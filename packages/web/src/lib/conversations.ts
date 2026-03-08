@@ -21,8 +21,6 @@ export interface Message {
   content: string
   timestamp: number
   media?: MediaAttachment[]
-  isStreaming?: boolean
-  toolStatus?: string
   toolCall?: string
 }
 
@@ -71,21 +69,6 @@ export function addMessage(
       lastActivity: Date.now(),
     },
   }
-}
-
-export function updateLastMessage(
-  store: ConversationStore,
-  sessionId: string,
-  msgId: string,
-  content: string,
-  isStreaming: boolean,
-): ConversationStore {
-  const conv = store[sessionId]
-  if (!conv) return store
-  const msgs = conv.messages.map((m) =>
-    m.id === msgId ? { ...m, content, isStreaming } : m,
-  )
-  return { ...store, [sessionId]: { ...conv, messages: msgs } }
 }
 
 /**

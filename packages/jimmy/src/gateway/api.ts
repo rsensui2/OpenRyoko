@@ -9,6 +9,7 @@ import {
   getSession,
   createSession,
   updateSession,
+  deleteSession,
   insertMessage,
   getMessages,
 } from "../sessions/registry.js";
@@ -131,6 +132,22 @@ export async function handleApiRequest(
       return json(res, { ...session, messages });
     }
 
+    // DELETE /api/sessions/:id
+    if (method === "DELETE" && params) {
+      const deleted = deleteSession(params.id);
+      if (!deleted) return notFound(res);
+      logger.info(`Session deleted: ${params.id}`);
+      context.emit("session:deleted", { sessionId: params.id });
+      return json(res, { status: "deleted" });
+    }
+
+    // GET /api/sessions/:id/children
+    params = matchRoute("/api/sessions/:id/children", pathname);
+    if (method === "GET" && params) {
+      const children = listSessions().filter((s) => s.parentSessionId === params!.id);
+      return json(res, children);
+    }
+
     // POST /api/sessions
     if (method === "POST" && pathname === "/api/sessions") {
       const body = JSON.parse(await readBody(req));
@@ -143,6 +160,8 @@ export async function handleApiRequest(
         source: "web",
         sourceRef: `web:${Date.now()}`,
         employee: body.employee,
+        parentSessionId: body.parentSessionId,
+        prompt,
       });
       logger.info(`Web session created: ${session.id}`);
 
@@ -249,15 +268,29 @@ export async function handleApiRequest(
       const departments = entries
         .filter((e) => e.isDirectory())
         .map((e) => e.name);
-      const employees = entries
-        .filter((e) => e.isFile() && (e.name.endsWith(".yaml") || e.name.endsWith(".yml")))
-        .map((e) => e.name.replace(/\.ya?ml$/, ""));
-      // Also scan employee subdirectory
+      const employees: string[] = [];
+      // Scan root-level YAML files
+      for (const e of entries) {
+        if (e.isFile() && (e.name.endsWith(".yaml") || e.name.endsWith(".yml"))) {
+          employees.push(e.name.replace(/\.ya?ml$/, ""));
+        }
+      }
+      // Scan employees/ subdirectory
       const employeesDir = path.join(ORG_DIR, "employees");
       if (fs.existsSync(employeesDir)) {
         const empEntries = fs.readdirSync(employeesDir, { withFileTypes: true });
         for (const e of empEntries) {
           if (e.isFile() && (e.name.endsWith(".yaml") || e.name.endsWith(".yml"))) {
+            employees.push(e.name.replace(/\.ya?ml$/, ""));
+          }
+        }
+      }
+      // Scan inside each department directory for YAML files (excluding department.yaml)
+      for (const dept of departments) {
+        const deptDir = path.join(ORG_DIR, dept);
+        const deptEntries = fs.readdirSync(deptDir, { withFileTypes: true });
+        for (const e of deptEntries) {
+          if (e.isFile() && (e.name.endsWith(".yaml") || e.name.endsWith(".yml")) && e.name !== "department.yaml") {
             employees.push(e.name.replace(/\.ya?ml$/, ""));
           }
         }
@@ -274,6 +307,14 @@ export async function handleApiRequest(
         path.join(ORG_DIR, `${params.name}.yaml`),
         path.join(ORG_DIR, `${params.name}.yml`),
       ];
+      // Also search inside each department directory
+      if (fs.existsSync(ORG_DIR)) {
+        const dirs = fs.readdirSync(ORG_DIR, { withFileTypes: true }).filter((e) => e.isDirectory());
+        for (const dir of dirs) {
+          candidates.push(path.join(ORG_DIR, dir.name, `${params.name}.yaml`));
+          candidates.push(path.join(ORG_DIR, dir.name, `${params.name}.yml`));
+        }
+      }
       const filePath = candidates.find((c) => fs.existsSync(c));
       if (!filePath) return notFound(res);
       const content = yaml.load(fs.readFileSync(filePath, "utf-8"));
@@ -289,11 +330,45 @@ export async function handleApiRequest(
       return json(res, board);
     }
 
+    // PUT /api/org/departments/:name/board
+    if (method === "PUT" && matchRoute("/api/org/departments/:name/board", pathname)) {
+      const p = matchRoute("/api/org/departments/:name/board", pathname)!;
+      const boardPath = path.join(ORG_DIR, p.name, "board.json");
+      const deptDir = path.join(ORG_DIR, p.name);
+      if (!fs.existsSync(deptDir)) return notFound(res);
+      const body = JSON.parse(await readBody(req));
+      fs.writeFileSync(boardPath, JSON.stringify(body, null, 2));
+      context.emit("board:updated", { department: p.name });
+      return json(res, { status: "ok" });
+    }
+
     // GET /api/skills
     if (method === "GET" && pathname === "/api/skills") {
       if (!fs.existsSync(SKILLS_DIR)) return json(res, []);
       const entries = fs.readdirSync(SKILLS_DIR, { withFileTypes: true });
-      const skills = entries.filter((e) => e.isDirectory()).map((e) => e.name);
+      const skills = entries.filter((e) => e.isDirectory()).map((e) => {
+        const skillMdPath = path.join(SKILLS_DIR, e.name, "SKILL.md");
+        let description = "";
+        if (fs.existsSync(skillMdPath)) {
+          const content = fs.readFileSync(skillMdPath, "utf-8");
+          // Extract description from ## Trigger section or first paragraph after title
+          const triggerMatch = content.match(/##\s*Trigger\s*\n+([^\n#]+)/);
+          if (triggerMatch) {
+            description = triggerMatch[1].trim();
+          } else {
+            // Use first non-heading, non-empty line
+            const lines = content.split("\n");
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (trimmed && !trimmed.startsWith("#")) {
+                description = trimmed;
+                break;
+              }
+            }
+          }
+        }
+        return { name: e.name, description };
+      });
       return json(res, skills);
     }
 
@@ -360,6 +435,24 @@ export async function handleApiRequest(
     if (method === "GET" && pathname === "/api/connectors") {
       const names = Array.from(context.connectors.keys());
       return json(res, names);
+    }
+
+    // GET /api/activity — recent activity derived from sessions
+    if (method === "GET" && pathname === "/api/activity") {
+      const sessions = listSessions();
+      const events: Array<{ event: string; payload: unknown; ts: number }> = [];
+      for (const s of sessions) {
+        const ts = new Date(s.lastActivity || s.createdAt).getTime();
+        if (s.status === "running") {
+          events.push({ event: "session:started", payload: { sessionId: s.id, employee: s.employee, engine: s.engine }, ts });
+        } else if (s.status === "idle") {
+          events.push({ event: "session:completed", payload: { sessionId: s.id, employee: s.employee, engine: s.engine }, ts });
+        } else if (s.status === "error") {
+          events.push({ event: "session:error", payload: { sessionId: s.id, employee: s.employee, error: s.lastError }, ts });
+        }
+      }
+      events.sort((a, b) => b.ts - a.ts);
+      return json(res, events.slice(0, 30));
     }
 
     // GET /api/onboarding — check if onboarding is needed
@@ -458,12 +551,23 @@ async function runWebSession(
   });
 
   try {
+    // If this session has an assigned employee, load their persona
+    let employee: import("../shared/types.js").Employee | undefined;
+    if (session.employee) {
+      const { findEmployee } = await import("./org.js");
+      const { scanOrg } = await import("./org.js");
+      const registry = scanOrg();
+      employee = findEmployee(session.employee, registry);
+    }
+
     const systemPrompt = buildContext({
       source: "web",
       channel: session.sourceRef,
       user: "web-user",
+      employee,
       connectors: Array.from(context.connectors.keys()),
       config,
+      sessionId: session.id,
     });
 
     const engineConfig = session.engine === "codex"
@@ -478,12 +582,15 @@ async function runWebSession(
       bin: engineConfig.bin,
       model: session.model ?? engineConfig.model,
       onStream: (delta) => {
-        context.emit("session:delta", {
-          sessionId: session.id,
-          type: delta.type,
-          content: delta.content,
-          toolName: delta.toolName,
-        });
+        // Only emit tool events — text arrives as the full result on completion
+        if (delta.type === "tool_use" || delta.type === "tool_result") {
+          context.emit("session:delta", {
+            sessionId: session.id,
+            type: delta.type,
+            content: delta.content,
+            toolName: delta.toolName,
+          });
+        }
       },
     });
 
@@ -501,6 +608,8 @@ async function runWebSession(
 
     context.emit("session:completed", {
       sessionId: session.id,
+      employee: session.employee || "Jimmy",
+      title: session.title,
       result: result.result,
       error: result.error || null,
       cost: result.cost,

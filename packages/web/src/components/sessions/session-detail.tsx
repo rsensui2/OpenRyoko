@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import {
   Card,
   CardHeader,
@@ -7,6 +8,7 @@ import {
   CardContent,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { api } from "@/lib/api";
 
 interface Session {
   id: string;
@@ -16,6 +18,8 @@ interface Session {
   sourceRef: string;
   employee: string | null;
   model: string | null;
+  title: string | null;
+  parentSessionId: string | null;
   status: "idle" | "running" | "error";
   createdAt: string;
   lastActivity: string;
@@ -75,10 +79,20 @@ function formatDate(iso: string): string {
 export function SessionDetail({
   session,
   onClose,
+  onNavigate,
 }: {
   session: Session;
   onClose: () => void;
+  onNavigate?: (id: string) => void;
 }) {
+  const [children, setChildren] = useState<Session[]>([]);
+
+  useEffect(() => {
+    api.getSessionChildren(session.id)
+      .then((data) => setChildren(data as unknown as Session[]))
+      .catch(() => setChildren([]));
+  }, [session.id]);
+
   return (
     <Card>
       <CardHeader>
@@ -88,7 +102,7 @@ export function SessionDetail({
             color: "var(--text-primary)",
           }}
         >
-          Session Detail
+          {session.title || "Session Detail"}
         </CardTitle>
       </CardHeader>
       <CardContent>
@@ -121,19 +135,6 @@ export function SessionDetail({
             }
           />
           <Field label="Source" value={session.source} />
-          <Field
-            label="Source Ref"
-            value={
-              <span
-                style={{
-                  fontFamily: "var(--font-mono)",
-                  fontSize: "var(--text-caption1)",
-                }}
-              >
-                {session.sourceRef}
-              </span>
-            }
-          />
           <Field label="Employee" value={session.employee || "Jimmy"} />
           <Field
             label="Status"
@@ -149,6 +150,75 @@ export function SessionDetail({
             label="Last Activity"
             value={formatDate(session.lastActivity)}
           />
+
+          {/* Parent session link */}
+          {session.parentSessionId && (
+            <Field
+              label="Parent Session"
+              value={
+                <button
+                  onClick={() => onNavigate?.(session.parentSessionId!)}
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    fontSize: "var(--text-caption1)",
+                    color: "var(--accent)",
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    textDecoration: "underline",
+                    padding: 0,
+                  }}
+                >
+                  {session.parentSessionId.slice(0, 12)}...
+                </button>
+              }
+            />
+          )}
+
+          {/* Child sessions */}
+          {children.length > 0 && (
+            <div style={{ marginTop: "var(--space-3)" }}>
+              <span
+                style={{
+                  fontSize: "var(--text-caption1)",
+                  fontWeight: "var(--weight-medium)",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.05em",
+                  color: "var(--text-tertiary)",
+                  display: "block",
+                  marginBottom: "var(--space-2)",
+                }}
+              >
+                Child Sessions ({children.length})
+              </span>
+              <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-1)" }}>
+                {children.map((child) => (
+                  <button
+                    key={child.id}
+                    onClick={() => onNavigate?.(child.id)}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      padding: "var(--space-2) var(--space-3)",
+                      background: "var(--fill-secondary)",
+                      borderRadius: "var(--radius-sm, 8px)",
+                      border: "none",
+                      cursor: "pointer",
+                      textAlign: "left",
+                    }}
+                  >
+                    <span style={{ fontSize: "var(--text-caption1)", color: "var(--text-primary)", fontWeight: "var(--weight-medium)" }}>
+                      {child.title || child.employee || "Session"}
+                    </span>
+                    <Badge variant={statusVariant[child.status] ?? "secondary"}>
+                      {child.status}
+                    </Badge>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           {session.lastError && (
             <div style={{ marginTop: "var(--space-3)" }}>

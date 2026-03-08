@@ -7,11 +7,11 @@
     "dev": "turbo dev",
     "lint": "turbo lint",
     "typecheck": "turbo typecheck",
-    "clean": "turbo clean",
+    "clean": "rm -rf .turbo node_modules/.cache && turbo clean",
     "jimmy": "node packages/jimmy/dist/bin/jimmy.js",
     "setup": "pnpm build && node packages/jimmy/dist/bin/jimmy.js setup",
     "setup:force": "pnpm build && node packages/jimmy/dist/bin/jimmy.js setup --force",
-    "start": "pnpm build && node packages/jimmy/dist/bin/jimmy.js start",
+    "start": "pnpm clean && pnpm build && node packages/jimmy/dist/bin/jimmy.js start",
     "stop": "node packages/jimmy/dist/bin/jimmy.js stop",
     "status": "node packages/jimmy/dist/bin/jimmy.js status"
   },

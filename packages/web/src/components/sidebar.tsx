@@ -94,13 +94,12 @@ export function Sidebar() {
         width: hovered ? 200 : 56,
         background: "var(--bg-secondary)",
         borderRight: "1px solid var(--separator)",
-        display: "flex",
         flexDirection: "column",
         zIndex: 50,
         transition: "width 200ms var(--ease-smooth)",
         overflow: "hidden",
       }}
-      className="hidden md:flex"
+      className="hidden lg:flex"
     >
       {/* App icon + title */}
       <div

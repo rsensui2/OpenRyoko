@@ -64,7 +64,16 @@ export default function OrgPage() {
             }
           }),
         );
-        setEmployees(details);
+        const jimmy: Employee = {
+          name: "jimmy",
+          displayName: "Jimmy",
+          department: "",
+          rank: "executive",
+          engine: "claude",
+          model: "opus",
+          persona: "COO and AI gateway daemon",
+        };
+        setEmployees([jimmy, ...details]);
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
@@ -251,7 +260,7 @@ export default function OrgPage() {
         {/* Mobile backdrop */}
         {selected && (
           <div
-            className="fixed inset-0 z-30 md:hidden"
+            className="fixed inset-0 z-30 lg:hidden"
             style={{ background: "rgba(0,0,0,0.5)" }}
             onClick={() => setSelected(null)}
           />

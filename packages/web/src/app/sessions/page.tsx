@@ -17,6 +17,8 @@ interface Session {
   sourceRef: string;
   employee: string | null;
   model: string | null;
+  title: string | null;
+  parentSessionId: string | null;
   status: "idle" | "running" | "error";
   createdAt: string;
   lastActivity: string;
@@ -207,6 +209,7 @@ export default function SessionsPage() {
                   sessions={filteredSessions}
                   selectedId={selectedId}
                   onSelect={setSelectedId}
+                  onDeleted={fetchSessions}
                 />
               )}
             </TabsContent>
@@ -216,7 +219,7 @@ export default function SessionsPage() {
         {/* Mobile backdrop */}
         {selected && (
           <div
-            className="fixed inset-0 z-30 md:hidden"
+            className="fixed inset-0 z-30 lg:hidden"
             style={{ background: "rgba(0,0,0,0.5)" }}
             onClick={() => setSelectedId(null)}
           />

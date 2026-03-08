@@ -34,6 +34,12 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
   return res.json();
 }
 
+async function del<T>(path: string): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  return res.json();
+}
+
 async function put<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: "PUT",
@@ -48,6 +54,8 @@ export const api = {
   getStatus: () => get<Record<string, unknown>>("/api/status"),
   getSessions: () => get<Record<string, unknown>[]>("/api/sessions"),
   getSession: (id: string) => get<Record<string, unknown>>(`/api/sessions/${id}`),
+  getSessionChildren: (id: string) => get<Record<string, unknown>[]>(`/api/sessions/${id}/children`),
+  deleteSession: (id: string) => del<Record<string, unknown>>(`/api/sessions/${id}`),
   createSession: (data: Record<string, unknown>) =>
     post<Record<string, unknown>>("/api/sessions", data),
   sendMessage: (id: string, data: Record<string, unknown>) =>
@@ -69,4 +77,8 @@ export const api = {
     get<{ lines: string[] }>(`/api/logs${n ? `?n=${n}` : ""}`),
   getOnboarding: () =>
     get<{ needed: boolean; sessionsCount: number; hasEmployees: boolean }>("/api/onboarding"),
+  getActivity: () =>
+    get<Array<{ event: string; payload: unknown; ts: number }>>("/api/activity"),
+  updateDepartmentBoard: (name: string, data: unknown) =>
+    put<Record<string, unknown>>(`/api/org/departments/${name}/board`, data),
 };

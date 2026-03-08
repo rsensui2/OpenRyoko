@@ -8,7 +8,10 @@ import { MediaPreview } from './media-preview'
 
 interface Employee {
   name: string
-  role?: string
+  displayName?: string
+  department?: string
+  rank?: string
+  engine?: string
 }
 
 interface ChatInputProps {
@@ -84,23 +87,34 @@ export function ChatInput({
   const [employees, setEmployees] = useState<Employee[]>([])
   const [showMentions, setShowMentions] = useState(false)
   const [mentionFilter, setMentionFilter] = useState('')
+  const [mentionIndex, setMentionIndex] = useState(0)
   const [pendingAttachments, setPendingAttachments] = useState<MediaAttachment[]>([])
   const [isRecording, setIsRecording] = useState(false)
   const [recordingElapsed, setRecordingElapsed] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const mentionItemRefs = useRef<Map<number, HTMLButtonElement>>(new Map())
   const recorderRef = useRef<AudioRecorderHandle | null>(null)
   const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // Load employees for @mention
+  // Load employees for @mention (with full details)
   useEffect(() => {
     api
       .getOrg()
-      .then((data) => {
+      .then(async (data) => {
         const emps = data.employees
-        if (Array.isArray(emps)) {
-          setEmployees(emps.map((e: string) => ({ name: e })))
-        }
+        if (!Array.isArray(emps)) return
+        const details = await Promise.all(
+          emps.map(async (name: string) => {
+            try {
+              const emp = await api.getEmployee(name)
+              return { name: emp.name, displayName: emp.displayName, department: emp.department, rank: emp.rank, engine: emp.engine }
+            } catch {
+              return { name }
+            }
+          })
+        )
+        setEmployees(details)
       })
       .catch(() => {})
   }, [])
@@ -135,6 +149,7 @@ export function ChatInput({
       const afterAt = val.slice(atIdx + 1)
       if (!afterAt.includes(' ') && !afterAt.includes('\n')) {
         setMentionFilter(afterAt.toLowerCase())
+        setMentionIndex(0)
         setShowMentions(true)
         return
       }
@@ -143,6 +158,29 @@ export function ChatInput({
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (showMentions && filteredEmployees.length > 0) {
+      const max = Math.min(filteredEmployees.length, 8)
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setMentionIndex((prev) => (prev + 1) % max)
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setMentionIndex((prev) => (prev - 1 + max) % max)
+        return
+      }
+      if (e.key === 'Tab' || e.key === 'Enter') {
+        e.preventDefault()
+        handleMentionSelect(filteredEmployees[mentionIndex].name)
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setShowMentions(false)
+        return
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSubmit()
@@ -260,8 +298,9 @@ export function ChatInput({
   const hasContent = value.trim().length > 0 || pendingAttachments.length > 0
 
   return (
-    <div style={{
-      padding: 'var(--space-3) var(--space-4)',
+    <div className="px-3 sm:px-4" style={{
+      paddingTop: 'var(--space-3)',
+      paddingBottom: 'var(--space-3)',
       borderTop: '1px solid var(--separator)',
       background: 'var(--material-regular)',
       flexShrink: 0,
@@ -283,31 +322,50 @@ export function ChatInput({
           overflowY: 'auto',
           zIndex: 10,
         }}>
-          {filteredEmployees.slice(0, 8).map((emp) => (
-            <button
-              key={emp.name}
-              onClick={() => handleMentionSelect(emp.name)}
-              style={{
-                width: '100%',
-                textAlign: 'left',
-                padding: 'var(--space-2) var(--space-3)',
-                fontSize: 'var(--text-footnote)',
-                background: 'transparent',
-                border: 'none',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 'var(--space-2)',
-                color: 'var(--text-primary)',
-              }}
-            >
-              <span style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-caption2)' }}>@</span>
-              <span style={{ fontWeight: 'var(--weight-medium)' }}>{emp.name}</span>
-              {emp.role && (
-                <span style={{ fontSize: 'var(--text-caption2)', color: 'var(--text-tertiary)' }}>{emp.role}</span>
-              )}
-            </button>
-          ))}
+          {filteredEmployees.slice(0, 8).map((emp, idx) => {
+            const rankEmoji: Record<string, string> = { executive: '🎯', manager: '📋', senior: '⭐', employee: '👤' }
+            const isHighlighted = idx === mentionIndex
+            return (
+              <button
+                key={emp.name}
+                ref={(el) => {
+                  if (el) mentionItemRefs.current.set(idx, el)
+                  else mentionItemRefs.current.delete(idx)
+                  if (isHighlighted && el) el.scrollIntoView({ block: 'nearest' })
+                }}
+                onClick={() => handleMentionSelect(emp.name)}
+                style={{
+                  width: '100%',
+                  textAlign: 'left',
+                  padding: 'var(--space-2) var(--space-3)',
+                  fontSize: 'var(--text-footnote)',
+                  background: isHighlighted ? 'var(--fill-secondary)' : 'transparent',
+                  border: 'none',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 'var(--space-2)',
+                  color: 'var(--text-primary)',
+                }}
+              >
+                <span style={{ fontSize: 16, lineHeight: 1 }}>{rankEmoji[emp.rank || 'employee'] || '👤'}</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+                    <span style={{ fontWeight: 'var(--weight-semibold)' }}>{emp.displayName || emp.name}</span>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-caption2)', color: 'var(--text-tertiary)' }}>@{emp.name}</span>
+                  </div>
+                  {emp.department && (
+                    <div style={{ fontSize: 'var(--text-caption2)', color: 'var(--text-quaternary)', display: 'flex', gap: 'var(--space-2)', marginTop: 1 }}>
+                      <span>{emp.department}</span>
+                      {emp.engine && (
+                        <span style={{ color: 'var(--accent)', fontWeight: 'var(--weight-medium)' }}>{emp.engine}</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </button>
+            )
+          })}
         </div>
       )}
 
@@ -327,15 +385,17 @@ export function ChatInput({
         gap: 'var(--space-2)',
         background: 'var(--fill-secondary)',
         borderRadius: 'var(--radius-lg)',
-        padding: 'var(--space-2) var(--space-3)',
+        padding: '6px var(--space-3)',
         border: '1px solid var(--separator)',
+        minHeight: 44,
       }}>
         {/* Attach button */}
         <button
           aria-label="Attach file"
           onClick={() => fileInputRef.current?.click()}
           style={{
-            padding: 'var(--space-1)',
+            width: 32,
+            height: 32,
             flexShrink: 0,
             borderRadius: 'var(--radius-sm)',
             display: 'flex',
@@ -345,6 +405,7 @@ export function ChatInput({
             border: 'none',
             cursor: 'pointer',
             color: 'var(--text-secondary)',
+            marginBottom: 0,
           }}
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -365,7 +426,8 @@ export function ChatInput({
           aria-label={isRecording ? 'Stop recording' : 'Record voice message'}
           onClick={toggleRecording}
           style={{
-            padding: 'var(--space-1)',
+            width: 32,
+            height: 32,
             flexShrink: 0,
             borderRadius: 'var(--radius-sm)',
             display: 'flex',
@@ -413,10 +475,12 @@ export function ChatInput({
             resize: 'none',
             color: 'var(--text-primary)',
             fontSize: 'var(--text-subheadline)',
-            lineHeight: 'var(--leading-normal)',
+            lineHeight: '20px',
             maxHeight: 120,
-            minHeight: 24,
-            padding: '2px 0',
+            minHeight: 20,
+            height: 20,
+            padding: 0,
+            margin: 0,
             opacity: disabled ? 0.5 : 1,
           }}
           onInput={(e) => {
@@ -453,13 +517,12 @@ export function ChatInput({
         </button>
       </div>
 
-      {/* Hint */}
-      <div style={{
+      {/* Hint — hidden on mobile for space */}
+      <div className="hidden sm:flex" style={{
         fontSize: 'var(--text-caption2)',
         color: 'var(--text-quaternary)',
         textAlign: 'center',
         marginTop: 'var(--space-1)',
-        display: 'flex',
         justifyContent: 'center',
         gap: 'var(--space-3)',
       }}>

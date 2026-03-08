@@ -90,6 +90,7 @@ export default function DashboardPage() {
   const [status, setStatus] = useState<StatusData | null>(null);
   const [cronCount, setCronCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [initialActivity, setInitialActivity] = useState<Array<{ event: string; payload: unknown }>>([]);
   const { events, connected } = useGateway();
 
   useEffect(() => {
@@ -112,13 +113,24 @@ export default function DashboardPage() {
       .getCronJobs()
       .then((data) => setCronCount(data.length))
       .catch(() => {});
+
+    // Load initial activity from recent sessions
+    api
+      .getActivity()
+      .then((data) => {
+        const initialEvents = data.map((e) => ({ event: e.event, payload: e.payload }));
+        setInitialActivity(initialEvents);
+      })
+      .catch(() => {});
   }, []);
 
   const defaultEngine = status?.engines
     ? Object.keys(status.engines as Record<string, unknown>)[0] ?? "--"
     : "--";
 
-  const recentEvents = [...events].reverse().slice(0, 20);
+  // Merge live WebSocket events with initial activity from API
+  const allEvents = events.length > 0 ? events : initialActivity;
+  const recentEvents = [...allEvents].reverse().slice(0, 20);
 
   return (
     <PageLayout>

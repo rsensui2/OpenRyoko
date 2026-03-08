@@ -2,8 +2,6 @@ import { spawn } from "node:child_process";
 import type { Engine, EngineRunOpts, EngineResult, StreamDelta } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
 
-const ENGINE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-
 export class ClaudeEngine implements Engine {
   name = "claude" as const;
 
@@ -49,20 +47,6 @@ export class ClaudeEngine implements Engine {
       let lastResultMsg: Record<string, unknown> | null = null;
       let lineCount = 0;
       let inTool = false;
-
-      // Timeout guard
-      const timer = setTimeout(() => {
-        if (!settled) {
-          settled = true;
-          logger.error(`Claude engine timed out after ${ENGINE_TIMEOUT_MS / 1000}s, killing process`);
-          proc.kill("SIGKILL");
-          resolve({
-            sessionId: opts.resumeSessionId || "",
-            result: "",
-            error: `Claude engine timed out after ${ENGINE_TIMEOUT_MS / 1000} seconds`,
-          });
-        }
-      }, ENGINE_TIMEOUT_MS);
 
       function processStreamLine(line: string, onStream: (delta: StreamDelta) => void): void {
         const trimmed = line.trim();
@@ -158,7 +142,6 @@ export class ClaudeEngine implements Engine {
       });
 
       proc.on("close", (code) => {
-        clearTimeout(timer);
         if (settled) return;
         settled = true;
 
@@ -208,7 +191,6 @@ export class ClaudeEngine implements Engine {
       });
 
       proc.on("error", (err) => {
-        clearTimeout(timer);
         if (settled) return;
         settled = true;
         const msg = `Failed to spawn Claude CLI: ${err.message}`;

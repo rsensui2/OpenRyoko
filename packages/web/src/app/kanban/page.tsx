@@ -32,11 +32,7 @@ export default function KanbanPage() {
     setLoading(true)
     setError(null)
 
-    // Load tickets from localStorage
-    const stored = loadTickets()
-    setTickets(stored)
-
-    // Load employees from API
+    // Load employees from API, then load board data from department boards
     api
       .getOrg()
       .then(async (data: OrgData) => {
@@ -58,6 +54,60 @@ export default function KanbanPage() {
           }),
         )
         setEmployees(details)
+
+        // Load board tickets from all departments
+        const boardTickets: KanbanStore = {}
+        for (const dept of data.departments) {
+          try {
+            const board = await api.getDepartmentBoard(dept) as unknown as Array<{
+              id: string
+              title: string
+              description?: string
+              status: string
+              priority?: string
+              assignee?: string
+              createdAt?: string
+              updatedAt?: string
+            }>
+            if (Array.isArray(board)) {
+              for (const item of board) {
+                // Map board.json status to kanban statuses
+                const statusMap: Record<string, TicketStatus> = {
+                  todo: 'todo',
+                  'in_progress': 'in-progress',
+                  'in-progress': 'in-progress',
+                  done: 'done',
+                  backlog: 'backlog',
+                  review: 'review',
+                }
+                const status = statusMap[item.status] || 'todo'
+                const priorityMap: Record<string, TicketPriority> = {
+                  low: 'low',
+                  medium: 'medium',
+                  high: 'high',
+                }
+                const priority = priorityMap[item.priority || 'medium'] || 'medium'
+                boardTickets[item.id] = {
+                  id: item.id,
+                  title: item.title,
+                  description: item.description || '',
+                  status,
+                  priority,
+                  assigneeId: item.assignee || null,
+                  workState: 'idle',
+                  createdAt: item.createdAt ? new Date(item.createdAt).getTime() : Date.now(),
+                  updatedAt: item.updatedAt ? new Date(item.updatedAt).getTime() : Date.now(),
+                }
+              }
+            }
+          } catch {
+            // Department may not have a board.json, that's fine
+          }
+        }
+
+        // Merge: API board data takes precedence, then localStorage for any extras
+        const localTickets = loadTickets()
+        setTickets({ ...localTickets, ...boardTickets })
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false))
@@ -326,7 +376,7 @@ export default function KanbanPage() {
         {/* Mobile backdrop */}
         {selectedTicket && (
           <div
-            className="fixed inset-0 z-30 md:hidden"
+            className="fixed inset-0 z-30 lg:hidden"
             style={{ background: 'rgba(0,0,0,0.5)' }}
             onClick={() => setSelectedTicket(null)}
           />

@@ -66,3 +66,20 @@ export function extractMention(
   }
   return undefined;
 }
+
+/**
+ * Extract ALL mentioned employees from text (e.g. "@jimmy-dev @jimmy-qa do X").
+ * Returns an array of matched employees (can be empty).
+ */
+export function extractMentions(
+  text: string,
+  registry: Map<string, Employee>,
+): Employee[] {
+  const mentioned: Employee[] = [];
+  for (const [name, employee] of registry) {
+    if (text.includes(`@${name}`)) {
+      mentioned.push(employee);
+    }
+  }
+  return mentioned;
+}

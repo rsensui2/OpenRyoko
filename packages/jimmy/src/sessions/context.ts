@@ -18,6 +18,7 @@ export function buildContext(opts: {
   employee?: Employee;
   connectors?: string[];
   config?: JimmyConfig;
+  sessionId?: string;
 }): string {
   const sections: string[] = [];
 
@@ -40,7 +41,7 @@ export function buildContext(opts: {
   }
 
   // ── Session context ───────────────────────────────────────
-  sections.push(buildSessionContext(opts));
+  sections.push(buildSessionContext({ ...opts, sessionId: opts.sessionId }));
 
   // ── Configuration awareness ───────────────────────────────
   if (opts.config) {
@@ -71,6 +72,11 @@ export function buildContext(opts: {
   // ── Local environment ────────────────────────────────────
   const envCtx = buildEnvironmentContext();
   if (envCtx) sections.push(envCtx);
+
+  // ── Delegation protocol ──────────────────────────────────
+  if (!opts.employee) {
+    sections.push(buildDelegationProtocol(opts.config));
+  }
 
   // ── Gateway API reference ─────────────────────────────────
   sections.push(buildApiReference());
@@ -160,8 +166,10 @@ function buildSessionContext(opts: {
   channel: string;
   thread?: string;
   user: string;
+  sessionId?: string;
 }): string {
   let ctx = `## Current session\n`;
+  if (opts.sessionId) ctx += `- Session ID: ${opts.sessionId}\n`;
   ctx += `- Source: ${opts.source}\n`;
   ctx += `- Channel: ${opts.channel}\n`;
   if (opts.thread) ctx += `- Thread: ${opts.thread}\n`;
@@ -420,6 +428,84 @@ function trimContext(sections: string[]): string {
   return result;
 }
 
+function buildDelegationProtocol(config?: JimmyConfig): string {
+  const host = config ? `${config.gateway.host || "127.0.0.1"}:${config.gateway.port || 7777}` : "127.0.0.1:7777";
+
+  return `## Employee Delegation Protocol
+
+You are the COO. You NEVER become an employee — you orchestrate them. When the user mentions employees with \`@employee-name\` in their message, or when a task clearly fits an employee's role, you delegate by creating **linked child sessions**.
+
+### How delegation works
+
+1. **Detect**: Spot \`@employee-name\` tags in the user's message, or infer the right employee from context.
+
+2. **Check for existing child sessions FIRST**: Before creating a new session, ALWAYS check if you already have a child session for this employee:
+
+\`\`\`bash
+curl -s http://${host}/api/sessions/<your-session-id>/children
+\`\`\`
+
+Look for a child with \`"employee": "<employee-name>"\`. If found, REUSE it (skip to step 5). If not found, proceed to step 3.
+
+3. **Brief**: Craft clear, targeted instructions for the employee. Don't just relay the user's words — translate them into actionable briefs with all necessary context.
+
+4. **Spawn**: Create a child session via the gateway API:
+
+\`\`\`bash
+curl -s -X POST http://${host}/api/sessions \\
+  -H 'Content-Type: application/json' \\
+  -d '{
+    "prompt": "<your brief for the employee>",
+    "employee": "<employee-name>",
+    "parentSessionId": "<your-session-id>"
+  }'
+\`\`\`
+
+The response includes \`{"id": "<child-session-id>", ...}\`. Save this ID.
+
+5. **Send message to existing child session** (when reusing):
+
+\`\`\`bash
+curl -s -X POST http://${host}/api/sessions/<child-session-id>/message \\
+  -H 'Content-Type: application/json' \\
+  -d '{"message": "<follow-up instructions>"}'
+\`\`\`
+
+6. **Poll**: Check if the child session is complete:
+
+\`\`\`bash
+curl -s http://${host}/api/sessions/<child-session-id>
+\`\`\`
+
+Look at the \`status\` field: \`"running"\` means still working, \`"idle"\` means done, \`"error"\` means failed.
+When \`"idle"\`, read the \`messages\` array — the last assistant message is the employee's response.
+
+7. **Relay**: Summarize or present the employee's response to the user. Add your own commentary if useful.
+
+### IMPORTANT: Always reuse child sessions
+
+Never create duplicate sessions for the same employee within the same parent. The flow is:
+- First time tagging an employee → create child session (step 4)
+- Every subsequent time → reuse via \`/children\` lookup (step 2 → step 5)
+- This ensures the employee has full conversation context and continuity
+
+### Multiple employees
+
+You can spawn multiple child sessions in parallel (one per employee). Poll each and collect all results before responding to the user.
+
+### Smart delegation
+
+- **Tagged employees**: Always delegate to them.
+- **No tags but clear fit**: Proactively suggest or auto-delegate. e.g., "This sounds like a task for @jimmy-dev, let me loop them in."
+- **Short tasks** (questions, lookups): Wait for the response, then relay immediately.
+- **Long tasks** (coding, research): Tell the user the employee is working on it, then check back.
+- **Multiple employees**: Coordinate their work. Spawn sessions in parallel, collect results, synthesize.
+
+### Your session ID
+
+Your current session ID is provided in the "Current session" section above. Use it as \`parentSessionId\` when spawning children and for the \`/children\` lookup.`;
+}
+
 function buildApiReference(): string {
   return `## Jimmy Gateway API (http://127.0.0.1:7777)
 
@@ -429,8 +515,10 @@ You can call these endpoints with curl to inspect and manage the gateway:
 |----------|--------|-------------|
 | \`/api/status\` | GET | Gateway status, uptime, engine info |
 | \`/api/sessions\` | GET | List all sessions |
-| \`/api/sessions/:id\` | GET | Session detail |
-| \`/api/sessions\` | POST | Create new session (\`{prompt, engine?, employee?}\`) |
+| \`/api/sessions/:id\` | GET | Session detail (includes messages) |
+| \`/api/sessions\` | POST | Create new session (\`{prompt, engine?, employee?, parentSessionId?}\`) |
+| \`/api/sessions/:id/message\` | POST | Send follow-up message to existing session (\`{message}\`) |
+| \`/api/sessions/:id/children\` | GET | List child sessions of a parent |
 | \`/api/cron\` | GET | List cron jobs |
 | \`/api/cron/:id\` | PUT | Update cron job (toggle enabled, etc.) |
 | \`/api/cron/:id/runs\` | GET | Cron run history |

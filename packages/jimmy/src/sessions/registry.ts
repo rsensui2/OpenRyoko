@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   source_ref TEXT NOT NULL,
   employee TEXT,
   model TEXT,
+  title TEXT,
+  parent_session_id TEXT,
   status TEXT DEFAULT 'idle',
   created_at TEXT NOT NULL,
   last_activity TEXT NOT NULL,
@@ -44,6 +46,8 @@ function rowToSession(row: Record<string, unknown>): Session {
     sourceRef: (row.source_ref as string),
     employee: (row.employee as string) ?? null,
     model: (row.model as string) ?? null,
+    title: (row.title as string) ?? null,
+    parentSessionId: (row.parent_session_id as string) ?? null,
     status: row.status as Session["status"],
     createdAt: row.created_at as string,
     lastActivity: row.last_activity as string,
@@ -59,6 +63,17 @@ export function initDb(): Database.Database {
   db.exec(CREATE_TABLE);
   db.exec(CREATE_MESSAGES_TABLE);
   db.exec(CREATE_MESSAGES_INDEX);
+
+  // Migrate: add title column if missing
+  const cols = db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>;
+  const colNames = new Set(cols.map((c) => c.name));
+  if (!colNames.has("title")) {
+    db.exec("ALTER TABLE sessions ADD COLUMN title TEXT");
+  }
+  if (!colNames.has("parent_session_id")) {
+    db.exec("ALTER TABLE sessions ADD COLUMN parent_session_id TEXT");
+  }
+
   return db;
 }
 
@@ -68,18 +83,34 @@ export interface CreateSessionOpts {
   sourceRef: string;
   employee?: string;
   model?: string;
+  title?: string;
+  parentSessionId?: string;
 }
 
-export function createSession(opts: CreateSessionOpts): Session {
+function generateTitle(employee?: string, prompt?: string): string {
+  const name = employee || "Jimmy";
+  if (!prompt) return name;
+  const cleaned = prompt
+    .replace(/\n/g, " ")
+    .replace(/@\w+/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return name;
+  const summary = cleaned.slice(0, 30).trim();
+  return `${name} — ${summary}${cleaned.length > 30 ? "..." : ""}`;
+}
+
+export function createSession(opts: CreateSessionOpts & { prompt?: string }): Session {
   const db = initDb();
   const now = new Date().toISOString();
   const id = uuidv4();
+  const title = opts.title ?? generateTitle(opts.employee, opts.prompt);
 
   const stmt = db.prepare(`
-    INSERT INTO sessions (id, engine, source, source_ref, employee, model, status, created_at, last_activity)
-    VALUES (?, ?, ?, ?, ?, ?, 'idle', ?, ?)
+    INSERT INTO sessions (id, engine, source, source_ref, employee, model, title, parent_session_id, status, created_at, last_activity)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, ?)
   `);
-  stmt.run(id, opts.engine, opts.source, opts.sourceRef, opts.employee ?? null, opts.model ?? null, now, now);
+  stmt.run(id, opts.engine, opts.source, opts.sourceRef, opts.employee ?? null, opts.model ?? null, title, opts.parentSessionId ?? null, now, now);
 
   return {
     id,
@@ -89,6 +120,8 @@ export function createSession(opts: CreateSessionOpts): Session {
     sourceRef: opts.sourceRef,
     employee: opts.employee ?? null,
     model: opts.model ?? null,
+    title,
+    parentSessionId: opts.parentSessionId ?? null,
     status: "idle",
     createdAt: now,
     lastActivity: now,
@@ -171,6 +204,18 @@ export function listSessions(filter?: ListSessionsFilter): Session[] {
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
   const rows = db.prepare(`SELECT * FROM sessions ${where} ORDER BY last_activity DESC`).all(...values) as Record<string, unknown>[];
   return rows.map(rowToSession);
+}
+
+/**
+ * Mark any sessions stuck in "running" status as "idle".
+ * Called on gateway startup — if the gateway is starting, no sessions can actually be running.
+ */
+export function recoverStaleSessions(): number {
+  const db = initDb();
+  const result = db.prepare(
+    "UPDATE sessions SET status = 'idle', last_error = 'Recovered: gateway restarted while session was running' WHERE status = 'running'"
+  ).run();
+  return result.changes;
 }
 
 export function deleteSession(id: string): boolean {

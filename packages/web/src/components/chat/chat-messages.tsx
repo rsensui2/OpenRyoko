@@ -5,6 +5,125 @@ import { parseMedia } from '@/lib/conversations'
 import { FileAttachment } from './file-attachment'
 import { VoiceMessage } from './voice-message'
 
+/* ── Tool grouping ──────────────────────────────────────── */
+
+type MessageItem =
+  | { kind: 'message'; msg: Message; index: number }
+  | { kind: 'tool-group'; msgs: Message[]; startIndex: number }
+
+function groupMessages(messages: Message[]): MessageItem[] {
+  const items: MessageItem[] = []
+  let i = 0
+  while (i < messages.length) {
+    if (messages[i].role === 'assistant' && messages[i].toolCall) {
+      const toolMsgs: Message[] = []
+      const start = i
+      while (i < messages.length && messages[i].role === 'assistant' && messages[i].toolCall) {
+        toolMsgs.push(messages[i])
+        i++
+      }
+      items.push({ kind: 'tool-group', msgs: toolMsgs, startIndex: start })
+    } else {
+      items.push({ kind: 'message', msg: messages[i], index: i })
+      i++
+    }
+  }
+  return items
+}
+
+function ToolGroup({ msgs, isActive }: { msgs: Message[]; isActive: boolean }) {
+  const [expanded, setExpanded] = useState(false)
+  const allDone = msgs.every((m) => m.content.startsWith('Used '))
+  const label = isActive && !allDone
+    ? `${msgs.length} tool${msgs.length !== 1 ? 's' : ''} running…`
+    : `${msgs.length} tool${msgs.length !== 1 ? 's' : ''} used`
+
+  return (
+    <div style={{
+      padding: '0 var(--space-4)',
+      marginBottom: 'var(--space-1)',
+    }}>
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 'var(--space-2)',
+          padding: '5px var(--space-3)',
+          borderRadius: 'var(--radius-full, 999px)',
+          background: 'var(--fill-secondary)',
+          border: '1px solid var(--separator)',
+          fontSize: 'var(--text-caption1)',
+          color: 'var(--text-secondary)',
+          cursor: 'pointer',
+          transition: 'background 150ms ease',
+        }}
+        onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--fill-tertiary)')}
+        onMouseLeave={(e) => (e.currentTarget.style.background = 'var(--fill-secondary)')}
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.6 }}>
+          <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+        </svg>
+        {label}
+        {isActive && !allDone && (
+          <span style={{
+            width: 6,
+            height: 6,
+            borderRadius: '50%',
+            background: 'var(--system-blue)',
+            animation: 'jimmy-pulse 1.4s infinite',
+          }} />
+        )}
+        <svg
+          width="10"
+          height="10"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          style={{
+            transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)',
+            transition: 'transform 150ms ease',
+            opacity: 0.5,
+          }}
+        >
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+      {expanded && (
+        <div style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: 'var(--space-1)',
+          marginTop: 'var(--space-1)',
+          paddingLeft: 'var(--space-1)',
+        }}>
+          {msgs.map((m) => (
+            <span
+              key={m.id}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+                padding: '2px 8px',
+                borderRadius: 'var(--radius-full, 999px)',
+                background: 'var(--fill-tertiary)',
+                border: '1px solid var(--separator)',
+                fontSize: 'var(--text-caption2)',
+                color: 'var(--text-tertiary)',
+              }}
+            >
+              {m.toolCall}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 /* ── Markdown rendering ─────────────────────────────────── */
 
 function inlineFormat(text: string): React.ReactNode {
@@ -96,6 +215,66 @@ function CodeBlock({ code, keyProp }: { code: string; keyProp: number }) {
   )
 }
 
+function isTableSeparator(line: string): boolean {
+  return /^\|[\s:|-]+\|$/.test(line.trim())
+}
+
+function parseTableRow(line: string): string[] {
+  return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim())
+}
+
+function TableBlock({ headerLine, rows, keyProp }: { headerLine: string; rows: string[]; keyProp: number }) {
+  const headers = parseTableRow(headerLine)
+  const bodyRows = rows.map(parseTableRow)
+
+  return (
+    <div key={keyProp} style={{
+      margin: '10px 0',
+      borderRadius: 10,
+      border: '1px solid var(--separator)',
+      overflow: 'hidden',
+    }}>
+      <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+        <table style={{
+          borderCollapse: 'collapse',
+          fontSize: 'var(--text-footnote)',
+          lineHeight: 1.6,
+          width: '100%',
+          minWidth: 'max-content',
+        }}>
+          <thead>
+            <tr style={{ background: 'var(--fill-tertiary)' }}>
+              {headers.map((h, hi) => (
+                <th key={hi} style={{
+                  textAlign: 'left',
+                  padding: '10px 16px',
+                  fontWeight: 600,
+                  color: 'var(--text-primary)',
+                  whiteSpace: 'nowrap',
+                  borderBottom: '1px solid var(--separator)',
+                }}>{inlineFormat(h)}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {bodyRows.map((row, ri) => (
+              <tr key={ri} style={{ background: ri % 2 === 1 ? 'var(--fill-quaternary, transparent)' : 'transparent' }}>
+                {row.map((cell, ci) => (
+                  <td key={ci} style={{
+                    padding: '10px 16px',
+                    borderBottom: ri < bodyRows.length - 1 ? '1px solid var(--separator)' : 'none',
+                    color: 'var(--text-primary)',
+                  }}>{inlineFormat(cell)}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 function formatMessage(content: string): React.ReactNode {
   if (!content) return null
   const lines = content.split('\n')
@@ -117,6 +296,20 @@ function formatMessage(content: string): React.ReactNode {
       continue
     }
     if (inCodeBlock) { codeLines.push(line); continue }
+
+    // Table detection: header row | separator row | body rows
+    if (line.trim().startsWith('|') && line.trim().endsWith('|') && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
+      const headerLine = line
+      i++ // skip separator
+      const tableRows: string[] = []
+      while (i + 1 < lines.length && lines[i + 1].trim().startsWith('|') && lines[i + 1].trim().endsWith('|') && !isTableSeparator(lines[i + 1])) {
+        i++
+        tableRows.push(lines[i])
+      }
+      result.push(<TableBlock key={`table-${i}`} keyProp={i} headerLine={headerLine} rows={tableRows} />)
+      continue
+    }
+
     if (line.trim() === '') { result.push(<div key={`space-${i}`} style={{ height: 6 }} />); continue }
     if (line.match(/^[-*] /)) {
       result.push(
@@ -286,17 +479,41 @@ export function ChatMessages({ messages, loading }: ChatMessagesProps) {
   }
 
   return (
-    <div style={{
+    <div className="chat-messages-scroll" style={{
       flex: 1,
       overflowY: 'auto',
-      padding: 'var(--space-5) 0 var(--space-8) 0',
+      padding: 'var(--space-3) 0 var(--space-6) 0',
       background: 'var(--bg)',
     }}>
-      {messages.map((msg, i) => {
+      {groupMessages(messages).map((item) => {
+        if (item.kind === 'tool-group') {
+          const firstMsg = item.msgs[0]
+          const showTimestamp = shouldShowTimestamp(messages, item.startIndex)
+          const prevMsg = item.startIndex > 0 ? messages[item.startIndex - 1] : null
+          const isActive = loading && item.startIndex + item.msgs.length === messages.length
+          return (
+            <div key={`tg-${item.startIndex}`}>
+              {showTimestamp && (
+                <div style={{
+                  textAlign: 'center',
+                  padding: 'var(--space-3) 0',
+                  fontSize: 'var(--text-caption2)',
+                  color: 'var(--text-tertiary)',
+                }}>
+                  {formatTimestamp(firstMsg.timestamp)}
+                </div>
+              )}
+              {!showTimestamp && prevMsg && (
+                <div style={{ height: prevMsg.role !== 'assistant' ? 'var(--space-4)' : 'var(--space-1)' }} />
+              )}
+              <ToolGroup msgs={item.msgs} isActive={isActive} />
+            </div>
+          )
+        }
+
+        const { msg, index: i } = item
         const isUser = msg.role === 'user'
         const showTimestamp = shouldShowTimestamp(messages, i)
-        const isLastAssistant = !isUser && i === messages.length - 1 && (loading || msg.isStreaming)
-        const showTypingDots = isLastAssistant && !msg.content
         const media = msg.media || parseMedia(msg.content)
 
         // Strip media URLs from text for display
@@ -343,8 +560,7 @@ export function ChatMessages({ messages, loading }: ChatMessagesProps) {
                 marginBottom: 'var(--space-1)',
               }}>
                 {textContent && (
-                  <div style={{
-                    maxWidth: '75%',
+                  <div className="user-msg-bubble" style={{
                     padding: 'var(--space-3) var(--space-4)',
                     borderRadius: 'var(--radius-lg) var(--radius-lg) var(--radius-sm) var(--radius-lg)',
                     background: 'var(--accent)',
@@ -358,80 +574,22 @@ export function ChatMessages({ messages, loading }: ChatMessagesProps) {
                   </div>
                 )}
                 {media.length > 0 && (
-                  <div style={{ maxWidth: '75%' }}>
+                  <div className="user-msg-bubble">
                     {renderMedia(media, true)}
                   </div>
                 )}
               </div>
             )}
 
-            {/* Tool call message — compact row */}
-            {!isUser && msg.toolCall && (
-              <div style={{
-                display: 'flex',
-                justifyContent: 'flex-start',
-                padding: '0 var(--space-4)',
-                marginBottom: 'var(--space-1)',
-              }}>
-                <div style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 'var(--space-2)',
-                  padding: '4px var(--space-3)',
-                  borderRadius: 'var(--radius-full, 999px)',
-                  background: 'var(--fill-secondary)',
-                  border: '1px solid var(--separator)',
-                  fontSize: 'var(--text-caption1)',
-                  color: 'var(--text-secondary)',
-                }}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.6 }}>
-                    <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
-                  </svg>
-                  {msg.content}
-                </div>
-              </div>
-            )}
-
             {/* Assistant message */}
-            {!isUser && !msg.toolCall && (
-              <div style={{
+            {!isUser && (
+              <div className="assistant-msg-row" style={{
                 display: 'flex',
                 justifyContent: 'flex-start',
                 padding: '0 var(--space-4)',
                 marginBottom: 'var(--space-1)',
               }}>
-                <div style={{ maxWidth: '75%', display: 'flex', flexDirection: 'column' }}>
-                  {/* Typing indicator */}
-                  {showTypingDots && (
-                    <div style={{
-                      padding: 'var(--space-3) var(--space-4)',
-                      borderRadius: 'var(--radius-sm) var(--radius-lg) var(--radius-lg) var(--radius-lg)',
-                      background: 'var(--material-thin)',
-                      border: '1px solid var(--separator)',
-                    }}>
-                      <div style={{ display: 'flex', gap: 4, alignItems: 'center', height: 16 }}>
-                        <span style={{
-                          width: 6, height: 6, borderRadius: '50%',
-                          background: 'var(--text-quaternary)',
-                          animation: 'jimmy-pulse 1.4s infinite',
-                          animationDelay: '0ms',
-                        }} />
-                        <span style={{
-                          width: 6, height: 6, borderRadius: '50%',
-                          background: 'var(--text-quaternary)',
-                          animation: 'jimmy-pulse 1.4s infinite',
-                          animationDelay: '200ms',
-                        }} />
-                        <span style={{
-                          width: 6, height: 6, borderRadius: '50%',
-                          background: 'var(--text-quaternary)',
-                          animation: 'jimmy-pulse 1.4s infinite',
-                          animationDelay: '400ms',
-                        }} />
-                      </div>
-                    </div>
-                  )}
-
+                <div className="assistant-msg-bubble" style={{ display: 'flex', flexDirection: 'column' }}>
                   {/* Text bubble */}
                   {textContent && (
                     <div style={{
@@ -444,44 +602,6 @@ export function ChatMessages({ messages, loading }: ChatMessagesProps) {
                       lineHeight: 'var(--leading-relaxed)',
                     }}>
                       {formatMessage(textContent)}
-                      {/* Streaming cursor */}
-                      {isLastAssistant && textContent && (
-                        <span style={{
-                          display: 'inline-block',
-                          width: 2,
-                          height: '1.1em',
-                          background: 'var(--accent)',
-                          marginLeft: 2,
-                          animation: 'jimmy-blink 1s step-end infinite',
-                          verticalAlign: 'text-bottom',
-                        }} />
-                      )}
-                    </div>
-                  )}
-
-                  {/* Tool status indicator */}
-                  {msg.toolStatus && (
-                    <div style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 'var(--space-2)',
-                      marginTop: 'var(--space-2)',
-                      padding: 'var(--space-1) var(--space-3)',
-                      borderRadius: 'var(--radius-full, 999px)',
-                      background: 'var(--fill-secondary)',
-                      border: '1px solid var(--separator)',
-                      fontSize: 'var(--text-caption2)',
-                      color: 'var(--text-secondary)',
-                      width: 'fit-content',
-                    }}>
-                      <span style={{
-                        width: 6,
-                        height: 6,
-                        borderRadius: '50%',
-                        background: 'var(--system-blue)',
-                        animation: 'jimmy-pulse 1.4s infinite',
-                      }} />
-                      Using {msg.toolStatus}
                     </div>
                   )}
 
@@ -494,8 +614,8 @@ export function ChatMessages({ messages, loading }: ChatMessagesProps) {
         )
       })}
 
-      {/* Global loading indicator when no messages are streaming yet */}
-      {loading && messages.length > 0 && !messages[messages.length - 1]?.isStreaming && (messages[messages.length - 1]?.role === 'user' || messages[messages.length - 1]?.toolCall) && (
+      {/* Loading indicator while waiting for engine response */}
+      {loading && messages.length > 0 && (messages[messages.length - 1]?.role === 'user' || messages[messages.length - 1]?.toolCall) && (
         <div style={{
           display: 'flex',
           justifyContent: 'flex-start',
@@ -534,14 +654,19 @@ export function ChatMessages({ messages, loading }: ChatMessagesProps) {
 
       <div ref={bottomRef} />
 
-      {/* Keyframe animations */}
+      {/* Keyframe animations + responsive bubble widths */}
       <style>{`
         @keyframes jimmy-pulse {
           0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
           40% { opacity: 1; transform: scale(1); }
         }
-        @keyframes jimmy-blink {
-          50% { opacity: 0; }
+        .assistant-msg-bubble { max-width: 100%; }
+        .user-msg-bubble { max-width: 90%; }
+        .assistant-msg-row { padding: 0 var(--space-2) !important; }
+        @media (min-width: 1024px) {
+          .assistant-msg-bubble { max-width: 75%; }
+          .user-msg-bubble { max-width: 75%; }
+          .assistant-msg-row { padding: 0 var(--space-4) !important; }
         }
       `}</style>
     </div>

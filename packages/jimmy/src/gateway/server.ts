@@ -6,7 +6,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import type { JimmyConfig, Connector, Employee } from "../shared/types.js";
 import { loadConfig } from "../shared/config.js";
 import { configureLogger, logger } from "../shared/logger.js";
-import { initDb } from "../sessions/registry.js";
+import { initDb, recoverStaleSessions } from "../sessions/registry.js";
 import { SessionManager } from "../sessions/manager.js";
 import { ClaudeEngine } from "../engines/claude.js";
 import { CodexEngine } from "../engines/codex.js";
@@ -15,7 +15,7 @@ import { startWatchers, stopWatchers } from "./watcher.js";
 import { SlackConnector } from "../connectors/slack/index.js";
 import { loadJobs } from "../cron/jobs.js";
 import { startScheduler, reloadScheduler, stopScheduler } from "../cron/scheduler.js";
-import { scanOrg, extractMention } from "./org.js";
+import { scanOrg, extractMentions } from "./org.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -95,8 +95,12 @@ export async function startGateway(
 
   logger.info("Starting Jimmy gateway...");
 
-  // Initialize database
+  // Initialize database and recover any sessions stuck from a previous run
   initDb();
+  const recovered = recoverStaleSessions();
+  if (recovered > 0) {
+    logger.info(`Recovered ${recovered} stale session(s) stuck in "running" state`);
+  }
 
   // Set up engines
   const engines = new Map<string, InstanceType<typeof ClaudeEngine> | InstanceType<typeof CodexEngine>>();
@@ -127,8 +131,9 @@ export async function startGateway(
         botToken: config.connectors.slack.botToken,
       });
       slack.onMessage((msg) => {
-        const employee = extractMention(msg.text, employeeRegistry);
-        sessionManager.route(msg, slack, employee).catch((err) => {
+        // Always route to Jimmy (COO). Employee mentions are detected by Jimmy
+        // in the message text and delegated via child sessions.
+        sessionManager.route(msg, slack).catch((err) => {
           logger.error(`Slack route error: ${err instanceof Error ? err.message : err}`);
         });
       });

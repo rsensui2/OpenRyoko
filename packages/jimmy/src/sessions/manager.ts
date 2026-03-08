@@ -123,17 +123,12 @@ export class SessionManager {
         employee,
         connectors: this.connectorNames,
         config: this.config,
+        sessionId: session.id,
       });
 
       const engineConfig = session.engine === "codex"
         ? this.config.engines.codex
         : this.config.engines.claude;
-
-      // Build streaming callback for connectors when enabled
-      const streaming = this.config.gateway.streaming ?? false;
-      let lastEditTime = 0;
-      let streamedText = "";
-      const THROTTLE_MS = 1500; // Slack rate limit friendly
 
       const result = await engine.run({
         prompt,
@@ -143,19 +138,6 @@ export class SessionManager {
         bin: engineConfig.bin,
         model: session.model ?? engineConfig.model,
         attachments: attachments.length > 0 ? attachments : undefined,
-        onStream: streaming ? (delta) => {
-          if (delta.type === "text" && delta.content && thinkingTs) {
-            streamedText += delta.content;
-            const now = Date.now();
-            if (now - lastEditTime > THROTTLE_MS) {
-              lastEditTime = now;
-              connector.editMessage(
-                { channel: target.channel, thread: target.thread || target.messageTs, messageTs: thinkingTs },
-                streamedText + " ▍",
-              ).catch(() => {});
-            }
-          }
-        } : undefined,
       });
 
       // Edit the thinking message with the actual response, or send new if edit fails

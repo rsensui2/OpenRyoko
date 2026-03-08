@@ -37,10 +37,32 @@ function ChatPage() {
   const [loading, setLoading] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
   const [mobileView, setMobileView] = useState<'sidebar' | 'chat'>('sidebar')
+  const [sessionMeta, setSessionMeta] = useState<{ engine?: string; engineSessionId?: string; model?: string } | null>(null)
+  const [showMoreMenu, setShowMoreMenu] = useState(false)
+  const [copiedField, setCopiedField] = useState<string | null>(null)
+  const moreMenuRef = useRef<HTMLDivElement>(null)
   const { events } = useGateway()
   const searchParams = useSearchParams()
   const onboardingTriggered = useRef(false)
-  const streamingRef = useRef(false)
+
+  // Close more menu on outside click
+  useEffect(() => {
+    if (!showMoreMenu) return
+    function handleClick(e: MouseEvent) {
+      if (moreMenuRef.current && !moreMenuRef.current.contains(e.target as Node)) {
+        setShowMoreMenu(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [showMoreMenu])
+
+  const copyToClipboard = useCallback((text: string, field: string) => {
+    navigator.clipboard.writeText(text)
+    setCopiedField(field)
+    setShowMoreMenu(false)
+    setTimeout(() => setCopiedField(null), 1500)
+  }, [])
 
   // Auto-trigger onboarding on first visit
   useEffect(() => {
@@ -88,7 +110,7 @@ function ChatPage() {
     })
   }
 
-  // Listen for session:delta and session:completed events
+  // Listen for session events (tool calls + completion)
   useEffect(() => {
     if (events.length === 0) return
     const latest = events[events.length - 1]
@@ -100,50 +122,9 @@ function ChatPage() {
 
     if (latest.event === 'session:delta') {
       const deltaType = String(payload.type || 'text')
-      const content = String(payload.content || '')
 
-      if (deltaType === 'text') {
-        if (!content) return
-        if (!streamingRef.current) {
-          streamingRef.current = true
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: crypto.randomUUID(),
-              role: 'assistant' as const,
-              content,
-              timestamp: Date.now(),
-              isStreaming: true,
-            },
-          ])
-        } else {
-          setMessages((prev) => {
-            const updated = [...prev]
-            const last = updated[updated.length - 1]
-            if (last && last.role === 'assistant') {
-              updated[updated.length - 1] = {
-                ...last,
-                content: last.content + content,
-              }
-            }
-            return updated
-          })
-        }
-      } else if (deltaType === 'tool_use') {
+      if (deltaType === 'tool_use') {
         const toolName = String(payload.toolName || 'tool')
-        // If we have a streaming text message, finalize it before adding tool call
-        if (streamingRef.current) {
-          setMessages((prev) => {
-            const updated = [...prev]
-            const last = updated[updated.length - 1]
-            if (last && last.role === 'assistant' && last.isStreaming) {
-              updated[updated.length - 1] = { ...last, isStreaming: false }
-            }
-            return updated
-          })
-          streamingRef.current = false
-        }
-        // Add tool call as a separate message
         setMessages((prev) => [
           ...prev,
           {
@@ -155,12 +136,11 @@ function ChatPage() {
           },
         ])
       } else if (deltaType === 'tool_result') {
-        // Mark the tool call message as completed
         setMessages((prev) => {
           const updated = [...prev]
           const last = updated[updated.length - 1]
           if (last && last.role === 'assistant' && last.toolCall) {
-            updated[updated.length - 1] = { ...last, content: `Used ${last.toolCall}`, toolStatus: undefined }
+            updated[updated.length - 1] = { ...last, content: `Used ${last.toolCall}` }
           }
           return updated
         })
@@ -171,31 +151,18 @@ function ChatPage() {
       if (isOnboarding && payload.sessionId) {
         setSelectedId(String(payload.sessionId))
       }
-      streamingRef.current = false
       setLoading(false)
 
       if (payload.result) {
-        setMessages((prev) => {
-          const last = prev[prev.length - 1]
-          if (last && last.role === 'assistant' && last.content) {
-            const updated = [...prev]
-            updated[updated.length - 1] = {
-              ...last,
-              content: String(payload.result),
-              isStreaming: false,
-            }
-            return updated
-          }
-          return [
-            ...prev,
-            {
-              id: crypto.randomUUID(),
-              role: 'assistant' as const,
-              content: String(payload.result),
-              timestamp: Date.now(),
-            },
-          ]
-        })
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: 'assistant' as const,
+            content: String(payload.result),
+            timestamp: Date.now(),
+          },
+        ])
       }
       if (payload.error && !payload.result) {
         setMessages((prev) => [
@@ -215,6 +182,11 @@ function ChatPage() {
   const loadSession = useCallback(async (id: string) => {
     try {
       const session = (await api.getSession(id)) as Record<string, unknown>
+      setSessionMeta({
+        engine: session.engine ? String(session.engine) : undefined,
+        engineSessionId: session.engineSessionId ? String(session.engineSessionId) : undefined,
+        model: session.model ? String(session.model) : undefined,
+      })
       const history = session.messages || session.history || []
       if (Array.isArray(history)) {
         setMessages(
@@ -231,6 +203,7 @@ function ChatPage() {
       }
     } catch {
       setMessages([])
+      setSessionMeta(null)
     }
   }, [])
 
@@ -239,7 +212,6 @@ function ChatPage() {
       setSelectedId(id)
       setMessages([])
       setLoading(false)
-      streamingRef.current = false
       setMobileView('chat')
       loadSession(id)
     },
@@ -250,9 +222,18 @@ function ChatPage() {
     setSelectedId(null)
     setMessages([])
     setLoading(false)
-    streamingRef.current = false
+    setSessionMeta(null)
     setMobileView('chat')
   }, [])
+
+  const handleSessionsLoaded = useCallback(
+    (sessions: { id: string }[]) => {
+      if (!selectedId && !onboardingTriggered.current && sessions.length > 0) {
+        handleSelect(sessions[0].id)
+      }
+    },
+    [selectedId, handleSelect]
+  )
 
   const handleSend = useCallback(
     async (message: string, media?: MediaAttachment[]) => {
@@ -268,7 +249,6 @@ function ChatPage() {
         setMessages((prev) => [...prev, userMsg])
       }
       setLoading(true)
-      streamingRef.current = false
 
       try {
         let sessionId = selectedId
@@ -359,18 +339,19 @@ function ChatPage() {
         overflow: 'hidden',
       }}>
         {/* Desktop sidebar — always visible on md+ */}
-        <div className="hidden md:block" style={{ width: 280, flexShrink: 0, height: '100%' }}>
+        <div className="hidden lg:block" style={{ width: 280, flexShrink: 0, height: '100%' }}>
           <ChatSidebar
             selectedId={selectedId}
             onSelect={handleSelect}
             onNewChat={handleNewChat}
             refreshKey={refreshKey}
+            onSessionsLoaded={handleSessionsLoaded}
           />
         </div>
 
         {/* Mobile: sidebar view */}
         <div
-          className="md:hidden"
+          className="lg:hidden"
           style={{
             width: '100%',
             height: '100%',
@@ -382,6 +363,7 @@ function ChatPage() {
             onSelect={handleSelect}
             onNewChat={handleNewChat}
             refreshKey={refreshKey}
+            onSessionsLoaded={handleSessionsLoaded}
           />
         </div>
 
@@ -395,7 +377,7 @@ function ChatPage() {
             background: 'var(--bg)',
             minWidth: 0,
           }}
-          className={mobileView === 'sidebar' ? 'hidden md:flex' : 'flex'}
+          className={mobileView === 'sidebar' ? 'hidden lg:flex' : 'flex'}
         >
           {/* Header */}
           <div style={{
@@ -409,7 +391,7 @@ function ChatPage() {
           }}>
             {/* Mobile back button */}
             <button
-              className="md:hidden"
+              className="lg:hidden"
               onClick={() => setMobileView('sidebar')}
               aria-label="Back to sessions"
               style={{
@@ -442,6 +424,105 @@ function ChatPage() {
                 {selectedId ? `Session ${selectedId.slice(0, 8)}...` : 'New Chat'}
               </div>
             </div>
+
+            {/* Copied toast */}
+            {copiedField && (
+              <div style={{
+                fontSize: 'var(--text-caption1)',
+                color: 'var(--accent)',
+                marginRight: 'var(--space-2)',
+                whiteSpace: 'nowrap',
+              }}>
+                Copied!
+              </div>
+            )}
+
+            {/* More menu */}
+            {selectedId && (
+              <div ref={moreMenuRef} style={{ position: 'relative' }}>
+                <button
+                  onClick={() => setShowMoreMenu((v) => !v)}
+                  aria-label="More options"
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    cursor: 'pointer',
+                    padding: 'var(--space-1)',
+                    borderRadius: 'var(--radius-sm)',
+                    color: 'var(--text-secondary)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    transition: 'color 150ms ease',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--text-primary)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-secondary)')}
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                    <circle cx="12" cy="5" r="2" />
+                    <circle cx="12" cy="12" r="2" />
+                    <circle cx="12" cy="19" r="2" />
+                  </svg>
+                </button>
+
+                {showMoreMenu && (
+                  <div style={{
+                    position: 'absolute',
+                    top: '100%',
+                    right: 0,
+                    marginTop: 4,
+                    background: 'var(--material-thick)',
+                    border: '1px solid var(--separator)',
+                    borderRadius: 'var(--radius-md)',
+                    boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                    zIndex: 100,
+                    minWidth: 200,
+                    overflow: 'hidden',
+                  }}>
+                    <button
+                      onClick={() => copyToClipboard(selectedId, 'id')}
+                      style={{
+                        display: 'block',
+                        width: '100%',
+                        padding: 'var(--space-2) var(--space-3)',
+                        background: 'transparent',
+                        border: 'none',
+                        cursor: 'pointer',
+                        textAlign: 'left',
+                        fontSize: 'var(--text-subheadline)',
+                        color: 'var(--text-primary)',
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--fill-tertiary)')}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                    >
+                      Copy Session ID
+                    </button>
+                    {sessionMeta?.engineSessionId && (
+                      <button
+                        onClick={() => {
+                          const cli = sessionMeta.engine === 'codex' ? 'codex' : 'claude'
+                          copyToClipboard(`${cli} --resume ${sessionMeta.engineSessionId}`, 'cli')
+                        }}
+                        style={{
+                          display: 'block',
+                          width: '100%',
+                          padding: 'var(--space-2) var(--space-3)',
+                          background: 'transparent',
+                          border: 'none',
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                          fontSize: 'var(--text-subheadline)',
+                          color: 'var(--text-primary)',
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--fill-tertiary)')}
+                        onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                      >
+                        Copy CLI Resume Command
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Messages */}

@@ -75,6 +75,8 @@ export interface Session {
   sourceRef: string;
   employee: string | null;
   model: string | null;
+  title: string | null;
+  parentSessionId: string | null;
   status: "idle" | "running" | "error";
   createdAt: string;
   lastActivity: string;

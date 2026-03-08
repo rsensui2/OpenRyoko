@@ -5,6 +5,7 @@ import { api } from '@/lib/api'
 interface Session {
   id: string
   employee?: string
+  title?: string
   status?: string
   source?: string
   lastActivity?: string
@@ -17,6 +18,7 @@ interface ChatSidebarProps {
   onSelect: (id: string) => void
   onNewChat: () => void
   refreshKey: number
+  onSessionsLoaded?: (sessions: Session[]) => void
 }
 
 function formatTime(dateStr?: string): string {
@@ -45,10 +47,13 @@ export function ChatSidebar({
   onSelect,
   onNewChat,
   refreshKey,
+  onSessionsLoaded,
 }: ChatSidebarProps) {
   const [sessions, setSessions] = useState<Session[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; sessionId: string } | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
 
   useEffect(() => {
     setLoading(true)
@@ -64,17 +69,35 @@ export function ChatSidebar({
           return tb.localeCompare(ta)
         })
         setSessions(filtered)
+        onSessionsLoaded?.(filtered)
       })
       .catch(() => setSessions([]))
       .finally(() => setLoading(false))
   }, [refreshKey])
+
+  function handleContextMenu(e: React.MouseEvent, sessionId: string) {
+    e.preventDefault()
+    e.stopPropagation()
+    setContextMenu({ x: e.clientX, y: e.clientY, sessionId })
+  }
+
+  async function handleDeleteConfirm() {
+    if (!confirmDelete) return
+    try {
+      await api.deleteSession(confirmDelete)
+      setSessions((prev) => prev.filter((s) => s.id !== confirmDelete))
+      if (selectedId === confirmDelete) onNewChat()
+    } catch { /* ignore */ }
+    setConfirmDelete(null)
+  }
 
   const displayed = search.trim()
     ? sessions.filter((s) => {
         const q = search.toLowerCase()
         return (
           s.id.toLowerCase().includes(q) ||
-          (s.employee && s.employee.toLowerCase().includes(q))
+          (s.employee && s.employee.toLowerCase().includes(q)) ||
+          (s.title && s.title.toLowerCase().includes(q))
         )
       })
     : sessions
@@ -86,7 +109,9 @@ export function ChatSidebar({
       height: '100%',
       background: 'var(--sidebar-bg)',
       borderRight: '1px solid var(--separator)',
-    }}>
+    }}
+    onClick={() => setContextMenu(null)}
+    >
       {/* Header */}
       <div style={{
         padding: 'var(--space-4) var(--space-4) var(--space-3)',
@@ -219,6 +244,7 @@ export function ChatSidebar({
               <button
                 key={session.id}
                 onClick={() => onSelect(session.id)}
+                onContextMenu={(e) => handleContextMenu(e, session.id)}
                 style={{
                   width: '100%',
                   display: 'flex',
@@ -259,7 +285,7 @@ export function ChatSidebar({
                       whiteSpace: 'nowrap',
                       maxWidth: 140,
                     }}>
-                      {session.employee || 'Jimmy'}
+                      {session.title || session.employee || 'Jimmy'}
                     </span>
                     <span style={{
                       fontSize: 'var(--text-caption2)',
@@ -286,6 +312,101 @@ export function ChatSidebar({
           })
         )}
       </div>
+
+      {/* Context menu */}
+      {contextMenu && (
+        <div
+          style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 50 }}
+          onClick={() => setContextMenu(null)}
+        >
+          <div
+            style={{
+              position: 'fixed',
+              top: contextMenu.y,
+              left: contextMenu.x,
+              background: 'var(--bg)',
+              border: '1px solid var(--separator)',
+              borderRadius: 'var(--radius-md)',
+              boxShadow: 'var(--shadow-lg)',
+              padding: 'var(--space-1)',
+              zIndex: 51,
+              minWidth: 160,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={() => { setContextMenu(null); setConfirmDelete(contextMenu.sessionId) }}
+              style={{
+                width: '100%',
+                textAlign: 'left',
+                padding: 'var(--space-2) var(--space-3)',
+                fontSize: 'var(--text-footnote)',
+                color: 'var(--system-red)',
+                background: 'transparent',
+                border: 'none',
+                cursor: 'pointer',
+                borderRadius: 'var(--radius-sm)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 'var(--space-2)',
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="3 6 5 6 21 6" />
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+              </svg>
+              Delete Session
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Confirm delete dialog */}
+      {confirmDelete && (
+        <div
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(0,0,0,0.5)', zIndex: 60,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}
+          onClick={() => setConfirmDelete(null)}
+        >
+          <div
+            style={{
+              background: 'var(--bg)', borderRadius: 'var(--radius-lg)',
+              padding: 'var(--space-6)', maxWidth: 400, width: '90%',
+              boxShadow: 'var(--shadow-overlay)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ fontSize: 'var(--text-headline)', fontWeight: 'var(--weight-bold)', color: 'var(--text-primary)', marginBottom: 'var(--space-2)' }}>
+              Delete Session?
+            </h3>
+            <p style={{ fontSize: 'var(--text-body)', color: 'var(--text-secondary)', marginBottom: 'var(--space-5)' }}>
+              This will permanently delete the session and all its messages.
+            </p>
+            <div style={{ display: 'flex', gap: 'var(--space-3)', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setConfirmDelete(null)}
+                style={{
+                  padding: 'var(--space-2) var(--space-4)', borderRadius: 'var(--radius-md)',
+                  background: 'var(--fill-tertiary)', color: 'var(--text-primary)',
+                  border: 'none', cursor: 'pointer', fontSize: 'var(--text-body)',
+                }}
+              >Cancel</button>
+              <button
+                onClick={handleDeleteConfirm}
+                style={{
+                  padding: 'var(--space-2) var(--space-4)', borderRadius: 'var(--radius-md)',
+                  background: 'var(--system-red)', color: '#fff',
+                  border: 'none', cursor: 'pointer', fontSize: 'var(--text-body)',
+                  fontWeight: 'var(--weight-semibold)',
+                }}
+              >Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
