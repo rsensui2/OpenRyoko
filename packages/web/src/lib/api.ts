@@ -6,6 +6,7 @@ export interface Employee {
   engine: string;
   model: string;
   persona: string;
+  emoji?: string;
 }
 
 export interface OrgData {
@@ -76,7 +77,9 @@ export const api = {
   getLogs: (n?: number) =>
     get<{ lines: string[] }>(`/api/logs${n ? `?n=${n}` : ""}`),
   getOnboarding: () =>
-    get<{ needed: boolean; sessionsCount: number; hasEmployees: boolean }>("/api/onboarding"),
+    get<{ needed: boolean; sessionsCount: number; hasEmployees: boolean; portalName: string | null; operatorName: string | null }>("/api/onboarding"),
+  completeOnboarding: (data: { portalName?: string; operatorName?: string }) =>
+    post<{ status: string; portal: { portalName?: string; operatorName?: string } }>("/api/onboarding", data),
   getActivity: () =>
     get<Array<{ event: string; payload: unknown; ts: number }>>("/api/activity"),
   updateDepartmentBoard: (name: string, data: unknown) =>

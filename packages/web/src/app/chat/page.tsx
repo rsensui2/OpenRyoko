@@ -8,6 +8,7 @@ import { ChatSidebar } from '@/components/chat/chat-sidebar'
 import { ChatMessages } from '@/components/chat/chat-messages'
 import { ChatInput } from '@/components/chat/chat-input'
 import type { Message, MediaAttachment } from '@/lib/conversations'
+import { saveIntermediateMessages, loadIntermediateMessages, clearIntermediateMessages } from '@/lib/conversations'
 
 const ONBOARDING_PROMPT = `This is your first time being activated. The user just set up Jimmy and opened the web dashboard for the first time.
 
@@ -40,6 +41,10 @@ function ChatPage() {
   const [sessionMeta, setSessionMeta] = useState<{ engine?: string; engineSessionId?: string; model?: string; title?: string; employee?: string } | null>(null)
   const streamingTextRef = useRef('')
   const [streamingText, setStreamingText] = useState('')
+  // Track the index in messages[] where intermediate (streaming) messages start
+  const intermediateStartRef = useRef<number>(-1)
+  // When true, user explicitly started a new chat — don't auto-select first session
+  const newChatIntentRef = useRef(false)
   const [showMoreMenu, setShowMoreMenu] = useState(false)
   const [copiedField, setCopiedField] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -113,6 +118,17 @@ function ChatPage() {
     })
   }
 
+  // Helper: persist intermediate messages to localStorage
+  const persistIntermediate = useCallback((msgs: Message[], sessionId: string | null) => {
+    if (!sessionId) return
+    const start = intermediateStartRef.current
+    if (start < 0) return
+    const intermediate = msgs.slice(start)
+    if (intermediate.length > 0) {
+      saveIntermediateMessages(sessionId, intermediate)
+    }
+  }, [])
+
   // Listen for session events (tool calls + completion)
   useEffect(() => {
     if (events.length === 0) return
@@ -136,27 +152,42 @@ function ChatPage() {
           const flushed = streamingTextRef.current
           streamingTextRef.current = ''
           setStreamingText('')
-          setMessages((prev) => [
+          setMessages((prev) => {
+            // Mark where intermediate messages start (if not already set)
+            if (intermediateStartRef.current < 0) {
+              intermediateStartRef.current = prev.length
+            }
+            const updated = [
+              ...prev,
+              {
+                id: crypto.randomUUID(),
+                role: 'assistant' as const,
+                content: flushed,
+                timestamp: Date.now(),
+              },
+            ]
+            persistIntermediate(updated, selectedId || (payload.sessionId as string))
+            return updated
+          })
+        }
+        const toolName = String(payload.toolName || 'tool')
+        setMessages((prev) => {
+          if (intermediateStartRef.current < 0) {
+            intermediateStartRef.current = prev.length
+          }
+          const updated = [
             ...prev,
             {
               id: crypto.randomUUID(),
               role: 'assistant' as const,
-              content: flushed,
+              content: `Using ${toolName}`,
               timestamp: Date.now(),
+              toolCall: toolName,
             },
-          ])
-        }
-        const toolName = String(payload.toolName || 'tool')
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            role: 'assistant' as const,
-            content: `Using ${toolName}`,
-            timestamp: Date.now(),
-            toolCall: toolName,
-          },
-        ])
+          ]
+          persistIntermediate(updated, selectedId || (payload.sessionId as string))
+          return updated
+        })
       } else if (deltaType === 'tool_result') {
         setMessages((prev) => {
           const updated = [...prev]
@@ -164,6 +195,7 @@ function ChatPage() {
           if (last && last.role === 'assistant' && last.toolCall) {
             updated[updated.length - 1] = { ...last, content: `Used ${last.toolCall}` }
           }
+          persistIntermediate(updated, selectedId || (payload.sessionId as string))
           return updated
         })
       }
@@ -184,6 +216,13 @@ function ChatPage() {
       streamingTextRef.current = ''
       setStreamingText('')
       setLoading(false)
+      intermediateStartRef.current = -1
+
+      // Clear intermediate messages from localStorage (keep showing in UI)
+      const completedSessionId = selectedId || (payload.sessionId ? String(payload.sessionId) : null)
+      if (completedSessionId) {
+        clearIntermediateMessages(completedSessionId)
+      }
 
       if (payload.result) {
         // Replace any partially-streamed message with the final complete result
@@ -218,7 +257,7 @@ function ChatPage() {
       }
       setRefreshKey((k) => k + 1)
     }
-  }, [events, selectedId])
+  }, [events, selectedId, persistIntermediate])
 
   const loadSession = useCallback(async (id: string) => {
     try {
@@ -231,27 +270,44 @@ function ChatPage() {
         employee: session.employee ? String(session.employee) : undefined,
       })
       const history = session.messages || session.history || []
-      if (Array.isArray(history)) {
-        setMessages(
-          history.map((m: Record<string, unknown>) => ({
+      const backendMessages: Message[] = Array.isArray(history)
+        ? history.map((m: Record<string, unknown>) => ({
             id: crypto.randomUUID(),
             role: (m.role as 'user' | 'assistant') || 'assistant',
             content: String(m.content || m.text || ''),
             timestamp: m.timestamp ? Number(m.timestamp) : Date.now(),
           }))
-        )
-      }
-      if (session.status === 'running') {
+        : []
+
+      const isRunning = session.status === 'running'
+
+      if (isRunning) {
+        // Restore intermediate messages from localStorage
+        const cached = loadIntermediateMessages(id)
+        if (cached.length > 0) {
+          intermediateStartRef.current = backendMessages.length
+          setMessages([...backendMessages, ...cached])
+        } else {
+          intermediateStartRef.current = backendMessages.length
+          setMessages(backendMessages)
+        }
         setLoading(true)
+      } else {
+        // Session is done — clear any stale intermediate cache and just show backend messages
+        clearIntermediateMessages(id)
+        intermediateStartRef.current = -1
+        setMessages(backendMessages)
       }
     } catch {
       setMessages([])
       setSessionMeta(null)
+      intermediateStartRef.current = -1
     }
   }, [])
 
   const handleSelect = useCallback(
     (id: string) => {
+      newChatIntentRef.current = false
       setSelectedId(id)
       setMessages([])
       setLoading(false)
@@ -262,16 +318,18 @@ function ChatPage() {
   )
 
   const handleNewChat = useCallback(() => {
+    newChatIntentRef.current = true
     setSelectedId(null)
     setMessages([])
     setLoading(false)
     setSessionMeta(null)
     setMobileView('chat')
+    intermediateStartRef.current = -1
   }, [])
 
   const handleSessionsLoaded = useCallback(
     (sessions: { id: string }[]) => {
-      if (!selectedId && !onboardingTriggered.current && sessions.length > 0) {
+      if (!selectedId && !onboardingTriggered.current && !newChatIntentRef.current && sessions.length > 0) {
         handleSelect(sessions[0].id)
       }
     },
@@ -289,7 +347,10 @@ function ChatPage() {
           timestamp: Date.now(),
           media,
         }
-        setMessages((prev) => [...prev, userMsg])
+        setMessages((prev) => {
+          intermediateStartRef.current = prev.length + 1 // after the user message
+          return [...prev, userMsg]
+        })
       }
       setLoading(true)
 
@@ -332,6 +393,8 @@ function ChatPage() {
     streamingTextRef.current = ''
     setStreamingText('')
     setLoading(false)
+    intermediateStartRef.current = -1
+    clearIntermediateMessages(selectedId)
   }, [selectedId, loading])
 
   const handleDeleteSession = useCallback(async (id: string) => {
@@ -344,7 +407,9 @@ function ChatPage() {
         setSessionMeta(null)
         streamingTextRef.current = ''
         setStreamingText('')
+        intermediateStartRef.current = -1
       }
+      clearIntermediateMessages(id)
       setRefreshKey((k) => k + 1)
     } catch { /* ignore */ }
     setConfirmDelete(false)
@@ -417,6 +482,7 @@ function ChatPage() {
             onDelete={handleDeleteSession}
             refreshKey={refreshKey}
             onSessionsLoaded={handleSessionsLoaded}
+            events={events}
           />
         </div>
 
@@ -436,6 +502,7 @@ function ChatPage() {
             onDelete={handleDeleteSession}
             refreshKey={refreshKey}
             onSessionsLoaded={handleSessionsLoaded}
+            events={events}
           />
         </div>
 

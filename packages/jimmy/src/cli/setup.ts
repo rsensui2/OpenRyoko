@@ -110,6 +110,7 @@ engines:
     bin: codex
     model: gpt-5.4
 connectors: {}
+portal: {}
 logging:
   file: true
   stdout: true

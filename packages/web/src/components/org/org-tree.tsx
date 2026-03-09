@@ -157,18 +157,18 @@ export function OrgTree({
     if (!byDept[dept]) byDept[dept] = [];
   }
 
-  // Find jimmy (executive) to show at top
-  const jimmy = data.employees.find(
-    (e) => e.rank === "executive" || e.name === "jimmy",
+  // Find the executive (COO) to show at top
+  const executive = data.employees.find(
+    (e) => e.rank === "executive",
   );
 
   return (
     <div className="space-y-1">
-      {jimmy && (
+      {executive && (
         <div className="mb-2">
           <EmployeeNode
-            employee={jimmy}
-            selected={selectedEmployee === jimmy.name}
+            employee={executive}
+            selected={selectedEmployee === executive.name}
             onSelect={onSelectEmployee}
           />
         </div>
@@ -180,7 +180,7 @@ export function OrgTree({
           <DepartmentNode
             key={dept}
             name={dept}
-            employees={employees.filter((e) => e.name !== jimmy?.name)}
+            employees={employees.filter((e) => e.name !== executive?.name)}
             selectedEmployee={selectedEmployee}
             onSelectEmployee={onSelectEmployee}
             onSelectDepartment={onSelectDepartment}
@@ -189,7 +189,7 @@ export function OrgTree({
         ))}
 
       {ungrouped
-        .filter((e) => e.name !== jimmy?.name)
+        .filter((e) => e.name !== executive?.name)
         .map((emp) => (
           <EmployeeNode
             key={emp.name}

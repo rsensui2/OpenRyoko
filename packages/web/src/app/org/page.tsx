@@ -8,6 +8,7 @@ import { GridView } from "@/components/org/grid-view";
 import { FeedView } from "@/components/org/feed-view";
 import { PageLayout } from "@/components/page-layout";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { useSettings } from "@/app/settings-provider";
 
 const OrgMap = dynamic(
   () =>
@@ -40,6 +41,7 @@ export default function OrgPage() {
   const [selected, setSelected] = useState<Employee | null>(null);
   const [view, setView] = useState<string>("map");
   const closeRef = useRef<HTMLButtonElement>(null);
+  const { settings } = useSettings();
 
   const loadData = useCallback(() => {
     setLoading(true);
@@ -64,20 +66,20 @@ export default function OrgPage() {
             }
           }),
         );
-        const jimmy: Employee = {
-          name: "jimmy",
-          displayName: "Jimmy",
+        const coo: Employee = {
+          name: (settings.portalName ?? "Jimmy").toLowerCase(),
+          displayName: settings.portalName ?? "Jimmy",
           department: "",
           rank: "executive",
           engine: "claude",
           model: "opus",
           persona: "COO and AI gateway daemon",
         };
-        setEmployees([jimmy, ...details]);
+        setEmployees([coo, ...details]);
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
-  }, []);
+  }, [settings.portalName]);
 
   useEffect(() => {
     loadData();

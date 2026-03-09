@@ -65,6 +65,46 @@ Each job execution is logged to `~/.jimmy/cron/runs/<jobId>.jsonl`. Each line is
 }
 ```
 
+## Delegation Pattern
+
+When a cron job produces analytical, reporting, or decision-informing output, it should **always target jimmy** (the COO), not the employee directly. Jimmy then delegates to the employee via a child session, reviews the output, filters noise, and delivers the final result.
+
+**Correct** — cron → jimmy → employee (via child session) → jimmy reviews → delivery:
+```json
+{
+  "id": "daily-pulse",
+  "name": "Daily Pulse Analytics",
+  "enabled": true,
+  "schedule": "0 8 * * *",
+  "engine": "claude",
+  "employee": "jimmy",
+  "prompt": "Delegate to @pulse: pull analytics for all products. Review the output, filter noise, and deliver a concise summary of what matters.",
+  "delivery": {
+    "connector": "slack",
+    "channel": "#analytics"
+  }
+}
+```
+
+**Incorrect** — cron → employee → delivery (bypasses COO review):
+```json
+{
+  "id": "daily-pulse",
+  "name": "Daily Pulse Analytics",
+  "enabled": true,
+  "schedule": "0 8 * * *",
+  "engine": "claude",
+  "employee": "pulse",
+  "prompt": "Pull analytics for all products and summarize.",
+  "delivery": {
+    "connector": "slack",
+    "channel": "#analytics"
+  }
+}
+```
+
+Direct employee-to-user delivery is only acceptable for simple, no-review-needed tasks (e.g. a health check ping). The gateway will log a warning if it detects a non-jimmy employee with delivery configured.
+
 ## Example Configuration
 
 ```json
@@ -77,7 +117,7 @@ Each job execution is logged to `~/.jimmy/cron/runs/<jobId>.jsonl`. Each line is
     "timezone": "America/New_York",
     "engine": "claude",
     "employee": "jimmy",
-    "prompt": "Review yesterday's board activity across all departments and write a brief standup summary.",
+    "prompt": "Delegate to @project-manager: review yesterday's board activity across all departments. Review the output and write a concise standup summary.",
     "delivery": {
       "connector": "slack",
       "channel": "#engineering"

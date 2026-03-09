@@ -132,6 +132,8 @@ export interface Employee {
   engine: string;
   model: string;
   persona: string;
+  /** Emoji icon for this employee (shown in sidebar, org chart, etc.) */
+  emoji?: string;
   /** Extra CLI flags passed to the engine (e.g. ["--chrome"]) */
   cliFlags?: string[];
 }
@@ -148,6 +150,11 @@ export interface WebConnectorConfig {
   hardTimeoutHours?: number;
 }
 
+export interface PortalConfig {
+  portalName?: string;
+  operatorName?: string;
+}
+
 export interface JimmyConfig {
   gateway: { port: number; host: string; streaming?: boolean };
   engines: {
@@ -157,4 +164,6 @@ export interface JimmyConfig {
   };
   connectors: Record<string, any> & { web?: WebConnectorConfig };
   logging: { file: boolean; stdout: boolean; level: string };
+  cron?: { defaultDelivery?: CronDelivery };
+  portal?: PortalConfig;
 }

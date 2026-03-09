@@ -45,28 +45,60 @@ const TLDS = [
   "org.uk", "net.au", "ac.uk",
 ];
 
-function getChromeExtensionDbPath(): string | null {
+interface BrowserConfig {
+  name: string;
+  processName: string;
+  macAppName: string;
+  macDataDir: string;
+  linuxDataDir: string;
+  winDataDir: string;
+}
+
+const BROWSERS: Record<string, BrowserConfig> = {
+  chrome: {
+    name: "Google Chrome",
+    processName: "Google Chrome",
+    macAppName: "Google Chrome",
+    macDataDir: path.join("Google", "Chrome"),
+    linuxDataDir: "google-chrome",
+    winDataDir: path.join("Google", "Chrome", "User Data"),
+  },
+  comet: {
+    name: "Comet",
+    processName: "Comet",
+    macAppName: "Comet",
+    macDataDir: "Comet",
+    linuxDataDir: "comet",
+    winDataDir: "Comet",
+  },
+};
+
+function getExtensionDbPath(browser: BrowserConfig): string | null {
   const home = os.homedir();
   const platform = os.platform();
 
   const candidates: string[] = [];
+  const profiles = ["Default", "Profile 1", "Profile 2"];
 
   if (platform === "darwin") {
-    candidates.push(
-      path.join(home, "Library", "Application Support", "Google", "Chrome", "Default", "Local Extension Settings", EXTENSION_ID),
-      path.join(home, "Library", "Application Support", "Google", "Chrome", "Profile 1", "Local Extension Settings", EXTENSION_ID),
-    );
+    for (const profile of profiles) {
+      candidates.push(
+        path.join(home, "Library", "Application Support", browser.macDataDir, profile, "Local Extension Settings", EXTENSION_ID),
+      );
+    }
   } else if (platform === "linux") {
-    candidates.push(
-      path.join(home, ".config", "google-chrome", "Default", "Local Extension Settings", EXTENSION_ID),
-      path.join(home, ".config", "google-chrome", "Profile 1", "Local Extension Settings", EXTENSION_ID),
-    );
+    for (const profile of profiles) {
+      candidates.push(
+        path.join(home, ".config", browser.linuxDataDir, profile, "Local Extension Settings", EXTENSION_ID),
+      );
+    }
   } else if (platform === "win32") {
     const appData = process.env.LOCALAPPDATA || path.join(home, "AppData", "Local");
-    candidates.push(
-      path.join(appData, "Google", "Chrome", "User Data", "Default", "Local Extension Settings", EXTENSION_ID),
-      path.join(appData, "Google", "Chrome", "User Data", "Profile 1", "Local Extension Settings", EXTENSION_ID),
-    );
+    for (const profile of profiles) {
+      candidates.push(
+        path.join(appData, browser.winDataDir, profile, "Local Extension Settings", EXTENSION_ID),
+      );
+    }
   }
 
   for (const candidate of candidates) {
@@ -75,15 +107,16 @@ function getChromeExtensionDbPath(): string | null {
   return null;
 }
 
-function isChromeRunning(): boolean {
+function isBrowserRunning(browser: BrowserConfig): boolean {
   try {
     const platform = os.platform();
     if (platform === "darwin") {
-      execSync("pgrep -x 'Google Chrome'", { stdio: "ignore" });
+      execSync(`pgrep -x '${browser.processName}'`, { stdio: "ignore" });
     } else if (platform === "linux") {
-      execSync("pgrep -x chrome", { stdio: "ignore" });
+      execSync(`pgrep -x '${browser.processName.toLowerCase()}'`, { stdio: "ignore" });
     } else if (platform === "win32") {
-      execSync("tasklist /FI \"IMAGENAME eq chrome.exe\" | findstr chrome.exe", { stdio: "ignore" });
+      const exe = browser.processName.toLowerCase().replace(/ /g, "") + ".exe";
+      execSync(`tasklist /FI "IMAGENAME eq ${exe}" | findstr ${exe}`, { stdio: "ignore" });
     }
     return true;
   } catch {
@@ -91,80 +124,70 @@ function isChromeRunning(): boolean {
   }
 }
 
-function quitChrome(): boolean {
+function quitBrowser(browser: BrowserConfig): boolean {
   try {
     const platform = os.platform();
     if (platform === "darwin") {
-      execSync("osascript -e 'tell application \"Google Chrome\" to quit'", { stdio: "ignore", timeout: 10000 });
+      execSync(`osascript -e 'tell application "${browser.macAppName}" to quit'`, { stdio: "ignore", timeout: 10000 });
     } else if (platform === "linux") {
-      execSync("pkill -TERM chrome", { stdio: "ignore" });
+      execSync(`pkill -TERM '${browser.processName.toLowerCase()}'`, { stdio: "ignore" });
     } else if (platform === "win32") {
-      execSync("taskkill /IM chrome.exe", { stdio: "ignore" });
+      const exe = browser.processName.toLowerCase().replace(/ /g, "") + ".exe";
+      execSync(`taskkill /IM ${exe}`, { stdio: "ignore" });
     }
-    // Wait for Chrome to fully close
     const deadline = Date.now() + 10000;
     while (Date.now() < deadline) {
-      if (!isChromeRunning()) return true;
+      if (!isBrowserRunning(browser)) return true;
       execSync("sleep 0.5");
     }
-    return !isChromeRunning();
+    return !isBrowserRunning(browser);
   } catch {
     return false;
   }
 }
 
-function openChrome(): void {
+function openBrowser(browser: BrowserConfig): void {
   try {
     const platform = os.platform();
     if (platform === "darwin") {
-      execSync("open -a 'Google Chrome'", { stdio: "ignore" });
+      execSync(`open -a '${browser.macAppName}'`, { stdio: "ignore" });
     } else if (platform === "linux") {
-      execSync("google-chrome &", { stdio: "ignore" });
+      execSync(`${browser.processName.toLowerCase()} &`, { stdio: "ignore" });
     } else if (platform === "win32") {
-      execSync("start chrome", { stdio: "ignore" });
+      execSync(`start ${browser.processName.toLowerCase().replace(/ /g, "")}`, { stdio: "ignore" });
     }
   } catch {
-    // User can open Chrome manually
+    // User can open browser manually
   }
 }
 
-export async function runChromeAllow(opts: { restart?: boolean }): Promise<void> {
-  // 1. Check for classic-level
-  let ClassicLevel: any;
-  try {
-    const mod = await import("classic-level");
-    ClassicLevel = mod.ClassicLevel;
-  } catch {
-    console.error(`${RED}Error:${RESET} classic-level is required but not installed.`);
-    console.error(`Run: ${DIM}npm install -g classic-level${RESET} or ${DIM}pnpm add classic-level${RESET}`);
-    process.exit(1);
-  }
+async function allowAllForBrowser(browser: BrowserConfig, ClassicLevel: any, opts: { restart?: boolean }): Promise<void> {
+  const label = browser.name;
 
-  // 2. Find the extension DB
-  const dbPath = getChromeExtensionDbPath();
+  // Find the extension DB
+  const dbPath = getExtensionDbPath(browser);
   if (!dbPath) {
-    console.error(`${RED}Error:${RESET} Claude Chrome extension not found.`);
-    console.error("Install it from the Chrome Web Store first.");
-    process.exit(1);
+    console.log(`${YELLOW}⚠${RESET} Claude extension not found for ${label} — skipping.`);
+    return;
   }
 
-  // 3. Chrome must be closed to write to LevelDB
-  const chromeWasRunning = isChromeRunning();
-  if (chromeWasRunning) {
+  // Browser must be closed to write to LevelDB
+  const wasRunning = isBrowserRunning(browser);
+  if (wasRunning) {
     if (opts.restart === false) {
-      console.error(`${RED}Error:${RESET} Chrome is running. Close it first or use ${DIM}--restart${RESET} to auto-restart.`);
+      console.error(`${RED}Error:${RESET} ${label} is running. Close it first or remove ${DIM}--no-restart${RESET}.`);
       process.exit(1);
     }
-    console.log(`${YELLOW}Closing Chrome...${RESET}`);
-    const closed = quitChrome();
+    console.log(`${YELLOW}Closing ${label}...${RESET}`);
+    const closed = quitBrowser(browser);
     if (!closed) {
-      console.error(`${RED}Error:${RESET} Failed to close Chrome. Please close it manually and try again.`);
+      console.error(`${RED}Error:${RESET} Failed to close ${label}. Please close it manually and try again.`);
       process.exit(1);
     }
-    console.log(`${GREEN}Chrome closed.${RESET}`);
+    console.log(`${GREEN}${label} closed.${RESET}`);
   }
 
-  // 4. Open LevelDB and write permissions
+  // Open LevelDB and write permissions
   const db = new ClassicLevel(dbPath, { keyEncoding: "utf8", valueEncoding: "utf8" });
 
   let data: { permissions: any[] };
@@ -198,20 +221,46 @@ export async function runChromeAllow(opts: { restart?: boolean }): Promise<void>
   }
 
   if (added === 0) {
-    console.log(`${GREEN}All ${TLDS.length} TLD wildcards already present.${RESET} Nothing to do.`);
+    console.log(`${GREEN}[${label}]${RESET} All ${TLDS.length} TLD wildcards already present. Nothing to do.`);
   } else {
     await db.put("permissionStorage", JSON.stringify(data));
-    console.log(`${GREEN}✓${RESET} Added ${added} wildcard permissions (${TLDS.length} TLDs covered)`);
+    console.log(`${GREEN}[${label}]${RESET} ✓ Added ${added} wildcard permissions (${TLDS.length} TLDs covered)`);
   }
 
   await db.close();
 
-  // 5. Restart Chrome if it was running
-  if (chromeWasRunning && opts.restart !== false) {
-    console.log(`${DIM}Reopening Chrome...${RESET}`);
-    openChrome();
-    console.log(`${GREEN}✓${RESET} Chrome restarted. All sites are now pre-approved for the Claude extension.`);
-  } else {
-    console.log(`${GREEN}✓${RESET} Done. All sites will be pre-approved when Chrome starts.`);
+  // Restart browser if it was running
+  if (wasRunning && opts.restart !== false) {
+    console.log(`${DIM}Reopening ${label}...${RESET}`);
+    openBrowser(browser);
+    console.log(`${GREEN}[${label}]${RESET} ✓ Restarted. All sites pre-approved.`);
   }
+}
+
+export async function runChromeAllow(opts: { restart?: boolean; cometBrowser?: boolean }): Promise<void> {
+  // Check for classic-level
+  let ClassicLevel: any;
+  try {
+    const mod = await import("classic-level");
+    ClassicLevel = mod.ClassicLevel;
+  } catch {
+    console.error(`${RED}Error:${RESET} classic-level is required but not installed.`);
+    console.error(`Run: ${DIM}npm install -g classic-level${RESET} or ${DIM}pnpm add classic-level${RESET}`);
+    process.exit(1);
+  }
+
+  const targets: BrowserConfig[] = [];
+
+  if (opts.cometBrowser) {
+    targets.push(BROWSERS.comet);
+  } else {
+    // Default: Chrome only
+    targets.push(BROWSERS.chrome);
+  }
+
+  for (const browser of targets) {
+    await allowAllForBrowser(browser, ClassicLevel, opts);
+  }
+
+  console.log(`\n${GREEN}✓${RESET} Done. All sites will be pre-approved for the Claude extension.`);
 }

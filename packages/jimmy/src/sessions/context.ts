@@ -19,6 +19,8 @@ export function buildContext(opts: {
   connectors?: string[];
   config?: JimmyConfig;
   sessionId?: string;
+  portalName?: string;
+  operatorName?: string;
 }): string {
   const sections: string[] = [];
 
@@ -27,11 +29,15 @@ export function buildContext(opts: {
     ? `http://${opts.config.gateway.host || "127.0.0.1"}:${opts.config.gateway.port || 7777}`
     : "http://127.0.0.1:7777";
 
+  // Resolve personalized names from config
+  const portalName = opts.portalName || opts.config?.portal?.portalName || "Jimmy";
+  const operatorName = opts.operatorName || opts.config?.portal?.operatorName;
+
   // ── Identity ──────────────────────────────────────────────
   if (opts.employee) {
-    sections.push(buildEmployeeIdentity(opts.employee));
+    sections.push(buildEmployeeIdentity(opts.employee, portalName));
   } else {
-    sections.push(buildIdentity());
+    sections.push(buildIdentity(portalName, operatorName));
   }
 
   // ── Self-evolution ────────────────────────────────────────
@@ -70,11 +76,11 @@ export function buildContext(opts: {
 
   // ── Delegation protocol ──────────────────────────────────
   if (!opts.employee) {
-    sections.push(buildDelegationProtocol(gatewayUrl));
+    sections.push(buildDelegationProtocol(gatewayUrl, portalName));
   }
 
   // ── Gateway API reference ─────────────────────────────────
-  sections.push(buildApiReference(gatewayUrl));
+  sections.push(buildApiReference(gatewayUrl, portalName));
 
   // ── Size guard: progressively trim if over budget ─────────
   return trimContext(sections);
@@ -84,10 +90,10 @@ export function buildContext(opts: {
 // Section builders
 // ═══════════════════════════════════════════════════════════════
 
-function buildEmployeeIdentity(employee: Employee): string {
+function buildEmployeeIdentity(employee: Employee, portalName: string): string {
   return `# You are ${employee.displayName}
 
-You are an AI employee in the Jimmy gateway system.
+You are an AI employee in the ${portalName} gateway system.
 
 ## Your persona
 ${employee.persona}
@@ -101,12 +107,12 @@ ${employee.persona}
 - **Model**: ${employee.model}
 
 ## System context
-You are part of the Jimmy AI gateway — a system that orchestrates AI workers. You have access to the filesystem, can run commands, call APIs, and send messages via connectors. Your working directory is \`~/.jimmy\` (${JIMMY_HOME}).
+You are part of the ${portalName} AI gateway — a system that orchestrates AI workers. You have access to the filesystem, can run commands, call APIs, and send messages via connectors. Your working directory is \`~/.jimmy\` (${JIMMY_HOME}).
 
 You can:
-- Read and write files in the Jimmy home directory
+- Read and write files in the home directory
 - Run shell commands
-- Call the Jimmy gateway API to interact with other parts of the system
+- Call the gateway API to interact with other parts of the system
 - Send messages via connectors (Slack, etc.)
 - Access skills, knowledge base, and documentation
 - Collaborate with other employees by mentioning them or creating sessions
@@ -114,15 +120,19 @@ You can:
 Be proactive, take initiative, and deliver results. You're not a chatbot — you're a worker.`;
 }
 
-function buildIdentity(): string {
-  return `# You are Jimmy
+function buildIdentity(portalName: string, operatorName?: string): string {
+  const operatorLine = operatorName
+    ? `\nThe user's name is **${operatorName}**. Address them by name when appropriate.`
+    : "";
 
-Jimmy is a personal AI assistant and gateway daemon. You are proactive, helpful, and opinionated — not a passive tool. You anticipate needs, suggest improvements, and take initiative when appropriate.
+  return `# You are ${portalName}
+
+${portalName} is a personal AI assistant and gateway daemon. You are proactive, helpful, and opinionated — not a passive tool. You anticipate needs, suggest improvements, and take initiative when appropriate.${operatorLine}
 
 ## Core principles
 - **Be proactive**: Don't just answer questions — suggest next steps, flag issues, offer to do related tasks.
 - **Be concise**: Respect the user's time. Lead with the answer, not the reasoning.
-- **Be capable**: You have access to the filesystem, can run commands, call APIs, send messages via connectors, and manage the Jimmy system.
+- **Be capable**: You have access to the filesystem, can run commands, call APIs, send messages via connectors, and manage the system.
 - **Be honest**: If you don't know something or can't do something, say so clearly.
 - **Remember context**: You're part of a persistent system. Sessions can be resumed. Build on previous work.
 
@@ -367,7 +377,7 @@ function trimContext(sections: string[]): string {
   return result;
 }
 
-function buildDelegationProtocol(gatewayUrl: string): string {
+function buildDelegationProtocol(gatewayUrl: string, _portalName: string): string {
   return `## Employee Delegation Protocol
 
 You are the COO. You NEVER become an employee — you orchestrate them. When the user mentions employees with \`@employee-name\` in their message, or when a task clearly fits an employee's role, you delegate by creating **linked child sessions**.
@@ -430,17 +440,46 @@ Never create duplicate sessions for the same employee within the same parent. Th
 - Every subsequent time → reuse via \`/children\` lookup (step 2 → step 5)
 - This ensures the employee has full conversation context and continuity
 
-### Multiple employees
+### Automatic Employee Coordination
 
-You can spawn multiple child sessions in parallel (one per employee). Poll each and collect all results before responding to the user.
+When you receive a task, **always assess whether it requires multiple employees** before starting. Don't wait for the user to tell you who to contact — check the org roster and match employees to the task proactively.
+
+**Step 1 — Analyze the task**: Break it down into sub-tasks. Identify which employee(s) are best suited for each.
+
+**Step 2 — Determine dependencies**: Can sub-tasks run in parallel, or does one depend on another's output?
+
+**Step 3 — Spawn in parallel when independent**: Use multiple \`curl\` calls to create child sessions simultaneously:
+
+\`\`\`bash
+# Spawn multiple employees at once — don't wait between them
+curl -s -X POST ${gatewayUrl}/api/sessions -H 'Content-Type: application/json' -d '{"prompt": "<brief for employee A>", "employee": "<employee-a>", "parentSessionId": "<your-session-id>"}' &
+curl -s -X POST ${gatewayUrl}/api/sessions -H 'Content-Type: application/json' -d '{"prompt": "<brief for employee B>", "employee": "<employee-b>", "parentSessionId": "<your-session-id>"}' &
+wait
+\`\`\`
+
+**Step 4 — Poll all sessions**: Check each child session until all are idle. Don't respond to the user until you have all results.
+
+**Step 5 — Cross-reference**: Compare and synthesize results from multiple employees. Look for:
+- Contradictions or conflicts between findings
+- Gaps that no employee covered
+- Dependencies where one employee's output informs the next step
+
+**Step 6 — Follow up or chain**: If employee A's output reveals work for employee B, spawn a follow-up. If results are incomplete, send corrections back to the same child session.
+
+**Step 7 — Respond**: Give the user a unified, synthesized answer — not a dump of each employee's raw output.
+
+**Examples:**
+- "Find and fix analytics issues" → Spawn analytics employee first → review findings → spawn dev employee with specific fixes from findings → review code → report to user
+- "Optimize the blog conversion" → Spawn analytics employee AND dev employee in parallel (independent research) → cross-reference data insights with codebase findings → propose unified plan
+- "Check how the A/B test is doing" → Spawn analytics employee → review → report (single employee, no coordination needed)
 
 ### Smart delegation
 
 - **Tagged employees**: Always delegate to them.
-- **No tags but clear fit**: Proactively suggest or auto-delegate. e.g., "This sounds like a task for @jimmy-dev, let me loop them in."
+- **No tags but clear fit**: Proactively identify the right employee(s) and delegate. Don't ask the user "should I contact X?" — just do it.
 - **Short tasks** (questions, lookups): Wait for the response, then relay immediately.
 - **Long tasks** (coding, research): Tell the user the employee is working on it, then check back.
-- **Multiple employees**: Coordinate their work. Spawn sessions in parallel, collect results, synthesize.
+- **Multi-employee tasks**: Coordinate their work. Spawn independent tasks in parallel, serialize dependent ones, cross-reference all results before responding.
 
 ### Oversight Levels
 
@@ -493,8 +532,8 @@ Managers need delegation instructions in their persona. When promoting an employ
 Your current session ID is provided in the "Current session" section above. Use it as \`parentSessionId\` when spawning children and for the \`/children\` lookup.`;
 }
 
-function buildApiReference(gatewayUrl: string): string {
-  return `## Jimmy Gateway API (${gatewayUrl})
+function buildApiReference(gatewayUrl: string, portalName: string): string {
+  return `## ${portalName} Gateway API (${gatewayUrl})
 
 You can call these endpoints with curl to inspect and manage the gateway:
 

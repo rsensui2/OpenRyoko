@@ -46,6 +46,7 @@ program
   .command("chrome-allow")
   .description("Pre-approve all sites for the Claude Chrome extension (no more per-site popups)")
   .option("--no-restart", "Don't restart Chrome automatically")
+  .option("--comet-browser", "Target Comet browser instead of Google Chrome")
   .action(async (opts) => {
     await runChromeAllow(opts);
   });

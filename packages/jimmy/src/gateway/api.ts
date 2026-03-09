@@ -537,11 +537,52 @@ export async function handleApiRequest(
         fs.readdirSync(ORG_DIR, { recursive: true }).some(
           (f) => String(f).endsWith(".yaml") && !String(f).endsWith("department.yaml")
         );
+      const config = context.getConfig();
       return json(res, {
         needed: sessions.length === 0 && !hasEmployees,
         sessionsCount: sessions.length,
         hasEmployees,
+        portalName: config.portal?.portalName ?? null,
+        operatorName: config.portal?.operatorName ?? null,
       });
+    }
+
+    // POST /api/onboarding — persist portal personalization
+    if (method === "POST" && pathname === "/api/onboarding") {
+      const body = JSON.parse(await readBody(req));
+      const { portalName, operatorName } = body;
+
+      // Read current config and merge portal settings
+      const config = context.getConfig();
+      const updated = {
+        ...config,
+        portal: {
+          ...config.portal,
+          ...(portalName !== undefined && { portalName: portalName || undefined }),
+          ...(operatorName !== undefined && { operatorName: operatorName || undefined }),
+        },
+      };
+
+      // Write updated config
+      const yamlStr = yaml.dump(updated, { lineWidth: -1 });
+      fs.writeFileSync(CONFIG_PATH, yamlStr);
+      logger.info(`Onboarding: portal name="${portalName}", operator="${operatorName}"`);
+
+      // Update CLAUDE.md with personalized COO name
+      const claudeMdPath = path.join(JIMMY_HOME, "CLAUDE.md");
+      if (fs.existsSync(claudeMdPath)) {
+        let claudeMd = fs.readFileSync(claudeMdPath, "utf-8");
+        const effectiveName = portalName || "Jimmy";
+        // Replace the identity line in CLAUDE.md
+        claudeMd = claudeMd.replace(
+          /^You are \w+, the COO of the user's AI organization\.$/m,
+          `You are ${effectiveName}, the COO of the user's AI organization.`,
+        );
+        fs.writeFileSync(claudeMdPath, claudeMd);
+      }
+
+      context.emit("config:updated", { portal: updated.portal });
+      return json(res, { status: "ok", portal: updated.portal });
     }
 
     return notFound(res);
@@ -684,7 +725,7 @@ async function runWebSession(
 
     context.emit("session:completed", {
       sessionId: session.id,
-      employee: session.employee || "Jimmy",
+      employee: session.employee || config.portal?.portalName || "Jimmy",
       title: session.title,
       result: result.result,
       error: result.error || null,

@@ -48,6 +48,13 @@ interface Config {
     stdout?: boolean
     file?: boolean
   }
+  cron?: {
+    defaultDelivery?: { connector?: string; channel?: string }
+  }
+  portal?: {
+    portalName?: string
+    operatorName?: string
+  }
   [key: string]: unknown
 }
 
@@ -568,7 +575,10 @@ export default function SettingsPage() {
                   placeholder="Jimmy"
                   value={nameValue}
                   onChange={(e) => setNameValue(e.target.value)}
-                  onBlur={() => setPortalName(nameValue || null)}
+                  onBlur={() => {
+                    setPortalName(nameValue || null)
+                    api.completeOnboarding({ portalName: nameValue || undefined }).catch(() => {})
+                  }}
                   style={{
                     width: "100%",
                     background: "var(--bg-secondary)",
@@ -628,7 +638,10 @@ export default function SettingsPage() {
                   placeholder="Your Name"
                   value={operatorNameValue}
                   onChange={(e) => setOperatorNameValue(e.target.value)}
-                  onBlur={() => setOperatorName(operatorNameValue || null)}
+                  onBlur={() => {
+                    setOperatorName(operatorNameValue || null)
+                    api.completeOnboarding({ operatorName: operatorNameValue || undefined }).catch(() => {})
+                  }}
                   style={{
                     width: "100%",
                     background: "var(--bg-secondary)",
@@ -930,7 +943,54 @@ export default function SettingsPage() {
                 )}
               </Section>
 
-              {/* ── Section 6: Logging ── */}
+              {/* ── Section 6: Cron ── */}
+              <Section title="Cron">
+                <div
+                  style={{
+                    fontSize: "var(--text-caption1)",
+                    fontWeight: "var(--weight-semibold)",
+                    color: "var(--text-tertiary)",
+                    marginBottom: "var(--space-2)",
+                  }}
+                >
+                  Default Delivery
+                </div>
+                <div
+                  style={{
+                    fontSize: "var(--text-caption2)",
+                    color: "var(--text-tertiary)",
+                    marginBottom: "var(--space-3)",
+                  }}
+                >
+                  When a cron job has no delivery configured, results will be sent here.
+                </div>
+                <FieldRow label="Connector">
+                  <SettingsSelect
+                    value={config.cron?.defaultDelivery?.connector ?? ""}
+                    onChange={(v) =>
+                      updateConfig(["cron", "defaultDelivery", "connector"], v || undefined)
+                    }
+                    options={[
+                      { value: "", label: "None (fire & forget)" },
+                      { value: "web", label: "Web" },
+                      { value: "slack", label: "Slack" },
+                    ]}
+                  />
+                </FieldRow>
+                {config.cron?.defaultDelivery?.connector && (
+                  <FieldRow label="Channel">
+                    <SettingsInput
+                      value={config.cron?.defaultDelivery?.channel ?? ""}
+                      onChange={(v) =>
+                        updateConfig(["cron", "defaultDelivery", "channel"], v)
+                      }
+                      placeholder="#general"
+                    />
+                  </FieldRow>
+                )}
+              </Section>
+
+              {/* ── Section 7: Logging ── */}
               <Section title="Logging">
                 <FieldRow label="Level">
                   <SettingsSelect

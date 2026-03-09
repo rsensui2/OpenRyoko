@@ -17,6 +17,7 @@ import {
 import { useSettings } from "@/app/settings-provider"
 import { useTheme } from "@/app/providers"
 import { THEMES } from "@/lib/themes"
+import { api } from "@/lib/api"
 
 // ---------------------------------------------------------------------------
 // Accent color presets
@@ -106,7 +107,13 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
       setDirection("forward")
       setStep(step + 1)
     } else {
-      // Complete
+      // Complete — persist to backend config
+      api.completeOnboarding({
+        portalName: localName || undefined,
+        operatorName: localOperator || undefined,
+      }).catch(() => {
+        // Best-effort: localStorage still has the values
+      })
       if (!forceOpen) {
         localStorage.setItem("jimmy-onboarded", "true")
       }

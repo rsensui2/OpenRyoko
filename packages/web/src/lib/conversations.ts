@@ -74,6 +74,39 @@ export function addMessage(
 /**
  * Extract image / audio URLs from markdown content.
  */
+// --- Intermediate message persistence (localStorage) ---
+
+const INTERMEDIATE_PREFIX = 'jimmy-intermediate-'
+
+export function saveIntermediateMessages(sessionId: string, messages: Message[]): void {
+  if (typeof window === 'undefined') return
+  try {
+    localStorage.setItem(
+      `${INTERMEDIATE_PREFIX}${sessionId}`,
+      JSON.stringify(messages),
+    )
+  } catch { /* storage full — silently skip */ }
+}
+
+export function loadIntermediateMessages(sessionId: string): Message[] {
+  if (typeof window === 'undefined') return []
+  try {
+    const raw = localStorage.getItem(`${INTERMEDIATE_PREFIX}${sessionId}`)
+    return raw ? JSON.parse(raw) : []
+  } catch {
+    return []
+  }
+}
+
+export function clearIntermediateMessages(sessionId: string): void {
+  if (typeof window === 'undefined') return
+  try {
+    localStorage.removeItem(`${INTERMEDIATE_PREFIX}${sessionId}`)
+  } catch { /* ignore */ }
+}
+
+// --- Media parsing ---
+
 export function parseMedia(content: string): MediaAttachment[] {
   const media: MediaAttachment[] = []
 
