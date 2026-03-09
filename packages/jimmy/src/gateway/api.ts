@@ -189,6 +189,15 @@ export async function handleApiRequest(
         return json(res, { ...session, status: "error", lastError: `Engine "${engineName}" not available` }, 201);
       }
 
+      // Set status to "running" synchronously BEFORE returning the response.
+      // This prevents a race condition where the caller polls immediately and
+      // sees "idle" status before runWebSession has a chance to set "running".
+      updateSession(session.id, {
+        status: "running",
+        lastActivity: new Date().toISOString(),
+      });
+      session.status = "running";
+
       context.emit("session:started", { sessionId: session.id });
       runWebSession(session, prompt, engine, config, context).catch((err) => {
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -550,7 +559,7 @@ export async function handleApiRequest(
     // POST /api/onboarding — persist portal personalization
     if (method === "POST" && pathname === "/api/onboarding") {
       const body = JSON.parse(await readBody(req));
-      const { portalName, operatorName } = body;
+      const { portalName, operatorName, language } = body;
 
       // Read current config and merge portal settings
       const config = context.getConfig();
@@ -560,25 +569,52 @@ export async function handleApiRequest(
           ...config.portal,
           ...(portalName !== undefined && { portalName: portalName || undefined }),
           ...(operatorName !== undefined && { operatorName: operatorName || undefined }),
+          ...(language !== undefined && { language: language || undefined }),
         },
       };
 
       // Write updated config
       const yamlStr = yaml.dump(updated, { lineWidth: -1 });
       fs.writeFileSync(CONFIG_PATH, yamlStr);
-      logger.info(`Onboarding: portal name="${portalName}", operator="${operatorName}"`);
+      logger.info(`Onboarding: portal name="${portalName}", operator="${operatorName}", language="${language}"`);
 
-      // Update CLAUDE.md with personalized COO name
+      const effectiveName = portalName || "Jimmy";
+      const languageSection = language && language !== "English"
+        ? `\n\n## Language\nAlways respond in ${language}. All communication with the user must be in ${language}.`
+        : "";
+
+      // Update CLAUDE.md with personalized COO name and language
       const claudeMdPath = path.join(JIMMY_HOME, "CLAUDE.md");
       if (fs.existsSync(claudeMdPath)) {
         let claudeMd = fs.readFileSync(claudeMdPath, "utf-8");
-        const effectiveName = portalName || "Jimmy";
         // Replace the identity line in CLAUDE.md
         claudeMd = claudeMd.replace(
           /^You are \w+, the COO of the user's AI organization\.$/m,
           `You are ${effectiveName}, the COO of the user's AI organization.`,
         );
+        // Remove existing language section if present, then add new one if needed
+        claudeMd = claudeMd.replace(/\n\n## Language\nAlways respond in .+\. All communication with the user must be in .+\./m, "");
+        if (languageSection) {
+          claudeMd = claudeMd.trimEnd() + languageSection + "\n";
+        }
         fs.writeFileSync(claudeMdPath, claudeMd);
+      }
+
+      // Update AGENTS.md with personalized name and language
+      const agentsMdPath = path.join(JIMMY_HOME, "AGENTS.md");
+      if (fs.existsSync(agentsMdPath)) {
+        let agentsMd = fs.readFileSync(agentsMdPath, "utf-8");
+        // Replace the bold identity line (e.g. "You are **Jimmy**")
+        agentsMd = agentsMd.replace(
+          /You are \*\*\w+\*\*/,
+          `You are **${effectiveName}**`,
+        );
+        // Remove existing language section if present, then add new one if needed
+        agentsMd = agentsMd.replace(/\n\n## Language\nAlways respond in .+\. All communication with the user must be in .+\./m, "");
+        if (languageSection) {
+          agentsMd = agentsMd.trimEnd() + languageSection + "\n";
+        }
+        fs.writeFileSync(agentsMdPath, agentsMd);
       }
 
       context.emit("config:updated", { portal: updated.portal });
@@ -658,10 +694,14 @@ async function runWebSession(
 ): Promise<void> {
   logger.info(`Web session ${session.id} running engine "${session.engine}" (model: ${session.model || "default"})`);
 
-  updateSession(session.id, {
-    status: "running",
-    lastActivity: new Date().toISOString(),
-  });
+  // Ensure status is "running" (may already be set by the POST handler)
+  const currentStatus = getSession(session.id);
+  if (currentStatus && currentStatus.status !== "running") {
+    updateSession(session.id, {
+      status: "running",
+      lastActivity: new Date().toISOString(),
+    });
+  }
 
   try {
     // If this session has an assigned employee, load their persona

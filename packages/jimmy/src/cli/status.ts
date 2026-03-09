@@ -5,7 +5,7 @@ import fs from "node:fs";
 
 export async function runStatus(): Promise<void> {
   if (!fs.existsSync(JIMMY_HOME)) {
-    console.log("Jimmy is not set up. Run \"jimmy setup\" first.");
+    console.log("Gateway is not set up. Run \"jimmy setup\" first.");
     return;
   }
 

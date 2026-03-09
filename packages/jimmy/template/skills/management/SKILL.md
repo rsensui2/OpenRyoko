@@ -11,7 +11,7 @@ This skill activates when the user wants to manage their organization: hiring or
 
 ## Organization Structure
 
-The organization lives under the `org/` directory in the Jimmy home folder (`~/.jimmy/org/`). Each department is a subdirectory containing employee persona YAML files and a task board.
+The organization lives under the `org/` directory in the {{portalName}} home folder (`~/.jimmy/org/`). Each department is a subdirectory containing employee persona YAML files and a task board.
 
 ```
 org/
@@ -118,7 +118,7 @@ persona: |
     - TRUST: simple lookups, status checks — relay directly
     - VERIFY: code changes, routine work — spot-check key outputs
     - THOROUGH: architecture, breaking changes — full review, multi-turn
-  - Report summaries back to the COO (Jimmy), not raw employee output
+  - Report summaries back to the COO ({{portalName}}), not raw employee output
   - Use the department board (board.json) to track task status
   - When given a task by the COO, decide whether to do it yourself or
     delegate to the right employee based on their skills and workload

@@ -14,7 +14,8 @@ engines:
 
 connectors: {}
 
-portal: {}
+portal:
+  language: English
 
 logging:
   file: true

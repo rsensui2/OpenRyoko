@@ -7,7 +7,7 @@ description: Create new custom skills by writing SKILL.md playbooks
 
 ## Trigger
 
-This skill activates when the user wants to create a new custom skill for Jimmy.
+This skill activates when the user wants to create a new custom skill for {{portalName}}.
 
 ## Output Location
 

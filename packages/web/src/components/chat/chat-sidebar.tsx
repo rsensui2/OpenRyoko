@@ -1,6 +1,7 @@
 "use client"
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { api, type Employee } from '@/lib/api'
+import { useSettings } from '@/app/settings-provider'
 
 interface Session {
   id: string
@@ -77,11 +78,11 @@ function isCronSession(session: Session): boolean {
   return session.source === 'cron' || (session.sourceRef || '').startsWith('cron:')
 }
 
-function isDirectSession(session: Session): boolean {
-  return !isCronSession(session) && (!session.employee || session.employee === 'jimmy')
+function isDirectSession(session: Session, portalSlug: string): boolean {
+  return !isCronSession(session) && (!session.employee || session.employee === portalSlug)
 }
 
-function groupSessions(sessions: Session[], employeeEmojis: Map<string, string>): SessionGroup[] {
+function groupSessions(sessions: Session[], employeeEmojis: Map<string, string>, portalSlug: string): SessionGroup[] {
   const directSessions: Session[] = []
   const cronSessions: Session[] = []
   const employeeMap = new Map<string, Session[]>()
@@ -89,7 +90,7 @@ function groupSessions(sessions: Session[], employeeEmojis: Map<string, string>)
   for (const s of sessions) {
     if (isCronSession(s)) {
       cronSessions.push(s)
-    } else if (isDirectSession(s)) {
+    } else if (isDirectSession(s, portalSlug)) {
       directSessions.push(s)
     } else {
       const emp = s.employee!
@@ -135,6 +136,9 @@ export function ChatSidebar({
   onSessionsLoaded,
   events,
 }: ChatSidebarProps) {
+  const { settings } = useSettings()
+  const portalName = settings.portalName ?? 'Jimmy'
+  const portalSlug = portalName.toLowerCase()
   const [sessions, setSessions] = useState<Session[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
@@ -255,7 +259,7 @@ export function ChatSidebar({
       })
     : sessions
 
-  const groups = groupSessions(displayed, employeeEmojis)
+  const groups = groupSessions(displayed, employeeEmojis, portalSlug)
 
   return (
     <div style={{
@@ -511,7 +515,7 @@ export function ChatSidebar({
                             flex: 1,
                             minWidth: 0,
                           }}>
-                            {session.title || session.employee || 'Jimmy'}
+                            {session.title || session.employee || portalName}
                           </span>
                           <span style={{
                             fontSize: 'var(--text-caption2)',
@@ -529,7 +533,7 @@ export function ChatSidebar({
                           textOverflow: 'ellipsis',
                           whiteSpace: 'nowrap',
                         }}>
-                          {session.employee || 'Jimmy'}
+                          {session.employee || portalName}
                         </div>
                       </div>
 

@@ -1,8 +1,8 @@
 # Self-Modification
 
-Jimmy's engines operate within `~/.jimmy/` and can modify any file in that directory. This enables Jimmy to update its own configuration, create skills, manage cron jobs, and restructure the organization at runtime.
+{{portalName}}'s engines operate within `~/.jimmy/` and can modify any file in that directory. This enables {{portalName}} to update its own configuration, create skills, manage cron jobs, and restructure the organization at runtime.
 
-## What Jimmy Can Edit
+## What {{portalName}} Can Edit
 
 | File/Directory | Effect of Modification |
 |---|---|

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execSync } from "node:child_process";
+import yaml from "js-yaml";
 import {
   JIMMY_HOME,
   CONFIG_PATH,
@@ -69,10 +70,30 @@ function ensureFile(filePath: string, content: string): boolean {
 }
 
 /**
+ * Apply template placeholder replacements to file content.
+ * Only applies to .md and .yaml files.
+ */
+function applyTemplateReplacements(
+  content: string,
+  replacements: Record<string, string>,
+): string {
+  let result = content;
+  for (const [placeholder, value] of Object.entries(replacements)) {
+    result = result.replaceAll(placeholder, value);
+  }
+  return result;
+}
+
+/**
  * Recursively copy template directory contents into dest, skipping files that already exist.
+ * Applies template placeholder replacements to .md and .yaml files.
  * Returns list of created file paths.
  */
-function copyTemplateDir(srcDir: string, destDir: string): string[] {
+function copyTemplateDir(
+  srcDir: string,
+  destDir: string,
+  replacements?: Record<string, string>,
+): string[] {
   const created: string[] = [];
   if (!fs.existsSync(srcDir)) return created;
 
@@ -84,13 +105,19 @@ function copyTemplateDir(srcDir: string, destDir: string): string[] {
     const destPath = path.join(destDir, entry.name);
 
     if (entry.isDirectory()) {
-      created.push(...copyTemplateDir(srcPath, destPath));
+      created.push(...copyTemplateDir(srcPath, destPath, replacements));
     } else if (entry.name === ".gitkeep") {
       // skip .gitkeep — directory already created
       continue;
     } else if (!fs.existsSync(destPath)) {
       fs.mkdirSync(path.dirname(destPath), { recursive: true });
-      fs.copyFileSync(srcPath, destPath);
+      const ext = path.extname(entry.name).toLowerCase();
+      if (replacements && (ext === ".md" || ext === ".yaml" || ext === ".yml")) {
+        const content = fs.readFileSync(srcPath, "utf-8");
+        fs.writeFileSync(destPath, applyTemplateReplacements(content, replacements), "utf-8");
+      } else {
+        fs.copyFileSync(srcPath, destPath);
+      }
       created.push(destPath);
     }
   }
@@ -117,16 +144,20 @@ logging:
   level: info
 `;
 
-const DEFAULT_CLAUDE_MD = `# Jimmy AI Gateway
+function defaultClaudeMd(portalName: string) {
+  return `# ${portalName} AI Gateway
 
-This is the Jimmy home directory (~/.jimmy).
-Jimmy orchestrates Claude Code and Codex as AI engines.
+This is the ${portalName} home directory (~/.jimmy).
+${portalName} orchestrates Claude Code and Codex as AI engines.
 `;
+}
 
-const DEFAULT_AGENTS_MD = `# Jimmy Agents
+function defaultAgentsMd(portalName: string) {
+  return `# ${portalName} Agents
 
 Agents are configured via employees in the org/ directory.
 `;
+}
 
 export async function runSetup(opts?: { force?: boolean }): Promise<void> {
   console.log("\nJimmy Setup\n");
@@ -195,20 +226,36 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
     created.push(CONFIG_PATH);
   }
 
+  // Read portal name from config for template replacements
+  const portalName = (() => {
+    try {
+      const cfg = yaml.load(fs.readFileSync(CONFIG_PATH, "utf-8")) as any;
+      return cfg?.portal?.portalName || "Jimmy";
+    } catch { return "Jimmy"; }
+  })();
+  const portalSlug = portalName.toLowerCase().replace(/\s+/g, "-");
+
+  const templateReplacements: Record<string, string> = {
+    "{{portalName}}": portalName,
+    "{{portalSlug}}": portalSlug,
+  };
+
   const claudeMdPath = path.join(JIMMY_HOME, "CLAUDE.md");
   if (!fs.existsSync(claudeMdPath)) {
-    const source = fs.existsSync(templateClaude)
+    let source = fs.existsSync(templateClaude)
       ? fs.readFileSync(templateClaude, "utf-8")
-      : DEFAULT_CLAUDE_MD;
+      : defaultClaudeMd(portalName);
+    source = applyTemplateReplacements(source, templateReplacements);
     ensureFile(claudeMdPath, source);
     created.push(claudeMdPath);
   }
 
   const agentsMdPath = path.join(JIMMY_HOME, "AGENTS.md");
   if (!fs.existsSync(agentsMdPath)) {
-    const source = fs.existsSync(templateAgents)
+    let source = fs.existsSync(templateAgents)
       ? fs.readFileSync(templateAgents, "utf-8")
-      : DEFAULT_AGENTS_MD;
+      : defaultAgentsMd(portalName);
+    source = applyTemplateReplacements(source, templateReplacements);
     ensureFile(agentsMdPath, source);
     created.push(agentsMdPath);
   }
@@ -242,9 +289,9 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
   if (ensureDir(LOGS_DIR)) created.push(LOGS_DIR);
 
   // Copy template contents for docs, skills, and org (skips existing files)
-  created.push(...copyTemplateDir(path.join(TEMPLATE_DIR, "docs"), DOCS_DIR));
-  created.push(...copyTemplateDir(path.join(TEMPLATE_DIR, "skills"), SKILLS_DIR));
-  created.push(...copyTemplateDir(path.join(TEMPLATE_DIR, "org"), ORG_DIR));
+  created.push(...copyTemplateDir(path.join(TEMPLATE_DIR, "docs"), DOCS_DIR, templateReplacements));
+  created.push(...copyTemplateDir(path.join(TEMPLATE_DIR, "skills"), SKILLS_DIR, templateReplacements));
+  created.push(...copyTemplateDir(path.join(TEMPLATE_DIR, "org"), ORG_DIR, templateReplacements));
 
   // Ensure dirs exist even if template had nothing to copy
   ensureDir(DOCS_DIR);

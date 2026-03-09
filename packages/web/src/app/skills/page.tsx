@@ -16,6 +16,7 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { Zap } from "lucide-react";
+import { useSettings } from "@/app/settings-provider";
 
 interface Skill {
   name: string;
@@ -25,6 +26,8 @@ interface Skill {
 }
 
 export default function SkillsPage() {
+  const { settings } = useSettings();
+  const portalName = settings.portalName ?? "Jimmy";
   const [skills, setSkills] = useState<Skill[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -106,7 +109,7 @@ export default function SkillsPage() {
           <button
             onClick={() =>
               alert(
-                "To create a new skill, chat with Jimmy and ask to learn something new.",
+                `To create a new skill, chat with ${portalName} and ask to learn something new.`,
               )
             }
             style={{
@@ -178,7 +181,7 @@ export default function SkillsPage() {
                     marginTop: "var(--space-1)",
                   }}
                 >
-                  Chat with Jimmy to teach new skills
+                  Chat with {portalName} to teach new skills
                 </p>
               </div>
             </CardContent>

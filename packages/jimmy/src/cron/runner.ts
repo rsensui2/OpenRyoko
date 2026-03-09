@@ -25,12 +25,13 @@ export async function runCronJob(
   const model =
     job.model || config.engines[engineName as "claude" | "codex"]?.model;
 
-  // 2. Warn if a non-jimmy employee has delivery configured (anti-pattern)
+  // 2. Warn if a non-COO employee has delivery configured (anti-pattern)
   const delivery = job.delivery || config.cron?.defaultDelivery;
-  if (delivery && job.employee && job.employee !== "jimmy") {
+  const cooSlug = config.portal?.portalName?.toLowerCase() || "jimmy";
+  if (delivery && job.employee && job.employee !== cooSlug) {
     logger.warn(
       `Cron job "${job.name}" targets employee "${job.employee}" with delivery to ${delivery.connector}:${delivery.channel}. ` +
-        `Recommended pattern: target "jimmy" and let the COO delegate to "${job.employee}" via a child session for output review/filtering.`,
+        `Recommended pattern: target "${cooSlug}" and let the COO delegate to "${job.employee}" via a child session for output review/filtering.`,
     );
   }
 

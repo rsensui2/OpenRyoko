@@ -93,7 +93,8 @@ export async function startGateway(
     file: config.logging.file,
   });
 
-  logger.info("Starting Jimmy gateway...");
+  const gatewayName = config.portal?.portalName || "Jimmy";
+  logger.info(`Starting ${gatewayName} gateway...`);
 
   // Initialize database and recover any sessions stuck from a previous run
   initDb();
@@ -104,16 +105,19 @@ export async function startGateway(
 
   // Set up engines
   const claudeEngine = new ClaudeEngine();
+  const codexEngine = new CodexEngine();
   const engines = new Map<string, InstanceType<typeof ClaudeEngine> | InstanceType<typeof CodexEngine>>();
   engines.set("claude", claudeEngine);
-  engines.set("codex", new CodexEngine());
+  engines.set("codex", codexEngine);
 
   // Configure bidirectional timeouts from config
   const applyBidirectionalTimeouts = (cfg: JimmyConfig) => {
-    claudeEngine.setTimeouts({
+    const timeouts = {
       idleTimeoutMinutes: cfg.connectors?.web?.idleTimeoutMinutes ?? 60,
       hardTimeoutHours: cfg.connectors?.web?.hardTimeoutHours ?? 24,
-    });
+    };
+    claudeEngine.setTimeouts(timeouts);
+    codexEngine.setTimeouts(timeouts);
   };
   applyBidirectionalTimeouts(config);
 
@@ -141,7 +145,7 @@ export async function startGateway(
         botToken: config.connectors.slack.botToken,
       });
       slack.onMessage((msg) => {
-        // Always route to Jimmy (COO). Employee mentions are detected by Jimmy
+        // Always route to COO. Employee mentions are detected by the COO
         // in the message text and delegated via child sessions.
         sessionManager.route(msg, slack).catch((err) => {
           logger.error(`Slack route error: ${err instanceof Error ? err.message : err}`);
@@ -294,7 +298,7 @@ export async function startGateway(
 
   await new Promise<void>((resolve) => {
     server.listen(port, host, () => {
-      logger.info(`Jimmy gateway listening on http://${host}:${port}`);
+      logger.info(`${gatewayName} gateway listening on http://${host}:${port}`);
       resolve();
     });
   });
@@ -303,8 +307,9 @@ export async function startGateway(
   return async () => {
     logger.info("Gateway cleanup starting...");
 
-    // Stop bidirectional sweep loop
+    // Stop bidirectional sweep loops
     claudeEngine.stopSweep();
+    codexEngine.stopSweep();
 
     // Stop cron scheduler
     stopScheduler();

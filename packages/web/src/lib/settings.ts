@@ -12,6 +12,7 @@ export interface JimmySettings {
   iconBgHidden: boolean
   emojiOnly: boolean
   operatorName: string | null
+  language: string
   employeeOverrides: Record<string, EmployeeOverride>
 }
 
@@ -24,6 +25,7 @@ export const DEFAULTS: JimmySettings = {
   iconBgHidden: false,
   emojiOnly: false,
   operatorName: null,
+  language: "English",
   employeeOverrides: {},
 }
 

@@ -87,8 +87,8 @@ export interface CreateSessionOpts {
   parentSessionId?: string;
 }
 
-function generateTitle(employee?: string, prompt?: string): string {
-  const name = employee || 'Jimmy';
+function generateTitle(employee?: string, prompt?: string, portalName?: string): string {
+  const name = employee || portalName || 'Jimmy';
   if (!prompt) return name;
   const cleaned = prompt.replace(/\n/g, ' ').replace(/@\w+/g, '').replace(/\s+/g, ' ').trim();
   if (!cleaned) return name;
@@ -96,11 +96,11 @@ function generateTitle(employee?: string, prompt?: string): string {
   return `${name} - ${summary}${cleaned.length > 30 ? '...' : ''}`;
 }
 
-export function createSession(opts: CreateSessionOpts & { prompt?: string }): Session {
+export function createSession(opts: CreateSessionOpts & { prompt?: string; portalName?: string }): Session {
   const db = initDb();
   const now = new Date().toISOString();
   const id = uuidv4();
-  const title = opts.title ?? generateTitle(opts.employee, opts.prompt);
+  const title = opts.title ?? generateTitle(opts.employee, opts.prompt, opts.portalName);
 
   const stmt = db.prepare(`
     INSERT INTO sessions (id, engine, source, source_ref, employee, model, title, parent_session_id, status, created_at, last_activity)

@@ -66,6 +66,7 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
     setPortalName,
     setOperatorName,
     setAccentColor,
+    setLanguage,
   } = useSettings()
   const { theme, setTheme } = useTheme()
   const router = useRouter()
@@ -77,6 +78,7 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
   // Local input values
   const [localName, setLocalName] = useState("")
   const [localOperator, setLocalOperator] = useState("")
+  const [localLanguage, setLocalLanguage] = useState(settings.language ?? "English")
 
   const TOTAL_STEPS = 4
 
@@ -97,10 +99,11 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
   }, [forceOpen]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleNext = useCallback(() => {
-    // Commit name/operator on step 0
+    // Commit name/operator/language on step 0
     if (step === 0) {
       setPortalName(localName || null)
       setOperatorName(localOperator || null)
+      setLanguage(localLanguage || "English")
     }
 
     if (step < TOTAL_STEPS - 1) {
@@ -111,6 +114,7 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
       api.completeOnboarding({
         portalName: localName || undefined,
         operatorName: localOperator || undefined,
+        language: localLanguage || undefined,
       }).catch(() => {
         // Best-effort: localStorage still has the values
       })
@@ -233,7 +237,7 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
                   marginBottom: "var(--space-2)",
                 }}
               >
-                Welcome to Jimmy
+                Welcome to {localName || "Jimmy"}
               </h2>
               <p
                 style={{
@@ -312,6 +316,48 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
                       color: "var(--text-primary)",
                     }}
                   />
+                </div>
+
+                <div>
+                  <label
+                    style={{
+                      display: "block",
+                      fontSize: "var(--text-caption1)",
+                      color: "var(--text-tertiary)",
+                      marginBottom: "var(--space-1)",
+                    }}
+                  >
+                    Preferred Language
+                  </label>
+                  <select
+                    value={localLanguage}
+                    onChange={(e) => setLocalLanguage(e.target.value)}
+                    style={{
+                      width: "100%",
+                      background: "var(--bg-secondary)",
+                      border: "1px solid var(--separator)",
+                      borderRadius: "var(--radius-sm)",
+                      padding: "8px 12px",
+                      fontSize: "var(--text-body)",
+                      color: "var(--text-primary)",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <option value="English">English</option>
+                    <option value="Spanish">Spanish</option>
+                    <option value="French">French</option>
+                    <option value="German">German</option>
+                    <option value="Portuguese">Portuguese</option>
+                    <option value="Italian">Italian</option>
+                    <option value="Dutch">Dutch</option>
+                    <option value="Russian">Russian</option>
+                    <option value="Chinese">Chinese</option>
+                    <option value="Japanese">Japanese</option>
+                    <option value="Korean">Korean</option>
+                    <option value="Arabic">Arabic</option>
+                    <option value="Hindi">Hindi</option>
+                    <option value="Bulgarian">Bulgarian</option>
+                  </select>
                 </div>
               </div>
             </div>

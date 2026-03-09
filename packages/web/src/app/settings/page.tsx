@@ -245,6 +245,7 @@ export default function SettingsPage() {
     setPortalSubtitle,
     setOperatorName,
     setPortalEmoji,
+    setLanguage,
     resetAll,
   } = useSettings()
   const { theme, setTheme } = useTheme()
@@ -254,6 +255,7 @@ export default function SettingsPage() {
   const [subtitleValue, setSubtitleValue] = useState(settings.portalSubtitle ?? "")
   const [operatorNameValue, setOperatorNameValue] = useState(settings.operatorName ?? "")
   const [emojiValue, setEmojiValue] = useState(settings.portalEmoji ?? "")
+  const [languageValue, setLanguageValue] = useState(settings.language ?? "English")
   const [customHex, setCustomHex] = useState(settings.accentColor ?? "")
 
   // Gateway config state
@@ -272,12 +274,14 @@ export default function SettingsPage() {
     setSubtitleValue(settings.portalSubtitle ?? "")
     setOperatorNameValue(settings.operatorName ?? "")
     setEmojiValue(settings.portalEmoji ?? "")
+    setLanguageValue(settings.language ?? "English")
     setCustomHex(settings.accentColor ?? "")
   }, [
     settings.portalName,
     settings.portalSubtitle,
     settings.operatorName,
     settings.portalEmoji,
+    settings.language,
     settings.accentColor,
   ])
 
@@ -682,6 +686,52 @@ export default function SettingsPage() {
                     borderRadius: "var(--radius-sm)",
                   }}
                 />
+              </div>
+
+              <div>
+                <label
+                  style={{
+                    display: "block",
+                    fontSize: "var(--text-caption1)",
+                    color: "var(--text-tertiary)",
+                    marginBottom: "var(--space-1)",
+                  }}
+                >
+                  Language
+                </label>
+                <select
+                  value={languageValue}
+                  onChange={(e) => setLanguageValue(e.target.value)}
+                  onBlur={() => {
+                    setLanguage(languageValue || "English")
+                    api.completeOnboarding({ language: languageValue || undefined }).catch(() => {})
+                  }}
+                  style={{
+                    width: "100%",
+                    background: "var(--bg-secondary)",
+                    border: "1px solid var(--separator)",
+                    borderRadius: "var(--radius-sm)",
+                    padding: "6px 10px",
+                    fontSize: "var(--text-footnote)",
+                    color: "var(--text-primary)",
+                    cursor: "pointer",
+                  }}
+                >
+                  <option value="English">English</option>
+                  <option value="Spanish">Spanish</option>
+                  <option value="French">French</option>
+                  <option value="German">German</option>
+                  <option value="Portuguese">Portuguese</option>
+                  <option value="Italian">Italian</option>
+                  <option value="Dutch">Dutch</option>
+                  <option value="Russian">Russian</option>
+                  <option value="Chinese">Chinese</option>
+                  <option value="Japanese">Japanese</option>
+                  <option value="Korean">Korean</option>
+                  <option value="Arabic">Arabic</option>
+                  <option value="Hindi">Hindi</option>
+                  <option value="Bulgarian">Bulgarian</option>
+                </select>
               </div>
             </div>
           </Section>

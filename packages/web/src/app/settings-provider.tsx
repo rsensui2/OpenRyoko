@@ -27,6 +27,7 @@ interface SettingsContextValue {
   setIconBgHidden: (hidden: boolean) => void
   setEmojiOnly: (emojiOnly: boolean) => void
   setOperatorName: (name: string | null) => void
+  setLanguage: (language: string) => void
   setEmployeeOverride: (employeeId: string, override: EmployeeOverride) => void
   clearEmployeeOverride: (employeeId: string) => void
   getEmployeeDisplay: (employee: { name: string; emoji: string; id: string }) => EmployeeDisplay
@@ -34,7 +35,7 @@ interface SettingsContextValue {
 }
 
 const SettingsContext = createContext<SettingsContextValue>({
-  settings: { accentColor: null, portalName: null, portalSubtitle: null, portalEmoji: null, portalIcon: null, iconBgHidden: false, emojiOnly: false, operatorName: null, employeeOverrides: {} },
+  settings: { accentColor: null, portalName: null, portalSubtitle: null, portalEmoji: null, portalIcon: null, iconBgHidden: false, emojiOnly: false, operatorName: null, language: "English", employeeOverrides: {} },
   setAccentColor: () => {},
   setPortalName: () => {},
   setPortalSubtitle: () => {},
@@ -43,6 +44,7 @@ const SettingsContext = createContext<SettingsContextValue>({
   setIconBgHidden: () => {},
   setEmojiOnly: () => {},
   setOperatorName: () => {},
+  setLanguage: () => {},
   setEmployeeOverride: () => {},
   clearEmployeeOverride: () => {},
   getEmployeeDisplay: (employee) => ({ emoji: employee.emoji }),
@@ -133,6 +135,13 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     [settings, update],
   )
 
+  const setLanguage = useCallback(
+    (language: string) => {
+      update({ ...settings, language: language || "English" })
+    },
+    [settings, update],
+  )
+
   const setEmployeeOverride = useCallback(
     (employeeId: string, override: EmployeeOverride) => {
       const existing = settings.employeeOverrides[employeeId] || {}
@@ -177,6 +186,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
       iconBgHidden: false,
       emojiOnly: false,
       operatorName: null,
+      language: "English",
       employeeOverrides: {},
     }
     update(defaults)
@@ -194,6 +204,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
         setIconBgHidden,
         setEmojiOnly,
         setOperatorName,
+        setLanguage,
         setEmployeeOverride,
         clearEmployeeOverride,
         getEmployeeDisplay,

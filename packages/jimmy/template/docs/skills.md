@@ -41,9 +41,9 @@ When the user says "deploy" or asks about deployment status.
 
 ## Pre-packaged Skills
 
-Jimmy ships with several default skills:
+{{portalName}} ships with several default skills:
 
-- **self**: Instructions for Jimmy to understand and modify its own configuration
+- **self**: Instructions for {{portalName}} to understand and modify its own configuration
 - **slack**: Slack-specific behavior and formatting guidelines
 - **cron**: How to create and manage scheduled jobs
 - **org**: Working with the organization structure and employee personas

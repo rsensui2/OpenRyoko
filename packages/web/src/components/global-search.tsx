@@ -15,6 +15,7 @@ import {
   Zap,
   Settings,
 } from "lucide-react"
+import { useSettings } from "@/app/settings-provider"
 
 const API =
   typeof window !== "undefined" ? window.location.origin : "http://127.0.0.1:7777"
@@ -75,6 +76,8 @@ function fuzzyMatch(query: string, target: string): boolean {
 // ---------------------------------------------------------------------------
 
 export function GlobalSearch() {
+  const { settings } = useSettings()
+  const portalName = settings.portalName ?? "Jimmy"
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState("")
   const [activeIndex, setActiveIndex] = useState(0)
@@ -277,7 +280,7 @@ export function GlobalSearch() {
       <div
         role="dialog"
         aria-modal="true"
-        aria-label="Search Jimmy"
+        aria-label={`Search ${portalName}`}
         className="animate-scale-in"
         onKeyDown={handleKeyDown}
         style={{
@@ -315,8 +318,8 @@ export function GlobalSearch() {
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search Jimmy..."
-            aria-label="Search Jimmy"
+            placeholder={`Search ${portalName}...`}
+            aria-label={`Search ${portalName}`}
             style={{
               flex: 1,
               background: "transparent",

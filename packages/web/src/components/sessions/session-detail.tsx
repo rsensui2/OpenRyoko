@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
+import { useSettings } from "@/app/settings-provider";
 
 interface Session {
   id: string;
@@ -85,6 +86,8 @@ export function SessionDetail({
   onClose: () => void;
   onNavigate?: (id: string) => void;
 }) {
+  const { settings } = useSettings();
+  const portalName = settings.portalName ?? "Jimmy";
   const [children, setChildren] = useState<Session[]>([]);
 
   useEffect(() => {
@@ -135,7 +138,7 @@ export function SessionDetail({
             }
           />
           <Field label="Source" value={session.source} />
-          <Field label="Employee" value={session.employee || "Jimmy"} />
+          <Field label="Employee" value={session.employee || portalName} />
           <Field
             label="Status"
             value={

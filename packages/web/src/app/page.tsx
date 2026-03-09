@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
 import { useGateway } from "@/hooks/use-gateway";
+import { useSettings } from "@/app/settings-provider";
 import { PageLayout } from "@/components/page-layout";
 import {
   Card,
@@ -47,46 +48,50 @@ function formatTimestamp(ts: number): string {
   return new Date(ts).toLocaleTimeString();
 }
 
-const quickLinks = [
-  {
-    href: "/chat",
-    icon: MessageSquare,
-    name: "Chat",
-    description: "Talk to Jimmy directly",
-  },
-  {
-    href: "/org",
-    icon: Network,
-    name: "Organization",
-    description: "View employees and departments",
-  },
-  {
-    href: "/kanban",
-    icon: KanbanSquare,
-    name: "Kanban",
-    description: "Manage tasks and boards",
-  },
-  {
-    href: "/cron",
-    icon: Timer,
-    name: "Cron",
-    description: "Scheduled jobs and automations",
-  },
-  {
-    href: "/costs",
-    icon: DollarSign,
-    name: "Costs",
-    description: "API usage and spending",
-  },
-  {
-    href: "/logs",
-    icon: Activity,
-    name: "Activity",
-    description: "Logs and event stream",
-  },
-];
+function getQuickLinks(portalName: string) {
+  return [
+    {
+      href: "/chat",
+      icon: MessageSquare,
+      name: "Chat",
+      description: `Talk to ${portalName} directly`,
+    },
+    {
+      href: "/org",
+      icon: Network,
+      name: "Organization",
+      description: "View employees and departments",
+    },
+    {
+      href: "/kanban",
+      icon: KanbanSquare,
+      name: "Kanban",
+      description: "Manage tasks and boards",
+    },
+    {
+      href: "/cron",
+      icon: Timer,
+      name: "Cron",
+      description: "Scheduled jobs and automations",
+    },
+    {
+      href: "/costs",
+      icon: DollarSign,
+      name: "Costs",
+      description: "API usage and spending",
+    },
+    {
+      href: "/logs",
+      icon: Activity,
+      name: "Activity",
+      description: "Logs and event stream",
+    },
+  ];
+}
 
 export default function DashboardPage() {
+  const { settings } = useSettings();
+  const portalName = settings.portalName ?? "Jimmy";
   const [status, setStatus] = useState<StatusData | null>(null);
   const [cronCount, setCronCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -381,7 +386,7 @@ export default function DashboardPage() {
               gap: "var(--space-3)",
             }}
           >
-            {quickLinks.map((link) => {
+            {getQuickLinks(portalName).map((link) => {
               const Icon = link.icon;
               return (
                 <Link

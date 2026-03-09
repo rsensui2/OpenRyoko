@@ -9,14 +9,17 @@ import { ChatMessages } from '@/components/chat/chat-messages'
 import { ChatInput } from '@/components/chat/chat-input'
 import type { Message, MediaAttachment } from '@/lib/conversations'
 import { saveIntermediateMessages, loadIntermediateMessages, clearIntermediateMessages } from '@/lib/conversations'
+import { useSettings } from '@/app/settings-provider'
 
-const ONBOARDING_PROMPT = `This is your first time being activated. The user just set up Jimmy and opened the web dashboard for the first time.
+function getOnboardingPrompt(portalName: string) {
+  return `This is your first time being activated. The user just set up ${portalName} and opened the web dashboard for the first time.
 
 Read your CLAUDE.md instructions and the onboarding skill at ~/.jimmy/skills/onboarding/SKILL.md, then follow the onboarding flow:
-- Greet the user warmly and introduce yourself as Jimmy
+- Greet the user warmly and introduce yourself as ${portalName}
 - Briefly explain what you can do (manage cron jobs, hire AI employees, connect to Slack, etc.)
 - Check if ~/.openclaw/ exists and mention migration if so
 - Ask the user what they'd like to set up first`
+}
 
 export default function ChatPageWrapper() {
   return (
@@ -33,6 +36,8 @@ export default function ChatPageWrapper() {
 }
 
 function ChatPage() {
+  const { settings } = useSettings()
+  const portalName = settings.portalName ?? 'Jimmy'
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
   const [loading, setLoading] = useState(false)
@@ -102,7 +107,7 @@ function ChatPage() {
 
     api.createSession({
       source: 'web',
-      prompt: ONBOARDING_PROMPT,
+      prompt: getOnboardingPrompt(portalName),
     }).then((session) => {
       const id = String((session as Record<string, unknown>).id)
       setSelectedId(id)
@@ -338,7 +343,7 @@ function ChatPage() {
 
   const handleSend = useCallback(
     async (message: string, media?: MediaAttachment[], interrupt?: boolean) => {
-      const isOnboardingMsg = message === ONBOARDING_PROMPT
+      const isOnboardingMsg = message === getOnboardingPrompt(portalName)
       if (!isOnboardingMsg) {
         const userMsg: Message = {
           id: crypto.randomUUID(),
@@ -468,9 +473,8 @@ function ChatPage() {
 
   return (
     <PageLayout>
-      <div style={{
+      <div className="h-[calc(100%-48px)] lg:h-full" style={{
         display: 'flex',
-        height: '100%',
         overflow: 'hidden',
       }}>
         {/* Desktop sidebar — always visible on md+ */}
@@ -488,11 +492,10 @@ function ChatPage() {
 
         {/* Mobile: sidebar view */}
         <div
-          className="lg:hidden"
+          className={mobileView === 'sidebar' ? 'block lg:hidden' : 'hidden'}
           style={{
             width: '100%',
             height: '100%',
-            display: mobileView === 'sidebar' ? 'block' : 'none',
           }}
         >
           <ChatSidebar
@@ -510,7 +513,6 @@ function ChatPage() {
         <div
           style={{
             flex: 1,
-            display: 'flex',
             flexDirection: 'column',
             height: '100%',
             background: 'var(--bg)',
@@ -528,9 +530,9 @@ function ChatPage() {
             background: 'var(--material-thick)',
             flexShrink: 0,
           }}>
-            {/* Mobile back button */}
+            {/* Mobile back button — use Tailwind flex + lg:hidden (no inline display to avoid specificity conflict) */}
             <button
-              className="lg:hidden"
+              className="flex lg:hidden"
               onClick={() => setMobileView('sidebar')}
               aria-label="Back to sessions"
               style={{
@@ -538,7 +540,6 @@ function ChatPage() {
                 borderRadius: 'var(--radius-sm)',
                 marginRight: 'var(--space-2)',
                 fontSize: 'var(--text-subheadline)',
-                display: 'flex',
                 alignItems: 'center',
                 gap: 'var(--space-1)',
                 background: 'transparent',
@@ -564,7 +565,7 @@ function ChatPage() {
                 whiteSpace: 'nowrap',
               }}>
                 {selectedId
-                  ? (sessionMeta?.title || sessionMeta?.employee || 'Jimmy')
+                  ? (sessionMeta?.title || sessionMeta?.employee || portalName)
                   : 'New Chat'}
               </div>
             </div>

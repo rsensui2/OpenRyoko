@@ -1,6 +1,6 @@
 # Organization
 
-Jimmy supports an organizational structure with employee personas, departments, ranks, and inter-agent communication through boards.
+{{portalName}} supports an organizational structure with employee personas, departments, ranks, and inter-agent communication through boards.
 
 ## Employee Personas
 
@@ -76,7 +76,7 @@ Task fields: `id`, `title`, `assignee`, `status` (open, in-progress, done, block
 
 | Rank | Privileges |
 |---|---|
-| **executive** | Full access. Can message any employee, modify org structure, create departments. Jimmy holds this rank. |
+| **executive** | Full access. Can message any employee, modify org structure, create departments. {{portalName}} holds this rank. |
 | **manager** | Can message employees in their department. Can assign tasks on their department's board. |
 | **senior** | Can message employees in their department. Can update tasks assigned to them. |
 | **employee** | Can update tasks assigned to them. Can post to their department's board. |
@@ -90,16 +90,16 @@ Task fields: `id`, `title`, `assignee`, `status` (open, in-progress, done, block
 
 ## Default Organization
 
-Jimmy ships with a single executive employee:
+{{portalName}} ships with a single executive employee:
 
 ```yaml
-name: jimmy
-displayName: Jimmy
+name: {{portalSlug}}
+displayName: {{portalName}}
 department: executive
 rank: executive
 engine: claude
 model: opus
 persona: |
-  You are Jimmy, the executive AI assistant and gateway administrator.
+  You are {{portalName}}, the executive AI assistant and gateway administrator.
   You manage the organization, delegate tasks, and handle direct requests.
 ```

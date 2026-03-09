@@ -1,6 +1,6 @@
 # Cron
 
-Jimmy supports scheduled AI jobs defined in `~/.jimmy/cron/jobs.json`.
+{{portalName}} supports scheduled AI jobs defined in `~/.jimmy/cron/jobs.json`.
 
 ## Job Schema
 
@@ -67,9 +67,9 @@ Each job execution is logged to `~/.jimmy/cron/runs/<jobId>.jsonl`. Each line is
 
 ## Delegation Pattern
 
-When a cron job produces analytical, reporting, or decision-informing output, it should **always target jimmy** (the COO), not the employee directly. Jimmy then delegates to the employee via a child session, reviews the output, filters noise, and delivers the final result.
+When a cron job produces analytical, reporting, or decision-informing output, it should **always target {{portalSlug}}** (the COO), not the employee directly. {{portalName}} then delegates to the employee via a child session, reviews the output, filters noise, and delivers the final result.
 
-**Correct** — cron → jimmy → employee (via child session) → jimmy reviews → delivery:
+**Correct** — cron → {{portalSlug}} → employee (via child session) → {{portalSlug}} reviews → delivery:
 ```json
 {
   "id": "daily-pulse",
@@ -77,7 +77,7 @@ When a cron job produces analytical, reporting, or decision-informing output, it
   "enabled": true,
   "schedule": "0 8 * * *",
   "engine": "claude",
-  "employee": "jimmy",
+  "employee": "{{portalSlug}}",
   "prompt": "Delegate to @pulse: pull analytics for all products. Review the output, filter noise, and deliver a concise summary of what matters.",
   "delivery": {
     "connector": "slack",
@@ -103,7 +103,7 @@ When a cron job produces analytical, reporting, or decision-informing output, it
 }
 ```
 
-Direct employee-to-user delivery is only acceptable for simple, no-review-needed tasks (e.g. a health check ping). The gateway will log a warning if it detects a non-jimmy employee with delivery configured.
+Direct employee-to-user delivery is only acceptable for simple, no-review-needed tasks (e.g. a health check ping). The gateway will log a warning if it detects a non-{{portalSlug}} employee with delivery configured.
 
 ## Example Configuration
 
@@ -116,7 +116,7 @@ Direct employee-to-user delivery is only acceptable for simple, no-review-needed
     "schedule": "0 9 * * 1-5",
     "timezone": "America/New_York",
     "engine": "claude",
-    "employee": "jimmy",
+    "employee": "{{portalSlug}}",
     "prompt": "Delegate to @project-manager: review yesterday's board activity across all departments. Review the output and write a concise standup summary.",
     "delivery": {
       "connector": "slack",
@@ -130,7 +130,7 @@ Direct employee-to-user delivery is only acceptable for simple, no-review-needed
     "schedule": "0 18 * * 5",
     "timezone": "America/New_York",
     "engine": "claude",
-    "employee": "jimmy",
+    "employee": "{{portalSlug}}",
     "prompt": "Review all skills in ~/.jimmy/skills/ and suggest improvements or removals for unused skills."
   }
 ]

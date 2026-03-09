@@ -56,7 +56,7 @@ Field details:
 3. Ask about the timezone. Default to `UTC` if not specified.
 4. Ask about the employee persona to use. This is optional.
 5. **Always ask the user about the delivery channel** if they did not specify one. Explain that without delivery, the output will only be logged.
-6. **Delegation check**: If the job has delivery configured AND targets a non-jimmy employee, warn the user. The correct pattern for reporting/analytical jobs is: target `jimmy`, and include delegation instructions in the prompt (e.g. "Delegate to @employee-name: ..."). Jimmy reviews and filters the output before it reaches the delivery channel. Only simple, no-review tasks (e.g. health checks) should target employees directly with delivery.
+6. **Delegation check**: If the job has delivery configured AND targets a non-{{portalSlug}} employee, warn the user. The correct pattern for reporting/analytical jobs is: target `{{portalSlug}}`, and include delegation instructions in the prompt (e.g. "Delegate to @employee-name: ..."). {{portalName}} reviews and filters the output before it reaches the delivery channel. Only simple, no-review tasks (e.g. health checks) should target employees directly with delivery.
 7. Generate a UUID for the `id` field.
 8. Set `enabled` to `true` by default.
 9. Append the new job object to the array.

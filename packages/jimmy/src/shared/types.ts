@@ -153,6 +153,7 @@ export interface WebConnectorConfig {
 export interface PortalConfig {
   portalName?: string;
   operatorName?: string;
+  language?: string;
 }
 
 export interface JimmyConfig {

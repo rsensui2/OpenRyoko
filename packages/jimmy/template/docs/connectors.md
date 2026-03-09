@@ -1,6 +1,6 @@
 # Connectors
 
-Connectors are modular adapters that bridge external messaging platforms with Jimmy's session manager.
+Connectors are modular adapters that bridge external messaging platforms with {{portalName}}'s session manager.
 
 ## Connector Interface
 
@@ -59,7 +59,7 @@ Reactions provide visual feedback during processing:
 
 ### Employee Routing
 
-- Default: messages route to the default employee (Jimmy)
+- Default: messages route to the default employee ({{portalName}})
 - `@mention`: messages mentioning a specific employee name route to that employee
 - Thread continuity: replies in a thread continue with the same employee
 

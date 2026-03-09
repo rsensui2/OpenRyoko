@@ -7,6 +7,7 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
+import { useSettings } from "@/app/settings-provider";
 
 interface Session {
   id: string;
@@ -53,6 +54,8 @@ export function SessionList({
   onSelect: (id: string) => void;
   onDeleted?: () => void;
 }) {
+  const { settings } = useSettings();
+  const portalName = settings.portalName ?? "Jimmy";
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; sessionId: string } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
@@ -173,7 +176,7 @@ export function SessionList({
                         whiteSpace: "nowrap",
                       }}
                     >
-                      {s.title || s.employee || "Jimmy"}
+                      {s.title || s.employee || portalName}
                     </span>
                     <Badge variant={statusVariant[s.status] ?? "secondary"}>
                       {statusLabel[s.status] || s.status}
@@ -188,7 +191,7 @@ export function SessionList({
                     }}
                   >
                     <span>{s.source}</span>
-                    <span>{s.employee || "Jimmy"}</span>
+                    <span>{s.employee || portalName}</span>
                   </div>
                 </div>
               </div>

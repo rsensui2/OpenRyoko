@@ -1,13 +1,13 @@
 ---
 name: self-heal
-description: Diagnose and fix problems in Jimmy's configuration and runtime
+description: Diagnose and fix problems in {{portalName}}'s configuration and runtime
 ---
 
 # Self-Heal Skill
 
 ## Trigger
 
-This skill activates when Jimmy is experiencing issues, errors, or unexpected behavior. It also activates when the user asks to diagnose problems, check system health, or fix something that is not working.
+This skill activates when {{portalName}} is experiencing issues, errors, or unexpected behavior. It also activates when the user asks to diagnose problems, check system health, or fix something that is not working.
 
 ## Diagnostic Steps
 
@@ -99,12 +99,12 @@ If sessions are stuck in `running` status:
 
 If the gateway cannot bind to its configured port:
 1. Check if another process is using the port: `lsof -i :<port>`
-2. If another Jimmy instance is running, tell the user to stop it first.
+2. If another {{portalName}} instance is running, tell the user to stop it first.
 3. If a different process is using the port, suggest changing the port in `config.yaml`.
 
 ## Reference
 
-For understanding Jimmy's architecture and component relationships, refer to the documentation in `~/.jimmy/docs/` if available.
+For understanding {{portalName}}'s architecture and component relationships, refer to the documentation in `~/.jimmy/docs/` if available.
 
 ## Error Handling
 

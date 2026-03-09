@@ -21,6 +21,7 @@ export function buildContext(opts: {
   sessionId?: string;
   portalName?: string;
   operatorName?: string;
+  language?: string;
 }): string {
   const sections: string[] = [];
 
@@ -32,17 +33,18 @@ export function buildContext(opts: {
   // Resolve personalized names from config
   const portalName = opts.portalName || opts.config?.portal?.portalName || "Jimmy";
   const operatorName = opts.operatorName || opts.config?.portal?.operatorName;
+  const language = opts.language || opts.config?.portal?.language || "English";
 
   // ── Identity ──────────────────────────────────────────────
   if (opts.employee) {
-    sections.push(buildEmployeeIdentity(opts.employee, portalName));
+    sections.push(buildEmployeeIdentity(opts.employee, portalName, language));
   } else {
-    sections.push(buildIdentity(portalName, operatorName));
+    sections.push(buildIdentity(portalName, operatorName, language));
   }
 
   // ── Self-evolution ────────────────────────────────────────
   if (!opts.employee) {
-    sections.push(buildEvolutionContext());
+    sections.push(buildEvolutionContext(portalName));
   }
 
   // ── Session context ───────────────────────────────────────
@@ -65,9 +67,14 @@ export function buildContext(opts: {
   const knowledgeCtx = buildKnowledgeContext();
   if (knowledgeCtx) sections.push(knowledgeCtx);
 
+  // ── Language override for skills ─────────────────────────
+  if (language !== "English") {
+    sections.push(`When following skill instructions, always communicate with the user in ${language}, even if the skill contains English examples or dialogue.`);
+  }
+
   // ── Connectors (Slack, etc.) ──────────────────────────────
   if (opts.connectors && opts.connectors.length > 0) {
-    sections.push(buildConnectorContext(opts.connectors, gatewayUrl));
+    sections.push(buildConnectorContext(opts.connectors, gatewayUrl, portalName));
   }
 
   // ── Local environment ────────────────────────────────────
@@ -90,14 +97,18 @@ export function buildContext(opts: {
 // Section builders
 // ═══════════════════════════════════════════════════════════════
 
-function buildEmployeeIdentity(employee: Employee, portalName: string): string {
+function buildEmployeeIdentity(employee: Employee, portalName: string, language: string): string {
+  const languageInstruction = language !== "English"
+    ? `\n**Language**: Always respond in ${language}. All your communication with the user must be in ${language}.\n`
+    : "";
+
   return `# You are ${employee.displayName}
 
 You are an AI employee in the ${portalName} gateway system.
 
 ## Your persona
 ${employee.persona}
-
+${languageInstruction}
 ## Your role
 - **Name**: ${employee.name}
 - **Display name**: ${employee.displayName}
@@ -120,9 +131,13 @@ You can:
 Be proactive, take initiative, and deliver results. You're not a chatbot — you're a worker.`;
 }
 
-function buildIdentity(portalName: string, operatorName?: string): string {
+function buildIdentity(portalName: string, operatorName?: string, language?: string): string {
   const operatorLine = operatorName
     ? `\nThe user's name is **${operatorName}**. Address them by name when appropriate.`
+    : "";
+
+  const languageInstruction = language && language !== "English"
+    ? `\n**Language**: Always respond in ${language}. All your communication with the user must be in ${language}.`
     : "";
 
   return `# You are ${portalName}
@@ -135,7 +150,7 @@ ${portalName} is a personal AI assistant and gateway daemon. You are proactive, 
 - **Be capable**: You have access to the filesystem, can run commands, call APIs, send messages via connectors, and manage the system.
 - **Be honest**: If you don't know something or can't do something, say so clearly.
 - **Remember context**: You're part of a persistent system. Sessions can be resumed. Build on previous work.
-
+${languageInstruction}
 ## Your home directory
 Your working directory is \`~/.jimmy\` (${JIMMY_HOME}). This contains:
 - \`config.yaml\` — your configuration (engines, connectors, logging)
@@ -257,9 +272,9 @@ function buildKnowledgeContext(): string | null {
   return lines.join("\n\n");
 }
 
-function buildConnectorContext(connectors: string[], gatewayUrl: string): string {
+function buildConnectorContext(connectors: string[], gatewayUrl: string, portalName: string): string {
   const lines: string[] = [`## Available connectors: ${connectors.join(", ")}`];
-  lines.push(`You can send messages and interact with external services via the Jimmy gateway API.`);
+  lines.push(`You can send messages and interact with external services via the ${portalName} gateway API.`);
   lines.push(`Use bash with curl to call these endpoints:\n`);
 
   for (const name of connectors) {
@@ -323,7 +338,7 @@ function buildEnvironmentContext(): string | null {
   return lines.join("\n");
 }
 
-function buildEvolutionContext(): string {
+function buildEvolutionContext(portalName: string): string {
   const profilePath = path.join(JIMMY_HOME, "knowledge", "user-profile.md");
   let profileContent = "";
   try { profileContent = fs.readFileSync(profilePath, "utf-8").trim(); } catch {}
@@ -333,12 +348,12 @@ function buildEvolutionContext(): string {
   const lines: string[] = [`## Self-evolution`];
 
   if (isNew) {
-    lines.push(`**ONBOARDING MODE**: This is a new or unconfigured Jimmy installation.`);
+    lines.push(`**ONBOARDING MODE**: This is a new or unconfigured ${portalName} installation.`);
     lines.push(`Before answering the user's request, introduce yourself briefly and ask them:`);
     lines.push(`1. What's your name and what do you do? (business, role, projects)`);
-    lines.push(`2. What should Jimmy help you automate? (code reviews, deployments, monitoring, etc.)`);
+    lines.push(`2. What should ${portalName} help you automate? (code reviews, deployments, monitoring, etc.)`);
     lines.push(`3. Communication preferences — emoji style, verbosity (concise vs detailed), language`);
-    lines.push(`4. Any active projects Jimmy should know about?`);
+    lines.push(`4. Any active projects ${portalName} should know about?`);
     lines.push(`\nAfter the user responds, write their answers to \`~/.jimmy/knowledge/user-profile.md\` and \`~/.jimmy/knowledge/preferences.md\`.`);
     lines.push(`Then proceed to help with their original request.`);
   } else {

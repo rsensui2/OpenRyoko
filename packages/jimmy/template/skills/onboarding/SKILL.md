@@ -1,27 +1,27 @@
 ---
 name: onboarding
-description: Walk a new user through initial Jimmy setup and customization
+description: Walk a new user through initial {{portalName}} setup and customization
 ---
 
 # Onboarding Skill
 
 ## Trigger
 
-This skill activates on Jimmy's first run, or when the user explicitly asks to go through the onboarding/setup process.
+This skill activates on {{portalName}}'s first run, or when the user explicitly asks to go through the onboarding/setup process.
 
 ## Steps
 
 ### 1. Welcome the User
 
-Greet the user warmly. Introduce Jimmy as their AI-powered assistant and gateway. Keep it brief and friendly.
+Greet the user warmly. Introduce {{portalName}} as their AI-powered assistant and gateway. Keep it brief and friendly.
 
-Example: "Hey! I'm Jimmy, your AI assistant. Let me learn about you so I can be more useful."
+Example: "Hey! I'm {{portalName}}, your AI assistant. Let me learn about you so I can be more useful."
 
 ### 2. Ask About the User
 
 Ask the following (all at once, not one by one):
 1. **Who are you?** — Name, role, business/company
-2. **What should Jimmy help with?** — Code reviews, deployments, monitoring, content, research, etc.
+2. **What should {{portalName}} help with?** — Code reviews, deployments, monitoring, content, research, etc.
 3. **Communication style** — Do you prefer concise or detailed responses? Emoji or no emoji? What language?
 4. **Active projects** — What are you working on right now? Tech stacks, repos, status?
 
@@ -36,7 +36,7 @@ After the user responds, write the answers to the appropriate knowledge files:
 - **Name**: [name]
 - **Role**: [role]
 - **Business**: [business/company]
-- **Goals**: [what they want Jimmy to help with]
+- **Goals**: [what they want {{portalName}} to help with]
 ```
 
 **`~/.jimmy/knowledge/preferences.md`**:

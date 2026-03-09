@@ -1,12 +1,12 @@
 # Architecture
 
-Jimmy runs as a single Node.js process acting as a gateway between external connectors and AI engines.
+{{portalName}} runs as a single Node.js process acting as a gateway between external connectors and AI engines.
 
 ## Components
 
 ```
 ┌─────────────────────────────────────────────────┐
-│                  Jimmy Gateway                   │
+│              {{portalName}} Gateway                │
 │                                                  │
 │  ┌───────────┐  ┌────────────┐  ┌────────────┐  │
 │  │ HTTP Server│  │ WebSocket  │  │   Cron     │  │
@@ -48,7 +48,7 @@ Uniform interface over different AI backends:
 - **Codex Engine**: Uses the Codex SDK directly in-process
 
 ### Connector System
-Modular adapters that implement a standard interface. Each connector translates between its platform's message format and Jimmy's internal message format. See `connectors.md`.
+Modular adapters that implement a standard interface. Each connector translates between its platform's message format and {{portalName}}'s internal message format. See `connectors.md`.
 
 ### Cron Scheduler
 Uses `node-cron` to run scheduled AI jobs. Watches `cron/jobs.json` for hot-reload. See `cron.md`.
