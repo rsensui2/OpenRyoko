@@ -159,6 +159,7 @@ export default function CronPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [updatedAgo, setUpdatedAgo] = useState("just now")
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date())
+  const [triggeringId, setTriggeringId] = useState<string | null>(null)
 
   const refresh = useCallback(() => {
     setError(null)
@@ -557,6 +558,53 @@ export default function CronPage() {
                                     <span style={{ fontSize: "var(--text-caption1)", color: "var(--text-secondary)" }}>{job.employee}</span>
                                   </>
                                 )}
+                              </div>
+
+                              {/* Trigger button */}
+                              <div style={{ marginBottom: "var(--space-3)" }}>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    setTriggeringId(job.id)
+                                    api.triggerCronJob(job.id)
+                                      .then(() => {
+                                        setTimeout(refresh, 2000)
+                                      })
+                                      .catch(() => {})
+                                      .finally(() => {
+                                        setTimeout(() => setTriggeringId(null), 2000)
+                                      })
+                                  }}
+                                  disabled={triggeringId === job.id}
+                                  style={{
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: 6,
+                                    padding: "6px 14px",
+                                    borderRadius: "var(--radius-sm)",
+                                    border: "1px solid var(--separator)",
+                                    background: triggeringId === job.id ? "var(--fill-tertiary)" : "var(--material-regular)",
+                                    color: triggeringId === job.id ? "var(--system-green)" : "var(--text-secondary)",
+                                    fontSize: "var(--text-caption1)",
+                                    fontWeight: 600,
+                                    cursor: triggeringId === job.id ? "default" : "pointer",
+                                    transition: "all 200ms ease",
+                                  }}
+                                >
+                                  {triggeringId === job.id ? (
+                                    <>
+                                      <span style={{ fontSize: 14 }}>✓</span>
+                                      Triggered
+                                    </>
+                                  ) : (
+                                    <>
+                                      <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                                        <polygon points="5,3 19,12 5,21" />
+                                      </svg>
+                                      Run Now
+                                    </>
+                                  )}
+                                </button>
                               </div>
 
                               {/* Run history */}

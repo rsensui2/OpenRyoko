@@ -67,6 +67,8 @@ export const api = {
   getCronRuns: (id: string) => get<Record<string, unknown>[]>(`/api/cron/${id}/runs`),
   updateCronJob: (id: string, data: Record<string, unknown>) =>
     put<Record<string, unknown>>(`/api/cron/${id}`, data),
+  triggerCronJob: (id: string) =>
+    post<Record<string, unknown>>(`/api/cron/${id}/trigger`, {}),
   getOrg: () => get<OrgData>("/api/org"),
   getEmployee: (name: string) => get<Employee>(`/api/org/employees/${name}`),
   getDepartmentBoard: (name: string) =>
