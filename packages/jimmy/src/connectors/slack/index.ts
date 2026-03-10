@@ -31,6 +31,29 @@ export class SlackConnector implements Connector {
     attachments: true,
   };
 
+  /**
+   * Set the AI assistant typing status in a thread.
+   * Uses Slack's assistant.threads.setStatus API for native animated indicator.
+   */
+  async setTypingStatus(channelId: string, threadTs: string | undefined, status: string): Promise<void> {
+    if (!threadTs) return;
+    const payload = {
+      channel_id: channelId,
+      thread_ts: threadTs,
+      status,
+    };
+    try {
+      const client = this.app.client as any;
+      if (client.assistant?.threads?.setStatus) {
+        await client.assistant.threads.setStatus(payload);
+      } else if (typeof client.apiCall === "function") {
+        await client.apiCall("assistant.threads.setStatus", payload);
+      }
+    } catch (err) {
+      logger.debug(`Slack typing status failed: ${err}`);
+    }
+  }
+
   constructor(config: SlackConnectorConfig) {
     this.app = new App({
       token: config.botToken,
@@ -49,9 +72,16 @@ export class SlackConnector implements Connector {
 
   async start() {
     this.app.message(async ({ event }) => {
+      logger.info(`[slack] Received message event: user=${(event as any).user} channel=${(event as any).channel} text="${((event as any).text || "").slice(0, 50)}"`);
       // Skip bot's own messages
-      if ((event as any).bot_id) return;
-      if (!this.handler) return;
+      if ((event as any).bot_id) {
+        logger.info(`[slack] Skipping bot message`);
+        return;
+      }
+      if (!this.handler) {
+        logger.info(`[slack] No handler registered, dropping message`);
+        return;
+      }
       if (this.ignoreOldMessagesOnBoot && isOldSlackMessage((event as any).ts, this.bootTimeMs)) {
         logger.debug(`Ignoring old Slack message ${(event as any).ts}`);
         return;
@@ -65,6 +95,26 @@ export class SlackConnector implements Connector {
         shareSessionInChannel: this.shareSessionInChannel,
       });
       const replyContext = buildReplyContext(event as any);
+
+      // Fetch parent message for thread replies so the session has full context
+      let parentContext = "";
+      const threadTs = (event as any).thread_ts;
+      if (threadTs && threadTs !== (event as any).ts) {
+        try {
+          const parentResult = await this.app.client.conversations.replies({
+            channel: (event as any).channel,
+            ts: threadTs,
+            limit: 1,
+            inclusive: true,
+          });
+          const parentMsg = parentResult.messages?.[0];
+          if (parentMsg?.text) {
+            parentContext = `[Thread context — parent message: "${parentMsg.text}"]\n\n`;
+          }
+        } catch (err) {
+          logger.debug(`Failed to fetch parent message: ${err}`);
+        }
+      }
 
       // Download attachments if present
       const attachments = [];
@@ -98,7 +148,7 @@ export class SlackConnector implements Connector {
         thread: (event as any).thread_ts,
         user: (event as any).user,
         userId: (event as any).user,
-        text: (event as any).text || "",
+        text: parentContext + ((event as any).text || ""),
         attachments,
         raw: event,
         transportMeta: {

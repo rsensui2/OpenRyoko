@@ -1,8 +1,9 @@
 import type { IncomingMessage as HttpRequest, ServerResponse } from "node:http";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import yaml from "js-yaml";
-import type { Engine, JinnConfig, Session } from "../shared/types.js";
+import type { CronJob, Engine, JinnConfig, Session } from "../shared/types.js";
 import { isInterruptibleEngine } from "../shared/types.js";
 import type { SessionManager } from "../sessions/manager.js";
 import { buildContext } from "../sessions/context.js";
@@ -317,7 +318,19 @@ export async function handleApiRequest(
     // GET /api/cron
     if (method === "GET" && pathname === "/api/cron") {
       const jobs = loadJobs();
-      return json(res, jobs);
+      // Enrich with last run status
+      const enriched = jobs.map((job) => {
+        const runFile = path.join(CRON_RUNS, `${job.id}.jsonl`);
+        let lastRun = null;
+        if (fs.existsSync(runFile)) {
+          const lines = fs.readFileSync(runFile, "utf-8").trim().split("\n").filter(Boolean);
+          if (lines.length > 0) {
+            try { lastRun = JSON.parse(lines[lines.length - 1]); } catch {}
+          }
+        }
+        return { ...job, lastRun };
+      });
+      return json(res, enriched);
     }
 
     // GET /api/cron/:id/runs
@@ -334,6 +347,28 @@ export async function handleApiRequest(
       return json(res, lines);
     }
 
+    // POST /api/cron — create new cron job
+    if (method === "POST" && pathname === "/api/cron") {
+      const body = JSON.parse(await readBody(req));
+      const jobs = loadJobs();
+      const newJob: CronJob = {
+        id: body.id || crypto.randomUUID(),
+        name: body.name || "untitled",
+        enabled: body.enabled ?? true,
+        schedule: body.schedule || "0 * * * *",
+        timezone: body.timezone,
+        engine: body.engine,
+        model: body.model,
+        employee: body.employee,
+        prompt: body.prompt || "",
+        delivery: body.delivery,
+      };
+      jobs.push(newJob);
+      saveJobs(jobs);
+      reloadScheduler(jobs);
+      return json(res, newJob, 201);
+    }
+
     // PUT /api/cron/:id
     params = matchRoute("/api/cron/:id", pathname);
     if (method === "PUT" && params) {
@@ -345,6 +380,18 @@ export async function handleApiRequest(
       saveJobs(jobs);
       reloadScheduler(jobs);
       return json(res, jobs[idx]);
+    }
+
+    // DELETE /api/cron/:id
+    params = matchRoute("/api/cron/:id", pathname);
+    if (method === "DELETE" && params) {
+      const jobs = loadJobs();
+      const idx = jobs.findIndex((j) => j.id === params!.id);
+      if (idx === -1) return notFound(res);
+      const removed = jobs.splice(idx, 1)[0];
+      saveJobs(jobs);
+      reloadScheduler(jobs);
+      return json(res, { deleted: removed.id, name: removed.name });
     }
 
     // GET /api/org

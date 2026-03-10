@@ -85,6 +85,7 @@ export interface Connector {
   addReaction(target: Target, emoji: string): Promise<void>;
   removeReaction(target: Target, emoji: string): Promise<void>;
   editMessage(target: Target, text: string): Promise<void>;
+  setTypingStatus?(channelId: string, threadTs: string | undefined, status: string): Promise<void>;
   onMessage(handler: (msg: IncomingMessage) => void): void;
 }
 

@@ -59,7 +59,7 @@ export class SessionManager {
     return this.queue;
   }
 
-  async route(msg: IncomingMessage, connector: Connector, opts: RouteOptions = {}): Promise<void> {
+  async route(msg: IncomingMessage, connector: Connector, opts: RouteOptions = {}): Promise<{ sessionId: string } | void> {
     if (await this.handleCommand(msg, connector)) return;
 
     let session = getSessionBySessionKey(msg.sessionKey);
@@ -103,9 +103,13 @@ export class SessionManager {
       await connector.addReaction(target, "clock1").catch(() => {});
     }
 
+    const sessionId = session.id;
+
     await this.queue.enqueue(msg.sessionKey, () =>
       this.runSession(session!, msg, attachmentPaths, connector, target, opts.employee),
     );
+
+    return { sessionId };
   }
 
   private async runSession(
@@ -132,10 +136,10 @@ export class SessionManager {
       await connector.addReaction(target, "eyes").catch(() => {});
     }
 
-    let thinkingTs: string | undefined;
-    if (decorateMessages) {
-      const placeholderResult = await connector.replyMessage(target, "_Thinking..._").catch(() => undefined);
-      thinkingTs = typeof placeholderResult === "string" ? placeholderResult : undefined;
+    // Set native typing indicator (Slack assistant.threads.setStatus)
+    const threadTs = target.thread || target.messageTs;
+    if (decorateMessages && connector.setTypingStatus) {
+      await connector.setTypingStatus(target.channel, threadTs, "is thinking...").catch(() => {});
     }
 
     updateSession(session.id, {
@@ -199,16 +203,12 @@ export class SessionManager {
         accumulateSessionCost(session.id, result.cost ?? 0, result.numTurns ?? 1);
       }
 
-      if (thinkingTs && capabilities.messageEdits) {
-        await connector.editMessage(
-          { ...target, messageTs: thinkingTs },
-          responseText,
-        ).catch(async () => {
-          await connector.replyMessage(target, responseText);
-        });
-      } else {
-        await connector.replyMessage(target, responseText);
+      // Clear typing indicator before sending response
+      if (decorateMessages && connector.setTypingStatus) {
+        await connector.setTypingStatus(target.channel, threadTs, "").catch(() => {});
       }
+
+      await connector.replyMessage(target, responseText);
 
       if (decorateMessages && capabilities.reactions) {
         await connector.removeReaction(target, "eyes").catch(() => {});
@@ -241,14 +241,12 @@ export class SessionManager {
         lastError: errMsg,
       });
 
-      if (thinkingTs && capabilities.messageEdits) {
-        await connector.editMessage(
-          { ...target, messageTs: thinkingTs },
-          `Error: ${errMsg}`,
-        ).catch(() => {});
-      } else {
-        await connector.replyMessage(target, `Error: ${errMsg}`).catch(() => {});
+      // Clear typing indicator on error
+      if (decorateMessages && connector.setTypingStatus) {
+        await connector.setTypingStatus(target.channel, threadTs, "").catch(() => {});
       }
+
+      await connector.replyMessage(target, `Error: ${errMsg}`).catch(() => {});
 
       if (decorateMessages && capabilities.reactions) {
         await connector.removeReaction(target, "eyes").catch(() => {});

@@ -45,14 +45,16 @@ export class ClaudeEngine implements InterruptibleEngine {
     if (opts.model) args.push("--model", opts.model);
     if (opts.effortLevel && opts.effortLevel !== "default") args.push("--effort", opts.effortLevel);
     if (opts.systemPrompt) args.push("--append-system-prompt", opts.systemPrompt);
-    if (opts.mcpConfigPath) args.push("--mcp-config", opts.mcpConfigPath);
-    if (opts.cliFlags?.length) args.push(...opts.cliFlags);
-
     let prompt = opts.prompt;
     if (opts.attachments?.length) {
       prompt += "\n\nAttached files:\n" + opts.attachments.map((a) => `- ${a}`).join("\n");
     }
+    // Prompt MUST come before --mcp-config because --mcp-config is variadic
+    // and would consume the prompt as another config path
     args.push(prompt);
+
+    if (opts.mcpConfigPath) args.push("--mcp-config", opts.mcpConfigPath);
+    if (opts.cliFlags?.length) args.push(...opts.cliFlags);
 
     const bin = opts.bin || "claude";
     logger.info(
@@ -160,13 +162,23 @@ export class ClaudeEngine implements InterruptibleEngine {
           }
 
           try {
-            const result = JSON.parse(stdout);
+            const parsed = JSON.parse(stdout);
+            // Claude --output-format json returns an array of events.
+            // The last element with type "result" has the final output.
+            let result: Record<string, unknown>;
+            if (Array.isArray(parsed)) {
+              const resultEvent = [...parsed].reverse().find((e: Record<string, unknown>) => e.type === "result");
+              result = resultEvent || parsed[parsed.length - 1] || {};
+            } else {
+              result = parsed;
+            }
+            logger.info(`Claude result: session_id=${result.session_id || "none"}, result_length=${((result.result as string) || "").length}, cost=$${result.total_cost_usd || 0}`);
             resolve({
-              sessionId: result.session_id,
-              result: result.result,
-              cost: result.total_cost_usd,
-              durationMs: result.duration_ms,
-              numTurns: result.num_turns,
+              sessionId: result.session_id as string,
+              result: result.result as string,
+              cost: result.total_cost_usd as number,
+              durationMs: result.duration_ms as number,
+              numTurns: result.num_turns as number,
             });
           } catch (err) {
             logger.error(`Failed to parse Claude output: ${err}\nstdout: ${stdout.slice(0, 500)}`);

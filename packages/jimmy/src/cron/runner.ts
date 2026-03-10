@@ -17,9 +17,8 @@ export async function runCronJob(
   const delivery = job.delivery || config.cron?.defaultDelivery;
   const cooSlug = config.portal?.portalName?.toLowerCase() || "jinn";
   if (delivery && job.employee && job.employee !== cooSlug) {
-    logger.warn(
-      `Cron job "${job.name}" targets employee "${job.employee}" with delivery to ${delivery.connector}:${delivery.channel}. ` +
-      `Recommended pattern: target "${cooSlug}" and let the COO delegate to "${job.employee}" via a child session for output review/filtering.`,
+    logger.debug(
+      `Cron job "${job.name}" targets employee "${job.employee}" directly (skipping COO delegation).`,
     );
   }
 
@@ -34,7 +33,7 @@ export async function runCronJob(
   const sessionKey = `cron:${job.id}:${Date.now()}`;
 
   try {
-    await sessionManager.route(
+    const routeResult = await sessionManager.route(
       {
         connector: connector.name,
         source: "cron",
@@ -64,8 +63,8 @@ export async function runCronJob(
       connector,
       {
         employee,
-        engine: job.engine || config.engines.default,
-        model: job.model || config.engines[(job.engine || config.engines.default) as "claude" | "codex"]?.model,
+        engine: job.engine || employee?.engine || config.engines.default,
+        model: job.model || employee?.model || config.engines[(job.engine || config.engines.default) as "claude" | "codex"]?.model,
         title: job.name,
       },
     );
@@ -73,6 +72,7 @@ export async function runCronJob(
     appendRunLog(job.id, {
       timestamp: startedAt,
       sessionKey,
+      sessionId: routeResult?.sessionId ?? null,
       status: "success",
       durationMs: Date.now() - startTime,
       error: null,
