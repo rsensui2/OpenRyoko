@@ -178,7 +178,7 @@ function MobileHeader() {
 
 export function PageLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex h-screen overflow-hidden" style={{ background: 'var(--bg)' }}>
+    <div className="flex h-dvh overflow-hidden" style={{ background: 'var(--bg)' }}>
       <Sidebar />
       <GlobalSearch />
       <main className="flex-1 overflow-hidden lg:ml-[56px]">

@@ -531,6 +531,7 @@ function ChatPage() {
             height: '100%',
             background: 'var(--bg)',
             minWidth: 0,
+            overflow: 'hidden',
           }}
           className={mobileView === 'sidebar' ? 'hidden lg:flex' : 'flex'}
         >

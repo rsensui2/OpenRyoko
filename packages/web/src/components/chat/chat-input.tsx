@@ -1,8 +1,9 @@
 "use client"
 import React, { useState, useRef, useEffect, useCallback } from 'react'
 import { api } from '@/lib/api'
-import { createAudioRecorder, formatDuration } from '@/lib/audio-recorder'
-import type { AudioRecorderHandle } from '@/lib/audio-recorder'
+// Audio recorder imports preserved for future STT integration
+// import { createAudioRecorder, formatDuration } from '@/lib/audio-recorder'
+// import type { AudioRecorderHandle } from '@/lib/audio-recorder'
 import type { MediaAttachment } from '@/lib/conversations'
 import { MediaPreview } from './media-preview'
 
@@ -113,13 +114,9 @@ export function ChatInput({
   const [commandFilter, setCommandFilter] = useState('')
   const [commandIndex, setCommandIndex] = useState(0)
   const [pendingAttachments, setPendingAttachments] = useState<MediaAttachment[]>([])
-  const [isRecording, setIsRecording] = useState(false)
-  const [recordingElapsed, setRecordingElapsed] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const mentionItemRefs = useRef<Map<number, HTMLButtonElement>>(new Map())
-  const recorderRef = useRef<AudioRecorderHandle | null>(null)
-  const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Load employees for @mention (with full details)
   useEffect(() => {
@@ -160,13 +157,6 @@ export function ChatInput({
       .catch(() => {})
   }, [skillsVersion])
 
-  // Cleanup recorder on unmount
-  useEffect(() => {
-    return () => {
-      recorderRef.current?.cancel()
-      if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current)
-    }
-  }, [])
 
   const handleMentionSelect = useCallback(
     (name: string) => {
@@ -346,46 +336,6 @@ export function ChatInput({
           setPendingAttachments((prev) => [...prev, att])
         }
         return
-      }
-    }
-  }
-
-  /* ── Voice recording ───────────────────────────────────── */
-
-  async function toggleRecording() {
-    if (isRecording) {
-      // Stop recording
-      if (!recorderRef.current) return
-      try {
-        const result = await recorderRef.current.stop()
-        const att: MediaAttachment = {
-          type: 'audio',
-          url: result.dataUrl,
-          name: 'Voice message',
-          mimeType: 'audio/webm',
-          duration: result.duration,
-          waveform: result.waveform,
-          size: result.dataUrl.length,
-        }
-        setPendingAttachments((prev) => [...prev, att])
-      } catch { /* cancelled or failed */ }
-      recorderRef.current = null
-      setIsRecording(false)
-      setRecordingElapsed(0)
-      if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current)
-    } else {
-      // Start recording
-      const recorder = createAudioRecorder()
-      recorderRef.current = recorder
-      try {
-        await recorder.start()
-        setIsRecording(true)
-        elapsedTimerRef.current = setInterval(() => {
-          setRecordingElapsed(recorder.getElapsed())
-        }, 100)
-      } catch {
-        // Mic permission denied
-        recorderRef.current = null
       }
     }
   }
@@ -580,38 +530,6 @@ export function ChatInput({
           onChange={handleFileAttach}
         />
 
-        {/* Voice recording button */}
-        <button
-          aria-label={isRecording ? 'Stop recording' : 'Record voice message'}
-          onClick={toggleRecording}
-          style={{
-            width: 32,
-            height: 32,
-            flexShrink: 0,
-            borderRadius: 'var(--radius-sm)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 4,
-            background: isRecording ? 'var(--system-red)' : 'transparent',
-            border: 'none',
-            cursor: 'pointer',
-            color: isRecording ? '#fff' : 'var(--text-secondary)',
-          }}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-            <line x1="12" y1="19" x2="12" y2="23" />
-            <line x1="8" y1="23" x2="16" y2="23" />
-          </svg>
-          {isRecording && (
-            <span style={{ fontSize: 11, fontVariantNumeric: 'tabular-nums' }}>
-              {formatDuration(recordingElapsed)}
-            </span>
-          )}
-        </button>
-
         {/* Textarea */}
         <textarea
           ref={textareaRef}
@@ -625,7 +543,7 @@ export function ChatInput({
               : 'Type a message...'
           }
           rows={1}
-          disabled={disabled || isRecording}
+          disabled={disabled}
           style={{
             flex: 1,
             background: 'transparent',
@@ -648,6 +566,36 @@ export function ChatInput({
             target.style.height = Math.min(target.scrollHeight, 120) + 'px'
           }}
         />
+
+        {/* Voice input button (STT coming soon) */}
+        <button
+          aria-label="Voice input — coming soon"
+          onClick={() => {
+            // STT will be wired up in a follow-up
+          }}
+          style={{
+            width: 32,
+            height: 32,
+            flexShrink: 0,
+            borderRadius: 'var(--radius-sm)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: 'transparent',
+            border: 'none',
+            cursor: 'default',
+            color: 'var(--text-quaternary)',
+            opacity: 0.5,
+          }}
+          title="Voice input — coming soon"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+            <line x1="12" y1="19" x2="12" y2="23" />
+            <line x1="8" y1="23" x2="16" y2="23" />
+          </svg>
+        </button>
 
         {/* Stop button — shown when loading */}
         {loading && onInterrupt && (

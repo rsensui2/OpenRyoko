@@ -525,8 +525,10 @@ export function ChatMessages({ messages, loading, streamingText }: ChatMessagesP
     <div className="chat-messages-scroll" style={{
       flex: 1,
       overflowY: 'auto',
+      overflowX: 'hidden',
       padding: 'var(--space-3) 0 var(--space-6) 0',
       background: 'var(--bg)',
+      minHeight: 0,
     }}>
       {groupMessages(messages).map((item) => {
         if (item.kind === 'tool-group') {
@@ -727,8 +729,8 @@ export function ChatMessages({ messages, loading, streamingText }: ChatMessagesP
           0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
           40% { opacity: 1; transform: scale(1); }
         }
-        .assistant-msg-bubble { max-width: 100%; }
-        .user-msg-bubble { max-width: 90%; }
+        .assistant-msg-bubble { max-width: 100%; overflow-wrap: break-word; word-break: break-word; }
+        .user-msg-bubble { max-width: 90%; overflow-wrap: break-word; word-break: break-word; }
         .assistant-msg-row { padding: 0 var(--space-2) !important; }
         @media (min-width: 1024px) {
           .assistant-msg-bubble { max-width: 75%; }
