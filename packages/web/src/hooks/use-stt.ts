@@ -13,6 +13,12 @@ export interface UseSttReturn {
   available: boolean | null
   downloadProgress: number | null
   analyser: AnalyserNode | null
+  /** Configured languages from the gateway */
+  languages: string[]
+  /** Currently selected language for transcription */
+  selectedLanguage: string
+  /** Cycle to the next language */
+  cycleLanguage: () => void
   handleMicClick: () => void
   startRecording: () => Promise<void>
   stopRecording: () => Promise<string | null>
@@ -30,6 +36,14 @@ export function useStt(
   const [available, setAvailable] = useState<boolean | null>(null)
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null)
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null)
+  const [languages, setLanguages] = useState<string[]>(["en"])
+  const [selectedLanguage, setSelectedLanguage] = useState<string>(() => {
+    if (typeof window === "undefined") return "en"
+    return localStorage.getItem("stt-language") || "en"
+  })
+
+  const selectedLanguageRef = useRef(selectedLanguage)
+  selectedLanguageRef.current = selectedLanguage
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
@@ -85,6 +99,18 @@ export function useStt(
       setAvailable(status.available)
       if (status.downloading) {
         setDownloadProgress(status.progress)
+      }
+      if (status.languages?.length > 0) {
+        setLanguages(status.languages)
+        // If the stored language isn't in the configured list, reset to the first
+        setSelectedLanguage((prev) => {
+          if (!status.languages.includes(prev)) {
+            const fallback = status.languages[0]
+            localStorage.setItem("stt-language", fallback)
+            return fallback
+          }
+          return prev
+        })
       }
       return status.available
     } catch {
@@ -178,7 +204,7 @@ export function useStt(
         }
 
         try {
-          const result = await api.sttTranscribe(blob)
+          const result = await api.sttTranscribe(blob, selectedLanguageRef.current)
           setState("idle")
           resolve(result.text || null)
         } catch {
@@ -222,11 +248,23 @@ export function useStt(
     setDownloadProgress(null)
   }, [])
 
+  const cycleLanguage = useCallback(() => {
+    setSelectedLanguage((prev) => {
+      const idx = languages.indexOf(prev)
+      const next = languages[(idx + 1) % languages.length]
+      localStorage.setItem("stt-language", next)
+      return next
+    })
+  }, [languages])
+
   return {
     state,
     available,
     downloadProgress,
     analyser,
+    languages,
+    selectedLanguage,
+    cycleLanguage,
     handleMicClick,
     startRecording,
     stopRecording,

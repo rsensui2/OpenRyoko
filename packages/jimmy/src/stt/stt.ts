@@ -59,9 +59,20 @@ export interface SttStatus {
   model: string | null;
   downloading: boolean;
   progress: number;
+  languages: string[];
 }
 
-export function getSttStatus(configModel?: string): SttStatus {
+/**
+ * Resolve the languages list from config, with backwards compat for the
+ * old `language: "en"` string format.
+ */
+export function resolveLanguages(sttConfig?: { language?: string; languages?: string[] }): string[] {
+  if (sttConfig?.languages && sttConfig.languages.length > 0) return sttConfig.languages;
+  if (sttConfig?.language) return [sttConfig.language];
+  return ["en"];
+}
+
+export function getSttStatus(configModel?: string, languages?: string[]): SttStatus {
   const model = configModel || "small";
   const modelPath = getModelPath(model);
   return {
@@ -69,6 +80,7 @@ export function getSttStatus(configModel?: string): SttStatus {
     model: modelPath ? model : null,
     downloading,
     progress: downloadProgress,
+    languages: languages || ["en"],
   };
 }
 

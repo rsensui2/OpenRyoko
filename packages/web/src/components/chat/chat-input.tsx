@@ -599,6 +599,36 @@ export function ChatInput({
           }}
         />
 
+        {/* Language picker — only shown when multiple STT languages configured */}
+        {stt.languages.length > 1 && (
+          <button
+            aria-label={`STT language: ${stt.selectedLanguage.toUpperCase()}. Click to switch.`}
+            onClick={stt.cycleLanguage}
+            style={{
+              height: 24,
+              padding: '0 6px',
+              flexShrink: 0,
+              borderRadius: 'var(--radius-sm)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              background: 'var(--fill-tertiary)',
+              border: 'none',
+              cursor: 'pointer',
+              color: 'var(--text-secondary)',
+              fontSize: 11,
+              fontWeight: 600,
+              fontFamily: 'var(--font-mono)',
+              letterSpacing: '0.5px',
+              textTransform: 'uppercase',
+              transition: 'all 150ms ease',
+            }}
+            title={`Transcription language: ${stt.selectedLanguage.toUpperCase()}. Click to cycle.`}
+          >
+            {stt.selectedLanguage}
+          </button>
+        )}
+
         {/* Voice input / STT button */}
         <button
           aria-label={

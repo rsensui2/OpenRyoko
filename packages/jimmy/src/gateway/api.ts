@@ -27,7 +27,7 @@ import {
   TMP_DIR,
 } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
-import { getSttStatus, downloadModel, transcribe as sttTranscribe } from "../stt/stt.js";
+import { getSttStatus, downloadModel, transcribe as sttTranscribe, resolveLanguages } from "../stt/stt.js";
 import { JINN_HOME } from "../shared/paths.js";
 import { resolveEffort } from "../shared/effort.js";
 import { loadJobs, saveJobs } from "../cron/jobs.js";
@@ -834,7 +834,8 @@ export async function handleApiRequest(
     // ── STT (Speech-to-Text) ──────────────────────────────────
     if (method === "GET" && pathname === "/api/stt/status") {
       const config = context.getConfig();
-      const status = getSttStatus(config.stt?.model);
+      const languages = resolveLanguages(config.stt);
+      const status = getSttStatus(config.stt?.model, languages);
       return json(res, status);
     }
 
@@ -850,8 +851,10 @@ export async function handleApiRequest(
           const raw = fs.readFileSync(CONFIG_PATH, "utf-8");
           const cfg = yaml.load(raw) as Record<string, unknown>;
           if (!cfg.stt || typeof cfg.stt !== "object") cfg.stt = {};
-          (cfg.stt as Record<string, unknown>).enabled = true;
-          (cfg.stt as Record<string, unknown>).model = model;
+          const sttCfg = cfg.stt as Record<string, unknown>;
+          sttCfg.enabled = true;
+          sttCfg.model = model;
+          if (!sttCfg.languages) sttCfg.languages = ["en"];
           fs.writeFileSync(CONFIG_PATH, yaml.dump(cfg, { lineWidth: -1 }));
         } catch (err) {
           logger.error(`Failed to update config after STT download: ${err}`);
@@ -869,7 +872,10 @@ export async function handleApiRequest(
     if (method === "POST" && pathname === "/api/stt/transcribe") {
       const config = context.getConfig();
       const model = config.stt?.model || "small";
-      const language = config.stt?.language || "en";
+      const languages = resolveLanguages(config.stt);
+      // Accept language from query param, fall back to first configured language
+      const requestedLang = url.searchParams.get("language");
+      const language = requestedLang && languages.includes(requestedLang) ? requestedLang : languages[0];
 
       const audioBuffer = await readBodyRaw(req);
       if (audioBuffer.length === 0) return badRequest(res, "No audio data");

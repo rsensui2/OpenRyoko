@@ -91,11 +91,12 @@ export const api = {
   updateDepartmentBoard: (name: string, data: unknown) =>
     put<Record<string, unknown>>(`/api/org/departments/${name}/board`, data),
   sttStatus: () =>
-    get<{ available: boolean; model: string | null; downloading: boolean; progress: number }>("/api/stt/status"),
+    get<{ available: boolean; model: string | null; downloading: boolean; progress: number; languages: string[] }>("/api/stt/status"),
   sttDownload: () =>
     post<{ status: string; model: string }>("/api/stt/download", {}),
-  sttTranscribe: async (audioBlob: Blob): Promise<{ text: string }> => {
-    const res = await fetch(`${BASE}/api/stt/transcribe`, {
+  sttTranscribe: async (audioBlob: Blob, language?: string): Promise<{ text: string }> => {
+    const params = language ? `?language=${encodeURIComponent(language)}` : "";
+    const res = await fetch(`${BASE}/api/stt/transcribe${params}`, {
       method: "POST",
       headers: { "Content-Type": audioBlob.type || "audio/webm" },
       body: audioBlob,

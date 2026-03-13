@@ -260,6 +260,8 @@ export interface JinnConfig {
   stt?: {
     enabled?: boolean;
     model?: string;
+    /** @deprecated Use `languages` instead. Kept for backwards compat. */
     language?: string;
+    languages?: string[];
   };
 }
