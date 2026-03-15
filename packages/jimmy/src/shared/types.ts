@@ -250,6 +250,7 @@ export interface JinnConfig {
   sessions?: {
     maxDurationMinutes?: number;
     maxCostUsd?: number;
+    interruptOnNewMessage?: boolean;
   };
   cron?: {
     defaultDelivery?: CronDelivery;

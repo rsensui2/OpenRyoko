@@ -39,6 +39,11 @@ interface Config {
     claude?: { bin?: string; model?: string; effortLevel?: string }
     codex?: { bin?: string; model?: string; effortLevel?: string }
   }
+  sessions?: {
+    maxDurationMinutes?: number
+    maxCostUsd?: number
+    interruptOnNewMessage?: boolean
+  }
   connectors?: {
     slack?: {
       appToken?: string
@@ -1237,7 +1242,30 @@ export default function SettingsPage() {
                 </FieldRow>
               </Section>
 
-              {/* ── Section 5: Connectors ── */}
+              {/* ── Section 5: Sessions ── */}
+              <Section title="Sessions">
+                <FieldRow label="Interrupt on New Message">
+                  <ToggleSwitch
+                    checked={config.sessions?.interruptOnNewMessage ?? true}
+                    onChange={(v) =>
+                      updateConfig(["sessions", "interruptOnNewMessage"], v)
+                    }
+                  />
+                </FieldRow>
+                <div
+                  style={{
+                    fontSize: "var(--text-caption1)",
+                    color: "var(--label-secondary)",
+                    marginTop: 4,
+                  }}
+                >
+                  When enabled, sending a new message to a running session will stop the
+                  current agent and start processing your new message immediately. When
+                  disabled, messages are queued.
+                </div>
+              </Section>
+
+              {/* ── Section 6: Connectors ── */}
               <Section title="Connectors">
                 <div
                   style={{

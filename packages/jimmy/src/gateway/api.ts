@@ -375,9 +375,17 @@ export async function handleApiRequest(
       // Persist the user message immediately
       insertMessage(session.id, "user", prompt);
 
-      // If a turn is already running, this follow-up will be queued and resume later.
+      // If a turn is already running, check whether we should interrupt or queue.
       if (session.status === "running") {
-        context.emit("session:queued", { sessionId: session.id, message: prompt });
+        if ((config.sessions?.interruptOnNewMessage ?? true) && isInterruptibleEngine(engine) && engine.isAlive(session.id)) {
+          logger.info(`Interrupting running session ${session.id} for new message`);
+          engine.kill(session.id, "Interrupted: new message received");
+          // Wait briefly for the process to exit so the queue slot frees up
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          context.emit("session:interrupted", { sessionId: session.id, reason: "new message" });
+        } else {
+          context.emit("session:queued", { sessionId: session.id, message: prompt });
+        }
       }
 
       // If session was interrupted by a restart, clear the error and resume
@@ -751,7 +759,7 @@ export async function handleApiRequest(
         return badRequest(res, "Config must be a JSON object");
       }
       // Validate known top-level keys
-      const KNOWN_KEYS = ["gateway", "engines", "connectors", "mcp", "portal", "stt", "skills"];
+      const KNOWN_KEYS = ["gateway", "engines", "connectors", "mcp", "portal", "stt", "skills", "sessions"];
       const unknownKeys = Object.keys(body).filter((k) => !KNOWN_KEYS.includes(k));
       if (unknownKeys.length > 0) {
         return badRequest(res, `Unknown config keys: ${unknownKeys.join(", ")}`);
