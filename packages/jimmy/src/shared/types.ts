@@ -257,6 +257,10 @@ export interface JinnConfig {
     alertConnector?: string;
   };
   portal?: PortalConfig;
+  context?: {
+    /** Max characters for the built system prompt. Defaults to 100000. */
+    maxChars?: number;
+  };
   stt?: {
     enabled?: boolean;
     model?: string;
