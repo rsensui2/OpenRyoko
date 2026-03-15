@@ -264,4 +264,5 @@ export interface JinnConfig {
     language?: string;
     languages?: string[];
   };
+  remotes?: Record<string, { url: string; label?: string }>;
 }
