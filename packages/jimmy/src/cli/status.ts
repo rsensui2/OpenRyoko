@@ -44,7 +44,15 @@ export async function runStatus(): Promise<void> {
       const data = await res.json();
       console.log(`  Port: ${config.gateway.port}`);
       if (data.sessions !== undefined) {
-        console.log(`  Active sessions: ${data.sessions}`);
+        if (typeof data.sessions === "object" && data.sessions && !Array.isArray(data.sessions)) {
+          const s = data.sessions as { total?: number; active?: number; running?: number };
+          const total = s.total ?? 0;
+          const active = s.active ?? 0;
+          const running = s.running ?? 0;
+          console.log(`  Active sessions: ${active} (running: ${running}, total: ${total})`);
+        } else {
+          console.log(`  Active sessions: ${data.sessions}`);
+        }
       }
       if (data.uptime !== undefined) {
         console.log(`  Server uptime: ${data.uptime}s`);
