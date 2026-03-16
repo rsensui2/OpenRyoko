@@ -43,6 +43,8 @@ interface Config {
     maxDurationMinutes?: number
     maxCostUsd?: number
     interruptOnNewMessage?: boolean
+    rateLimitStrategy?: "wait" | "fallback"
+    fallbackEngine?: "codex"
   }
   connectors?: {
     slack?: {
@@ -51,6 +53,16 @@ interface Config {
       shareSessionInChannel?: boolean
       allowFrom?: string | string[]
       ignoreOldMessagesOnBoot?: boolean
+    }
+    discord?: {
+      botToken?: string
+      allowFrom?: string | string[]
+      guildId?: string
+      channelId?: string
+    }
+    whatsapp?: {
+      authDir?: string
+      allowFrom?: string[]
     }
     web?: Record<string, never>
   }
@@ -576,6 +588,10 @@ export default function SettingsPage() {
     message: string
   } | null>(null)
 
+  // WhatsApp QR code state
+  const [waQr, setWaQr] = useState<string | null>(null)
+  const [waStatus, setWaStatus] = useState<string>("unknown")
+
   // Sync local values when settings change externally (e.g., reset)
   useEffect(() => {
     setNameValue(settings.portalName ?? "")
@@ -609,6 +625,39 @@ export default function SettingsPage() {
   useEffect(() => {
     loadConfig()
   }, [])
+
+  // Poll for WhatsApp QR code when WhatsApp connector is configured
+  useEffect(() => {
+    if (!config.connectors?.whatsapp) return
+
+    let cancelled = false
+
+    async function checkQr() {
+      try {
+        const statusRes = await fetch("/api/status")
+        const status = await statusRes.json()
+        const connStatus = status?.connectors?.whatsapp?.status
+        if (!cancelled) setWaStatus(connStatus ?? "unknown")
+
+        if (connStatus === "qr_pending") {
+          const qrRes = await fetch("/api/connectors/whatsapp/qr")
+          const data = await qrRes.json()
+          if (!cancelled) setWaQr(data.qr)
+        } else {
+          if (!cancelled) setWaQr(null)
+        }
+      } catch {
+        // non-fatal
+      }
+    }
+
+    void checkQr()
+    const interval = setInterval(() => { void checkQr() }, 10000)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [config.connectors?.whatsapp])
 
   function updateConfig(path: string[], value: unknown) {
     setConfig((prev) => {
@@ -1263,6 +1312,37 @@ export default function SettingsPage() {
                   current agent and start processing your new message immediately. When
                   disabled, messages are queued.
                 </div>
+
+                <div
+                  style={{
+                    borderTop: "1px solid var(--separator)",
+                    marginTop: "var(--space-3)",
+                    paddingTop: "var(--space-3)",
+                  }}
+                />
+
+                <FieldRow label="When Claude Hits Usage Limit">
+                  <SettingsSelect
+                    value={config.sessions?.rateLimitStrategy ?? "fallback"}
+                    onChange={(v) =>
+                      updateConfig(["sessions", "rateLimitStrategy"], v)
+                    }
+                    options={[
+                      { value: "wait", label: "Wait & Auto-Resume" },
+                      { value: "fallback", label: "Switch to GPT (Codex)" },
+                    ]}
+                  />
+                </FieldRow>
+                <div
+                  style={{
+                    fontSize: "var(--text-caption1)",
+                    color: "var(--label-secondary)",
+                    marginTop: 4,
+                  }}
+                >
+                  “Wait” pauses the session and continues automatically when Claude resets.
+                  “Switch” answers immediately using GPT, then returns to Claude once the reset window passes.
+                </div>
               </Section>
 
               {/* ── Section 6: Connectors ── */}
@@ -1327,6 +1407,166 @@ export default function SettingsPage() {
                     }
                   />
                 </FieldRow>
+
+                <div
+                  style={{
+                    borderTop: "1px solid var(--separator)",
+                    marginTop: "var(--space-3)",
+                    paddingTop: "var(--space-3)",
+                  }}
+                />
+
+                <div
+                  style={{
+                    fontSize: "var(--text-caption1)",
+                    fontWeight: "var(--weight-semibold)",
+                    color: "var(--text-tertiary)",
+                    marginBottom: "var(--space-2)",
+                  }}
+                >
+                  Discord
+                </div>
+                <FieldRow label="Bot Token">
+                  <SettingsInput
+                    type="password"
+                    value={config.connectors?.discord?.botToken ?? ""}
+                    onChange={(v) =>
+                      updateConfig(["connectors", "discord", "botToken"], v)
+                    }
+                    placeholder="Bot token..."
+                  />
+                </FieldRow>
+                <FieldRow label="Allow From">
+                  <SettingsInput
+                    value={Array.isArray(config.connectors?.discord?.allowFrom)
+                      ? config.connectors?.discord?.allowFrom?.join(", ")
+                      : config.connectors?.discord?.allowFrom ?? ""}
+                    onChange={(v) =>
+                      updateConfig(
+                        ["connectors", "discord", "allowFrom"],
+                        v.trim() ? v.split(",").map((entry) => entry.trim()).filter(Boolean) : undefined,
+                      )
+                    }
+                    placeholder="User IDs, comma-separated (optional)"
+                  />
+                </FieldRow>
+                <FieldRow label="Guild ID">
+                  <SettingsInput
+                    value={config.connectors?.discord?.guildId ?? ""}
+                    onChange={(v) =>
+                      updateConfig(["connectors", "discord", "guildId"], v.trim() || undefined)
+                    }
+                    placeholder="Server/Guild ID (optional)"
+                  />
+                </FieldRow>
+                <FieldRow label="Channel ID">
+                  <SettingsInput
+                    value={config.connectors?.discord?.channelId ?? ""}
+                    onChange={(v) =>
+                      updateConfig(["connectors", "discord", "channelId"], v.trim() || undefined)
+                    }
+                    placeholder="Restrict to this channel (right-click → Copy Channel ID)"
+                  />
+                </FieldRow>
+
+                {/* WhatsApp */}
+                <div
+                  style={{
+                    fontSize: "var(--text-caption1)",
+                    fontWeight: "var(--weight-semibold)",
+                    color: "var(--text-tertiary)",
+                    marginTop: "var(--space-4)",
+                    marginBottom: "var(--space-2)",
+                  }}
+                >
+                  WhatsApp
+                </div>
+                <div
+                  style={{
+                    fontSize: "var(--text-caption2)",
+                    color: "var(--text-tertiary)",
+                    marginBottom: "var(--space-3)",
+                  }}
+                >
+                  On first start, scan the QR code below with your WhatsApp app to connect. Credentials are cached for subsequent runs.
+                </div>
+                <FieldRow label="Auth Directory">
+                  <SettingsInput
+                    value={config.connectors?.whatsapp?.authDir ?? ""}
+                    onChange={(v) =>
+                      updateConfig(["connectors", "whatsapp", "authDir"], v.trim() || undefined)
+                    }
+                    placeholder="Default: ~/.jinn/.whatsapp-auth"
+                  />
+                </FieldRow>
+                <FieldRow label="Allow From">
+                  <SettingsInput
+                    value={Array.isArray(config.connectors?.whatsapp?.allowFrom)
+                      ? config.connectors?.whatsapp?.allowFrom?.join(", ")
+                      : ""}
+                    onChange={(v) =>
+                      updateConfig(
+                        ["connectors", "whatsapp", "allowFrom"],
+                        v.trim() ? v.split(",").map((entry) => entry.trim()).filter(Boolean) : undefined,
+                      )
+                    }
+                    placeholder="447700900000@s.whatsapp.net, ... (optional)"
+                  />
+                </FieldRow>
+
+                {waQr && (
+                  <div
+                    style={{
+                      marginTop: "var(--space-3)",
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      gap: "var(--space-2)",
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: "var(--text-caption1)",
+                        fontWeight: 600,
+                        color: "var(--text-secondary)",
+                      }}
+                    >
+                      Scan with WhatsApp to connect
+                    </div>
+                    <img
+                      src={waQr}
+                      alt="WhatsApp QR Code"
+                      style={{
+                        width: 200,
+                        height: 200,
+                        borderRadius: "var(--radius-md)",
+                        border: "1px solid var(--separator)",
+                        background: "white",
+                        padding: 8,
+                      }}
+                    />
+                    <div
+                      style={{
+                        fontSize: "var(--text-caption2)",
+                        color: "var(--text-tertiary)",
+                      }}
+                    >
+                      Open WhatsApp → Linked Devices → Link a Device
+                    </div>
+                  </div>
+                )}
+                {config.connectors?.whatsapp && waStatus === "ok" && (
+                  <div
+                    style={{
+                      marginTop: "var(--space-2)",
+                      fontSize: "var(--text-caption1)",
+                      color: "var(--system-green)",
+                      fontWeight: 600,
+                    }}
+                  >
+                    ✓ Connected
+                  </div>
+                )}
 
                 <div
                   style={{

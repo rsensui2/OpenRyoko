@@ -21,7 +21,6 @@ export interface NavItem {
 export const NAV_ITEMS: NavItem[] = [
   { href: "/", label: "Home", icon: Home },
   { href: "/chat", label: "Chat", icon: MessageSquare },
-  { href: "/sessions", label: "Sessions", icon: Layers },
   { href: "/org", label: "Organization", icon: Users },
   { href: "/kanban", label: "Kanban", icon: LayoutGrid },
   { href: "/cron", label: "Cron", icon: Clock },

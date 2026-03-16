@@ -53,7 +53,6 @@ interface CronJob {
 const STATIC_PAGES: SearchResult[] = [
   { id: "page-home", label: "Dashboard", icon: <Home size={16} />, href: "/", category: "Pages" },
   { id: "page-chat", label: "Chat", icon: <MessageSquare size={16} />, href: "/chat", category: "Pages" },
-  { id: "page-sessions", label: "Sessions", icon: <Layers size={16} />, href: "/sessions", category: "Pages" },
   { id: "page-org", label: "Organization", icon: <Users size={16} />, href: "/org", category: "Pages" },
   { id: "page-kanban", label: "Kanban", icon: <LayoutGrid size={16} />, href: "/kanban", category: "Pages" },
   { id: "page-cron", label: "Cron", icon: <Clock size={16} />, href: "/cron", category: "Pages" },

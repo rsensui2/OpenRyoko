@@ -7,6 +7,8 @@ import { PageLayout } from '@/components/page-layout'
 import { ChatSidebar } from '@/components/chat/chat-sidebar'
 import { ChatMessages } from '@/components/chat/chat-messages'
 import { ChatInput } from '@/components/chat/chat-input'
+import { QueuePanel } from '@/components/chat/queue-panel'
+import { CliTranscript } from '@/components/chat/cli-transcript'
 import type { Message, MediaAttachment } from '@/lib/conversations'
 import { saveIntermediateMessages, loadIntermediateMessages, clearIntermediateMessages } from '@/lib/conversations'
 import { useSettings } from '@/app/settings-provider'
@@ -45,17 +47,25 @@ function ChatPage() {
   const [refreshKey, setRefreshKey] = useState(0)
   const [mobileView, setMobileView] = useState<'sidebar' | 'chat'>('sidebar')
   const [sessionMeta, setSessionMeta] = useState<{ engine?: string; engineSessionId?: string; model?: string; title?: string; employee?: string } | null>(null)
+  // Sibling sessions for the currently selected employee (empty if direct/single session)
+  const [employeeSessions, setEmployeeSessions] = useState<Array<{ id: string; title?: string; lastActivity?: string; createdAt?: string }>>([])
   const streamingTextRef = useRef('')
   const [streamingText, setStreamingText] = useState('')
   // Track the index in messages[] where intermediate (streaming) messages start
   const intermediateStartRef = useRef<number>(-1)
   // When true, user explicitly started a new chat — don't auto-select first session
   const newChatIntentRef = useRef(false)
+  const [currentSession, setCurrentSession] = useState<Record<string, unknown> | null>(null)
+  const [viewMode, setViewMode] = useState<'chat' | 'cli'>('chat')
   const [showMoreMenu, setShowMoreMenu] = useState(false)
+  const [showSessionPicker, setShowSessionPicker] = useState(false)
   const [copiedField, setCopiedField] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const moreMenuRef = useRef<HTMLDivElement>(null)
-  const { events, connectionSeq, skillsVersion } = useGateway()
+  const sessionPickerRef = useRef<HTMLDivElement>(null)
+  const { events, connectionSeq, skillsVersion, subscribe } = useGateway()
+  const selectedIdRef = useRef(selectedId)
+  useEffect(() => { selectedIdRef.current = selectedId }, [selectedId])
   const searchParams = useSearchParams()
   const onboardingTriggered = useRef(false)
   // When set, the current session is a stub awaiting the user's first message
@@ -63,15 +73,18 @@ function ChatPage() {
 
   // Close more menu on outside click
   useEffect(() => {
-    if (!showMoreMenu) return
+    if (!showMoreMenu && !showSessionPicker) return
     function handleClick(e: MouseEvent) {
-      if (moreMenuRef.current && !moreMenuRef.current.contains(e.target as Node)) {
+      if (showMoreMenu && moreMenuRef.current && !moreMenuRef.current.contains(e.target as Node)) {
         setShowMoreMenu(false)
+      }
+      if (showSessionPicker && sessionPickerRef.current && !sessionPickerRef.current.contains(e.target as Node)) {
+        setShowSessionPicker(false)
       }
     }
     document.addEventListener('mousedown', handleClick)
     return () => document.removeEventListener('mousedown', handleClick)
-  }, [showMoreMenu])
+  }, [showMoreMenu, showSessionPicker])
 
   const copyToClipboard = useCallback((text: string, field: string) => {
     navigator.clipboard.writeText(text)
@@ -126,134 +139,159 @@ function ChatPage() {
     }
   }, [])
 
-  // Listen for session events (tool calls + completion)
+  // Listen for session events via subscribe — processes every event synchronously,
+  // bypassing React 18 automatic batching that would otherwise drop intermediate deltas.
   useEffect(() => {
-    if (events.length === 0) return
-    const latest = events[events.length - 1]
-    const payload = latest.payload as Record<string, unknown>
+    return subscribe((event, payload) => {
+      const p = payload as Record<string, unknown>
+      const sid = selectedIdRef.current
+      if (!sid || p.sessionId !== sid) return
 
-    const matchesSession = selectedId && payload.sessionId === selectedId
-    if (!matchesSession) return
+      if (event === 'session:delta') {
+        const deltaType = String(p.type || 'text')
 
-    if (latest.event === 'session:delta') {
-      const deltaType = String(payload.type || 'text')
-
-      if (deltaType === 'text') {
-        const chunk = String(payload.content || '')
-        streamingTextRef.current += chunk
-        setStreamingText(streamingTextRef.current)
-      } else if (deltaType === 'tool_use') {
-        // If we were streaming text, flush it as a message first
-        if (streamingTextRef.current) {
-          const flushed = streamingTextRef.current
-          streamingTextRef.current = ''
-          setStreamingText('')
+        if (deltaType === 'text') {
+          const chunk = String(p.content || '')
+          streamingTextRef.current += chunk
+          setStreamingText(streamingTextRef.current)
+        } else if (deltaType === 'text_snapshot') {
+          // Full text snapshot from assistant partial message — replace streaming text
+          // to correct any dropped deltas
+          const snapshot = String(p.content || '')
+          if (snapshot.length >= streamingTextRef.current.length) {
+            streamingTextRef.current = snapshot
+            setStreamingText(snapshot)
+          }
+        } else if (deltaType === 'tool_use') {
+          // If we were streaming text, flush it as a message first
+          if (streamingTextRef.current) {
+            const flushed = streamingTextRef.current
+            streamingTextRef.current = ''
+            setStreamingText('')
+            setMessages((prev) => {
+              if (intermediateStartRef.current < 0) intermediateStartRef.current = prev.length
+              const updated = [
+                ...prev,
+                {
+                  id: crypto.randomUUID(),
+                  role: 'assistant' as const,
+                  content: flushed,
+                  timestamp: Date.now(),
+                },
+              ]
+              persistIntermediate(updated, sid)
+              return updated
+            })
+          }
+          const toolName = String(p.toolName || 'tool')
           setMessages((prev) => {
-            // Mark where intermediate messages start (if not already set)
-            if (intermediateStartRef.current < 0) {
-              intermediateStartRef.current = prev.length
-            }
+            if (intermediateStartRef.current < 0) intermediateStartRef.current = prev.length
             const updated = [
               ...prev,
               {
                 id: crypto.randomUUID(),
                 role: 'assistant' as const,
-                content: flushed,
+                content: `Using ${toolName}`,
                 timestamp: Date.now(),
+                toolCall: toolName,
               },
             ]
-            persistIntermediate(updated, selectedId || (payload.sessionId as string))
+            persistIntermediate(updated, sid)
+            return updated
+          })
+        } else if (deltaType === 'tool_result') {
+          setMessages((prev) => {
+            const updated = [...prev]
+            const last = updated[updated.length - 1]
+            if (last && last.role === 'assistant' && last.toolCall) {
+              updated[updated.length - 1] = { ...last, content: `Used ${last.toolCall}` }
+            }
+            persistIntermediate(updated, sid)
             return updated
           })
         }
-        const toolName = String(payload.toolName || 'tool')
-        setMessages((prev) => {
-          if (intermediateStartRef.current < 0) {
-            intermediateStartRef.current = prev.length
-          }
-          const updated = [
+      }
+
+      if (event === 'session:notification') {
+        // Internal notification (e.g. child session completed) — display as a system notification
+        const notifMessage = String(p.message || '')
+        if (notifMessage) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              role: 'notification' as const,
+              content: notifMessage,
+              timestamp: Date.now(),
+            },
+          ])
+        }
+      }
+
+      if (event === 'session:interrupted') {
+        // Engine was interrupted — clear streaming, wait for new turn
+        streamingTextRef.current = ''
+        setStreamingText('')
+      }
+
+      if (event === 'session:stopped') {
+        setLoading(false)
+        setStreamingText('')
+      }
+
+      if (event === 'session:completed') {
+        // Clear streaming state
+        streamingTextRef.current = ''
+        setStreamingText('')
+        setLoading(false)
+        intermediateStartRef.current = -1
+
+        // Clear intermediate messages from localStorage (keep showing in UI)
+        const completedSessionId = sid || (p.sessionId ? String(p.sessionId) : null)
+        if (completedSessionId) {
+          clearIntermediateMessages(completedSessionId)
+        }
+
+        if (p.result) {
+          // Replace any partially-streamed message with the final complete result
+          setMessages((prev) => {
+            // Remove trailing non-tool assistant message if it was from streaming
+            const cleaned = [...prev]
+            const last = cleaned[cleaned.length - 1]
+            if (last && last.role === 'assistant' && !last.toolCall) {
+              cleaned.pop()
+            }
+            return [
+              ...cleaned,
+              {
+                id: crypto.randomUUID(),
+                role: 'assistant' as const,
+                content: String(p.result),
+                timestamp: Date.now(),
+              },
+            ]
+          })
+        }
+        if (p.error && !p.result) {
+          setMessages((prev) => [
             ...prev,
             {
               id: crypto.randomUUID(),
               role: 'assistant' as const,
-              content: `Using ${toolName}`,
-              timestamp: Date.now(),
-              toolCall: toolName,
-            },
-          ]
-          persistIntermediate(updated, selectedId || (payload.sessionId as string))
-          return updated
-        })
-      } else if (deltaType === 'tool_result') {
-        setMessages((prev) => {
-          const updated = [...prev]
-          const last = updated[updated.length - 1]
-          if (last && last.role === 'assistant' && last.toolCall) {
-            updated[updated.length - 1] = { ...last, content: `Used ${last.toolCall}` }
-          }
-          persistIntermediate(updated, selectedId || (payload.sessionId as string))
-          return updated
-        })
-      }
-    }
-
-    if (latest.event === 'session:interrupted') {
-      // Engine was interrupted — clear streaming, wait for new turn
-      streamingTextRef.current = ''
-      setStreamingText('')
-    }
-
-    if (latest.event === 'session:completed') {
-      // Clear streaming state
-      streamingTextRef.current = ''
-      setStreamingText('')
-      setLoading(false)
-      intermediateStartRef.current = -1
-
-      // Clear intermediate messages from localStorage (keep showing in UI)
-      const completedSessionId = selectedId || (payload.sessionId ? String(payload.sessionId) : null)
-      if (completedSessionId) {
-        clearIntermediateMessages(completedSessionId)
-      }
-
-      if (payload.result) {
-        // Replace any partially-streamed message with the final complete result
-        setMessages((prev) => {
-          // Remove trailing non-tool assistant message if it was from streaming
-          const cleaned = [...prev]
-          const last = cleaned[cleaned.length - 1]
-          if (last && last.role === 'assistant' && !last.toolCall) {
-            cleaned.pop()
-          }
-          return [
-            ...cleaned,
-            {
-              id: crypto.randomUUID(),
-              role: 'assistant' as const,
-              content: String(payload.result),
+              content: `Error: ${p.error}`,
               timestamp: Date.now(),
             },
-          ]
-        })
+          ])
+        }
+        setRefreshKey((k) => k + 1)
       }
-      if (payload.error && !payload.result) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            role: 'assistant' as const,
-            content: `Error: ${payload.error}`,
-            timestamp: Date.now(),
-          },
-        ])
-      }
-      setRefreshKey((k) => k + 1)
-    }
-  }, [events, selectedId, persistIntermediate])
+    })
+  }, [subscribe, persistIntermediate])
 
   const loadSession = useCallback(async (id: string) => {
     try {
       const session = (await api.getSession(id)) as Record<string, unknown>
+      setCurrentSession(session)
       setSessionMeta({
         engine: session.engine ? String(session.engine) : undefined,
         engineSessionId: session.engineSessionId ? String(session.engineSessionId) : undefined,
@@ -265,7 +303,7 @@ function ChatPage() {
       const backendMessages: Message[] = Array.isArray(history)
         ? history.map((m: Record<string, unknown>) => ({
             id: crypto.randomUUID(),
-            role: (m.role as 'user' | 'assistant') || 'assistant',
+            role: (m.role as 'user' | 'assistant' | 'notification') || 'assistant',
             content: String(m.content || m.text || ''),
             timestamp: m.timestamp ? Number(m.timestamp) : Date.now(),
           }))
@@ -305,6 +343,7 @@ function ChatPage() {
     } catch {
       setMessages([])
       setSessionMeta(null)
+      setCurrentSession(null)
       intermediateStartRef.current = -1
     }
   }, [])
@@ -330,6 +369,13 @@ function ChatPage() {
     return () => clearInterval(timer)
   }, [selectedId, loading, loadSession])
 
+  const handleEmployeeSessionsAvailable = useCallback(
+    (sessions: Array<{ id: string; title?: string; lastActivity?: string; createdAt?: string }>) => {
+      setEmployeeSessions(sessions.length > 1 ? sessions : [])
+    },
+    []
+  )
+
   const handleSelect = useCallback(
     (id: string) => {
       newChatIntentRef.current = false
@@ -337,6 +383,7 @@ function ChatPage() {
       setMessages([])
       setLoading(false)
       setMobileView('chat')
+      setViewMode('chat')
       loadSession(id)
     },
     [loadSession]
@@ -349,6 +396,7 @@ function ChatPage() {
     setLoading(false)
     setSessionMeta(null)
     setMobileView('chat')
+    setEmployeeSessions([])
     intermediateStartRef.current = -1
   }, [])
 
@@ -364,7 +412,7 @@ function ChatPage() {
   const handleInterrupt = useCallback(async () => {
     if (!selectedId) return
     try {
-      await api.sendMessage(selectedId, { message: '', interrupt: true })
+      await api.stopSession(selectedId)
     } catch {
       // ignore — session may already be done
     }
@@ -509,6 +557,7 @@ function ChatPage() {
             connectionSeq={connectionSeq}
             onSessionsLoaded={handleSessionsLoaded}
             events={events}
+            onEmployeeSessionsAvailable={handleEmployeeSessionsAvailable}
           />
         </div>
 
@@ -529,6 +578,7 @@ function ChatPage() {
             connectionSeq={connectionSeq}
             onSessionsLoaded={handleSessionsLoaded}
             events={events}
+            onEmployeeSessionsAvailable={handleEmployeeSessionsAvailable}
           />
         </div>
 
@@ -593,6 +643,246 @@ function ChatPage() {
                   : 'New Chat'}
               </div>
             </div>
+
+            {/* Session picker — dropdown + new session button */}
+            {selectedId && employeeSessions.length >= 1 && (() => {
+              const currentIndex = employeeSessions.findIndex(s => s.id === selectedId)
+              const total = employeeSessions.length
+              const canPrev = currentIndex < total - 1
+              const canNext = currentIndex > 0
+              return (
+                <div ref={sessionPickerRef} style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  marginRight: 'var(--space-2)',
+                  flexShrink: 0,
+                  position: 'relative',
+                }}>
+                  {/* Prev/counter/next */}
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 2,
+                    background: 'var(--fill-tertiary)',
+                    borderRadius: 'var(--radius-sm)',
+                    padding: '2px 4px',
+                  }}>
+                    <button
+                      onClick={() => {
+                        if (canPrev) {
+                          const prev = employeeSessions[currentIndex + 1]
+                          handleSelect(prev.id)
+                        }
+                      }}
+                      disabled={!canPrev}
+                      aria-label="Older session"
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        cursor: canPrev ? 'pointer' : 'default',
+                        padding: '2px 4px',
+                        color: canPrev ? 'var(--text-secondary)' : 'var(--text-quaternary)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        borderRadius: 'var(--radius-sm)',
+                      }}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="15 18 9 12 15 6" />
+                      </svg>
+                    </button>
+                    <button
+                      onClick={() => setShowSessionPicker(v => !v)}
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        cursor: 'pointer',
+                        fontSize: 'var(--text-caption2)',
+                        color: 'var(--text-secondary)',
+                        whiteSpace: 'nowrap',
+                        padding: '0 2px',
+                        minWidth: 40,
+                        textAlign: 'center',
+                      }}
+                    >
+                      {currentIndex + 1} / {total} ▾
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (canNext) {
+                          const next = employeeSessions[currentIndex - 1]
+                          handleSelect(next.id)
+                        }
+                      }}
+                      disabled={!canNext}
+                      aria-label="Newer session"
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        cursor: canNext ? 'pointer' : 'default',
+                        padding: '2px 4px',
+                        color: canNext ? 'var(--text-secondary)' : 'var(--text-quaternary)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        borderRadius: 'var(--radius-sm)',
+                      }}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="9 18 15 12 9 6" />
+                      </svg>
+                    </button>
+                  </div>
+
+                  {/* New session button */}
+                  <button
+                    onClick={() => {
+                      setShowSessionPicker(false)
+                      handleNewChat()
+                    }}
+                    aria-label="New session"
+                    title="New session"
+                    style={{
+                      background: 'var(--fill-tertiary)',
+                      border: 'none',
+                      cursor: 'pointer',
+                      padding: '4px 8px',
+                      borderRadius: 'var(--radius-sm)',
+                      color: 'var(--text-secondary)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      fontSize: 'var(--text-caption2)',
+                      fontWeight: 'var(--weight-medium)',
+                      gap: 3,
+                      transition: 'color 150ms ease',
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--accent)')}
+                    onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-secondary)')}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="12" y1="5" x2="12" y2="19" />
+                      <line x1="5" y1="12" x2="19" y2="12" />
+                    </svg>
+                    New
+                  </button>
+
+                  {/* Session dropdown */}
+                  {showSessionPicker && (
+                    <div style={{
+                      position: 'absolute',
+                      top: '100%',
+                      left: 0,
+                      marginTop: 4,
+                      background: 'var(--material-thick)',
+                      border: '1px solid var(--separator)',
+                      borderRadius: 'var(--radius-md, 12px)',
+                      boxShadow: 'var(--shadow-overlay)',
+                      minWidth: 280,
+                      maxHeight: 300,
+                      overflowY: 'auto',
+                      zIndex: 100,
+                      padding: 'var(--space-1)',
+                    }}>
+                      {employeeSessions.map((s, i) => {
+                        const isSelected = s.id === selectedId
+                        const title = (s as Record<string, unknown>).title as string || `Session ${i + 1}`
+                        const time = s.lastActivity || s.createdAt || ''
+                        const timeLabel = time ? new Date(time).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''
+                        return (
+                          <button
+                            key={s.id}
+                            onClick={() => {
+                              handleSelect(s.id)
+                              setShowSessionPicker(false)
+                            }}
+                            style={{
+                              width: '100%',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              gap: 'var(--space-2)',
+                              padding: 'var(--space-2) var(--space-3)',
+                              background: isSelected ? 'var(--fill-secondary)' : 'transparent',
+                              border: 'none',
+                              borderRadius: 'var(--radius-sm)',
+                              cursor: 'pointer',
+                              textAlign: 'left',
+                            }}
+                          >
+                            <span style={{
+                              fontSize: 'var(--text-caption1)',
+                              color: isSelected ? 'var(--text-primary)' : 'var(--text-secondary)',
+                              fontWeight: isSelected ? 'var(--weight-semibold)' : 'var(--weight-regular)',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                              flex: 1,
+                            }}>
+                              {title}
+                            </span>
+                            <span style={{
+                              fontSize: 'var(--text-caption2)',
+                              color: 'var(--text-quaternary)',
+                              flexShrink: 0,
+                            }}>
+                              {timeLabel}
+                            </span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
+
+            {/* View mode toggle — only shown when a session is selected */}
+            {selectedId && (
+              <div style={{
+                display: 'flex',
+                gap: 2,
+                padding: 2,
+                background: 'var(--fill-tertiary)',
+                borderRadius: 'var(--radius-sm)',
+                marginRight: 'var(--space-2)',
+              }}>
+                <button
+                  onClick={() => setViewMode('chat')}
+                  style={{
+                    padding: '3px 10px',
+                    borderRadius: 'calc(var(--radius-sm) - 2px)',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontSize: 'var(--text-caption1)',
+                    fontWeight: viewMode === 'chat' ? 'var(--weight-semibold)' : 'var(--weight-regular)',
+                    background: viewMode === 'chat' ? 'var(--bg)' : 'transparent',
+                    color: viewMode === 'chat' ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                    boxShadow: viewMode === 'chat' ? '0 1px 3px rgba(0,0,0,0.12)' : 'none',
+                    transition: 'all 120ms ease',
+                  }}
+                >
+                  Chat
+                </button>
+                <button
+                  onClick={() => setViewMode('cli')}
+                  style={{
+                    padding: '3px 10px',
+                    borderRadius: 'calc(var(--radius-sm) - 2px)',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontSize: 'var(--text-caption1)',
+                    fontWeight: viewMode === 'cli' ? 'var(--weight-semibold)' : 'var(--weight-regular)',
+                    background: viewMode === 'cli' ? 'var(--bg)' : 'transparent',
+                    color: viewMode === 'cli' ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                    boxShadow: viewMode === 'cli' ? '0 1px 3px rgba(0,0,0,0.12)' : 'none',
+                    transition: 'all 120ms ease',
+                    fontFamily: '"SF Mono", Menlo, monospace',
+                  }}
+                >
+                  CLI
+                </button>
+              </div>
+            )}
 
             {/* Copied toast */}
             {copiedField && (
@@ -719,20 +1009,35 @@ function ChatPage() {
             )}
           </div>
 
-          {/* Messages */}
-          <ChatMessages messages={messages} loading={loading} streamingText={streamingText} />
+          {/* Messages / CLI transcript */}
+          {viewMode === 'cli' && selectedId ? (
+            <CliTranscript sessionId={selectedId} />
+          ) : (
+            <ChatMessages messages={messages} loading={loading} streamingText={streamingText} />
+          )}
 
-          {/* Input */}
-          <ChatInput
-            disabled={false}
-            loading={loading}
-            onSend={handleSend}
-            onInterrupt={handleInterrupt}
-            onNewSession={handleNewChat}
-            onStatusRequest={handleStatusRequest}
-            skillsVersion={skillsVersion}
-            events={events}
-          />
+          {/* Queue panel — shows pending messages with cancel buttons */}
+          {viewMode === 'chat' && (
+            <QueuePanel
+              sessionId={selectedId}
+              events={events}
+              paused={currentSession?.paused as boolean ?? false}
+            />
+          )}
+
+          {/* Input — hidden in CLI view */}
+          {viewMode === 'chat' && (
+            <ChatInput
+              disabled={false}
+              loading={loading}
+              onSend={handleSend}
+              onInterrupt={handleInterrupt}
+              onNewSession={handleNewChat}
+              onStatusRequest={handleStatusRequest}
+              skillsVersion={skillsVersion}
+              events={events}
+            />
+          )}
         </div>
       </div>
 
