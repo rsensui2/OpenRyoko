@@ -19,19 +19,11 @@ interface PipelineGraphProps {
 export function PipelineGraph({ crons }: PipelineGraphProps) {
   if (crons.length === 0) {
     return (
-      <div
-        style={{
-          background: "var(--material-regular)",
-          border: "1px solid var(--separator)",
-          borderRadius: "var(--radius-md)",
-          padding: "32px 24px",
-          textAlign: "center",
-        }}
-      >
-        <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-primary)", marginBottom: 8 }}>
+      <div className="bg-[var(--material-regular)] border border-[var(--separator)] rounded-[var(--radius-md)] px-6 py-8 text-center">
+        <div className="text-sm font-bold text-[var(--text-primary)] mb-2">
           No cron jobs configured
         </div>
-        <div style={{ fontSize: 12, color: "var(--text-secondary)", maxWidth: 480, margin: "0 auto", lineHeight: 1.6 }}>
+        <div className="text-xs text-[var(--text-secondary)] max-w-[480px] mx-auto leading-[1.6]">
           Cron jobs will appear here as cards once configured.
         </div>
       </div>
@@ -55,102 +47,56 @@ export function PipelineGraph({ crons }: PipelineGraphProps) {
 
 function CronCardGroup({ crons, label }: { crons: CronJob[]; label: string }) {
   return (
-    <div style={{ marginBottom: 24 }}>
-      <div
-        style={{
-          fontSize: 13,
-          fontWeight: 700,
-          color: "var(--text-secondary)",
-          marginBottom: 12,
-        }}
-      >
+    <div className="mb-6">
+      <div className="text-[13px] font-bold text-[var(--text-secondary)] mb-3">
         {label} ({crons.length})
       </div>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
-          gap: 10,
-        }}
-      >
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-2.5">
         {crons.map(cron => {
           const borderColor = cron.enabled ? "var(--system-green)" : "var(--text-tertiary)"
 
           return (
             <div
               key={cron.id}
-              style={{
-                background: "var(--material-regular)",
-                borderRadius: "var(--radius-md)",
-                border: "1px solid var(--separator)",
-                borderLeft: `3px solid ${borderColor}`,
-                padding: "10px 14px",
-              }}
+              className="bg-[var(--material-regular)] rounded-[var(--radius-md)] border border-[var(--separator)] px-3.5 py-2.5"
+              style={{ borderLeft: `3px solid ${borderColor}` }}
             >
               {/* Name + status dot */}
-              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+              <div className="flex items-center gap-1.5 mb-1">
                 <div
-                  style={{
-                    width: 7,
-                    height: 7,
-                    borderRadius: "50%",
-                    background: cron.enabled ? "var(--system-green)" : "var(--text-tertiary)",
-                    flexShrink: 0,
-                  }}
+                  className={`w-[7px] h-[7px] rounded-full shrink-0 ${
+                    cron.enabled ? "bg-[var(--system-green)]" : "bg-[var(--text-tertiary)]"
+                  }`}
                 />
-                <div
-                  style={{
-                    fontSize: 12,
-                    fontWeight: 600,
-                    color: "var(--text-primary)",
-                    whiteSpace: "nowrap",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                  }}
-                >
+                <div className="text-xs font-semibold text-[var(--text-primary)] whitespace-nowrap overflow-hidden text-ellipsis">
                   {cron.name}
                 </div>
               </div>
 
               {/* Schedule (human-readable) */}
-              <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 2 }}>
+              <div className="text-[10px] text-[var(--text-secondary)] mb-0.5">
                 {describeCron(cron.schedule)}
               </div>
 
               {/* Raw schedule */}
-              <div style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "var(--text-tertiary)", marginBottom: 4 }}>
+              <div className="text-[10px] font-[var(--font-mono)] text-[var(--text-tertiary)] mb-1">
                 {cron.schedule}
               </div>
 
               {/* Badges row */}
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+              <div className="flex flex-wrap gap-1">
                 {/* Employee badge */}
                 {cron.employee && (
                   <span
-                    style={{
-                      display: "inline-block",
-                      fontSize: 9,
-                      padding: "1px 6px",
-                      borderRadius: 4,
-                      background: "color-mix(in srgb, var(--system-blue) 15%, transparent)",
-                      color: "var(--system-blue)",
-                    }}
+                    className="inline-block text-[9px] px-1.5 py-px rounded text-[var(--system-blue)]"
+                    style={{ background: "color-mix(in srgb, var(--system-blue) 15%, transparent)" }}
                   >
                     {cron.employee}
                   </span>
                 )}
                 {/* Engine badge */}
                 {cron.engine && (
-                  <span
-                    style={{
-                      display: "inline-block",
-                      fontSize: 9,
-                      padding: "1px 6px",
-                      borderRadius: 4,
-                      background: "var(--fill-tertiary)",
-                      color: "var(--text-tertiary)",
-                    }}
-                  >
+                  <span className="inline-block text-[9px] px-1.5 py-px rounded bg-[var(--fill-tertiary)] text-[var(--text-tertiary)]">
                     {cron.engine}
                   </span>
                 )}

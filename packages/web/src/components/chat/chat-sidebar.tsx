@@ -1,7 +1,27 @@
 "use client"
-import { useEffect, useState, useRef, useCallback } from 'react'
-import { api, type Employee } from '@/lib/api'
-import { useSettings } from '@/app/settings-provider'
+
+import { useEffect, useState, useRef, useCallback, useMemo } from "react"
+import { ChevronDown, Clock3, EllipsisVertical, Pin, Plus, Search, Trash2, X } from "lucide-react"
+import { api, type Employee } from "@/lib/api"
+import { useSettings } from "@/app/settings-provider"
+import { useSessions, useDeleteSession, useBulkDeleteSessions } from "@/hooks/use-sessions"
+import {
+  ContextMenu,
+  ContextMenuTrigger,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+} from "@/components/ui/context-menu"
+import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { cn } from "@/lib/utils"
 
 interface Session {
   id: string
@@ -24,46 +44,45 @@ interface ChatSidebarProps {
   onSelect: (id: string) => void
   onNewChat: () => void
   onDelete?: (id: string) => void
-  refreshKey: number
-  connectionSeq?: number
   onSessionsLoaded?: (sessions: Session[]) => void
-  events?: Array<{ event: string; payload: unknown }>
   onEmployeeSessionsAvailable?: (sessions: Session[]) => void
 }
 
-// A flat list item: either an employee contact or a direct session
 interface FlatItem {
-  type: 'employee' | 'direct'
-  // For employee type
+  type: "employee" | "direct"
   employeeName?: string
   employeeData?: Employee
-  sessions?: Session[] // all sessions for this employee, sorted by activity
-  // For direct type
+  sessions?: Session[]
   session?: Session
-  // Common
-  sortKey: string // for overall sort (most recent activity)
-  pinKey: string  // the key stored in pinned set
+  sortKey: string
+  pinKey: string
 }
 
-const COLLAPSE_STORAGE_KEY = 'jinn-sidebar-collapsed'
-const PINNED_STORAGE_KEY = 'jinn-pinned-sessions'
+const COLLAPSE_STORAGE_KEY = "jinn-sidebar-collapsed"
+const EXPANDED_STORAGE_KEY = "jinn-sidebar-expanded"
+const PINNED_STORAGE_KEY = "jinn-pinned-sessions"
 
 function formatTime(dateStr?: string): string {
-  if (!dateStr) return ''
+  if (!dateStr) return ""
   const d = new Date(dateStr)
   const now = Date.now()
   const diff = now - d.getTime()
-  if (diff < 60000) return 'now'
-  if (diff < 3600000) return `${Math.floor(diff / 60000)}m`
-  if (diff < 86400000) return new Date(dateStr).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
-  return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  if (diff < 60_000) return "now"
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m`
+  if (diff < 86_400_000) {
+    return new Date(dateStr).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true })
+  }
+  if (diff < 172_800_000) return "yesterday"
+  return new Date(dateStr).toLocaleDateString("en-US", { month: "short", day: "numeric" })
 }
 
 function getReadSessions(): Set<string> {
   try {
-    const raw = localStorage.getItem('jinn-read-sessions')
+    const raw = localStorage.getItem("jinn-read-sessions")
     return raw ? new Set(JSON.parse(raw)) : new Set()
-  } catch { return new Set() }
+  } catch {
+    return new Set()
+  }
 }
 
 function markSessionRead(id: string) {
@@ -71,37 +90,64 @@ function markSessionRead(id: string) {
   read.add(id)
   const arr = Array.from(read)
   if (arr.length > 500) arr.splice(0, arr.length - 500)
-  localStorage.setItem('jinn-read-sessions', JSON.stringify(arr))
+  localStorage.setItem("jinn-read-sessions", JSON.stringify(arr))
+}
+
+function markAllReadForEmployee(sessions: Session[]) {
+  const read = getReadSessions()
+  for (const s of sessions) read.add(s.id)
+  const arr = Array.from(read)
+  if (arr.length > 500) arr.splice(0, arr.length - 500)
+  localStorage.setItem("jinn-read-sessions", JSON.stringify(arr))
 }
 
 function getPinnedSessions(): Set<string> {
   try {
     const raw = localStorage.getItem(PINNED_STORAGE_KEY)
     return raw ? new Set(JSON.parse(raw)) : new Set()
-  } catch { return new Set() }
+  } catch {
+    return new Set()
+  }
 }
 
 function savePinnedSessions(pinned: Set<string>) {
   try {
     localStorage.setItem(PINNED_STORAGE_KEY, JSON.stringify(Array.from(pinned)))
-  } catch { /* ignore */ }
+  } catch {}
 }
 
 function loadCollapsedState(): Set<string> {
   try {
     const raw = localStorage.getItem(COLLAPSE_STORAGE_KEY)
     return raw ? new Set(JSON.parse(raw)) : new Set()
-  } catch { return new Set() }
+  } catch {
+    return new Set()
+  }
 }
 
 function saveCollapsedState(collapsed: Set<string>) {
   try {
     localStorage.setItem(COLLAPSE_STORAGE_KEY, JSON.stringify(Array.from(collapsed)))
-  } catch { /* ignore */ }
+  } catch {}
+}
+
+function loadExpandedState(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(EXPANDED_STORAGE_KEY)
+    return raw ? JSON.parse(raw) : {}
+  } catch {
+    return {}
+  }
+}
+
+function saveExpandedState(expanded: Record<string, boolean>) {
+  try {
+    localStorage.setItem(EXPANDED_STORAGE_KEY, JSON.stringify(expanded))
+  } catch {}
 }
 
 function isCronSession(session: Session): boolean {
-  return session.source === 'cron' || (session.sourceRef || '').startsWith('cron:')
+  return session.source === "cron" || (session.sourceRef || "").startsWith("cron:")
 }
 
 function isDirectSession(session: Session, portalSlug: string): boolean {
@@ -109,11 +155,100 @@ function isDirectSession(session: Session, portalSlug: string): boolean {
 }
 
 function getSessionActivity(session: Session): string {
-  return session.lastActivity || session.createdAt || ''
+  return session.lastActivity || session.createdAt || ""
 }
 
 function sortSessionsByActivity(sessions: Session[]): Session[] {
   return [...sessions].sort((a, b) => getSessionActivity(b).localeCompare(getSessionActivity(a)))
+}
+
+function getStatusDotColor(session: Session, readSet: Set<string>): string {
+  if (session.status === "running") return "var(--system-blue)"
+  if (session.status === "error") return "var(--system-red)"
+  if (readSet.has(session.id)) return "var(--text-quaternary)"
+  return "var(--system-green)"
+}
+
+function StatusDot({
+  color,
+  pulse = false,
+  className,
+}: {
+  color: string
+  pulse?: boolean
+  className?: string
+}) {
+  return (
+    <span
+      className={cn("shrink-0 rounded-full", className)}
+      style={{
+        background: color,
+        animation: pulse ? "sidebar-pulse 2s ease-in-out infinite" : "none",
+        boxShadow: pulse ? `0 0 8px ${color}` : "none",
+      }}
+    />
+  )
+}
+
+function SectionLabel({
+  icon,
+  label,
+  count,
+}: {
+  icon: React.ReactNode
+  label: string
+  count?: number
+}) {
+  return (
+    <div className="flex items-center gap-2 px-4 py-2">
+      <span className="text-xs">{icon}</span>
+      <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+        {label}
+      </span>
+      {typeof count === "number" && (
+        <span className="ml-auto rounded bg-[var(--fill-tertiary)] px-1.5 py-0.5 text-[10px] text-[var(--text-secondary)]">
+          {count}
+        </span>
+      )}
+    </div>
+  )
+}
+
+function ConfirmationDialog({
+  open,
+  onOpenChange,
+  title,
+  description,
+  confirmLabel,
+  onConfirm,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  title: string
+  description: React.ReactNode
+  confirmLabel: string
+  onConfirm: () => void
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent showCloseButton={false} className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription asChild>
+            <div>{description}</div>
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button variant="destructive" onClick={onConfirm}>
+            {confirmLabel}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
 }
 
 export function ChatSidebar({
@@ -121,63 +256,75 @@ export function ChatSidebar({
   onSelect,
   onNewChat,
   onDelete,
-  refreshKey,
-  connectionSeq,
   onSessionsLoaded,
-  events,
   onEmployeeSessionsAvailable,
 }: ChatSidebarProps) {
   const { settings } = useSettings()
-  const portalName = settings.portalName ?? 'Jinn'
+  const portalName = settings.portalName ?? "Jinn"
   const portalSlug = portalName.toLowerCase()
 
-  // Replace stale "Jinn" prefix in stored session titles with the current portal name
   const fixTitle = (title: string | undefined, employee: string | undefined) => {
     if (!title) return employee || portalName
-    if (portalName !== 'Jinn' && title.startsWith('Jinn - ')) {
+    if (portalName !== "Jinn" && title.startsWith("Jinn - ")) {
       return portalName + title.slice(4)
     }
     return title
   }
 
-  const [sessions, setSessions] = useState<Session[]>([])
-  const [loading, setLoading] = useState(true)
-  const [search, setSearch] = useState('')
+  const { data: rawSessions, isLoading: loading } = useSessions()
+  const deleteSessionMutation = useDeleteSession()
+  const bulkDeleteMutation = useBulkDeleteSessions()
+
+  const sessions = useMemo(() => {
+    if (!rawSessions) return []
+    const filtered = (rawSessions as Session[]).filter(
+      (s) => s.source === "web" || s.source === "cron" || s.source === "whatsapp" || s.source === "discord" || !s.source
+    )
+    filtered.sort((a, b) => {
+      const ta = a.lastActivity || a.createdAt || ""
+      const tb = b.lastActivity || b.createdAt || ""
+      return tb.localeCompare(ta)
+    })
+    return filtered
+  }, [rawSessions])
+
+  const [search, setSearch] = useState("")
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
-  const [confirmDeleteEmployee, setConfirmDeleteEmployee] = useState<{ name: string; displayName: string; sessions: Session[] } | null>(null)
+  const [confirmDeleteEmployee, setConfirmDeleteEmployee] = useState<{
+    name: string
+    displayName: string
+    sessions: Session[]
+  } | null>(null)
   const [hoveredKey, setHoveredKey] = useState<string | null>(null)
   const [readSessions, setReadSessions] = useState<Set<string>>(new Set())
   const [pinnedSessions, setPinnedSessions] = useState<Set<string>>(new Set())
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const [fullyExpanded, setFullyExpanded] = useState<Record<string, boolean>>({})
   const [employeeData, setEmployeeData] = useState<Map<string, Employee>>(new Map())
-  const lastEventKey = useRef<string | null>(null)
+  const onSessionsLoadedRef = useRef(onSessionsLoaded)
 
-  // Load persisted state from localStorage + fetch employee data
+  useEffect(() => {
+    onSessionsLoadedRef.current = onSessionsLoaded
+  }, [onSessionsLoaded])
+
+  useEffect(() => {
+    if (sessions.length > 0) {
+      onSessionsLoadedRef.current?.(sessions)
+    }
+  }, [sessions])
+
   useEffect(() => {
     setReadSessions(getReadSessions())
     setPinnedSessions(getPinnedSessions())
     setCollapsed(loadCollapsedState())
-
-    // Fetch org to build employee name → Employee data map
-    api.getOrg().then(async (org) => {
-      const dataMap = new Map<string, Employee>()
-      await Promise.all(
-        org.employees.map(async (name) => {
-          try {
-            const emp = await api.getEmployee(name)
-            dataMap.set(name, emp)
-          } catch { /* ignore */ }
-        })
-      )
-      setEmployeeData(dataMap)
-    }).catch(() => {})
+    setExpanded(loadExpandedState())
   }, [])
 
-  // Mark selected session as read
   useEffect(() => {
     if (selectedId) {
       markSessionRead(selectedId)
-      setReadSessions(prev => {
+      setReadSessions((prev) => {
         const next = new Set(prev)
         next.add(selectedId)
         return next
@@ -185,87 +332,90 @@ export function ChatSidebar({
     }
   }, [selectedId])
 
-  // Fetch sessions
-  const fetchSessions = useCallback(() => {
-    api
-      .getSessions()
-      .then((data) => {
-        const filtered = (data as Session[]).filter(
-          (s) => s.source === 'web' || s.source === 'cron' || s.source === 'whatsapp' || s.source === 'discord' || !s.source
-        )
-        filtered.sort((a, b) => {
-          const ta = a.lastActivity || a.createdAt || ''
-          const tb = b.lastActivity || b.createdAt || ''
-          return tb.localeCompare(ta)
-        })
-        setSessions(filtered)
-        onSessionsLoaded?.(filtered)
+  useEffect(() => {
+    const employeeNames = Array.from(
+      new Set(
+        sessions
+          .map((session) => session.employee)
+          .filter((employee): employee is string => Boolean(employee && employee !== portalSlug))
+      )
+    )
+
+    if (employeeNames.length === 0) return
+
+    let cancelled = false
+    Promise.all(
+      employeeNames.map(async (name) => {
+        try {
+          const employee = await api.getEmployee(name)
+          return [name, employee as Employee] as const
+        } catch {
+          return null
+        }
       })
-      .catch(() => setSessions([]))
-      .finally(() => setLoading(false))
-  }, [onSessionsLoaded])
+    ).then((results) => {
+      if (cancelled) return
+      const next = new Map<string, Employee>()
+      for (const entry of results) {
+        if (entry) next.set(entry[0], entry[1])
+      }
+      setEmployeeData(next)
+    })
 
-  // Initial load + refreshKey changes
-  useEffect(() => {
-    setLoading(true)
-    fetchSessions()
-  }, [refreshKey, fetchSessions])
-
-  useEffect(() => {
-    if (!connectionSeq) return
-    fetchSessions()
-  }, [connectionSeq, fetchSessions])
-
-  // Auto-refresh sidebar on relevant WS events
-  useEffect(() => {
-    if (!events || events.length === 0) return
-    const latest = events[events.length - 1]
-    const eventKey = `${latest.event}:${JSON.stringify(latest.payload)}`
-    if (eventKey === lastEventKey.current) return
-    lastEventKey.current = eventKey
-
-    const shouldRefresh =
-      latest.event === 'session:started' ||
-      latest.event === 'session:completed' ||
-      latest.event === 'session:deleted' ||
-      latest.event === 'session:error'
-    if (shouldRefresh) {
-      fetchSessions()
+    return () => {
+      cancelled = true
     }
-  }, [events, fetchSessions])
+  }, [sessions, portalSlug])
 
   const toggleCronCollapsed = useCallback(() => {
-    setCollapsed(prev => {
+    setCollapsed((prev) => {
       const next = new Set(prev)
-      if (next.has('cron')) {
-        next.delete('cron')
-      } else {
-        next.add('cron')
-      }
+      if (next.has("cron")) next.delete("cron")
+      else next.add("cron")
       saveCollapsedState(next)
       return next
     })
   }, [])
 
-  const togglePin = useCallback((pinKey: string) => {
-    setPinnedSessions(prev => {
-      const next = new Set(prev)
-      if (next.has(pinKey)) {
-        next.delete(pinKey)
-      } else {
-        next.add(pinKey)
+  const toggleEmployeeExpanded = useCallback((empName: string) => {
+    setExpanded((prev) => {
+      const next = { ...prev, [empName]: !prev[empName] }
+      saveExpandedState(next)
+      if (!next[empName]) {
+        setFullyExpanded((fe) => {
+          if (!fe[empName]) return fe
+          const { [empName]: _, ...rest } = fe
+          return rest
+        })
       }
+      return next
+    })
+  }, [])
+
+  const togglePin = useCallback((pinKey: string) => {
+    setPinnedSessions((prev) => {
+      const next = new Set(prev)
+      if (next.has(pinKey)) next.delete(pinKey)
+      else next.add(pinKey)
       savePinnedSessions(next)
       return next
     })
   }, [])
 
+  const handleMarkAllRead = useCallback((empSessions: Session[]) => {
+    markAllReadForEmployee(empSessions)
+    setReadSessions((prev) => {
+      const next = new Set(prev)
+      for (const s of empSessions) next.add(s.id)
+      return next
+    })
+  }, [])
+
   async function handleDeleteEmployee(empName: string, empSessions: Session[]) {
-    const ids = empSessions.map(s => s.id)
+    const ids = empSessions.map((s) => s.id)
     try {
-      await api.bulkDeleteSessions(ids)
-      setSessions(prev => prev.filter(s => !ids.includes(s.id)))
-      setPinnedSessions(prev => {
+      await bulkDeleteMutation.mutateAsync(ids)
+      setPinnedSessions((prev) => {
         const next = new Set(prev)
         next.delete(`emp:${empName}`)
         for (const id of ids) next.delete(id)
@@ -273,15 +423,14 @@ export function ChatSidebar({
         return next
       })
       if (selectedId && ids.includes(selectedId)) onNewChat()
-    } catch { /* ignore */ }
+    } catch {}
     setConfirmDeleteEmployee(null)
   }
 
   async function handleDelete(sessionId: string) {
     try {
-      await api.deleteSession(sessionId)
-      setSessions((prev) => prev.filter((s) => s.id !== sessionId))
-      setPinnedSessions(prev => {
+      await deleteSessionMutation.mutateAsync(sessionId)
+      setPinnedSessions((prev) => {
         if (!prev.has(sessionId)) return prev
         const next = new Set(prev)
         next.delete(sessionId)
@@ -290,11 +439,10 @@ export function ChatSidebar({
       })
       if (onDelete) onDelete(sessionId)
       else if (selectedId === sessionId) onNewChat()
-    } catch { /* ignore */ }
+    } catch {}
     setConfirmDelete(null)
   }
 
-  // Build the displayed sessions list (search filtered)
   const displayed = search.trim()
     ? sessions.filter((s) => {
         const q = search.toLowerCase()
@@ -308,912 +456,450 @@ export function ChatSidebar({
       })
     : sessions
 
-  // Partition into cron, direct, and employee sessions
   const cronSessions: Session[] = []
   const directSessions: Session[] = []
   const employeeSessionMap = new Map<string, Session[]>()
 
   for (const s of displayed) {
-    if (isCronSession(s)) {
-      cronSessions.push(s)
-    } else if (isDirectSession(s, portalSlug)) {
-      directSessions.push(s)
-    } else {
+    if (isCronSession(s)) cronSessions.push(s)
+    else if (isDirectSession(s, portalSlug)) directSessions.push(s)
+    else {
       const emp = s.employee!
       if (!employeeSessionMap.has(emp)) employeeSessionMap.set(emp, [])
       employeeSessionMap.get(emp)!.push(s)
     }
   }
 
-  // Build flat items list (employee entries + direct sessions, mixed and sorted)
   const flatItems: FlatItem[] = []
 
-  // Employee entries — one per employee
   for (const [empName, empSessions] of employeeSessionMap) {
     const sorted = sortSessionsByActivity(empSessions)
-    const latestSession = sorted[0]
     flatItems.push({
-      type: 'employee',
+      type: "employee",
       employeeName: empName,
       employeeData: employeeData.get(empName),
       sessions: sorted,
-      sortKey: getSessionActivity(latestSession),
+      sortKey: getSessionActivity(sorted[0]),
       pinKey: `emp:${empName}`,
     })
   }
 
-  // Direct sessions — grouped into a single entry (like employees)
   if (directSessions.length > 0) {
     const sorted = sortSessionsByActivity(directSessions)
     flatItems.push({
-      type: 'employee',
+      type: "employee",
       employeeName: portalSlug,
-      employeeData: { name: portalSlug, displayName: portalName, emoji: '💬', department: 'direct', role: '', rank: 'manager', engine: '', model: '', persona: '' } as Employee,
+      employeeData: {
+        name: portalSlug,
+        displayName: portalName,
+        emoji: "\u{1F4AC}",
+        department: "direct",
+        role: "",
+        rank: "manager",
+        engine: "",
+        model: "",
+        persona: "",
+      } as Employee,
       sessions: sorted,
       sortKey: getSessionActivity(sorted[0]),
       pinKey: `emp:${portalSlug}`,
     })
   }
 
-  // Sort: pinned float to top, then by most recent activity
-  const pinnedFlat = flatItems.filter(item => pinnedSessions.has(item.pinKey))
+  const pinnedFlat = flatItems
+    .filter((item) => pinnedSessions.has(item.pinKey))
     .sort((a, b) => b.sortKey.localeCompare(a.sortKey))
-  const unpinnedFlat = flatItems.filter(item => !pinnedSessions.has(item.pinKey))
+  const unpinnedFlat = flatItems
+    .filter((item) => !pinnedSessions.has(item.pinKey))
     .sort((a, b) => b.sortKey.localeCompare(a.sortKey))
-  const sortedFlatItems = [...pinnedFlat, ...unpinnedFlat]
 
-  const cronCollapsed = collapsed.has('cron')
+  const cronCollapsed = collapsed.has("cron")
   const sortedCron = sortSessionsByActivity(cronSessions)
 
-  // Compute status dot colour for a session
-  function getStatusDotColor(session: Session, readSet: Set<string>): string {
-    if (session.status === 'running') return 'var(--system-blue)'
-    if (session.status === 'error') return 'var(--system-red)'
-    if (readSet.has(session.id)) return 'var(--text-quaternary)'
-    return 'var(--system-green)'
-  }
-
-  // Compute status dot for an employee entry (based on most recent session)
-  function getEmployeeStatusDot(empSessions: Session[], readSet: Set<string>): { color: string; pulse: boolean } {
-    const latest = empSessions[0]
-    if (!latest) return { color: 'var(--text-quaternary)', pulse: false }
-    const color = getStatusDotColor(latest, readSet)
-    const pulse = latest.status === 'running'
-    return { color, pulse }
-  }
-
-  // Check if any of an employee's sessions is currently selected
   function isEmployeeActive(empSessions: Session[]): boolean {
-    return empSessions.some(s => s.id === selectedId)
+    return empSessions.some((s) => s.id === selectedId)
   }
 
-  // Handle clicking an employee entry: select latest session + notify page of sibling sessions
   function handleEmployeeClick(item: FlatItem) {
+    const empName = item.employeeName!
+    const empSessions = item.sessions!
+    if (empSessions.length > 1) {
+      // Toggle expand/collapse — selecting latest session when expanding
+      const wasExpanded = expanded[empName] || false
+      toggleEmployeeExpanded(empName)
+      if (!wasExpanded) {
+        onSelect(empSessions[0].id)
+        onEmployeeSessionsAvailable?.(empSessions)
+      }
+    } else {
+      onSelect(empSessions[0].id)
+      onEmployeeSessionsAvailable?.(empSessions)
+    }
+  }
+
+  function renderSessionRow(session: Session, parentSessions?: Session[]) {
+    const sessionIsActive = session.id === selectedId
+    const sessionDotColor = getStatusDotColor(session, readSessions)
+    const sessionIsRunning = session.status === "running"
+    const sessionTitle = fixTitle(session.title, session.employee)
+    const sessionTime = formatTime(getSessionActivity(session))
+    const isPinned = pinnedSessions.has(session.id)
+    const isHovered = hoveredKey === session.id
+
+    return (
+      <ContextMenu key={session.id}>
+        <ContextMenuTrigger asChild>
+          <button
+            onClick={() => {
+              onSelect(session.id)
+              onEmployeeSessionsAvailable?.(parentSessions ?? [session])
+            }}
+            onMouseEnter={() => setHoveredKey(session.id)}
+            onMouseLeave={() => { if (hoveredKey !== `menu:${session.id}`) setHoveredKey(null) }}
+            className={cn(
+              "group relative flex w-full items-center gap-2.5 border-l-2 px-4 py-2 text-left transition-colors",
+              parentSessions
+                ? "pl-[67px]"
+                : "pl-6",
+              sessionIsActive
+                ? "border-l-[var(--accent)] bg-[var(--fill-secondary)]"
+                : "border-l-transparent hover:bg-accent"
+            )}
+          >
+            <StatusDot color={sessionDotColor} pulse={sessionIsRunning} className="size-1.5" />
+            <span
+              className={cn(
+                "min-w-0 flex-1 truncate text-xs",
+                sessionIsActive ? "font-semibold text-foreground" : "text-[var(--text-secondary)]"
+              )}
+            >
+              {sessionTitle || "Untitled"}
+            </span>
+            {isPinned ? (
+              <Pin className={cn("size-3 shrink-0 text-[var(--accent)]", isHovered && "hidden lg:hidden")} />
+            ) : null}
+            {/* Date on default, ... on hover (desktop only) */}
+            <span className={cn("shrink-0 text-[10px] text-[var(--text-quaternary)]", isHovered && "lg:hidden")}>{sessionTime}</span>
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                setHoveredKey(`menu:${session.id}`)
+              }}
+              className={cn(
+                "hidden shrink-0 text-muted-foreground transition-colors hover:text-foreground",
+                isHovered && "lg:block"
+              )}
+            >
+              <EllipsisVertical className="size-3.5" />
+            </button>
+            {hoveredKey === `menu:${session.id}` ? (
+              <div
+                className="absolute right-2 top-full z-50 min-w-[140px] overflow-hidden rounded-lg border border-border bg-[var(--material-thick)] py-1 shadow-[var(--shadow-overlay)] backdrop-blur-xl"
+                onMouseLeave={() => setHoveredKey(null)}
+              >
+                <button
+                  onClick={(e) => { e.stopPropagation(); togglePin(session.id); setHoveredKey(null) }}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-foreground transition-colors hover:bg-accent"
+                >
+                  <Pin className="size-3" /> {isPinned ? "Unpin" : "Pin"}
+                </button>
+                <div className="my-0.5 border-t border-border" />
+                <button
+                  onClick={(e) => { e.stopPropagation(); setConfirmDelete(session.id); setHoveredKey(null) }}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-[var(--system-red)] transition-colors hover:bg-accent"
+                >
+                  <Trash2 className="size-3" /> Delete
+                </button>
+              </div>
+            ) : null}
+          </button>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem onClick={() => togglePin(session.id)}>
+            {isPinned ? "Unpin" : "Pin"}
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem variant="destructive" onClick={() => setConfirmDelete(session.id)}>
+            Delete session
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+    )
+  }
+
+  function renderEmployeeItem(item: FlatItem) {
+    const empName = item.employeeName!
     const empSessions = item.sessions!
     const latestSession = empSessions[0]
-    onSelect(latestSession.id)
-    onEmployeeSessionsAvailable?.(empSessions)
+    const empInfo = item.employeeData
+    const displayName = empInfo?.displayName || empName
+    const emoji = empInfo?.emoji || "\u{1F916}"
+    const department = empInfo?.department || ""
+    const timeLabel = formatTime(getSessionActivity(latestSession))
+    const dotColor = getStatusDotColor(latestSession, readSessions)
+    const pulse = latestSession.status === "running"
+    const isActive = isEmployeeActive(empSessions)
+    const isPinned = pinnedSessions.has(item.pinKey)
+    const isHovered = hoveredKey === item.pinKey
+    const sessionCount = empSessions.length
+    const isExpanded = expanded[empName] || false
+    const hasUnread = empSessions.some(
+      (s) => !readSessions.has(s.id) && s.status !== "running" && s.status !== "error"
+    )
+
+    return (
+      <div key={item.pinKey}>
+        <ContextMenu>
+          <ContextMenuTrigger asChild>
+            <button
+              onClick={() => handleEmployeeClick(item)}
+              onMouseEnter={() => setHoveredKey(item.pinKey)}
+              onMouseLeave={() => { if (hoveredKey !== `menu:${item.pinKey}`) setHoveredKey(null) }}
+              className={cn(
+                "group relative flex w-full items-center gap-3 border-l-2 px-4 py-3 text-left transition-colors",
+                isActive
+                  ? "border-l-[var(--accent)] bg-[var(--fill-secondary)]"
+                  : "border-l-transparent hover:bg-accent"
+              )}
+            >
+              <div className="relative flex size-9 shrink-0 items-center justify-center rounded-full bg-[var(--fill-secondary)] text-lg">
+                {emoji}
+                <StatusDot
+                  color={dotColor}
+                  pulse={pulse}
+                  className="absolute -bottom-0.5 -right-0.5 size-2.5 border-2 border-[var(--sidebar-bg)]"
+                />
+              </div>
+
+              <div className="min-w-0 flex-1">
+                <div className="mb-0.5 flex items-baseline gap-2">
+                  <span
+                    className={cn(
+                      "min-w-0 flex-1 truncate text-[13px] tracking-[-0.2px] text-foreground",
+                      hasUnread || isActive ? "font-semibold" : "font-medium"
+                    )}
+                  >
+                    {displayName}
+                  </span>
+                  {/* Date on default, ... on hover (desktop only) */}
+                  <span className={cn("shrink-0 text-[10px] text-[var(--text-tertiary)]", isHovered && "lg:hidden")}>{timeLabel}</span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setHoveredKey(`menu:${item.pinKey}`)
+                    }}
+                    className={cn(
+                      "hidden shrink-0 text-muted-foreground transition-colors hover:text-foreground",
+                      isHovered && "lg:block"
+                    )}
+                  >
+                    <EllipsisVertical className="size-3.5" />
+                  </button>
+                </div>
+                <div className="flex items-center gap-1.5 overflow-hidden text-[11px] text-[var(--text-tertiary)]">
+                  {department ? <span className="truncate">{department}</span> : null}
+                  {sessionCount > 1 ? (
+                    <span className="shrink-0 rounded bg-[var(--fill-tertiary)] px-1.5 py-0.5 text-[10px]">
+                      {sessionCount} chats
+                    </span>
+                  ) : null}
+                  {isPinned ? (
+                    <Pin className="size-3 shrink-0 text-[var(--accent)]" />
+                  ) : null}
+                </div>
+              </div>
+
+              {hoveredKey === `menu:${item.pinKey}` ? (
+                <div
+                  className="absolute right-2 top-full z-50 min-w-[160px] overflow-hidden rounded-lg border border-border bg-[var(--material-thick)] py-1 shadow-[var(--shadow-overlay)] backdrop-blur-xl"
+                  onMouseLeave={() => setHoveredKey(null)}
+                >
+                  <button
+                    onClick={(e) => { e.stopPropagation(); togglePin(item.pinKey); setHoveredKey(null) }}
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-foreground transition-colors hover:bg-accent"
+                  >
+                    <Pin className="size-3" /> {isPinned ? "Unpin" : "Pin"}
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleMarkAllRead(empSessions); setHoveredKey(null) }}
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-foreground transition-colors hover:bg-accent"
+                  >
+                    Mark all as read
+                  </button>
+                  <div className="my-0.5 border-t border-border" />
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setConfirmDeleteEmployee({ name: empName, displayName, sessions: empSessions })
+                      setHoveredKey(null)
+                    }}
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-[var(--system-red)] transition-colors hover:bg-accent"
+                  >
+                    <Trash2 className="size-3" /> Delete all chats
+                  </button>
+                </div>
+              ) : null}
+            </button>
+          </ContextMenuTrigger>
+          <ContextMenuContent>
+            <ContextMenuItem onClick={() => togglePin(item.pinKey)}>
+              {isPinned ? "Unpin" : "Pin"}
+            </ContextMenuItem>
+            <ContextMenuItem onClick={() => handleMarkAllRead(empSessions)}>
+              Mark all as read
+            </ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
+
+        {isExpanded && sessionCount > 1 ? (
+          fullyExpanded[empName]
+            ? empSessions.map((session) => renderSessionRow(session, empSessions))
+            : empSessions.slice(0, 5).map((session) => renderSessionRow(session, empSessions))
+        ) : null}
+        {isExpanded && sessionCount > 5 && !fullyExpanded[empName] ? (
+          <button
+            onClick={() => setFullyExpanded((prev) => ({ ...prev, [empName]: true }))}
+            className="w-full cursor-pointer px-4 pb-2 pl-[67px] text-left text-[10px] text-[var(--text-quaternary)] transition-colors hover:text-[var(--text-secondary)]"
+          >
+            +{sessionCount - 5} more
+          </button>
+        ) : null}
+      </div>
+    )
   }
 
-  // Handle clicking a direct session
-  function handleDirectClick(session: Session) {
-    onSelect(session.id)
-    onEmployeeSessionsAvailable?.([session])
-  }
+  const hasPinnedItems = pinnedFlat.length > 0
 
   return (
-    <div style={{
-      display: 'flex',
-      flexDirection: 'column',
-      height: '100%',
-      background: 'var(--sidebar-bg)',
-      borderRight: '1px solid var(--separator)',
-    }}>
-      {/* Header */}
-      <div style={{
-        padding: 'var(--space-4) var(--space-4) var(--space-3)',
-        borderBottom: '1px solid var(--separator)',
-        background: 'var(--material-thick)',
-        flexShrink: 0,
-      }}>
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          marginBottom: 'var(--space-3)',
-        }}>
-          <h2 style={{
-            fontSize: 'var(--text-title3)',
-            fontWeight: 'var(--weight-bold)',
-            letterSpacing: '-0.5px',
-            color: 'var(--text-primary)',
-            margin: 0,
-          }}>
-            Chats
-          </h2>
-          <button
-            onClick={onNewChat}
-            aria-label="New chat"
-            style={{
-              padding: 'var(--space-1) var(--space-3)',
-              fontSize: 'var(--text-footnote)',
-              fontWeight: 'var(--weight-semibold)',
-              color: 'var(--accent-contrast)',
-              background: 'var(--accent)',
-              border: 'none',
-              borderRadius: 'var(--radius-md)',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 'var(--space-1)',
-            }}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-              <line x1="12" y1="5" x2="12" y2="19" />
-              <line x1="5" y1="12" x2="19" y2="12" />
-            </svg>
+    <div className="flex h-full flex-col border-r border-border bg-[var(--sidebar-bg)]">
+      <div className="shrink-0 border-b border-border bg-[var(--material-thick)] px-4 pb-3 pt-4">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-bold tracking-[-0.03em] text-foreground">Chats</h2>
+            <p className="text-xs text-muted-foreground">Sessions, employees, and cron runs</p>
+          </div>
+          <Button size="sm" className="gap-1.5" onClick={onNewChat}>
+            <Plus className="size-3.5" />
             New
-          </button>
+          </Button>
         </div>
 
-        {/* Search */}
-        <div style={{
-          background: 'var(--fill-tertiary)',
-          borderRadius: 'var(--radius-md)',
-          padding: '7px var(--space-3)',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 'var(--space-2)',
-        }}>
-          <svg
-            width="14" height="14" viewBox="0 0 24 24" fill="none"
-            stroke="var(--text-tertiary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-            style={{ flexShrink: 0 }}
-            aria-hidden="true"
-          >
-            <circle cx="11" cy="11" r="8" />
-            <line x1="21" y1="21" x2="16.65" y2="16.65" />
-          </svg>
+        <div className="flex items-center gap-2 rounded-[var(--radius-md)] bg-[var(--fill-tertiary)] px-3 py-2">
+          <Search className="size-3.5 shrink-0 text-[var(--text-tertiary)]" />
           <input
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search chats..."
             aria-label="Search chats"
-            style={{
-              flex: 1,
-              fontSize: 'var(--text-footnote)',
-              color: 'var(--text-primary)',
-              background: 'transparent',
-              border: 'none',
-              outline: 'none',
-              padding: 0,
-              margin: 0,
-              lineHeight: 1.4,
-            }}
+            className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-[var(--text-tertiary)]"
           />
-          {search.trim() && (
+          {search.trim() ? (
             <button
-              onClick={() => setSearch('')}
+              onClick={() => setSearch("")}
               aria-label="Clear search"
-              style={{
-                padding: 2,
-                borderRadius: '50%',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexShrink: 0,
-                background: 'transparent',
-                border: 'none',
-                cursor: 'pointer',
-                color: 'var(--text-tertiary)',
-              }}
+              className="rounded-full p-0.5 text-[var(--text-tertiary)] transition-colors hover:bg-[var(--fill-secondary)] hover:text-foreground"
             >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
+              <X className="size-3" />
             </button>
-          )}
+          ) : null}
         </div>
       </div>
 
-      {/* Session list */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: 'var(--space-1) 0' }}>
+      <div className="flex-1 overflow-y-auto py-1">
         {loading ? (
-          <div style={{ padding: 'var(--space-8) var(--space-4)', textAlign: 'center' }}>
-            <span style={{ fontSize: 'var(--text-caption1)', color: 'var(--text-quaternary)' }}>
-              Loading sessions...
-            </span>
+          <div className="px-4 py-8 text-center text-xs text-[var(--text-quaternary)]">
+            Loading sessions...
           </div>
-        ) : sortedFlatItems.length === 0 && cronSessions.length === 0 ? (
-          <div style={{ padding: 'var(--space-8) var(--space-4)', textAlign: 'center' }}>
-            <span style={{ fontSize: 'var(--text-caption1)', color: 'var(--text-quaternary)' }}>
-              {search.trim() ? 'No matching chats' : 'No conversations yet'}
-            </span>
+        ) : pinnedFlat.length === 0 && unpinnedFlat.length === 0 && cronSessions.length === 0 ? (
+          <div className="px-4 py-8 text-center text-xs text-[var(--text-quaternary)]">
+            {search.trim() ? "No matching chats" : "No conversations yet"}
           </div>
         ) : (
           <>
-            {/* Flat contact list: employee entries + direct sessions mixed */}
-            {sortedFlatItems.map((item) => {
-              if (item.type === 'employee') {
-                const empName = item.employeeName!
-                const empSessions = item.sessions!
-                const latestSession = empSessions[0]
-                const empInfo = item.employeeData
-                const displayName = empInfo?.displayName || empName
-                const emoji = empInfo?.emoji || '🤖'
-                const department = empInfo?.department || ''
-                const timeLabel = formatTime(getSessionActivity(latestSession))
-                const { color: dotColor, pulse } = getEmployeeStatusDot(empSessions, readSessions)
-                const isActive = isEmployeeActive(empSessions)
-                const isPinned = pinnedSessions.has(item.pinKey)
-                const isHovered = hoveredKey === item.pinKey
-                const sessionCount = empSessions.length
-                // Unread: any session in this employee group is unread
-                const hasUnread = empSessions.some(s => !readSessions.has(s.id) && s.status !== 'running' && s.status !== 'error')
+            {hasPinnedItems ? (
+              <>
+                <SectionLabel icon={"\u{1F4CC}"} label="Pinned" />
+                {pinnedFlat.map((item) => renderEmployeeItem(item))}
+                {unpinnedFlat.length > 0 ? <div className="mx-4 my-2 border-t border-border" /> : null}
+              </>
+            ) : null}
 
-                return (
-                  <button
-                    key={item.pinKey}
-                    onClick={() => handleEmployeeClick(item)}
-                    onMouseEnter={() => setHoveredKey(item.pinKey)}
-                    onMouseLeave={() => setHoveredKey(null)}
-                    style={{
-                      width: '100%',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 'var(--space-3)',
-                      padding: 'var(--space-3) var(--space-4)',
-                      background: isActive ? 'var(--fill-secondary)' : 'transparent',
-                      border: 'none',
-                      cursor: 'pointer',
-                      textAlign: 'left',
-                      borderLeft: isActive ? '2px solid var(--accent)' : '2px solid transparent',
-                      position: 'relative',
-                    }}
-                  >
-                    {/* Emoji avatar */}
-                    <div style={{
-                      width: 36,
-                      height: 36,
-                      borderRadius: '50%',
-                      background: 'var(--fill-secondary)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontSize: 18,
-                      flexShrink: 0,
-                      position: 'relative',
-                    }}>
-                      {emoji}
-                      {/* Status dot on avatar */}
-                      <div style={{
-                        position: 'absolute',
-                        bottom: 0,
-                        right: 0,
-                        width: 10,
-                        height: 10,
-                        borderRadius: '50%',
-                        background: dotColor,
-                        border: '2px solid var(--sidebar-bg)',
-                        animation: pulse ? 'sidebar-pulse 2s ease-in-out infinite' : 'none',
-                        boxShadow: pulse ? `0 0 5px ${dotColor}` : 'none',
-                      }} />
-                    </div>
+            {unpinnedFlat.map((item) => renderEmployeeItem(item))}
 
-                    {/* Text content */}
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'baseline',
-                        marginBottom: 2,
-                      }}>
-                        <span style={{
-                          fontSize: 'var(--text-footnote)',
-                          fontWeight: hasUnread || isActive ? 'var(--weight-semibold)' : 'var(--weight-medium)',
-                          color: 'var(--text-primary)',
-                          letterSpacing: '-0.2px',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                          flex: 1,
-                          minWidth: 0,
-                        }}>
-                          {displayName}
-                        </span>
-                        <span style={{
-                          fontSize: 'var(--text-caption2)',
-                          color: 'var(--text-tertiary)',
-                          flexShrink: 0,
-                          marginLeft: 'var(--space-1)',
-                        }}>
-                          {timeLabel}
-                        </span>
-                      </div>
-                      <div style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 'var(--space-1)',
-                        fontSize: 'var(--text-caption1)',
-                        color: 'var(--text-tertiary)',
-                        overflow: 'hidden',
-                      }}>
-                        {department && (
-                          <span style={{
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
-                            flex: 1,
-                            minWidth: 0,
-                          }}>
-                            {department}
-                          </span>
-                        )}
-                        {sessionCount > 1 && (
-                          <span style={{
-                            flexShrink: 0,
-                            background: 'var(--fill-tertiary)',
-                            borderRadius: 'var(--radius-sm)',
-                            padding: '0 5px',
-                            lineHeight: '16px',
-                            fontSize: 'var(--text-caption2)',
-                            whiteSpace: 'nowrap',
-                          }}>
-                            {sessionCount} chats
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Pin indicator (when not hovered) */}
-                    {isPinned && !isHovered && (
-                      <span style={{ fontSize: 11, flexShrink: 0, opacity: 0.5 }}>📌</span>
-                    )}
-
-                    {/* Action buttons on hover */}
-                    {isHovered && (
-                      <>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); togglePin(item.pinKey) }}
-                          aria-label={isPinned ? 'Unpin' : 'Pin'}
-                          style={{
-                            padding: 4,
-                            borderRadius: 'var(--radius-sm)',
-                            background: 'transparent',
-                            border: 'none',
-                            cursor: 'pointer',
-                            color: isPinned ? 'var(--accent)' : 'var(--text-tertiary)',
-                            display: 'flex',
-                            alignItems: 'center',
-                            flexShrink: 0,
-                            transition: 'color 150ms ease',
-                          }}
-                          onMouseEnter={(e) => { if (!isPinned) e.currentTarget.style.color = 'var(--accent)' }}
-                          onMouseLeave={(e) => { if (!isPinned) e.currentTarget.style.color = 'var(--text-tertiary)' }}
-                        >
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill={isPinned ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M12 17v5" />
-                            <path d="M9 2h6l-1 7h4l-2 4H8l-2-4h4L9 2z" />
-                          </svg>
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            const empInfo = item.employeeData
-                            setConfirmDeleteEmployee({
-                              name: empName,
-                              displayName: empInfo?.displayName || empName,
-                              sessions: empSessions,
-                            })
-                          }}
-                          aria-label={`Delete all chats with ${displayName}`}
-                          style={{
-                            padding: 4,
-                            borderRadius: 'var(--radius-sm)',
-                            background: 'transparent',
-                            border: 'none',
-                            cursor: 'pointer',
-                            color: 'var(--text-tertiary)',
-                            display: 'flex',
-                            alignItems: 'center',
-                            flexShrink: 0,
-                            transition: 'color 150ms ease',
-                          }}
-                          onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--system-red)')}
-                          onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-tertiary)')}
-                        >
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <polyline points="3 6 5 6 21 6" />
-                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                          </svg>
-                        </button>
-                      </>
-                    )}
-                  </button>
-                )
-              }
-
-              // Direct session entry
-              const session = item.session!
-              const isActive = session.id === selectedId
-              const isHovered = hoveredKey === item.pinKey
-              const isRunning = session.status === 'running'
-              const isRead = readSessions.has(session.id)
-              const isError = session.status === 'error'
-              const isPinned = pinnedSessions.has(item.pinKey)
-              const timeLabel = formatTime(getSessionActivity(session))
-
-              let dotColor: string
-              if (isRunning) dotColor = 'var(--system-blue)'
-              else if (isError) dotColor = 'var(--system-red)'
-              else if (isRead) dotColor = 'var(--text-quaternary)'
-              else dotColor = 'var(--system-green)'
-
-              return (
+            {cronSessions.length > 0 ? (
+              <div className={cn("mt-2", pinnedFlat.length === 0 && unpinnedFlat.length === 0 && "mt-0")}>
                 <button
-                  key={item.pinKey}
-                  onClick={() => handleDirectClick(session)}
-                  onMouseEnter={() => setHoveredKey(item.pinKey)}
+                  onClick={toggleCronCollapsed}
+                  onMouseEnter={() => setHoveredKey("cron-header")}
                   onMouseLeave={() => setHoveredKey(null)}
-                  style={{
-                    width: '100%',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 'var(--space-3)',
-                    padding: 'var(--space-3) var(--space-4)',
-                    background: isActive ? 'var(--fill-secondary)' : 'transparent',
-                    border: 'none',
-                    cursor: 'pointer',
-                    textAlign: 'left',
-                    borderLeft: isActive ? '2px solid var(--accent)' : '2px solid transparent',
-                    position: 'relative',
-                  }}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left transition-colors hover:bg-accent"
                 >
-                  {/* Emoji avatar for direct session */}
-                  <div style={{
-                    width: 36,
-                    height: 36,
-                    borderRadius: '50%',
-                    background: 'var(--fill-secondary)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: 18,
-                    flexShrink: 0,
-                    position: 'relative',
-                  }}>
-                    💬
-                    <div style={{
-                      position: 'absolute',
-                      bottom: 0,
-                      right: 0,
-                      width: 10,
-                      height: 10,
-                      borderRadius: '50%',
-                      background: dotColor,
-                      border: '2px solid var(--sidebar-bg)',
-                      animation: isRunning ? 'sidebar-pulse 2s ease-in-out infinite' : 'none',
-                      boxShadow: isRunning ? `0 0 5px ${dotColor}` : 'none',
-                    }} />
-                  </div>
-
-                  {/* Text content */}
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'baseline',
-                      marginBottom: 2,
-                    }}>
-                      <span style={{
-                        fontSize: 'var(--text-footnote)',
-                        fontWeight: isRead && !isActive ? 'var(--weight-medium)' : 'var(--weight-semibold)',
-                        color: 'var(--text-primary)',
-                        letterSpacing: '-0.2px',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                        flex: 1,
-                        minWidth: 0,
-                      }}>
-                        {fixTitle(session.title, session.employee)}
-                      </span>
-                      <span style={{
-                        fontSize: 'var(--text-caption2)',
-                        color: 'var(--text-tertiary)',
-                        flexShrink: 0,
-                        marginLeft: 'var(--space-1)',
-                      }}>
-                        {timeLabel}
-                      </span>
-                    </div>
-                    <div style={{
-                      fontSize: 'var(--text-caption1)',
-                      color: 'var(--text-tertiary)',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}>
-                      {portalName}
-                    </div>
-                  </div>
-
-                  {/* Pin indicator (when not hovered) */}
-                  {isPinned && !isHovered && (
-                    <span style={{ fontSize: 11, flexShrink: 0, opacity: 0.5 }}>📌</span>
-                  )}
-
-                  {/* Action buttons on hover */}
-                  {isHovered && (
-                    <>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); togglePin(item.pinKey) }}
-                        aria-label={isPinned ? 'Unpin session' : 'Pin session'}
-                        style={{
-                          padding: 4,
-                          borderRadius: 'var(--radius-sm)',
-                          background: 'transparent',
-                          border: 'none',
-                          cursor: 'pointer',
-                          color: isPinned ? 'var(--accent)' : 'var(--text-tertiary)',
-                          display: 'flex',
-                          alignItems: 'center',
-                          flexShrink: 0,
-                          transition: 'color 150ms ease',
-                        }}
-                        onMouseEnter={(e) => { if (!isPinned) e.currentTarget.style.color = 'var(--accent)' }}
-                        onMouseLeave={(e) => { if (!isPinned) e.currentTarget.style.color = 'var(--text-tertiary)' }}
-                      >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill={isPinned ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M12 17v5" />
-                          <path d="M9 2h6l-1 7h4l-2 4H8l-2-4h4L9 2z" />
-                        </svg>
-                      </button>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); setConfirmDelete(session.id) }}
-                        aria-label="Delete session"
-                        style={{
-                          padding: 4,
-                          borderRadius: 'var(--radius-sm)',
-                          background: 'transparent',
-                          border: 'none',
-                          cursor: 'pointer',
-                          color: 'var(--text-tertiary)',
-                          display: 'flex',
-                          alignItems: 'center',
-                          flexShrink: 0,
-                          transition: 'color 150ms ease',
-                        }}
-                        onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--system-red)')}
-                        onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-tertiary)')}
-                      >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <polyline points="3 6 5 6 21 6" />
-                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                        </svg>
-                      </button>
-                    </>
-                  )}
+                  <Clock3 className="size-3.5 text-muted-foreground" />
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                    Scheduled
+                  </span>
+                  <span className="ml-auto rounded bg-[var(--fill-tertiary)] px-1.5 py-0.5 text-[10px] text-[var(--text-secondary)]">
+                    {cronSessions.length}
+                  </span>
+                  <ChevronDown className={cn("size-3.5 text-muted-foreground transition-transform", cronCollapsed && "-rotate-90")} />
                 </button>
-              )
-            })}
-
-            {/* Cron section — collapsible, always at bottom */}
-            {cronSessions.length > 0 && (
-              <div style={{ marginTop: sortedFlatItems.length > 0 ? 'var(--space-2)' : 0 }}>
-                {/* Cron group header */}
-                <div
-                  onMouseEnter={() => setHoveredKey('cron-header')}
-                  onMouseLeave={() => setHoveredKey(null)}
-                  style={{ display: 'flex', alignItems: 'center', marginTop: 'var(--space-1)' }}
-                >
-                  <button
-                    onClick={toggleCronCollapsed}
-                    style={{
-                      flex: 1,
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 'var(--space-2)',
-                      padding: 'var(--space-2) var(--space-4)',
-                      paddingRight: 'var(--space-1)',
-                      background: 'transparent',
-                      border: 'none',
-                      cursor: 'pointer',
-                      textAlign: 'left',
-                    }}
-                  >
-                    <span style={{ fontSize: 'var(--text-caption1)' }}>⏰</span>
-                    <span style={{
-                      fontSize: 'var(--text-caption1)',
-                      fontWeight: 'var(--weight-semibold)',
-                      color: 'var(--text-secondary)',
-                      letterSpacing: '0.3px',
-                      textTransform: 'uppercase',
-                      flex: 1,
-                    }}>
-                      Scheduled
-                    </span>
-                    <span style={{
-                      fontSize: 'var(--text-caption2)',
-                      color: 'var(--text-tertiary)',
-                      background: 'var(--fill-tertiary)',
-                      borderRadius: 'var(--radius-sm)',
-                      padding: '0 5px',
-                      lineHeight: '18px',
-                      minWidth: 18,
-                      textAlign: 'center',
-                    }}>
-                      {cronSessions.length}
-                    </span>
-                    <svg
-                      width="10" height="10" viewBox="0 0 24 24" fill="none"
-                      stroke="var(--text-tertiary)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
-                      style={{
-                        flexShrink: 0,
-                        transition: 'transform 150ms ease',
-                        transform: cronCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
-                      }}
-                    >
-                      <polyline points="6 9 12 15 18 9" />
-                    </svg>
-                  </button>
-                </div>
-
-                {/* Cron sessions list */}
-                {!cronCollapsed && sortedCron.map((session) => {
-                  const isActive = session.id === selectedId
-                  const isHovered = hoveredKey === session.id
-                  const isRunning = session.status === 'running'
-                  const isRead = readSessions.has(session.id)
-                  const isError = session.status === 'error'
-                  const isPinned = pinnedSessions.has(session.id)
-                  const timeLabel = formatTime(getSessionActivity(session))
-
-                  let dotColor: string
-                  if (isRunning) dotColor = 'var(--system-blue)'
-                  else if (isError) dotColor = 'var(--system-red)'
-                  else if (isRead) dotColor = 'var(--text-quaternary)'
-                  else dotColor = 'var(--system-green)'
-
-                  return (
-                    <button
-                      key={session.id}
-                      onClick={() => { onSelect(session.id); onEmployeeSessionsAvailable?.([session]) }}
-                      onMouseEnter={() => setHoveredKey(session.id)}
-                      onMouseLeave={() => setHoveredKey(null)}
-                      style={{
-                        width: '100%',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 'var(--space-3)',
-                        padding: 'var(--space-3) var(--space-4)',
-                        paddingLeft: 'calc(var(--space-4) + 8px)',
-                        background: isActive ? 'var(--fill-secondary)' : 'transparent',
-                        border: 'none',
-                        cursor: 'pointer',
-                        textAlign: 'left',
-                        borderLeft: isActive ? '2px solid var(--accent)' : '2px solid transparent',
-                        position: 'relative',
-                      }}
-                    >
-                      {/* Status dot */}
-                      <div style={{
-                        width: 8,
-                        height: 8,
-                        borderRadius: '50%',
-                        background: dotColor,
-                        flexShrink: 0,
-                        animation: isRunning ? 'sidebar-pulse 2s ease-in-out infinite' : 'none',
-                        boxShadow: isRunning ? `0 0 6px ${dotColor}` : 'none',
-                      }} />
-
-                      {/* Text content */}
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'baseline',
-                          marginBottom: 2,
-                        }}>
-                          <span style={{
-                            fontSize: 'var(--text-footnote)',
-                            fontWeight: isRead && !isActive ? 'var(--weight-medium)' : 'var(--weight-semibold)',
-                            color: 'var(--text-primary)',
-                            letterSpacing: '-0.2px',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
-                            flex: 1,
-                            minWidth: 0,
-                          }}>
-                            {fixTitle(session.title, session.employee)}
-                          </span>
-                          <span style={{
-                            fontSize: 'var(--text-caption2)',
-                            color: 'var(--text-tertiary)',
-                            flexShrink: 0,
-                            marginLeft: 'var(--space-1)',
-                          }}>
-                            {timeLabel}
-                          </span>
-                        </div>
-                        <div style={{
-                          fontSize: 'var(--text-caption1)',
-                          color: 'var(--text-tertiary)',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                        }}>
-                          {session.employee || portalName}
-                        </div>
-                      </div>
-
-                      {/* Pin indicator */}
-                      {isPinned && !isHovered && (
-                        <span style={{ fontSize: 11, flexShrink: 0, opacity: 0.5 }}>📌</span>
-                      )}
-
-                      {/* Action buttons on hover */}
-                      {isHovered && (
-                        <>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); togglePin(session.id) }}
-                            aria-label={isPinned ? 'Unpin session' : 'Pin session'}
-                            style={{
-                              padding: 4,
-                              borderRadius: 'var(--radius-sm)',
-                              background: 'transparent',
-                              border: 'none',
-                              cursor: 'pointer',
-                              color: isPinned ? 'var(--accent)' : 'var(--text-tertiary)',
-                              display: 'flex',
-                              alignItems: 'center',
-                              flexShrink: 0,
-                              transition: 'color 150ms ease',
-                            }}
-                            onMouseEnter={(e) => { if (!isPinned) e.currentTarget.style.color = 'var(--accent)' }}
-                            onMouseLeave={(e) => { if (!isPinned) e.currentTarget.style.color = 'var(--text-tertiary)' }}
-                          >
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill={isPinned ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                              <path d="M12 17v5" />
-                              <path d="M9 2h6l-1 7h4l-2 4H8l-2-4h4L9 2z" />
-                            </svg>
-                          </button>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); setConfirmDelete(session.id) }}
-                            aria-label="Delete session"
-                            style={{
-                              padding: 4,
-                              borderRadius: 'var(--radius-sm)',
-                              background: 'transparent',
-                              border: 'none',
-                              cursor: 'pointer',
-                              color: 'var(--text-tertiary)',
-                              display: 'flex',
-                              alignItems: 'center',
-                              flexShrink: 0,
-                              transition: 'color 150ms ease',
-                            }}
-                            onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--system-red)')}
-                            onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-tertiary)')}
-                          >
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                              <polyline points="3 6 5 6 21 6" />
-                              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                            </svg>
-                          </button>
-                        </>
-                      )}
-                    </button>
-                  )
-                })}
+                {!cronCollapsed ? sortedCron.map((session) => renderSessionRow(session)) : null}
               </div>
-            )}
+            ) : null}
           </>
         )}
       </div>
 
-      {/* Confirm delete single session dialog */}
-      {confirmDelete && (
-        <div
-          style={{
-            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-            background: 'rgba(0,0,0,0.5)', zIndex: 60,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}
-          onClick={() => setConfirmDelete(null)}
-        >
-          <div
-            style={{
-              background: 'var(--bg)', borderRadius: 'var(--radius-lg)',
-              padding: 'var(--space-6)', maxWidth: 400, width: '90%',
-              boxShadow: 'var(--shadow-overlay)',
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 style={{ fontSize: 'var(--text-headline)', fontWeight: 'var(--weight-bold)', color: 'var(--text-primary)', marginBottom: 'var(--space-2)' }}>
-              Delete Session?
-            </h3>
-            <p style={{ fontSize: 'var(--text-body)', color: 'var(--text-secondary)', marginBottom: 'var(--space-5)' }}>
-              This will permanently delete the session and all its messages.
-            </p>
-            <div style={{ display: 'flex', gap: 'var(--space-3)', justifyContent: 'flex-end' }}>
-              <button
-                onClick={() => setConfirmDelete(null)}
-                style={{
-                  padding: 'var(--space-2) var(--space-4)', borderRadius: 'var(--radius-md)',
-                  background: 'var(--fill-tertiary)', color: 'var(--text-primary)',
-                  border: 'none', cursor: 'pointer', fontSize: 'var(--text-body)',
-                }}
-              >Cancel</button>
-              <button
-                onClick={() => handleDelete(confirmDelete)}
-                style={{
-                  padding: 'var(--space-2) var(--space-4)', borderRadius: 'var(--radius-md)',
-                  background: 'var(--system-red)', color: '#fff',
-                  border: 'none', cursor: 'pointer', fontSize: 'var(--text-body)',
-                  fontWeight: 'var(--weight-semibold)',
-                }}
-              >Delete</button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmationDialog
+        open={!!confirmDelete}
+        onOpenChange={(open) => {
+          if (!open) setConfirmDelete(null)
+        }}
+        title="Delete Session?"
+        description="This will permanently delete the session and all its messages."
+        confirmLabel="Delete"
+        onConfirm={() => confirmDelete && handleDelete(confirmDelete)}
+      />
 
-      {/* Confirm delete employee (all their sessions) dialog */}
-      {confirmDeleteEmployee && (
-        <div
-          style={{
-            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-            background: 'rgba(0,0,0,0.5)', zIndex: 60,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}
-          onClick={() => setConfirmDeleteEmployee(null)}
-        >
-          <div
-            style={{
-              background: 'var(--bg)', borderRadius: 'var(--radius-lg)',
-              padding: 'var(--space-6)', maxWidth: 400, width: '90%',
-              boxShadow: 'var(--shadow-overlay)',
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 style={{ fontSize: 'var(--text-headline)', fontWeight: 'var(--weight-bold)', color: 'var(--text-primary)', marginBottom: 'var(--space-2)' }}>
-              Delete All Chats?
-            </h3>
-            <p style={{ fontSize: 'var(--text-body)', color: 'var(--text-secondary)', marginBottom: 'var(--space-5)' }}>
-              Delete all {confirmDeleteEmployee.sessions.length} chat{confirmDeleteEmployee.sessions.length !== 1 ? 's' : ''} with &ldquo;{confirmDeleteEmployee.displayName}&rdquo;? This cannot be undone.
-            </p>
-            <div style={{ display: 'flex', gap: 'var(--space-3)', justifyContent: 'flex-end' }}>
-              <button
-                onClick={() => setConfirmDeleteEmployee(null)}
-                style={{
-                  padding: 'var(--space-2) var(--space-4)', borderRadius: 'var(--radius-md)',
-                  background: 'var(--fill-tertiary)', color: 'var(--text-primary)',
-                  border: 'none', cursor: 'pointer', fontSize: 'var(--text-body)',
-                }}
-              >Cancel</button>
-              <button
-                onClick={() => handleDeleteEmployee(confirmDeleteEmployee.name, confirmDeleteEmployee.sessions)}
-                style={{
-                  padding: 'var(--space-2) var(--space-4)', borderRadius: 'var(--radius-md)',
-                  background: 'var(--system-red)', color: '#fff',
-                  border: 'none', cursor: 'pointer', fontSize: 'var(--text-body)',
-                  fontWeight: 'var(--weight-semibold)',
-                }}
-              >Delete {confirmDeleteEmployee.sessions.length} Chat{confirmDeleteEmployee.sessions.length !== 1 ? 's' : ''}</button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmationDialog
+        open={!!confirmDeleteEmployee}
+        onOpenChange={(open) => {
+          if (!open) setConfirmDeleteEmployee(null)
+        }}
+        title="Delete All Chats?"
+        description={
+          confirmDeleteEmployee ? (
+            <>
+              Delete all {confirmDeleteEmployee.sessions.length} chat
+              {confirmDeleteEmployee.sessions.length !== 1 ? "s" : ""} with{" "}
+              <span className="font-medium text-foreground">&ldquo;{confirmDeleteEmployee.displayName}&rdquo;</span>?
+              This cannot be undone.
+            </>
+          ) : null
+        }
+        confirmLabel={
+          confirmDeleteEmployee
+            ? `Delete ${confirmDeleteEmployee.sessions.length} Chat${confirmDeleteEmployee.sessions.length !== 1 ? "s" : ""}`
+            : "Delete"
+        }
+        onConfirm={() =>
+          confirmDeleteEmployee &&
+          handleDeleteEmployee(confirmDeleteEmployee.name, confirmDeleteEmployee.sessions)
+        }
+      />
 
-      {/* Pulse animation for running sessions */}
-      <style>{`
+      <style jsx>{`
         @keyframes sidebar-pulse {
-          0%, 100% { opacity: 1; transform: scale(1); }
-          50% { opacity: 0.5; transform: scale(0.85); }
+          0%,
+          100% {
+            opacity: 1;
+            transform: scale(1);
+          }
+          50% {
+            opacity: 0.55;
+            transform: scale(0.85);
+          }
         }
       `}</style>
     </div>

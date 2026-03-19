@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { RefreshCw, Radio } from "lucide-react"
 import { api } from "@/lib/api"
-import { PageLayout } from "@/components/page-layout"
+import { PageLayout, ToolbarActions } from "@/components/page-layout"
 import { LogBrowser, parseLogLine } from "@/components/activity/log-browser"
 
 /* ── Summary Cards ─────────────────────────────────────────────── */
@@ -20,43 +20,17 @@ function SummaryCard({
   pulse?: boolean
 }) {
   return (
-    <div
-      style={{
-        background: "var(--material-regular)",
-        border: "1px solid var(--separator)",
-        borderRadius: "var(--radius-md)",
-        padding: "var(--space-4)",
-      }}
-    >
-      <div
-        style={{
-          fontSize: "var(--text-caption1)",
-          color: "var(--text-tertiary)",
-          fontWeight: "var(--weight-medium)",
-          marginBottom: "var(--space-1)",
-        }}
-      >
+    <div className="bg-[var(--material-regular)] border border-[var(--separator)] rounded-[var(--radius-md)] p-[var(--space-4)]">
+      <div className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)] font-[var(--weight-medium)] mb-[var(--space-1)]">
         {label}
       </div>
-      <div className="flex items-center" style={{ gap: "var(--space-2)" }}>
+      <div className="flex items-center gap-[var(--space-2)]">
         {pulse && value > 0 && (
-          <span
-            className="animate-error-pulse"
-            style={{
-              width: 8,
-              height: 8,
-              borderRadius: "50%",
-              background: "var(--system-red)",
-              flexShrink: 0,
-            }}
-          />
+          <span className="animate-error-pulse w-2 h-2 rounded-full bg-[var(--system-red)] shrink-0" />
         )}
         <span
-          style={{
-            fontSize: "var(--text-title2)",
-            fontWeight: "var(--weight-bold)",
-            color: color ?? "var(--text-primary)",
-          }}
+          className="text-[length:var(--text-title2)] font-[var(--weight-bold)]"
+          style={{ color: color ?? "var(--text-primary)" }}
         >
           {value}
         </span>
@@ -123,47 +97,25 @@ export default function LogsPage() {
 
   return (
     <PageLayout>
-      <div
-        className="h-full flex flex-col overflow-hidden animate-fade-in"
-        style={{ background: "var(--bg)" }}
-      >
+      <div className="h-full flex flex-col overflow-hidden animate-fade-in bg-[var(--bg)]">
         {/* Sticky header */}
         <header
-          className="sticky top-0 z-10 flex-shrink-0"
+          className="sticky top-0 z-10 flex-shrink-0 bg-[var(--material-regular)] border-b border-[var(--separator)]"
           style={{
-            background: "var(--material-regular)",
             backdropFilter: "blur(40px) saturate(180%)",
             WebkitBackdropFilter: "blur(40px) saturate(180%)",
-            borderBottom: "1px solid var(--separator)",
           }}
         >
-          <div
-            className="flex items-center justify-between"
-            style={{ padding: "var(--space-4) var(--space-6)" }}
-          >
+          <div className="flex items-center justify-between px-[var(--space-6)] py-[var(--space-4)]">
             <div>
-              <h1
-                style={{
-                  fontSize: "var(--text-title1)",
-                  fontWeight: "var(--weight-bold)",
-                  color: "var(--text-primary)",
-                  letterSpacing: "-0.5px",
-                  lineHeight: "var(--leading-tight)",
-                }}
-              >
+              <h1 className="text-[length:var(--text-title1)] font-[var(--weight-bold)] text-[var(--text-primary)] tracking-[-0.5px] leading-[var(--leading-tight)]">
                 Activity Console
               </h1>
               {!loading && (
-                <p
-                  style={{
-                    fontSize: "var(--text-footnote)",
-                    color: "var(--text-secondary)",
-                    marginTop: "var(--space-1)",
-                  }}
-                >
+                <p className="text-[length:var(--text-footnote)] text-[var(--text-secondary)] mt-[var(--space-1)]">
                   {totalCount} event{totalCount !== 1 ? "s" : ""}
                   {errorCount > 0 && (
-                    <span style={{ color: "var(--system-red)" }}>
+                    <span className="text-[var(--system-red)]">
                       {" \u00b7 "}
                       {errorCount} error{errorCount !== 1 ? "s" : ""}
                     </span>
@@ -171,112 +123,54 @@ export default function LogsPage() {
                 </p>
               )}
             </div>
-            <div
-              className="flex items-center"
-              style={{ gap: "var(--space-3)" }}
-            >
-              {/* Open Live Stream */}
-              <button
-                onClick={() =>
-                  window.dispatchEvent(new CustomEvent("open-live-stream"))
-                }
-                className="focus-ring flex items-center"
-                style={{
-                  padding: "6px 14px",
-                  borderRadius: "var(--radius-sm)",
-                  border: "none",
-                  cursor: "pointer",
-                  fontSize: "var(--text-footnote)",
-                  fontWeight: "var(--weight-semibold)",
-                  gap: 6,
-                  background: "var(--accent-fill)",
-                  color: "var(--accent)",
-                  transition: "all 200ms var(--ease-smooth)",
-                }}
-              >
-                <Radio size={14} />
-                Open Live Stream
-              </button>
+            <ToolbarActions>
+              <div className="flex items-center gap-[var(--space-3)]">
+                {/* Open Live Stream */}
+                <button
+                  onClick={() =>
+                    window.dispatchEvent(new CustomEvent("open-live-stream"))
+                  }
+                  className="focus-ring flex items-center py-[6px] px-[14px] rounded-[var(--radius-sm)] border-none cursor-pointer text-[length:var(--text-footnote)] font-[var(--weight-semibold)] gap-1.5 bg-[var(--accent-fill)] text-[var(--accent)] transition-all duration-200 ease-[var(--ease-smooth)]"
+                >
+                  <Radio size={14} />
+                  Open Live Stream
+                </button>
 
-              <span
-                style={{
-                  fontSize: "var(--text-caption1)",
-                  color: "var(--text-tertiary)",
-                }}
-              >
-                Updated {updatedAgo}
-              </span>
-              <button
-                onClick={refresh}
-                className="focus-ring"
-                aria-label="Refresh logs"
-                style={{
-                  width: 32,
-                  height: 32,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  borderRadius: "var(--radius-sm)",
-                  border: "none",
-                  background: "transparent",
-                  color: "var(--text-tertiary)",
-                  cursor: "pointer",
-                  transition: "color 150ms var(--ease-smooth)",
-                }}
-              >
-                <RefreshCw
-                  size={16}
-                  className={refreshing ? "animate-spin" : ""}
-                />
-              </button>
-            </div>
+                <span className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">
+                  Updated {updatedAgo}
+                </span>
+                <button
+                  onClick={refresh}
+                  className="focus-ring w-8 h-8 flex items-center justify-center rounded-[var(--radius-sm)] border-none bg-transparent text-[var(--text-tertiary)] cursor-pointer transition-colors duration-150 ease-[var(--ease-smooth)]"
+                  aria-label="Refresh logs"
+                >
+                  <RefreshCw
+                    size={16}
+                    className={refreshing ? "animate-spin" : ""}
+                  />
+                </button>
+              </div>
+            </ToolbarActions>
           </div>
         </header>
 
         {/* Scrollable content */}
-        <div
-          className="flex-1 overflow-y-auto flex flex-col"
-          style={{
-            padding: "var(--space-4) var(--space-6) var(--space-6)",
-            minHeight: 0,
-          }}
-        >
+        <div className="flex-1 overflow-y-auto flex flex-col px-[var(--space-6)] pt-[var(--space-4)] pb-[var(--space-6)] min-h-0">
           {/* Error banner */}
           {error && (
-            <div
-              style={{
-                marginBottom: "var(--space-3)",
-                padding: "var(--space-3) var(--space-4)",
-                borderRadius: "var(--radius-md)",
-                background: "rgba(255,69,58,0.06)",
-                border: "1px solid rgba(255,69,58,0.15)",
-                fontSize: "var(--text-footnote)",
-                color: "var(--system-red)",
-              }}
-            >
+            <div className="mb-[var(--space-3)] px-[var(--space-4)] py-[var(--space-3)] rounded-[var(--radius-md)] bg-[rgba(255,69,58,0.06)] border border-[rgba(255,69,58,0.15)] text-[length:var(--text-footnote)] text-[var(--system-red)]">
               Failed to load logs: {error}
             </div>
           )}
 
           {loading ? (
-            <div
-              className="flex items-center justify-center"
-              style={{ height: 200, color: "var(--text-tertiary)" }}
-            >
+            <div className="flex items-center justify-center h-[200px] text-[var(--text-tertiary)]">
               Loading...
             </div>
           ) : (
             <>
               {/* Summary cards */}
-              <div
-                className="summary-cards-grid"
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(4, 1fr)",
-                  gap: "var(--space-3)",
-                  marginBottom: "var(--space-4)",
-                }}
-              >
+              <div className="summary-cards-grid grid grid-cols-4 gap-[var(--space-3)] mb-[var(--space-4)]">
                 <SummaryCard label="Total Events" value={totalCount} />
                 <SummaryCard
                   label="Errors"

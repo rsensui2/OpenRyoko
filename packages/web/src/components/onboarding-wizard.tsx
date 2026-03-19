@@ -147,50 +147,26 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
 
   return (
     <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
       style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 50,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "rgba(0,0,0,0.6)",
         backdropFilter: "blur(12px)",
         WebkitBackdropFilter: "blur(12px)",
       }}
     >
       <div
-        className="animate-fade-in"
+        className="animate-fade-in w-full max-w-[520px] mx-[var(--space-4)] bg-[var(--material-regular)] rounded-[var(--radius-lg)] border border-[var(--separator)] overflow-hidden flex flex-col max-h-[90vh]"
         style={{
-          width: "100%",
-          maxWidth: 520,
-          margin: "0 var(--space-4)",
-          background: "var(--material-regular)",
-          borderRadius: "var(--radius-lg)",
-          border: "1px solid var(--separator)",
           boxShadow: "0 24px 48px rgba(0,0,0,0.3)",
-          overflow: "hidden",
-          display: "flex",
-          flexDirection: "column",
-          maxHeight: "90vh",
         }}
       >
         {/* Step indicator dots */}
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "center",
-            gap: 8,
-            padding: "var(--space-4) var(--space-4) 0",
-          }}
-        >
+        <div className="flex justify-center gap-2 pt-[var(--space-4)] px-[var(--space-4)]">
           {Array.from({ length: TOTAL_STEPS }).map((_, i) => (
             <div
               key={i}
+              className="h-2 rounded-full transition-all duration-200"
               style={{
                 width: i === step ? 24 : 8,
-                height: 8,
-                borderRadius: 4,
                 background:
                   i === step
                     ? "var(--accent)"
@@ -198,150 +174,65 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
                       ? "var(--accent)"
                       : "var(--fill-tertiary)",
                 opacity: i < step ? 0.5 : 1,
-                transition: "all 200ms var(--ease-smooth)",
               }}
             />
           ))}
         </div>
 
         {/* Step content */}
-        <div
-          style={{
-            padding: "var(--space-5) var(--space-5) var(--space-4)",
-            overflowY: "auto",
-            flex: 1,
-          }}
-        >
+        <div className="px-[var(--space-5)] pt-[var(--space-5)] pb-[var(--space-4)] overflow-y-auto flex-1">
           {/* Step 0: Welcome */}
           {step === 0 && (
             <div
               key="step-0"
-              className="animate-fade-in"
-              style={{ textAlign: "center" }}
+              className="animate-fade-in text-center"
             >
-              <div
-                style={{
-                  fontSize: 56,
-                  marginBottom: "var(--space-3)",
-                  lineHeight: 1,
-                }}
-              >
+              <div className="text-[56px] mb-[var(--space-3)] leading-none">
                 {"\ud83e\udd16"}
               </div>
-              <h2
-                style={{
-                  fontSize: "var(--text-large-title)",
-                  fontWeight: "var(--weight-bold)",
-                  letterSpacing: "var(--tracking-tight)",
-                  color: "var(--text-primary)",
-                  marginBottom: "var(--space-2)",
-                }}
-              >
+              <h2 className="text-[length:var(--text-large-title)] font-[var(--weight-bold)] tracking-[var(--tracking-tight)] text-[var(--text-primary)] mb-[var(--space-2)]">
                 Welcome to {localName || "Jinn"}
               </h2>
-              <p
-                style={{
-                  fontSize: "var(--text-body)",
-                  color: "var(--text-secondary)",
-                  lineHeight: "var(--leading-relaxed)",
-                  maxWidth: 400,
-                  margin: "0 auto var(--space-5)",
-                }}
-              >
+              <p className="text-[length:var(--text-body)] text-[var(--text-secondary)] leading-[var(--leading-relaxed)] max-w-[400px] mx-auto mb-[var(--space-5)]">
                 Your AI team management portal. Let&apos;s get you set up.
               </p>
 
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "var(--space-3)",
-                  textAlign: "left",
-                }}
-              >
+              <div className="flex flex-col gap-[var(--space-3)] text-left">
                 <div>
-                  <label
-                    style={{
-                      display: "block",
-                      fontSize: "var(--text-caption1)",
-                      color: "var(--text-tertiary)",
-                      marginBottom: "var(--space-1)",
-                    }}
-                  >
+                  <label className="block text-[length:var(--text-caption1)] text-[var(--text-tertiary)] mb-[var(--space-1)]">
                     Portal Name
                   </label>
                   <input
                     type="text"
-                    className="apple-input"
+                    className="apple-input w-full bg-[var(--bg-secondary)] border border-[var(--separator)] rounded-[var(--radius-sm)] px-3 py-2 text-[length:var(--text-body)] text-[var(--text-primary)]"
                     placeholder="Jinn"
                     value={localName}
                     onChange={(e) => setLocalName(e.target.value)}
                     autoFocus
-                    style={{
-                      width: "100%",
-                      background: "var(--bg-secondary)",
-                      border: "1px solid var(--separator)",
-                      borderRadius: "var(--radius-sm)",
-                      padding: "8px 12px",
-                      fontSize: "var(--text-body)",
-                      color: "var(--text-primary)",
-                    }}
                   />
                 </div>
 
                 <div>
-                  <label
-                    style={{
-                      display: "block",
-                      fontSize: "var(--text-caption1)",
-                      color: "var(--text-tertiary)",
-                      marginBottom: "var(--space-1)",
-                    }}
-                  >
+                  <label className="block text-[length:var(--text-caption1)] text-[var(--text-tertiary)] mb-[var(--space-1)]">
                     What should we call you?
                   </label>
                   <input
                     type="text"
-                    className="apple-input"
+                    className="apple-input w-full bg-[var(--bg-secondary)] border border-[var(--separator)] rounded-[var(--radius-sm)] px-3 py-2 text-[length:var(--text-body)] text-[var(--text-primary)]"
                     placeholder="Your Name"
                     value={localOperator}
                     onChange={(e) => setLocalOperator(e.target.value)}
-                    style={{
-                      width: "100%",
-                      background: "var(--bg-secondary)",
-                      border: "1px solid var(--separator)",
-                      borderRadius: "var(--radius-sm)",
-                      padding: "8px 12px",
-                      fontSize: "var(--text-body)",
-                      color: "var(--text-primary)",
-                    }}
                   />
                 </div>
 
                 <div>
-                  <label
-                    style={{
-                      display: "block",
-                      fontSize: "var(--text-caption1)",
-                      color: "var(--text-tertiary)",
-                      marginBottom: "var(--space-1)",
-                    }}
-                  >
+                  <label className="block text-[length:var(--text-caption1)] text-[var(--text-tertiary)] mb-[var(--space-1)]">
                     Preferred Language
                   </label>
                   <select
                     value={localLanguage}
                     onChange={(e) => setLocalLanguage(e.target.value)}
-                    style={{
-                      width: "100%",
-                      background: "var(--bg-secondary)",
-                      border: "1px solid var(--separator)",
-                      borderRadius: "var(--radius-sm)",
-                      padding: "8px 12px",
-                      fontSize: "var(--text-body)",
-                      color: "var(--text-primary)",
-                      cursor: "pointer",
-                    }}
+                    className="w-full bg-[var(--bg-secondary)] border border-[var(--separator)] rounded-[var(--radius-sm)] px-3 py-2 text-[length:var(--text-body)] text-[var(--text-primary)] cursor-pointer"
                   >
                     <option value="English">English</option>
                     <option value="Spanish">Spanish</option>
@@ -366,59 +257,31 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
           {/* Step 1: Theme */}
           {step === 1 && (
             <div key="step-1" className="animate-fade-in">
-              <h2
-                style={{
-                  fontSize: "var(--text-title1)",
-                  fontWeight: "var(--weight-bold)",
-                  letterSpacing: "var(--tracking-tight)",
-                  color: "var(--text-primary)",
-                  marginBottom: "var(--space-1)",
-                }}
-              >
+              <h2 className="text-[length:var(--text-title1)] font-[var(--weight-bold)] tracking-[var(--tracking-tight)] text-[var(--text-primary)] mb-[var(--space-1)]">
                 Choose your theme
               </h2>
-              <p
-                style={{
-                  fontSize: "var(--text-subheadline)",
-                  color: "var(--text-tertiary)",
-                  marginBottom: "var(--space-4)",
-                }}
-              >
+              <p className="text-[length:var(--text-subheadline)] text-[var(--text-tertiary)] mb-[var(--space-4)]">
                 Pick the look that suits you. This applies live.
               </p>
 
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))",
-                  gap: "var(--space-3)",
-                }}
-              >
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(130px,1fr))] gap-[var(--space-3)]">
                 {THEMES.map((t) => {
                   const isActive = theme === t.id
                   return (
                     <button
                       key={t.id}
                       onClick={() => setTheme(t.id)}
+                      className="flex flex-col items-center gap-[var(--space-2)] px-[var(--space-3)] py-[var(--space-4)] rounded-[var(--radius-md)] bg-[var(--fill-quaternary)] cursor-pointer transition-all duration-150"
                       style={{
-                        display: "flex",
-                        flexDirection: "column",
-                        alignItems: "center",
-                        gap: "var(--space-2)",
-                        padding: "var(--space-4) var(--space-3)",
-                        borderRadius: "var(--radius-md)",
-                        background: "var(--fill-quaternary)",
                         border: isActive
                           ? "2px solid var(--accent)"
                           : "2px solid var(--separator)",
-                        cursor: "pointer",
-                        transition: "all 150ms var(--ease-smooth)",
                       }}
                     >
-                      <span style={{ fontSize: 28 }}>{t.emoji}</span>
+                      <span className="text-[28px]">{t.emoji}</span>
                       <span
+                        className="text-[length:var(--text-footnote)]"
                         style={{
-                          fontSize: "var(--text-footnote)",
                           fontWeight: isActive
                             ? "var(--weight-semibold)"
                             : "var(--weight-medium)",
@@ -439,35 +302,14 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
           {/* Step 2: Accent Color */}
           {step === 2 && (
             <div key="step-2" className="animate-fade-in">
-              <h2
-                style={{
-                  fontSize: "var(--text-title1)",
-                  fontWeight: "var(--weight-bold)",
-                  letterSpacing: "var(--tracking-tight)",
-                  color: "var(--text-primary)",
-                  marginBottom: "var(--space-1)",
-                }}
-              >
+              <h2 className="text-[length:var(--text-title1)] font-[var(--weight-bold)] tracking-[var(--tracking-tight)] text-[var(--text-primary)] mb-[var(--space-1)]">
                 Pick an accent color
               </h2>
-              <p
-                style={{
-                  fontSize: "var(--text-subheadline)",
-                  color: "var(--text-tertiary)",
-                  marginBottom: "var(--space-4)",
-                }}
-              >
+              <p className="text-[length:var(--text-subheadline)] text-[var(--text-tertiary)] mb-[var(--space-4)]">
                 Personalize with your favorite color.
               </p>
 
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(6, 1fr)",
-                  gap: "var(--space-3)",
-                  justifyItems: "center",
-                }}
-              >
+              <div className="grid grid-cols-6 gap-[var(--space-3)] justify-items-center">
                 {ACCENT_PRESETS.map((preset) => {
                   const isActive = settings.accentColor === preset.value
                   return (
@@ -476,21 +318,13 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
                       onClick={() => setAccentColor(preset.value)}
                       aria-label={preset.label}
                       title={preset.label}
+                      className="w-10 h-10 rounded-full border-none cursor-pointer flex items-center justify-center transition-all duration-100"
                       style={{
-                        width: 40,
-                        height: 40,
-                        borderRadius: "50%",
                         background: preset.value,
-                        border: "none",
-                        cursor: "pointer",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
                         outline: isActive
                           ? `3px solid ${preset.value}`
                           : "none",
                         outlineOffset: 3,
-                        transition: "all 100ms var(--ease-smooth)",
                       }}
                     >
                       {isActive && (
@@ -506,82 +340,32 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
           {/* Step 3: Overview */}
           {step === 3 && (
             <div key="step-3" className="animate-fade-in">
-              <h2
-                style={{
-                  fontSize: "var(--text-title1)",
-                  fontWeight: "var(--weight-bold)",
-                  letterSpacing: "var(--tracking-tight)",
-                  color: "var(--text-primary)",
-                  marginBottom: "var(--space-1)",
-                }}
-              >
+              <h2 className="text-[length:var(--text-title1)] font-[var(--weight-bold)] tracking-[var(--tracking-tight)] text-[var(--text-primary)] mb-[var(--space-1)]">
                 You&apos;re all set!
               </h2>
-              <p
-                style={{
-                  fontSize: "var(--text-subheadline)",
-                  color: "var(--text-tertiary)",
-                  marginBottom: "var(--space-4)",
-                }}
-              >
+              <p className="text-[length:var(--text-subheadline)] text-[var(--text-tertiary)] mb-[var(--space-4)]">
                 Here&apos;s what you can do.
               </p>
 
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "var(--space-2)",
-                }}
-              >
+              <div className="flex flex-col gap-[var(--space-2)]">
                 {FEATURES.map((f) => {
                   const Icon = f.icon
                   return (
                     <div
                       key={f.name}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "var(--space-3)",
-                        padding: "var(--space-3)",
-                        borderRadius: "var(--radius-md)",
-                        background: "var(--fill-quaternary)",
-                        border: "1px solid var(--separator)",
-                      }}
+                      className="flex items-center gap-[var(--space-3)] p-[var(--space-3)] rounded-[var(--radius-md)] bg-[var(--fill-quaternary)] border border-[var(--separator)]"
                     >
-                      <div
-                        style={{
-                          width: 36,
-                          height: 36,
-                          borderRadius: 8,
-                          background: "var(--accent-fill)",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          flexShrink: 0,
-                        }}
-                      >
+                      <div className="w-9 h-9 rounded-lg bg-[var(--accent-fill)] flex items-center justify-center shrink-0">
                         <Icon
                           size={18}
-                          style={{ color: "var(--accent)" }}
+                          className="text-[var(--accent)]"
                         />
                       </div>
-                      <div style={{ minWidth: 0 }}>
-                        <div
-                          style={{
-                            fontSize: "var(--text-subheadline)",
-                            fontWeight: "var(--weight-semibold)",
-                            color: "var(--text-primary)",
-                          }}
-                        >
+                      <div className="min-w-0">
+                        <div className="text-[length:var(--text-subheadline)] font-[var(--weight-semibold)] text-[var(--text-primary)]">
                           {f.name}
                         </div>
-                        <div
-                          style={{
-                            fontSize: "var(--text-caption1)",
-                            color: "var(--text-tertiary)",
-                          }}
-                        >
+                        <div className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">
                           {f.desc}
                         </div>
                       </div>
@@ -594,32 +378,11 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
         </div>
 
         {/* Navigation buttons */}
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            padding: "var(--space-3) var(--space-5) var(--space-5)",
-            gap: "var(--space-3)",
-          }}
-        >
+        <div className="flex justify-between items-center px-[var(--space-5)] pb-[var(--space-5)] pt-[var(--space-3)] gap-[var(--space-3)]">
           {step > 0 ? (
             <button
               onClick={handleBack}
-              style={{
-                padding: "var(--space-2) var(--space-4)",
-                borderRadius: "var(--radius-md)",
-                background: "var(--fill-tertiary)",
-                color: "var(--text-secondary)",
-                border: "none",
-                cursor: "pointer",
-                fontSize: "var(--text-subheadline)",
-                fontWeight: "var(--weight-medium)",
-                transition: "all 150ms var(--ease-smooth)",
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-              }}
+              className="px-[var(--space-4)] py-[var(--space-2)] rounded-[var(--radius-md)] bg-[var(--fill-tertiary)] text-[var(--text-secondary)] border-none cursor-pointer text-[length:var(--text-subheadline)] font-[var(--weight-medium)] transition-all duration-150 inline-flex items-center gap-1.5"
             >
               <ArrowLeft size={16} />
               Back
@@ -629,20 +392,7 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
           )}
           <button
             onClick={handleNext}
-            style={{
-              padding: "var(--space-2) var(--space-6)",
-              borderRadius: "var(--radius-md)",
-              background: "var(--accent)",
-              color: "var(--accent-contrast)",
-              border: "none",
-              cursor: "pointer",
-              fontSize: "var(--text-subheadline)",
-              fontWeight: "var(--weight-semibold)",
-              transition: "all 150ms var(--ease-smooth)",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-            }}
+            className="px-[var(--space-6)] py-[var(--space-2)] rounded-[var(--radius-md)] bg-[var(--accent)] text-[var(--accent-contrast)] border-none cursor-pointer text-[length:var(--text-subheadline)] font-[var(--weight-semibold)] transition-all duration-150 inline-flex items-center gap-1.5"
           >
             {step === 0
               ? "Next"

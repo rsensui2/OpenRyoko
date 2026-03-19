@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { renderMarkdown } from "@/lib/sanitize";
 import { PageLayout } from "@/components/page-layout";
+import { useBreadcrumbs } from "@/context/breadcrumb-context";
 import {
   Card,
   CardContent,
@@ -26,6 +27,7 @@ interface Skill {
 }
 
 export default function SkillsPage() {
+  useBreadcrumbs([{ label: 'Skills' }])
   const { settings } = useSettings();
   const portalName = settings.portalName ?? "Jinn";
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -70,39 +72,14 @@ export default function SkillsPage() {
 
   return (
     <PageLayout>
-      <div
-        style={{
-          height: "100%",
-          overflowY: "auto",
-          padding: "var(--space-6)",
-        }}
-      >
+      <div className="h-full overflow-y-auto p-[var(--space-6)]">
         {/* Header */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            marginBottom: "var(--space-6)",
-          }}
-        >
+        <div className="flex items-center justify-between mb-[var(--space-6)]">
           <div>
-            <h2
-              style={{
-                fontSize: "var(--text-title2)",
-                fontWeight: "var(--weight-bold)",
-                color: "var(--text-primary)",
-                marginBottom: "var(--space-1)",
-              }}
-            >
+            <h2 className="text-[length:var(--text-title2)] font-[var(--weight-bold)] text-[var(--text-primary)] mb-[var(--space-1)]">
               Skills
             </h2>
-            <p
-              style={{
-                fontSize: "var(--text-body)",
-                color: "var(--text-tertiary)",
-              }}
-            >
+            <p className="text-[length:var(--text-body)] text-[var(--text-tertiary)]">
               Capabilities and learned behaviors
             </p>
           </div>
@@ -112,16 +89,10 @@ export default function SkillsPage() {
                 `To create a new skill, chat with ${portalName} and ask to learn something new.`,
               )
             }
+            className="py-[var(--space-2)] px-[var(--space-4)] rounded-[var(--radius-md,12px)] text-[var(--accent)] border-none cursor-pointer text-[length:var(--text-body)] font-[var(--weight-medium)]"
             style={{
-              padding: "var(--space-2) var(--space-4)",
-              borderRadius: "var(--radius-md, 12px)",
               background:
                 "color-mix(in srgb, var(--accent) 12%, transparent)",
-              color: "var(--accent)",
-              border: "none",
-              cursor: "pointer",
-              fontSize: "var(--text-body)",
-              fontWeight: "var(--weight-medium)",
             }}
           >
             + Create Skill
@@ -130,16 +101,12 @@ export default function SkillsPage() {
 
         {error && (
           <div
+            className="mb-[var(--space-4)] rounded-[var(--radius-md,12px)] py-[var(--space-3)] px-[var(--space-4)] text-[length:var(--text-body)] text-[var(--system-red)]"
             style={{
-              marginBottom: "var(--space-4)",
-              borderRadius: "var(--radius-md, 12px)",
               background:
                 "color-mix(in srgb, var(--system-red) 10%, transparent)",
               border:
                 "1px solid color-mix(in srgb, var(--system-red) 30%, transparent)",
-              padding: "var(--space-3) var(--space-4)",
-              fontSize: "var(--text-body)",
-              color: "var(--system-red)",
             }}
           >
             Failed to load skills: {error}
@@ -147,97 +114,45 @@ export default function SkillsPage() {
         )}
 
         {loading ? (
-          <div
-            style={{
-              textAlign: "center",
-              padding: "var(--space-8)",
-              color: "var(--text-tertiary)",
-              fontSize: "var(--text-body)",
-            }}
-          >
+          <div className="text-center p-[var(--space-8)] text-[var(--text-tertiary)] text-[length:var(--text-body)]">
             Loading...
           </div>
         ) : skills.length === 0 && !error ? (
           <Card>
             <CardContent>
-              <div
-                style={{
-                  textAlign: "center",
-                  padding: "var(--space-6)",
-                }}
-              >
-                <p
-                  style={{
-                    fontSize: "var(--text-body)",
-                    color: "var(--text-tertiary)",
-                  }}
-                >
+              <div className="text-center p-[var(--space-6)]">
+                <p className="text-[length:var(--text-body)] text-[var(--text-tertiary)]">
                   No skills yet
                 </p>
-                <p
-                  style={{
-                    fontSize: "var(--text-caption1)",
-                    color: "var(--text-quaternary)",
-                    marginTop: "var(--space-1)",
-                  }}
-                >
+                <p className="text-[length:var(--text-caption1)] text-[var(--text-quaternary)] mt-[var(--space-1)]">
                   Chat with {portalName} to teach new skills
                 </p>
               </div>
             </CardContent>
           </Card>
         ) : (
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
-              gap: "var(--space-4)",
-            }}
-          >
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-[var(--space-4)]">
             {skills.map((skill) => (
               <Card
                 key={skill.name}
                 className="py-4 cursor-pointer transition-colors hover:border-[var(--accent)]"
                 onClick={() => openSkill(skill)}
-                style={{ cursor: "pointer" }}
               >
                 <CardContent className="flex flex-col gap-3">
                   <div
+                    className="w-10 h-10 rounded-[var(--radius-md,12px)] flex items-center justify-center text-[var(--system-yellow)]"
                     style={{
-                      width: 40,
-                      height: 40,
-                      borderRadius: "var(--radius-md, 12px)",
                       background:
                         "color-mix(in srgb, var(--system-yellow) 12%, transparent)",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      color: "var(--system-yellow)",
                     }}
                   >
                     <Zap size={20} />
                   </div>
                   <div>
-                    <p
-                      style={{
-                        fontSize: "var(--text-body)",
-                        fontWeight: "var(--weight-semibold)",
-                        color: "var(--text-primary)",
-                        marginBottom: 2,
-                      }}
-                    >
+                    <p className="text-[length:var(--text-body)] font-[var(--weight-semibold)] text-[var(--text-primary)] mb-0.5">
                       {skill.name}
                     </p>
-                    <p
-                      style={{
-                        fontSize: "var(--text-caption1)",
-                        color: "var(--text-tertiary)",
-                        display: "-webkit-box",
-                        WebkitLineClamp: 2,
-                        WebkitBoxOrient: "vertical",
-                        overflow: "hidden",
-                      }}
-                    >
+                    <p className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)] line-clamp-2">
                       {skill.description || "No description"}
                     </p>
                   </div>
@@ -256,29 +171,14 @@ export default function SkillsPage() {
                 {selectedSkill?.description || "Skill details"}
               </DialogDescription>
             </DialogHeader>
-            <div
-              style={{
-                flex: 1,
-                overflowY: "auto",
-                padding: "var(--space-2) 0",
-              }}
-            >
+            <div className="flex-1 overflow-y-auto py-[var(--space-2)]">
               {contentLoading ? (
-                <p
-                  style={{
-                    fontSize: "var(--text-body)",
-                    color: "var(--text-tertiary)",
-                  }}
-                >
+                <p className="text-[length:var(--text-body)] text-[var(--text-tertiary)]">
                   Loading...
                 </p>
               ) : skillContent ? (
                 <div
-                  style={{
-                    fontSize: "var(--text-body)",
-                    lineHeight: 1.7,
-                    color: "var(--text-secondary)",
-                  }}
+                  className="text-[length:var(--text-body)] leading-[1.7] text-[var(--text-secondary)]"
                   dangerouslySetInnerHTML={{
                     __html: renderMarkdown(skillContent),
                   }}

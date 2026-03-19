@@ -12,19 +12,7 @@ function ToolInput({ input }: { input: Record<string, unknown> }) {
 
   if (!isLong) {
     return (
-      <pre style={{
-        margin: '4px 0 0',
-        padding: '6px 10px',
-        background: 'rgba(255,255,255,0.05)',
-        borderRadius: 4,
-        fontSize: 12,
-        lineHeight: 1.5,
-        whiteSpace: 'pre-wrap',
-        wordBreak: 'break-all',
-        color: 'var(--text-secondary)',
-        fontFamily: '"SF Mono", Menlo, "Cascadia Code", monospace',
-        overflowX: 'auto',
-      }}>
+      <pre className="mt-1 px-2.5 py-1.5 bg-white/5 rounded text-xs leading-normal whitespace-pre-wrap break-all text-[var(--text-secondary)] font-[SF_Mono,Menlo,Cascadia_Code,monospace] overflow-x-auto">
         {serialised}
       </pre>
     )
@@ -34,36 +22,12 @@ function ToolInput({ input }: { input: Record<string, unknown> }) {
     <div>
       <button
         onClick={() => setExpanded((v) => !v)}
-        style={{
-          marginTop: 4,
-          padding: '2px 8px',
-          fontSize: 11,
-          borderRadius: 4,
-          background: 'rgba(255,255,255,0.08)',
-          border: '1px solid rgba(255,255,255,0.12)',
-          color: 'var(--text-tertiary)',
-          cursor: 'pointer',
-          fontFamily: '"SF Mono", Menlo, "Cascadia Code", monospace',
-        }}
+        className="mt-1 px-2 py-0.5 text-[11px] rounded bg-white/[0.08] border border-white/[0.12] text-[var(--text-tertiary)] cursor-pointer font-[SF_Mono,Menlo,Cascadia_Code,monospace]"
       >
         {expanded ? 'collapse input' : `show input (${serialised.length} chars)`}
       </button>
       {expanded && (
-        <pre style={{
-          margin: '4px 0 0',
-          padding: '6px 10px',
-          background: 'rgba(255,255,255,0.05)',
-          borderRadius: 4,
-          fontSize: 12,
-          lineHeight: 1.5,
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-all',
-          color: 'var(--text-secondary)',
-          fontFamily: '"SF Mono", Menlo, "Cascadia Code", monospace',
-          overflowX: 'auto',
-          maxHeight: 400,
-          overflowY: 'auto',
-        }}>
+        <pre className="mt-1 px-2.5 py-1.5 bg-white/5 rounded text-xs leading-normal whitespace-pre-wrap break-all text-[var(--text-secondary)] font-[SF_Mono,Menlo,Cascadia_Code,monospace] overflow-x-auto max-h-[400px] overflow-y-auto">
           {serialised}
         </pre>
       )}
@@ -77,37 +41,15 @@ function ThinkingBlock({ text }: { text: string }) {
   const [expanded, setExpanded] = useState(false)
 
   return (
-    <div style={{ marginBottom: 6 }}>
+    <div className="mb-1.5">
       <button
         onClick={() => setExpanded((v) => !v)}
-        style={{
-          padding: '2px 8px',
-          fontSize: 11,
-          borderRadius: 4,
-          background: 'rgba(255,255,255,0.06)',
-          border: '1px solid rgba(255,255,255,0.1)',
-          color: 'var(--text-quaternary, var(--text-tertiary))',
-          cursor: 'pointer',
-          fontFamily: '"SF Mono", Menlo, "Cascadia Code", monospace',
-          fontStyle: 'italic',
-        }}
+        className="px-2 py-0.5 text-[11px] rounded bg-white/[0.06] border border-white/10 text-[var(--text-quaternary,var(--text-tertiary))] cursor-pointer font-[SF_Mono,Menlo,Cascadia_Code,monospace] italic"
       >
         {expanded ? 'hide thinking' : 'show thinking'}
       </button>
       {expanded && (
-        <div style={{
-          marginTop: 4,
-          padding: '8px 12px',
-          background: 'rgba(255,255,255,0.04)',
-          borderLeft: '2px solid rgba(255,255,255,0.1)',
-          fontSize: 12,
-          lineHeight: 1.6,
-          color: 'var(--text-quaternary, var(--text-tertiary))',
-          fontStyle: 'italic',
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-word',
-          fontFamily: '"SF Mono", Menlo, "Cascadia Code", monospace',
-        }}>
+        <div className="mt-1 px-3 py-2 bg-white/[0.04] border-l-2 border-white/10 text-xs leading-relaxed text-[var(--text-quaternary,var(--text-tertiary))] italic whitespace-pre-wrap break-words font-[SF_Mono,Menlo,Cascadia_Code,monospace]">
           {text}
         </div>
       )}
@@ -123,21 +65,7 @@ function ToolResult({ text }: { text: string }) {
 
   if (!isLong) {
     return (
-      <pre style={{
-        margin: '4px 0 0',
-        padding: '6px 10px',
-        background: 'rgba(255,255,255,0.04)',
-        borderRadius: 4,
-        fontSize: 12,
-        lineHeight: 1.5,
-        whiteSpace: 'pre-wrap',
-        wordBreak: 'break-all',
-        color: 'var(--text-tertiary)',
-        fontFamily: '"SF Mono", Menlo, "Cascadia Code", monospace',
-        overflowX: 'auto',
-        maxHeight: 300,
-        overflowY: 'auto',
-      }}>
+      <pre className="mt-1 px-2.5 py-1.5 bg-white/[0.04] rounded text-xs leading-normal whitespace-pre-wrap break-all text-[var(--text-tertiary)] font-[SF_Mono,Menlo,Cascadia_Code,monospace] overflow-x-auto max-h-[300px] overflow-y-auto">
         {text || '(empty)'}
       </pre>
     )
@@ -147,36 +75,12 @@ function ToolResult({ text }: { text: string }) {
     <div>
       <button
         onClick={() => setExpanded((v) => !v)}
-        style={{
-          marginTop: 4,
-          padding: '2px 8px',
-          fontSize: 11,
-          borderRadius: 4,
-          background: 'rgba(255,255,255,0.08)',
-          border: '1px solid rgba(255,255,255,0.12)',
-          color: 'var(--text-tertiary)',
-          cursor: 'pointer',
-          fontFamily: '"SF Mono", Menlo, "Cascadia Code", monospace',
-        }}
+        className="mt-1 px-2 py-0.5 text-[11px] rounded bg-white/[0.08] border border-white/[0.12] text-[var(--text-tertiary)] cursor-pointer font-[SF_Mono,Menlo,Cascadia_Code,monospace]"
       >
         {expanded ? 'collapse output' : `show output (${text.length} chars)`}
       </button>
       {expanded && (
-        <pre style={{
-          margin: '4px 0 0',
-          padding: '6px 10px',
-          background: 'rgba(255,255,255,0.04)',
-          borderRadius: 4,
-          fontSize: 12,
-          lineHeight: 1.5,
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-all',
-          color: 'var(--text-tertiary)',
-          fontFamily: '"SF Mono", Menlo, "Cascadia Code", monospace',
-          overflowX: 'auto',
-          maxHeight: 400,
-          overflowY: 'auto',
-        }}>
+        <pre className="mt-1 px-2.5 py-1.5 bg-white/[0.04] rounded text-xs leading-normal whitespace-pre-wrap break-all text-[var(--text-tertiary)] font-[SF_Mono,Menlo,Cascadia_Code,monospace] overflow-x-auto max-h-[400px] overflow-y-auto">
           {text}
         </pre>
       )}
@@ -193,22 +97,8 @@ function ContentBlock({ block }: { block: TranscriptContentBlock }) {
 
   if (block.type === 'tool_use') {
     return (
-      <div style={{
-        marginBottom: 8,
-        padding: '6px 10px',
-        background: 'rgba(99, 179, 237, 0.08)',
-        border: '1px solid rgba(99, 179, 237, 0.2)',
-        borderRadius: 6,
-      }}>
-        <div style={{
-          fontSize: 11,
-          fontWeight: 600,
-          color: 'rgba(99, 179, 237, 0.9)',
-          fontFamily: '"SF Mono", Menlo, "Cascadia Code", monospace',
-          marginBottom: 2,
-          textTransform: 'uppercase',
-          letterSpacing: '0.05em',
-        }}>
+      <div className="mb-2 px-2.5 py-1.5 bg-[rgba(99,179,237,0.08)] border border-[rgba(99,179,237,0.2)] rounded-md">
+        <div className="text-[11px] font-semibold text-[rgba(99,179,237,0.9)] font-[SF_Mono,Menlo,Cascadia_Code,monospace] mb-0.5 uppercase tracking-wide">
           tool: {block.name}
         </div>
         {block.input && Object.keys(block.input).length > 0 && (
@@ -220,22 +110,8 @@ function ContentBlock({ block }: { block: TranscriptContentBlock }) {
 
   if (block.type === 'tool_result') {
     return (
-      <div style={{
-        marginBottom: 8,
-        padding: '6px 10px',
-        background: 'rgba(255,255,255,0.03)',
-        border: '1px solid rgba(255,255,255,0.08)',
-        borderRadius: 6,
-      }}>
-        <div style={{
-          fontSize: 11,
-          fontWeight: 600,
-          color: 'rgba(160,160,160,0.7)',
-          fontFamily: '"SF Mono", Menlo, "Cascadia Code", monospace',
-          marginBottom: 2,
-          textTransform: 'uppercase',
-          letterSpacing: '0.05em',
-        }}>
+      <div className="mb-2 px-2.5 py-1.5 bg-white/[0.03] border border-white/[0.08] rounded-md">
+        <div className="text-[11px] font-semibold text-[rgba(160,160,160,0.7)] font-[SF_Mono,Menlo,Cascadia_Code,monospace] mb-0.5 uppercase tracking-wide">
           result
         </div>
         <ToolResult text={block.text || ''} />
@@ -245,13 +121,7 @@ function ContentBlock({ block }: { block: TranscriptContentBlock }) {
 
   // type === 'text'
   return (
-    <div style={{
-      whiteSpace: 'pre-wrap',
-      wordBreak: 'break-word',
-      lineHeight: 1.6,
-      color: 'var(--text-primary)',
-      marginBottom: 4,
-    }}>
+    <div className="whitespace-pre-wrap break-words leading-relaxed text-[var(--text-primary)] mb-1">
       {block.text}
     </div>
   )
@@ -268,27 +138,17 @@ function TranscriptEntryRow({ entry }: { entry: TranscriptEntry }) {
   const prefixColor = isUser ? 'var(--accent)' : 'rgba(110, 231, 183, 0.8)'
 
   return (
-    <div style={{
-      display: 'flex',
-      gap: 10,
-      padding: '10px 0',
-      borderBottom: '1px solid rgba(255,255,255,0.04)',
-    }}>
+    <div className="flex gap-2.5 py-2.5 border-b border-white/[0.04]">
       {/* Role prefix */}
-      <div style={{
-        flexShrink: 0,
-        width: 16,
-        fontSize: 13,
-        fontWeight: 700,
-        color: prefixColor,
-        fontFamily: '"SF Mono", Menlo, "Cascadia Code", monospace',
-        paddingTop: 1,
-      }}>
+      <div
+        className="shrink-0 w-4 text-[13px] font-bold font-[SF_Mono,Menlo,Cascadia_Code,monospace] pt-px"
+        style={{ color: prefixColor }}
+      >
         {prefix}
       </div>
 
       {/* Content blocks */}
-      <div style={{ flex: 1, minWidth: 0 }}>
+      <div className="flex-1 min-w-0">
         {entry.content.map((block, i) => (
           <ContentBlock key={i} block={block} />
         ))}
@@ -331,16 +191,7 @@ export function CliTranscript({ sessionId }: CliTranscriptProps) {
 
   if (loading) {
     return (
-      <div style={{
-        flex: 1,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: 'var(--bg-primary, var(--bg))',
-        color: 'var(--text-tertiary)',
-        fontFamily: '"SF Mono", Menlo, "Cascadia Code", monospace',
-        fontSize: 13,
-      }}>
+      <div className="flex-1 flex items-center justify-center bg-[var(--bg-primary,var(--bg))] text-[var(--text-tertiary)] font-[SF_Mono,Menlo,Cascadia_Code,monospace] text-[13px]">
         loading transcript...
       </div>
     )
@@ -348,16 +199,7 @@ export function CliTranscript({ sessionId }: CliTranscriptProps) {
 
   if (error) {
     return (
-      <div style={{
-        flex: 1,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: 'var(--bg-primary, var(--bg))',
-        color: 'var(--system-red)',
-        fontFamily: '"SF Mono", Menlo, "Cascadia Code", monospace',
-        fontSize: 13,
-      }}>
+      <div className="flex-1 flex items-center justify-center bg-[var(--bg-primary,var(--bg))] text-[var(--system-red)] font-[SF_Mono,Menlo,Cascadia_Code,monospace] text-[13px]">
         error: {error}
       </div>
     )
@@ -365,33 +207,14 @@ export function CliTranscript({ sessionId }: CliTranscriptProps) {
 
   if (entries.length === 0) {
     return (
-      <div style={{
-        flex: 1,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: 'var(--bg-primary, var(--bg))',
-        color: 'var(--text-tertiary)',
-        fontFamily: '"SF Mono", Menlo, "Cascadia Code", monospace',
-        fontSize: 13,
-      }}>
+      <div className="flex-1 flex items-center justify-center bg-[var(--bg-primary,var(--bg))] text-[var(--text-tertiary)] font-[SF_Mono,Menlo,Cascadia_Code,monospace] text-[13px]">
         no transcript available
       </div>
     )
   }
 
   return (
-    <div style={{
-      flex: 1,
-      overflowY: 'auto',
-      overflowX: 'hidden',
-      background: 'var(--bg-primary, var(--bg))',
-      padding: 'var(--space-4)',
-      fontFamily: '"SF Mono", Menlo, "Cascadia Code", monospace',
-      fontSize: 13,
-      lineHeight: 1.5,
-      minHeight: 0,
-    }}>
+    <div className="flex-1 overflow-y-auto overflow-x-hidden bg-[var(--bg-primary,var(--bg))] p-[var(--space-4)] font-[SF_Mono,Menlo,Cascadia_Code,monospace] text-[13px] leading-normal min-h-0">
       {entries.map((entry, i) => (
         <TranscriptEntryRow key={i} entry={entry} />
       ))}

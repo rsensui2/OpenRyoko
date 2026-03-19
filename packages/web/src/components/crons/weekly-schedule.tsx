@@ -52,75 +52,56 @@ function PillTooltip({ slot, rect, containerRect }: { slot: SlotInfo; rect: DOMR
 
   return (
     <div
+      className="absolute pointer-events-none z-[100] min-w-[200px] max-w-[300px] bg-[var(--material-regular)] border border-[var(--separator)] rounded-[var(--radius-md)] px-[var(--space-4)] py-[var(--space-3)] text-[length:var(--text-caption1)] text-[var(--text-primary)]"
       style={{
-        position: "absolute",
         top,
         left,
         transform: "translate(-50%, -100%)",
-        background: "var(--material-regular)",
-        border: "1px solid var(--separator)",
-        borderRadius: "var(--radius-md)",
-        padding: "var(--space-3) var(--space-4)",
-        fontSize: "var(--text-caption1)",
-        color: "var(--text-primary)",
-        pointerEvents: "none",
-        zIndex: 100,
-        minWidth: 200,
-        maxWidth: 300,
         boxShadow: "0 8px 24px rgba(0,0,0,0.4), 0 2px 8px rgba(0,0,0,0.2)",
       }}
     >
       {/* Arrow */}
       <div
+        className="absolute w-2.5 h-2.5 bg-[var(--material-regular)] border-r border-b border-[var(--separator)]"
         style={{
-          position: "absolute",
           bottom: -5,
           left: "50%",
           transform: "translateX(-50%) rotate(45deg)",
-          width: 10,
-          height: 10,
-          background: "var(--material-regular)",
-          borderRight: "1px solid var(--separator)",
-          borderBottom: "1px solid var(--separator)",
         }}
       />
       {/* Name */}
-      <div style={{
-        fontWeight: 700,
-        fontSize: "var(--text-footnote)",
-        marginBottom: "var(--space-1)",
-        borderLeft: `3px solid ${color}`,
-        paddingLeft: "var(--space-2)",
-      }}>
+      <div
+        className="font-bold text-[length:var(--text-footnote)] mb-[var(--space-1)] pl-[var(--space-2)]"
+        style={{ borderLeft: `3px solid ${color}` }}
+      >
         {slot.cron.name}
       </div>
       {/* Schedule */}
-      <div style={{ color: "var(--text-secondary)", fontSize: "var(--text-caption1)", marginBottom: "var(--space-2)" }}>
+      <div className="text-[var(--text-secondary)] text-[length:var(--text-caption1)] mb-[var(--space-2)]">
         {describeCron(slot.cron.schedule)}
       </div>
       {/* Raw cron */}
-      <div style={{ fontFamily: "var(--font-mono)", fontSize: "var(--text-caption2)", color: "var(--text-tertiary)", marginBottom: "var(--space-2)" }}>
+      <div className="font-[family-name:var(--font-mono)] text-[length:var(--text-caption2)] text-[var(--text-tertiary)] mb-[var(--space-2)]">
         {slot.cron.schedule}
       </div>
       {/* Status */}
-      <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", fontSize: "var(--text-caption1)" }}>
+      <div className="flex items-center gap-[var(--space-2)] text-[length:var(--text-caption1)]">
         <span
+          className="w-[7px] h-[7px] rounded-full shrink-0"
           style={{
-            width: 7,
-            height: 7,
-            borderRadius: "50%",
             background: slot.cron.enabled ? "var(--system-green)" : "var(--text-tertiary)",
-            flexShrink: 0,
           }}
         />
-        <span style={{
-          color: slot.cron.enabled ? "var(--system-green)" : "var(--text-tertiary)",
-          fontWeight: 500,
-        }}>
+        <span
+          className="font-medium"
+          style={{
+            color: slot.cron.enabled ? "var(--system-green)" : "var(--text-tertiary)",
+          }}
+        >
           {slot.cron.enabled ? "Enabled" : "Disabled"}
         </span>
         {slot.cron.employee && (
-          <span style={{ color: "var(--text-tertiary)", marginLeft: "var(--space-1)" }}>
+          <span className="text-[var(--text-tertiary)] ml-[var(--space-1)]">
             {slot.cron.employee}
           </span>
         )}
@@ -219,29 +200,22 @@ export function WeeklySchedule({ crons }: WeeklyScheduleProps) {
 
   if (activeHours.length === 0) {
     return (
-      <div
-        className="flex flex-col items-center justify-center"
-        style={{
-          height: 200,
-          color: "var(--text-secondary)",
-          gap: "var(--space-2)",
-        }}
-      >
+      <div className="flex flex-col items-center justify-center h-[200px] text-[var(--text-secondary)] gap-[var(--space-2)]">
         <svg
           width="32" height="32" viewBox="0 0 24 24"
           fill="none" stroke="currentColor" strokeWidth="1.5"
           strokeLinecap="round" strokeLinejoin="round"
-          style={{ color: "var(--text-tertiary)", marginBottom: "var(--space-2)" }}
+          className="text-[var(--text-tertiary)] mb-[var(--space-2)]"
         >
           <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
           <line x1="16" y1="2" x2="16" y2="6" />
           <line x1="8" y1="2" x2="8" y2="6" />
           <line x1="3" y1="10" x2="21" y2="10" />
         </svg>
-        <span style={{ fontSize: "var(--text-subheadline)", fontWeight: 500 }}>
+        <span className="text-[length:var(--text-subheadline)] font-medium">
           No scheduled jobs to display
         </span>
-        <span style={{ fontSize: "var(--text-footnote)", color: "var(--text-tertiary)" }}>
+        <span className="text-[length:var(--text-footnote)] text-[var(--text-tertiary)]">
           Enable some cron jobs to see the weekly schedule
         </span>
       </div>
@@ -251,64 +225,36 @@ export function WeeklySchedule({ crons }: WeeklyScheduleProps) {
   return (
     <div
       ref={containerRef}
-      style={{ position: "relative" }}
+      className="relative"
       onClick={() => setTooltip(null)}
     >
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "56px repeat(7, 1fr)",
-          background: "var(--material-regular)",
-          borderRadius: "var(--radius-md)",
-          border: "1px solid var(--separator)",
-          overflow: "hidden",
-        }}
-      >
+      <div className="grid grid-cols-[56px_repeat(7,1fr)] bg-[var(--material-regular)] rounded-[var(--radius-md)] border border-[var(--separator)] overflow-hidden">
         {/* Header row */}
-        <div
-          style={{
-            padding: "var(--space-3) var(--space-2)",
-            borderBottom: "1px solid var(--separator)",
-            background: "var(--material-thick)",
-          }}
-        />
+        <div className="p-[var(--space-3)_var(--space-2)] border-b border-[var(--separator)] bg-[var(--material-thick)]" />
         {DAY_LABELS.map((label, i) => {
           const isToday = i === nowCol
           return (
             <div
               key={label}
+              className="relative p-[var(--space-3)_var(--space-2)] text-center border-b border-l border-[var(--separator)]"
               style={{
-                padding: "var(--space-3) var(--space-2)",
-                textAlign: "center",
-                borderBottom: "1px solid var(--separator)",
-                borderLeft: "1px solid var(--separator)",
                 background: isToday ? "var(--accent-fill)" : "var(--material-thick)",
-                position: "relative",
               }}
             >
               <div
                 title={DAY_LABELS_FULL[i]}
+                className="text-[length:var(--text-footnote)] tracking-[0.02em]"
                 style={{
-                  fontSize: "var(--text-footnote)",
                   fontWeight: isToday ? 700 : 600,
                   color: isToday ? "var(--accent)" : "var(--text-primary)",
-                  letterSpacing: "0.02em",
                 }}
               >
                 {label}
               </div>
               {isToday && (
-                <div style={{
-                  position: "absolute",
-                  bottom: -3,
-                  left: "50%",
-                  transform: "translateX(-50%)",
-                  width: 6,
-                  height: 6,
-                  borderRadius: "50%",
-                  background: "var(--accent)",
-                  zIndex: 2,
-                }} />
+                <div
+                  className="absolute -bottom-[3px] left-1/2 -translate-x-1/2 w-1.5 h-1.5 rounded-full bg-[var(--accent)] z-[2]"
+                />
               )}
             </div>
           )
@@ -325,29 +271,21 @@ export function WeeklySchedule({ crons }: WeeklyScheduleProps) {
           const isLastRow = hourIdx === activeHours.length - 1
 
           return (
-            <div key={hour} style={{ display: "contents" }}>
+            <div key={hour} className="contents">
               {/* Hour label cell */}
               <div
+                className="p-[var(--space-2)] flex items-start justify-end relative"
                 style={{
-                  padding: "var(--space-2)",
-                  display: "flex",
-                  alignItems: "flex-start",
-                  justifyContent: "flex-end",
                   borderBottom: isLastRow ? "none" : "1px solid var(--separator)",
                   minHeight: minCellHeight,
                   background: isNowHour ? "var(--accent-fill)" : undefined,
-                  position: "relative",
                 }}
               >
                 <span
+                  className="text-[length:var(--text-caption1)] font-[family-name:var(--font-mono)] leading-[1.2] whitespace-nowrap pt-0.5"
                   style={{
-                    fontSize: "var(--text-caption1)",
-                    fontFamily: "var(--font-mono)",
                     color: isNowHour ? "var(--accent)" : "var(--text-tertiary)",
                     fontWeight: isNowHour ? 600 : 400,
-                    lineHeight: 1.2,
-                    whiteSpace: "nowrap",
-                    paddingTop: 2,
                   }}
                   title={formatHour(hour)}
                 >
@@ -365,35 +303,25 @@ export function WeeklySchedule({ crons }: WeeklyScheduleProps) {
                 return (
                   <div
                     key={key}
+                    className="flex flex-col relative border-l border-[var(--separator)]"
                     style={{
                       padding: `${cellPadding / 2}px 4px`,
-                      borderLeft: "1px solid var(--separator)",
                       borderBottom: isLastRow ? "none" : "1px solid var(--separator)",
                       minHeight: minCellHeight,
-                      display: "flex",
-                      flexDirection: "column",
                       gap: pillGap,
                       background: isNowCell
                         ? "color-mix(in srgb, var(--accent) 6%, transparent)"
                         : isToday
                           ? "color-mix(in srgb, var(--accent) 3%, transparent)"
                           : undefined,
-                      position: "relative",
                     }}
                   >
                     {/* Current time indicator (red line) */}
                     {isNowCell && (
-                      <div style={{
-                        position: "absolute",
-                        top: `${(nowMinuteFrac * 100).toFixed(1)}%`,
-                        left: 0,
-                        right: 0,
-                        height: 2,
-                        background: "var(--system-red)",
-                        opacity: 0.8,
-                        zIndex: 3,
-                        borderRadius: 1,
-                      }} />
+                      <div
+                        className="absolute left-0 right-0 h-0.5 bg-[var(--system-red)] opacity-80 z-[3] rounded-[1px]"
+                        style={{ top: `${(nowMinuteFrac * 100).toFixed(1)}%` }}
+                      />
                     )}
 
                     {/* Pills */}
@@ -420,65 +348,33 @@ export function WeeklySchedule({ crons }: WeeklyScheduleProps) {
                           }}
                           onMouseEnter={(e) => handlePillEnter(slot, e)}
                           onMouseLeave={() => setTooltip(null)}
+                          className="flex items-center gap-[5px] px-1.5 rounded-[var(--radius-sm)] border-none cursor-pointer w-full min-w-0 text-left relative overflow-hidden transition-[background,box-shadow] duration-150 ease-in-out"
                           style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 5,
                             height: pillHeight,
-                            padding: "0 6px",
-                            borderRadius: "var(--radius-sm)",
-                            border: "none",
-                            cursor: "pointer",
-                            width: "100%",
-                            minWidth: 0,
                             background: isActive
                               ? `color-mix(in srgb, ${pillColor} 25%, transparent)`
                               : `color-mix(in srgb, ${pillColor} 12%, transparent)`,
                             borderLeft: `3px solid ${pillColor}`,
-                            transition: "background 150ms ease, box-shadow 150ms ease",
                             boxShadow: isActive
                               ? `0 0 0 1px color-mix(in srgb, ${pillColor} 40%, transparent)`
                               : "none",
-                            textAlign: "left",
-                            position: "relative",
-                            overflow: "hidden",
                           }}
                         >
                           {/* Status dot */}
                           <span
+                            className="w-1.5 h-1.5 rounded-full shrink-0"
                             style={{
-                              width: 6,
-                              height: 6,
-                              borderRadius: "50%",
-                              flexShrink: 0,
                               background: slot.cron.enabled ? "var(--system-green)" : "var(--text-tertiary)",
                             }}
                           />
                           {/* Time */}
-                          <span
-                            style={{
-                              fontSize: "var(--text-caption2)",
-                              fontFamily: "var(--font-mono)",
-                              color: "var(--text-tertiary)",
-                              flexShrink: 0,
-                              lineHeight: 1,
-                            }}
-                          >
+                          <span className="text-[length:var(--text-caption2)] font-[family-name:var(--font-mono)] text-[var(--text-tertiary)] shrink-0 leading-none">
                             {`:${String(slot.minute).padStart(2, "0")}`}
                           </span>
                           {/* Name */}
                           <span
-                            style={{
-                              fontSize: "var(--text-caption2)",
-                              fontWeight: 600,
-                              color: pillColor,
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              whiteSpace: "nowrap",
-                              minWidth: 0,
-                              flex: 1,
-                              lineHeight: 1,
-                            }}
+                            className="text-[length:var(--text-caption2)] font-semibold overflow-hidden text-ellipsis whitespace-nowrap min-w-0 flex-1 leading-none"
+                            style={{ color: pillColor }}
                           >
                             {slot.cron.name}
                           </span>
@@ -486,7 +382,7 @@ export function WeeklySchedule({ crons }: WeeklyScheduleProps) {
                       )
                     })}
 
-                    {slots.length === 0 && <div style={{ flex: 1 }} />}
+                    {slots.length === 0 && <div className="flex-1" />}
                   </div>
                 )
               })}

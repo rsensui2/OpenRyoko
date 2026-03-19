@@ -48,54 +48,21 @@ export function KanbanColumn({
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
+      className="flex flex-col min-w-[280px] max-w-[320px] flex-[1_0_280px] h-full rounded-[var(--radius-lg)] transition-[background,border-color] duration-200 ease-[var(--ease-smooth)]"
       style={{
-        display: 'flex',
-        flexDirection: 'column',
-        minWidth: 280,
-        maxWidth: 320,
-        flex: '1 0 280px',
-        height: '100%',
-        borderRadius: 'var(--radius-lg)',
         background: isDragOver ? 'var(--fill-secondary)' : 'var(--fill-tertiary)',
         border: isDragOver
           ? '2px dashed var(--accent)'
           : '2px dashed transparent',
-        transition: 'background 200ms var(--ease-smooth), border-color 200ms var(--ease-smooth)',
       }}
     >
       {/* Column header */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: 'var(--space-3) var(--space-4)',
-          flexShrink: 0,
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-          <span
-            style={{
-              fontSize: 'var(--text-footnote)',
-              fontWeight: 'var(--weight-semibold)',
-              color: 'var(--text-primary)',
-              letterSpacing: '-0.01em',
-            }}
-          >
+      <div className="flex items-center justify-between p-[var(--space-3)_var(--space-4)] shrink-0">
+        <div className="flex items-center gap-[var(--space-2)]">
+          <span className="text-[length:var(--text-footnote)] font-[var(--weight-semibold)] text-[var(--text-primary)] tracking-[-0.01em]">
             {column.title}
           </span>
-          <span
-            style={{
-              fontSize: 'var(--text-caption2)',
-              fontWeight: 'var(--weight-medium)',
-              color: 'var(--text-tertiary)',
-              background: 'var(--fill-secondary)',
-              borderRadius: 'var(--radius-sm)',
-              padding: '1px 6px',
-              minWidth: 20,
-              textAlign: 'center',
-            }}
-          >
+          <span className="text-[length:var(--text-caption2)] font-[var(--weight-medium)] text-[var(--text-tertiary)] bg-[var(--fill-secondary)] rounded-[var(--radius-sm)] py-px px-1.5 min-w-[20px] text-center">
             {tickets.length}
           </span>
         </div>
@@ -104,20 +71,7 @@ export function KanbanColumn({
           <button
             onClick={onCreateTicket}
             aria-label="Create new ticket"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: 24,
-              height: 24,
-              borderRadius: 'var(--radius-sm)',
-              border: 'none',
-              background: 'transparent',
-              color: 'var(--text-secondary)',
-              cursor: 'pointer',
-              padding: 0,
-              transition: 'color 150ms var(--ease-smooth)',
-            }}
+            className="flex items-center justify-center w-6 h-6 rounded-[var(--radius-sm)] border-none bg-transparent text-[var(--text-secondary)] cursor-pointer p-0 transition-colors duration-150 ease-[var(--ease-smooth)]"
           >
             <Plus size={16} />
           </button>
@@ -125,16 +79,7 @@ export function KanbanColumn({
       </div>
 
       {/* Scrollable ticket area */}
-      <div
-        style={{
-          flex: 1,
-          overflowY: 'auto',
-          padding: '0 var(--space-2) var(--space-2)',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 'var(--space-2)',
-        }}
-      >
+      <div className="flex-1 overflow-y-auto px-[var(--space-2)] pb-[var(--space-2)] flex flex-col gap-[var(--space-2)]">
         {tickets.map((ticket) => (
           <div key={ticket.id}>
             {renderTicket(ticket)}
@@ -143,14 +88,7 @@ export function KanbanColumn({
 
         {/* Empty state */}
         {tickets.length === 0 && (
-          <div
-            style={{
-              padding: 'var(--space-8) var(--space-4)',
-              textAlign: 'center',
-              fontSize: 'var(--text-caption1)',
-              color: 'var(--text-tertiary)',
-            }}
-          >
+          <div className="py-[var(--space-8)] px-[var(--space-4)] text-center text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">
             No tickets
           </div>
         )}

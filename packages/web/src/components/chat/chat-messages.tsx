@@ -1,5 +1,5 @@
 "use client"
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { Message, MediaAttachment } from '@/lib/conversations'
 import { parseMedia } from '@/lib/conversations'
 import { FileAttachment } from './file-attachment'
@@ -39,40 +39,17 @@ function ToolGroup({ msgs, isActive }: { msgs: Message[]; isActive: boolean }) {
     : `${msgs.length} tool${msgs.length !== 1 ? 's' : ''} used`
 
   return (
-    <div style={{
-      padding: '0 var(--space-4)',
-      marginBottom: 'var(--space-1)',
-    }}>
+    <div className="px-[var(--space-4)] mb-[var(--space-1)]">
       <button
         onClick={() => setExpanded((v) => !v)}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 'var(--space-2)',
-          padding: '5px var(--space-3)',
-          borderRadius: 'var(--radius-full, 999px)',
-          background: 'var(--fill-secondary)',
-          border: '1px solid var(--separator)',
-          fontSize: 'var(--text-caption1)',
-          color: 'var(--text-secondary)',
-          cursor: 'pointer',
-          transition: 'background 150ms ease',
-        }}
-        onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--fill-tertiary)')}
-        onMouseLeave={(e) => (e.currentTarget.style.background = 'var(--fill-secondary)')}
+        className="flex items-center gap-[var(--space-2)] py-[5px] px-[var(--space-3)] rounded-full bg-[var(--fill-secondary)] border border-[var(--separator)] text-[length:var(--text-caption1)] text-[var(--text-secondary)] cursor-pointer transition-[background] duration-150 ease-in-out hover:bg-[var(--fill-tertiary)]"
       >
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.6 }}>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="opacity-60">
           <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
         </svg>
         {label}
         {isActive && !allDone && (
-          <span style={{
-            width: 6,
-            height: 6,
-            borderRadius: '50%',
-            background: 'var(--system-blue)',
-            animation: 'jinn-pulse 1.4s infinite',
-          }} />
+          <span className="w-1.5 h-1.5 rounded-full bg-[var(--system-blue)] animate-[jinn-pulse_1.4s_infinite]" />
         )}
         <svg
           width="10"
@@ -83,37 +60,17 @@ function ToolGroup({ msgs, isActive }: { msgs: Message[]; isActive: boolean }) {
           strokeWidth="2.5"
           strokeLinecap="round"
           strokeLinejoin="round"
-          style={{
-            transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)',
-            transition: 'transform 150ms ease',
-            opacity: 0.5,
-          }}
+          className={`transition-transform duration-150 ease-in-out opacity-50 ${expanded ? 'rotate-180' : 'rotate-0'}`}
         >
           <polyline points="6 9 12 15 18 9" />
         </svg>
       </button>
       {expanded && (
-        <div style={{
-          display: 'flex',
-          flexWrap: 'wrap',
-          gap: 'var(--space-1)',
-          marginTop: 'var(--space-1)',
-          paddingLeft: 'var(--space-1)',
-        }}>
+        <div className="flex flex-wrap gap-[var(--space-1)] mt-[var(--space-1)] pl-[var(--space-1)]">
           {msgs.map((m) => (
             <span
               key={m.id}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 4,
-                padding: '2px 8px',
-                borderRadius: 'var(--radius-full, 999px)',
-                background: 'var(--fill-tertiary)',
-                border: '1px solid var(--separator)',
-                fontSize: 'var(--text-caption2)',
-                color: 'var(--text-tertiary)',
-              }}
+              className="inline-flex items-center gap-1 py-0.5 px-2 rounded-full bg-[var(--fill-tertiary)] border border-[var(--separator)] text-[length:var(--text-caption2)] text-[var(--text-tertiary)]"
             >
               {m.toolCall}
             </span>
@@ -142,27 +99,19 @@ function inlineFormat(text: string): React.ReactNode {
           href={match[1]}
           target="_blank"
           rel="noopener noreferrer"
-          style={{ color: 'var(--system-blue)', textDecoration: 'underline', textUnderlineOffset: 2 }}
+          className="text-[var(--system-blue)] underline underline-offset-2"
         >
           {match[1]}
         </a>
       )
     } else if (match[2]) {
-      parts.push(<strong key={match.index} style={{ fontWeight: 'var(--weight-bold)' }}>{match[3]}</strong>)
+      parts.push(<strong key={match.index} className="font-[var(--weight-bold)]">{match[3]}</strong>)
     } else if (match[4]) {
       parts.push(
-        <code key={match.index} style={{
-          background: 'var(--fill-secondary)',
-          border: '1px solid var(--separator)',
-          borderRadius: 5,
-          padding: '1px 5px',
-          fontSize: '0.88em',
-          fontFamily: '"SF Mono", Menlo, monospace',
-          color: 'var(--accent)',
-        }}>{match[5]}</code>
+        <code key={match.index} className="bg-[var(--fill-secondary)] border border-[var(--separator)] rounded-[5px] py-px px-[5px] text-[0.88em] font-['SF_Mono',Menlo,monospace] text-[var(--accent)]">{match[5]}</code>
       )
     } else if (match[6]) {
-      parts.push(<em key={match.index} style={{ fontStyle: 'italic', opacity: 0.85 }}>{match[6]}</em>)
+      parts.push(<em key={match.index} className="italic opacity-[0.85]">{match[6]}</em>)
     }
     last = match.index + match[0].length
   }
@@ -181,36 +130,15 @@ function CodeBlock({ code, keyProp }: { code: string; keyProp: number }) {
   }
 
   return (
-    <div key={keyProp} style={{ position: 'relative', margin: '8px 0' }}>
+    <div key={keyProp} className="relative my-2">
       <button
         onClick={handleCopy}
         aria-label="Copy code"
-        style={{
-          position: 'absolute',
-          top: 8,
-          right: 8,
-          padding: '2px 8px',
-          fontSize: 11,
-          borderRadius: 'var(--radius-sm)',
-          background: 'var(--fill-secondary)',
-          color: 'var(--text-secondary)',
-          border: '1px solid var(--separator)',
-          cursor: 'pointer',
-        }}
+        className="absolute top-2 right-2 py-0.5 px-2 text-[11px] rounded-[var(--radius-sm)] bg-[var(--fill-secondary)] text-[var(--text-secondary)] border border-[var(--separator)] cursor-pointer"
       >
         {copied ? 'Copied!' : 'Copy'}
       </button>
-      <pre className="code-block" style={{
-        background: 'var(--fill-tertiary)',
-        border: '1px solid var(--separator)',
-        borderRadius: 'var(--radius-md)',
-        padding: 'var(--space-3) var(--space-4)',
-        overflowX: 'auto',
-        fontSize: 13,
-        lineHeight: 1.5,
-        fontFamily: '"SF Mono", Menlo, monospace',
-        color: 'var(--text-primary)',
-      }}><code>{code}</code></pre>
+      <pre className="code-block bg-[var(--fill-tertiary)] border border-[var(--separator)] rounded-[var(--radius-md)] py-[var(--space-3)] px-[var(--space-4)] overflow-x-auto text-[13px] leading-normal font-['SF_Mono',Menlo,monospace] text-[var(--text-primary)]"><code>{code}</code></pre>
     </div>
   )
 }
@@ -228,46 +156,21 @@ function TableBlock({ headerLine, rows, keyProp }: { headerLine: string; rows: s
   const bodyRows = rows.map(parseTableRow)
 
   return (
-    <div key={keyProp} style={{
-      margin: '10px 0',
-      borderRadius: 10,
-      border: '1px solid var(--separator)',
-      overflow: 'hidden',
-    }}>
-      <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
-        <table style={{
-          borderCollapse: 'collapse',
-          fontSize: 'var(--text-footnote)',
-          lineHeight: 1.6,
-          width: '100%',
-          minWidth: 'max-content',
-        }}>
+    <div key={keyProp} className="my-2.5 rounded-[10px] border border-[var(--separator)] overflow-hidden">
+      <div className="overflow-x-auto [WebkitOverflowScrolling:touch]">
+        <table className="border-collapse text-[length:var(--text-footnote)] leading-[1.6] w-full min-w-max">
           <thead>
-            <tr style={{ background: 'var(--fill-tertiary)' }}>
+            <tr className="bg-[var(--fill-tertiary)]">
               {headers.map((h, hi) => (
-                <th key={hi} style={{
-                  textAlign: 'left',
-                  padding: '10px 16px',
-                  fontWeight: 600,
-                  color: 'var(--text-primary)',
-                  borderBottom: '1px solid var(--separator)',
-                  maxWidth: 280,
-                  wordBreak: 'break-word',
-                }}>{inlineFormat(h)}</th>
+                <th key={hi} className="text-left py-2.5 px-4 font-semibold text-[var(--text-primary)] border-b border-[var(--separator)] max-w-[280px] break-words">{inlineFormat(h)}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {bodyRows.map((row, ri) => (
-              <tr key={ri} style={{ background: ri % 2 === 1 ? 'var(--fill-quaternary, transparent)' : 'transparent' }}>
+              <tr key={ri} className={ri % 2 === 1 ? 'bg-[var(--fill-quaternary,transparent)]' : 'bg-transparent'}>
                 {row.map((cell, ci) => (
-                  <td key={ci} style={{
-                    padding: '10px 16px',
-                    borderBottom: ri < bodyRows.length - 1 ? '1px solid var(--separator)' : 'none',
-                    color: 'var(--text-primary)',
-                    maxWidth: 280,
-                    wordBreak: 'break-word',
-                  }}>{inlineFormat(cell)}</td>
+                  <td key={ci} className={`py-2.5 px-4 text-[var(--text-primary)] max-w-[280px] break-words ${ri < bodyRows.length - 1 ? 'border-b border-[var(--separator)]' : ''}`}>{inlineFormat(cell)}</td>
                 ))}
               </tr>
             ))}
@@ -313,11 +216,11 @@ function formatMessage(content: string): React.ReactNode {
       continue
     }
 
-    if (line.trim() === '') { result.push(<div key={`space-${i}`} style={{ height: 6 }} />); continue }
+    if (line.trim() === '') { result.push(<div key={`space-${i}`} className="h-1.5" />); continue }
     if (line.match(/^[-*] /)) {
       result.push(
-        <div key={i} style={{ display: 'flex', gap: 'var(--space-2)', marginBottom: 2 }}>
-          <span style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 1 }}>&bull;</span>
+        <div key={i} className="flex gap-[var(--space-2)] mb-0.5">
+          <span className="text-[var(--accent)] shrink-0 mt-px">&bull;</span>
           <span>{inlineFormat(line.slice(2))}</span>
         </div>
       )
@@ -326,8 +229,8 @@ function formatMessage(content: string): React.ReactNode {
     if (line.match(/^\d+\. /)) {
       const num = line.match(/^(\d+)\. /)?.[1]
       result.push(
-        <div key={i} style={{ display: 'flex', gap: 'var(--space-2)', marginBottom: 2 }}>
-          <span style={{ color: 'var(--accent)', flexShrink: 0, fontWeight: 'var(--weight-semibold)', minWidth: 16 }}>{num}.</span>
+        <div key={i} className="flex gap-[var(--space-2)] mb-0.5">
+          <span className="text-[var(--accent)] shrink-0 font-[var(--weight-semibold)] min-w-4">{num}.</span>
           <span>{inlineFormat(line.replace(/^\d+\. /, ''))}</span>
         </div>
       )
@@ -335,7 +238,7 @@ function formatMessage(content: string): React.ReactNode {
     }
     if (line.startsWith('### ')) {
       result.push(
-        <div key={i} style={{ fontWeight: 'var(--weight-semibold)', fontSize: 'var(--text-footnote)', marginTop: 'var(--space-2)', marginBottom: 2 }}>
+        <div key={i} className="font-[var(--weight-semibold)] text-[length:var(--text-footnote)] mt-[var(--space-2)] mb-0.5">
           {inlineFormat(line.slice(4))}
         </div>
       )
@@ -343,7 +246,7 @@ function formatMessage(content: string): React.ReactNode {
     }
     if (line.startsWith('## ')) {
       result.push(
-        <div key={i} style={{ fontWeight: 'var(--weight-bold)', fontSize: 'var(--text-subheadline)', marginTop: 'var(--space-3)', marginBottom: 3 }}>
+        <div key={i} className="font-[var(--weight-bold)] text-[length:var(--text-subheadline)] mt-[var(--space-3)] mb-[3px]">
           {inlineFormat(line.slice(3))}
         </div>
       )
@@ -351,13 +254,13 @@ function formatMessage(content: string): React.ReactNode {
     }
     if (line.startsWith('# ')) {
       result.push(
-        <div key={i} style={{ fontWeight: 'var(--weight-bold)', fontSize: 'var(--text-body)', marginTop: 'var(--space-3)', marginBottom: 'var(--space-1)' }}>
+        <div key={i} className="font-[var(--weight-bold)] text-[length:var(--text-body)] mt-[var(--space-3)] mb-[var(--space-1)]">
           {inlineFormat(line.slice(2))}
         </div>
       )
       continue
     }
-    result.push(<div key={i} style={{ marginBottom: 1 }}>{inlineFormat(line)}</div>)
+    result.push(<div key={i} className="mb-px">{inlineFormat(line)}</div>)
   }
 
   // Close unclosed code block
@@ -434,22 +337,17 @@ function renderMedia(media: MediaAttachment[], isUser: boolean) {
   return (
     <>
       {images.map((m, mi) => (
-        <div key={`img-${mi}`} style={{
-          marginTop: 'var(--space-2)',
-          borderRadius: 'var(--radius-lg)',
-          overflow: 'hidden',
-          maxWidth: 280,
-        }}>
+        <div key={`img-${mi}`} className="mt-[var(--space-2)] rounded-[var(--radius-lg)] overflow-hidden max-w-[280px]">
           <img
             src={m.url}
             alt={m.name || 'Image'}
-            style={{ width: '100%', display: 'block', borderRadius: 'var(--radius-lg)', cursor: 'pointer' }}
+            className="w-full block rounded-[var(--radius-lg)] cursor-pointer"
             onClick={() => window.open(m.url, '_blank')}
           />
         </div>
       ))}
       {audio.map((m, mi) => (
-        <div key={`audio-${mi}`} style={{ marginTop: 'var(--space-2)' }}>
+        <div key={`audio-${mi}`} className="mt-[var(--space-2)]">
           <VoiceMessage
             src={m.url}
             duration={m.duration || 0}
@@ -459,7 +357,7 @@ function renderMedia(media: MediaAttachment[], isUser: boolean) {
         </div>
       ))}
       {files.map((m, mi) => (
-        <div key={`file-${mi}`} style={{ marginTop: 'var(--space-2)' }}>
+        <div key={`file-${mi}`} className="mt-[var(--space-2)]">
           <FileAttachment
             name={m.name || 'File'}
             size={m.size}
@@ -483,37 +381,51 @@ interface ChatMessagesProps {
 
 export function ChatMessages({ messages, loading, streamingText }: ChatMessagesProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
   const prevMsgCount = useRef(0)
+  const prevMsgIdRef = useRef<string | null>(null)
 
-  useEffect(() => {
-    // Instant scroll on initial load / session switch, smooth for new messages
+  // Use useLayoutEffect for instant scroll (before paint) to avoid flash
+  useLayoutEffect(() => {
+    if (messages.length === 0) {
+      prevMsgCount.current = 0
+      prevMsgIdRef.current = null
+      return
+    }
+
+    const currentFirstId = messages[0]?.id || null
+    const isSessionSwitch = prevMsgIdRef.current !== null && currentFirstId !== prevMsgIdRef.current
     const isInitialLoad = prevMsgCount.current === 0 && messages.length > 0
-    const behavior = isInitialLoad ? 'instant' as const : 'smooth' as const
-    bottomRef.current?.scrollIntoView({ behavior })
+
+    if (isInitialLoad || isSessionSwitch) {
+      // Snap to bottom instantly before paint — no visible scroll
+      if (scrollContainerRef.current) {
+        scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight
+      }
+    } else {
+      // New messages arriving in same session — smooth scroll
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
+
     prevMsgCount.current = messages.length
-  }, [messages, loading])
+    prevMsgIdRef.current = currentFirstId
+  }, [messages])
+
+  // Also scroll on loading state changes (streaming starts)
+  useEffect(() => {
+    if (loading && messages.length > 0) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [loading, messages.length])
 
   if (messages.length === 0 && !loading) {
     return (
-      <div style={{
-        flex: 1,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-      }}>
-        <div style={{ textAlign: 'center' }}>
-          <div style={{
-            fontSize: 'var(--text-title3)',
-            fontWeight: 'var(--weight-semibold)',
-            color: 'var(--text-tertiary)',
-          }}>
+      <div className="flex-1 flex items-center justify-center">
+        <div className="text-center">
+          <div className="text-[length:var(--text-title3)] font-[var(--weight-semibold)] text-[var(--text-tertiary)]">
             Start a conversation
           </div>
-          <div style={{
-            fontSize: 'var(--text-footnote)',
-            color: 'var(--text-quaternary)',
-            marginTop: 'var(--space-2)',
-          }}>
+          <div className="text-[length:var(--text-footnote)] text-[var(--text-quaternary)] mt-[var(--space-2)]">
             Send a message or use /new to begin
           </div>
         </div>
@@ -522,14 +434,7 @@ export function ChatMessages({ messages, loading, streamingText }: ChatMessagesP
   }
 
   return (
-    <div className="chat-messages-scroll" style={{
-      flex: 1,
-      overflowY: 'auto',
-      overflowX: 'hidden',
-      padding: 'var(--space-3) 0 var(--space-6) 0',
-      background: 'var(--bg)',
-      minHeight: 0,
-    }}>
+    <div ref={scrollContainerRef} className="chat-messages-scroll flex-1 overflow-y-auto overflow-x-hidden py-[var(--space-3)] pb-[var(--space-6)] bg-[var(--bg)] min-h-0">
       {groupMessages(messages).map((item) => {
         if (item.kind === 'tool-group') {
           const firstMsg = item.msgs[0]
@@ -539,17 +444,12 @@ export function ChatMessages({ messages, loading, streamingText }: ChatMessagesP
           return (
             <div key={`tg-${item.startIndex}`}>
               {showTimestamp && (
-                <div style={{
-                  textAlign: 'center',
-                  padding: 'var(--space-3) 0',
-                  fontSize: 'var(--text-caption2)',
-                  color: 'var(--text-tertiary)',
-                }}>
+                <div className="text-center py-[var(--space-3)] text-[length:var(--text-caption2)] text-[var(--text-tertiary)]">
                   {formatTimestamp(firstMsg.timestamp)}
                 </div>
               )}
               {!showTimestamp && prevMsg && (
-                <div style={{ height: prevMsg.role !== 'assistant' ? 'var(--space-4)' : 'var(--space-1)' }} />
+                <div className={prevMsg.role !== 'assistant' ? 'h-[var(--space-4)]' : 'h-[var(--space-1)]'} />
               )}
               <ToolGroup msgs={item.msgs} isActive={isActive} />
             </div>
@@ -581,43 +481,21 @@ export function ChatMessages({ messages, loading, streamingText }: ChatMessagesP
           <div key={msg.id || i}>
             {/* Timestamp divider */}
             {showTimestamp && (
-              <div style={{
-                textAlign: 'center',
-                padding: 'var(--space-3) 0',
-                fontSize: 'var(--text-caption2)',
-                color: 'var(--text-tertiary)',
-              }}>
+              <div className="text-center py-[var(--space-3)] text-[length:var(--text-caption2)] text-[var(--text-tertiary)]">
                 {formatTimestamp(msg.timestamp)}
               </div>
             )}
 
             {/* Spacing between role switches */}
             {!showTimestamp && i > 0 && (
-              <div style={{ height: messages[i - 1].role !== msg.role ? 'var(--space-4)' : 'var(--space-1)' }} />
+              <div className={messages[i - 1].role !== msg.role ? 'h-[var(--space-4)]' : 'h-[var(--space-1)]'} />
             )}
 
             {/* Notification message — centered system-style banner */}
             {isNotification && (
-              <div style={{
-                display: 'flex',
-                justifyContent: 'center',
-                padding: '0 var(--space-4)',
-                marginBottom: 'var(--space-1)',
-              }}>
-                <div className="notification-msg-bubble" style={{
-                  display: 'flex',
-                  alignItems: 'flex-start',
-                  gap: 'var(--space-2)',
-                  padding: 'var(--space-3) var(--space-4)',
-                  borderRadius: 'var(--radius-md)',
-                  background: 'var(--fill-secondary)',
-                  border: '1px dashed var(--separator)',
-                  color: 'var(--text-secondary)',
-                  fontSize: 'var(--text-caption1)',
-                  lineHeight: 'var(--leading-relaxed)',
-                  maxWidth: '85%',
-                }}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 2, opacity: 0.6 }}>
+              <div className="flex justify-center px-[var(--space-4)] mb-[var(--space-1)]">
+                <div className="notification-msg-bubble flex items-start gap-[var(--space-2)] py-[var(--space-3)] px-[var(--space-4)] rounded-[var(--radius-md)] bg-[var(--fill-secondary)] border border-dashed border-[var(--separator)] text-[var(--text-secondary)] text-[length:var(--text-caption1)] leading-[var(--leading-relaxed)] max-w-[85%]">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5 opacity-60">
                     <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
                     <path d="M13.73 21a2 2 0 0 1-3.46 0" />
                   </svg>
@@ -628,24 +506,9 @@ export function ChatMessages({ messages, loading, streamingText }: ChatMessagesP
 
             {/* User message */}
             {isUser && (
-              <div style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'flex-end',
-                padding: '0 var(--space-4)',
-                marginBottom: 'var(--space-1)',
-              }}>
+              <div className="flex flex-col items-end px-[var(--space-4)] mb-[var(--space-1)]">
                 {textContent && (
-                  <div className="user-msg-bubble" style={{
-                    padding: 'var(--space-3) var(--space-4)',
-                    borderRadius: 'var(--radius-lg) var(--radius-lg) var(--radius-sm) var(--radius-lg)',
-                    background: 'var(--accent)',
-                    color: 'var(--accent-contrast)',
-                    fontSize: 'var(--text-subheadline)',
-                    lineHeight: 'var(--leading-relaxed)',
-                    fontWeight: 'var(--weight-medium)',
-                    boxShadow: 'var(--shadow-subtle)',
-                  }}>
+                  <div className="user-msg-bubble py-[var(--space-3)] px-[var(--space-4)] rounded-[var(--radius-lg)_var(--radius-lg)_var(--radius-sm)_var(--radius-lg)] bg-[var(--accent)] text-[var(--accent-contrast)] text-[length:var(--text-subheadline)] leading-[var(--leading-relaxed)] font-[var(--weight-medium)] shadow-[var(--shadow-subtle)]">
                     {formatMessage(textContent)}
                   </div>
                 )}
@@ -659,24 +522,11 @@ export function ChatMessages({ messages, loading, streamingText }: ChatMessagesP
 
             {/* Assistant message */}
             {!isUser && !isNotification && (
-              <div className="assistant-msg-row" style={{
-                display: 'flex',
-                justifyContent: 'flex-start',
-                padding: '0 var(--space-4)',
-                marginBottom: 'var(--space-1)',
-              }}>
-                <div className="assistant-msg-bubble" style={{ display: 'flex', flexDirection: 'column' }}>
+              <div className="assistant-msg-row flex justify-start px-[var(--space-4)] mb-[var(--space-1)]">
+                <div className="assistant-msg-bubble flex flex-col">
                   {/* Text bubble */}
                   {textContent && (
-                    <div style={{
-                      padding: 'var(--space-3) var(--space-4)',
-                      borderRadius: 'var(--radius-sm) var(--radius-lg) var(--radius-lg) var(--radius-lg)',
-                      background: 'var(--material-thin)',
-                      border: '1px solid var(--separator)',
-                      color: 'var(--text-primary)',
-                      fontSize: 'var(--text-subheadline)',
-                      lineHeight: 'var(--leading-relaxed)',
-                    }}>
+                    <div className="py-[var(--space-3)] px-[var(--space-4)] rounded-[var(--radius-sm)_var(--radius-lg)_var(--radius-lg)_var(--radius-lg)] bg-[var(--material-thin)] border border-[var(--separator)] text-[var(--text-primary)] text-[length:var(--text-subheadline)] leading-[var(--leading-relaxed)]">
                       {formatMessage(textContent)}
                     </div>
                   )}
@@ -692,22 +542,9 @@ export function ChatMessages({ messages, loading, streamingText }: ChatMessagesP
 
       {/* Streaming message — shows text as it arrives */}
       {streamingText && (
-        <div style={{
-          display: 'flex',
-          justifyContent: 'flex-start',
-          padding: '0 var(--space-4)',
-          marginBottom: 'var(--space-1)',
-        }} className="assistant-msg-row">
-          <div className="assistant-msg-bubble" style={{ display: 'flex', flexDirection: 'column' }}>
-            <div style={{
-              padding: 'var(--space-3) var(--space-4)',
-              borderRadius: 'var(--radius-sm) var(--radius-lg) var(--radius-lg) var(--radius-lg)',
-              background: 'var(--material-thin)',
-              border: '1px solid var(--separator)',
-              color: 'var(--text-primary)',
-              fontSize: 'var(--text-subheadline)',
-              lineHeight: 'var(--leading-relaxed)',
-            }}>
+        <div className="assistant-msg-row flex justify-start px-[var(--space-4)] mb-[var(--space-1)]">
+          <div className="assistant-msg-bubble flex flex-col">
+            <div className="py-[var(--space-3)] px-[var(--space-4)] rounded-[var(--radius-sm)_var(--radius-lg)_var(--radius-lg)_var(--radius-lg)] bg-[var(--material-thin)] border border-[var(--separator)] text-[var(--text-primary)] text-[length:var(--text-subheadline)] leading-[var(--leading-relaxed)]">
               {formatMessage(closePartialMarkdown(streamingText))}
             </div>
           </div>
@@ -716,24 +553,9 @@ export function ChatMessages({ messages, loading, streamingText }: ChatMessagesP
 
       {/* Thinking indicator — visible while waiting, disappears when streaming or response arrives */}
       {loading && !streamingText && messages.length > 0 && (
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 6,
-          padding: '6px var(--space-4)',
-          marginTop: 'var(--space-1)',
-        }}>
-          <span style={{
-            width: 6, height: 6, borderRadius: '50%',
-            background: 'var(--accent)',
-            animation: 'jinn-pulse 1.4s infinite',
-            flexShrink: 0,
-          }} />
-          <span style={{
-            fontSize: 'var(--text-caption1)',
-            color: 'var(--text-tertiary)',
-            fontWeight: 'var(--weight-medium)',
-          }}>
+        <div className="flex items-center gap-1.5 py-1.5 px-[var(--space-4)] mt-[var(--space-1)]">
+          <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-[jinn-pulse_1.4s_infinite] shrink-0" />
+          <span className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)] font-[var(--weight-medium)]">
             Thinking
           </span>
         </div>

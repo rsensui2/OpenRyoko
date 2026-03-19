@@ -1,6 +1,7 @@
 "use client";
 import React, { useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
 interface Task {
   id?: string;
@@ -35,18 +36,14 @@ function TaskCard({ task }: { task: Task }) {
   const pStyle = priorityStyles[task.priority || "low"] || priorityStyles.low;
 
   return (
-    <div style={{
-      borderRadius: 'var(--radius-md)', border: '1px solid var(--separator)',
-      background: 'var(--material-regular)', padding: 12,
-      boxShadow: '0 1px 2px rgba(0,0,0,0.06)',
-    }}>
-      <p style={{ fontSize: 'var(--text-subheadline)', fontWeight: 500, color: 'var(--text-primary)', marginBottom: 8 }}>{task.title}</p>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+    <div className="rounded-[var(--radius-md)] border border-[var(--separator)] bg-[var(--material-regular)] p-3 shadow-[0_1px_2px_rgba(0,0,0,0.06)]">
+      <p className="mb-2 text-[length:var(--text-subheadline)] font-medium text-[var(--text-primary)]">{task.title}</p>
+      <div className="flex items-center justify-between">
         {task.assignee && (
-          <span style={{ fontSize: 'var(--text-caption1)', color: 'var(--text-tertiary)' }}>{task.assignee}</span>
+          <span className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">{task.assignee}</span>
         )}
         {task.priority && (
-          <span style={{ fontSize: 10, fontWeight: 500, padding: '2px 6px', borderRadius: 999, border: '1px solid', ...pStyle }}>
+          <span className="rounded-full border px-1.5 py-0.5 text-[10px] font-medium" style={pStyle}>
             {task.priority}
           </span>
         )}
@@ -57,19 +54,19 @@ function TaskCard({ task }: { task: Task }) {
 
 function Column({ title, tasks }: { title: string; tasks: Task[] }) {
   return (
-    <div style={{ flex: 1, minWidth: 220 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-        <h4 style={{ fontSize: 'var(--text-caption1)', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-quaternary)' }}>
+    <div className="min-w-[220px] flex-1">
+      <div className="mb-3 flex items-center gap-2">
+        <h4 className="text-[length:var(--text-caption1)] font-medium uppercase tracking-[0.05em] text-[var(--text-quaternary)]">
           {title}
         </h4>
-        <span style={{ fontSize: 'var(--text-caption1)', color: 'var(--text-quaternary)' }}>{tasks.length}</span>
+        <span className="text-[length:var(--text-caption1)] text-[var(--text-quaternary)]">{tasks.length}</span>
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div className="flex flex-col gap-2">
         {tasks.map((task, idx) => (
           <TaskCard key={task.id || idx} task={task} />
         ))}
         {tasks.length === 0 && (
-          <p style={{ fontSize: 'var(--text-caption1)', color: 'var(--text-quaternary)', textAlign: 'center', padding: '16px 0' }}>
+          <p className="py-4 text-center text-[length:var(--text-caption1)] text-[var(--text-quaternary)]">
             No tasks
           </p>
         )}
@@ -96,7 +93,7 @@ export function BoardView({ department }: { department: string }) {
 
   if (loading) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 256, color: 'var(--text-quaternary)', fontSize: 'var(--text-subheadline)' }}>
+      <div className="flex h-64 items-center justify-center text-[length:var(--text-subheadline)] text-[var(--text-quaternary)]">
         Loading board...
       </div>
     );
@@ -104,11 +101,11 @@ export function BoardView({ department }: { department: string }) {
 
   if (error) {
     return (
-      <div style={{ borderRadius: 'var(--radius-md)', background: 'var(--fill-tertiary)', border: '1px solid var(--separator)', padding: '32px 16px', textAlign: 'center' }}>
-        <p style={{ fontSize: 'var(--text-subheadline)', color: 'var(--text-tertiary)' }}>
+      <div className="rounded-[var(--radius-md)] border border-[var(--separator)] bg-[var(--fill-tertiary)] px-4 py-8 text-center">
+        <p className="text-[length:var(--text-subheadline)] text-[var(--text-tertiary)]">
           No board found for {department}.
         </p>
-        <p style={{ fontSize: 'var(--text-caption1)', color: 'var(--text-quaternary)', marginTop: 4 }}>
+        <p className="mt-1 text-[length:var(--text-caption1)] text-[var(--text-quaternary)]">
           Tasks will appear here when the department has a board set up.
         </p>
       </div>
@@ -156,12 +153,12 @@ export function BoardView({ department }: { department: string }) {
 
   return (
     <div>
-      <h2 style={{ fontSize: 'var(--text-title2)', fontWeight: 600, letterSpacing: '-0.3px', marginBottom: 4, textTransform: 'capitalize', color: 'var(--text-primary)' }}>
+      <h2 className="mb-1 text-[length:var(--text-title2)] font-semibold capitalize tracking-[-0.3px] text-[var(--text-primary)]">
         {department}
       </h2>
-      <p style={{ fontSize: 'var(--text-subheadline)', color: 'var(--text-tertiary)', marginBottom: 24 }}>Department board</p>
+      <p className="mb-6 text-[length:var(--text-subheadline)] text-[var(--text-tertiary)]">Department board</p>
 
-      <div style={{ display: 'flex', gap: 16, overflowX: 'auto', paddingBottom: 16 }}>
+      <div className={cn("flex gap-4 overflow-x-auto pb-4")}>
         {displayColumns.map((col) => (
           <Column key={col.key} title={col.title} tasks={col.tasks} />
         ))}

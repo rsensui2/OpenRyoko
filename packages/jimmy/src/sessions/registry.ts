@@ -125,6 +125,34 @@ export function initDb(): Database.Database {
   `);
   db.exec(CREATE_FILES_TABLE);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS goals (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      description TEXT,
+      status TEXT NOT NULL DEFAULT 'not_started',
+      level TEXT NOT NULL DEFAULT 'company',
+      parent_id TEXT,
+      department TEXT,
+      owner TEXT,
+      progress INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (parent_id) REFERENCES goals(id)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS budget_events (
+      id TEXT PRIMARY KEY,
+      employee TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      amount REAL NOT NULL,
+      limit_amount REAL NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
   return db;
 }
 

@@ -30,7 +30,8 @@ function RankBadge({ rank }: { rank: string }) {
   const style = rankStyles[rank] || rankStyles.employee;
   return (
     <span
-      style={{ fontSize: 10, fontWeight: 500, padding: '2px 6px', borderRadius: 999, ...style }}
+      className="text-[10px] font-medium py-[2px] px-[6px] rounded-full"
+      style={style}
     >
       {rank}
     </span>
@@ -39,9 +40,7 @@ function RankBadge({ rank }: { rank: string }) {
 
 function EngineIcon({ engine }: { engine: string }) {
   return (
-    <span
-      style={{ fontSize: 10, fontFamily: 'var(--font-mono)', background: 'var(--fill-tertiary)', color: 'var(--text-tertiary)', padding: '2px 4px', borderRadius: 'var(--radius-sm)' }}
-    >
+    <span className="text-[10px] font-[family-name:var(--font-mono)] bg-[var(--fill-tertiary)] text-[var(--text-tertiary)] py-[2px] px-[4px] rounded-[var(--radius-sm)]">
       {engineIcons[engine] || engine?.charAt(0)?.toUpperCase() || "?"}
     </span>
   );
@@ -59,25 +58,15 @@ function EmployeeNode({
   return (
     <button
       onClick={() => onSelect(employee.name)}
+      className="w-full text-left flex items-center gap-2 py-[6px] px-3 rounded-[var(--radius-md)] text-[length:var(--text-subheadline)] border-none cursor-pointer transition-[background,color] duration-150 ease-in-out"
       style={{
-        width: '100%',
-        textAlign: 'left',
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
-        padding: '6px 12px',
-        borderRadius: 'var(--radius-md)',
-        fontSize: 'var(--text-subheadline)',
         background: selected ? 'var(--accent-fill)' : 'transparent',
         color: selected ? 'var(--accent)' : 'var(--text-secondary)',
-        border: 'none',
-        cursor: 'pointer',
-        transition: 'background 150ms ease, color 150ms ease',
       }}
       onMouseEnter={(e) => { if (!selected) e.currentTarget.style.background = 'var(--fill-tertiary)' }}
       onMouseLeave={(e) => { if (!selected) e.currentTarget.style.background = 'transparent' }}
     >
-      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+      <span className="flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
         {employee.displayName || employee.name}
       </span>
       {employee.rank && <RankBadge rank={employee.rank} />}
@@ -107,37 +96,31 @@ function DepartmentNode({
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center' }}>
+      <div className="flex items-center">
         <button
           onClick={() => setExpanded(!expanded)}
-          style={{
-            width: 20, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center',
-            color: 'var(--text-quaternary)', fontSize: 12, flexShrink: 0,
-            background: 'none', border: 'none', cursor: 'pointer',
-          }}
+          className="w-5 h-5 flex items-center justify-center text-[var(--text-quaternary)] text-xs shrink-0 bg-none border-none cursor-pointer"
         >
           {expanded ? "\u25BC" : "\u25B6"}
         </button>
         <button
           onClick={() => onSelectDepartment(name)}
+          className="flex-1 text-left py-[6px] px-2 rounded-[var(--radius-md)] text-[length:var(--text-subheadline)] font-medium border-none cursor-pointer transition-[background,color] duration-150 ease-in-out"
           style={{
-            flex: 1, textAlign: 'left', padding: '6px 8px', borderRadius: 'var(--radius-md)',
-            fontSize: 'var(--text-subheadline)', fontWeight: 500,
             background: isSelected ? 'var(--accent-fill)' : 'transparent',
             color: isSelected ? 'var(--accent)' : 'var(--text-primary)',
-            border: 'none', cursor: 'pointer', transition: 'background 150ms ease, color 150ms ease',
           }}
           onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = 'var(--fill-tertiary)' }}
           onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = 'transparent' }}
         >
           {name}
-          <span style={{ fontSize: 'var(--text-caption1)', color: 'var(--text-quaternary)', marginLeft: 6 }}>
+          <span className="text-[length:var(--text-caption1)] text-[var(--text-quaternary)] ml-[6px]">
             ({employees.length})
           </span>
         </button>
       </div>
       {expanded && (
-        <div style={{ marginLeft: 20, borderLeft: '1px solid var(--separator)', paddingLeft: 8, marginTop: 2 }}>
+        <div className="ml-5 border-l border-[var(--separator)] pl-2 mt-[2px]">
           {employees.map((emp) => (
             <EmployeeNode
               key={emp.name}
@@ -189,9 +172,9 @@ export function OrgTree({
   );
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+    <div className="flex flex-col gap-1">
       {executive && (
-        <div style={{ marginBottom: 8 }}>
+        <div className="mb-2">
           <EmployeeNode
             employee={executive}
             selected={selectedEmployee === executive.name}

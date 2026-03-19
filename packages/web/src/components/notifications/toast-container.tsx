@@ -28,87 +28,34 @@ export function ToastContainer() {
   if (toasts.length === 0) return null;
 
   return (
-    <div
-      style={{
-        position: "fixed",
-        top: 16,
-        right: 16,
-        zIndex: 9999,
-        display: "flex",
-        flexDirection: "column",
-        gap: 8,
-        maxWidth: 380,
-        width: "100%",
-        pointerEvents: "none",
-      }}
-    >
+    <div className="fixed top-4 right-4 z-[9999] flex flex-col gap-2 max-w-[380px] w-full pointer-events-none">
       {toasts.map((toast) => {
         const Icon = ICON_MAP[toast.type];
         const color = COLOR_MAP[toast.type];
         return (
           <div
             key={toast.id}
-            className="animate-slide-down"
+            className="animate-slide-down pointer-events-auto flex items-start gap-2.5 px-3.5 py-3 bg-[var(--material-thick)] backdrop-blur-[40px] backdrop-saturate-[1.8] border border-[var(--separator)] rounded-[var(--radius-md)] shadow-[var(--shadow-overlay)]"
             style={{
-              pointerEvents: "auto",
-              display: "flex",
-              alignItems: "flex-start",
-              gap: 10,
-              padding: "12px 14px",
-              background: "var(--material-thick)",
-              backdropFilter: "blur(40px) saturate(180%)",
               WebkitBackdropFilter: "blur(40px) saturate(180%)",
-              border: "1px solid var(--separator)",
-              borderRadius: "var(--radius-md)",
-              boxShadow: "var(--shadow-overlay)",
             }}
           >
-            <Icon size={18} style={{ color, flexShrink: 0, marginTop: 1 }} />
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div
-                style={{
-                  fontSize: 13,
-                  fontWeight: 600,
-                  color: "var(--text-primary)",
-                  lineHeight: 1.3,
-                }}
-              >
+            <Icon size={18} className="shrink-0 mt-px" style={{ color }} />
+            <div className="flex-1 min-w-0">
+              <div className="text-[13px] font-semibold text-[var(--text-primary)] leading-[1.3]">
                 {toast.title}
               </div>
-              <div
-                style={{
-                  fontSize: 12,
-                  color: "var(--text-secondary)",
-                  marginTop: 2,
-                  lineHeight: 1.3,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
+              <div className="text-xs text-[var(--text-secondary)] mt-0.5 leading-[1.3] overflow-hidden text-ellipsis whitespace-nowrap">
                 {toast.message}
               </div>
-              <div
-                style={{
-                  fontSize: 11,
-                  color: "var(--text-quaternary)",
-                  marginTop: 4,
-                }}
-              >
+              <div className="text-[11px] text-[var(--text-quaternary)] mt-1">
                 {formatTime(toast.timestamp)}
               </div>
             </div>
             <button
               onClick={() => dismissToast(toast.id)}
               aria-label="Dismiss"
-              style={{
-                background: "transparent",
-                border: "none",
-                cursor: "pointer",
-                color: "var(--text-tertiary)",
-                padding: 2,
-                flexShrink: 0,
-              }}
+              className="bg-transparent border-none cursor-pointer text-[var(--text-tertiary)] p-0.5 shrink-0"
             >
               <X size={14} />
             </button>

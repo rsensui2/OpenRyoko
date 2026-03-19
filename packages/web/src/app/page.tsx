@@ -6,6 +6,7 @@ import { api } from "@/lib/api";
 import { useGateway } from "@/hooks/use-gateway";
 import { useSettings } from "@/app/settings-provider";
 import { PageLayout } from "@/components/page-layout";
+import { useBreadcrumbs } from "@/context/breadcrumb-context";
 import {
   Card,
   CardHeader,
@@ -90,6 +91,7 @@ function getQuickLinks(portalName: string) {
 }
 
 export default function DashboardPage() {
+  useBreadcrumbs([{ label: 'Dashboard' }])
   const { settings } = useSettings();
   const portalName = settings.portalName ?? "Jinn";
   const [status, setStatus] = useState<StatusData | null>(null);
@@ -139,47 +141,25 @@ export default function DashboardPage() {
 
   return (
     <PageLayout>
-      <div
-        style={{
-          height: "100%",
-          overflowY: "auto",
-          padding: "var(--space-6)",
-        }}
-      >
+      <div className="h-full overflow-y-auto p-[var(--space-6)]">
         {/* Page header */}
-        <div style={{ marginBottom: "var(--space-6)" }}>
-          <h2
-            style={{
-              fontSize: "var(--text-title2)",
-              fontWeight: "var(--weight-bold)",
-              color: "var(--text-primary)",
-              marginBottom: "var(--space-1)",
-            }}
-          >
+        <div className="mb-[var(--space-6)]">
+          <h2 className="text-[length:var(--text-title2)] font-[var(--weight-bold)] text-[var(--text-primary)] mb-[var(--space-1)]">
             Dashboard
           </h2>
-          <p
-            style={{
-              fontSize: "var(--text-body)",
-              color: "var(--text-tertiary)",
-            }}
-          >
+          <p className="text-[length:var(--text-body)] text-[var(--text-tertiary)]">
             Gateway overview and live activity
           </p>
         </div>
 
         {error && (
           <div
+            className="mb-[var(--space-4)] rounded-[var(--radius-md,12px)] border px-[var(--space-4)] py-[var(--space-3)] text-[length:var(--text-body)] text-[var(--system-red)]"
             style={{
-              marginBottom: "var(--space-4)",
-              borderRadius: "var(--radius-md, 12px)",
               background:
                 "color-mix(in srgb, var(--system-red) 10%, transparent)",
-              border:
-                "1px solid color-mix(in srgb, var(--system-red) 30%, transparent)",
-              padding: "var(--space-3) var(--space-4)",
-              fontSize: "var(--text-body)",
-              color: "var(--system-red)",
+              borderColor:
+                "color-mix(in srgb, var(--system-red) 30%, transparent)",
             }}
           >
             Failed to connect: {error}
@@ -187,50 +167,23 @@ export default function DashboardPage() {
         )}
 
         {/* Summary cards */}
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-            gap: "var(--space-4)",
-            marginBottom: "var(--space-6)",
-          }}
-        >
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-[var(--space-4)] mb-[var(--space-6)]">
           <Card className="py-4">
             <CardContent className="flex items-center gap-3">
               <div
+                className="w-10 h-10 rounded-[var(--radius-md,12px)] flex items-center justify-center text-[var(--system-blue)]"
                 style={{
-                  width: 40,
-                  height: 40,
-                  borderRadius: "var(--radius-md, 12px)",
                   background:
                     "color-mix(in srgb, var(--system-blue) 12%, transparent)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  color: "var(--system-blue)",
                 }}
               >
                 <Clock size={20} />
               </div>
               <div>
-                <p
-                  style={{
-                    fontSize: "var(--text-caption1)",
-                    color: "var(--text-tertiary)",
-                    fontWeight: "var(--weight-medium)",
-                    textTransform: "uppercase",
-                    letterSpacing: "0.05em",
-                  }}
-                >
+                <p className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)] font-[var(--weight-medium)] uppercase tracking-[0.05em]">
                   Uptime
                 </p>
-                <p
-                  style={{
-                    fontSize: "var(--text-title3)",
-                    fontWeight: "var(--weight-semibold)",
-                    color: "var(--text-primary)",
-                  }}
-                >
+                <p className="text-[length:var(--text-title3)] font-[var(--weight-semibold)] text-[var(--text-primary)]">
                   {status?.uptime != null
                     ? formatUptime(status.uptime as number)
                     : "--"}
@@ -242,39 +195,19 @@ export default function DashboardPage() {
           <Card className="py-4">
             <CardContent className="flex items-center gap-3">
               <div
+                className="w-10 h-10 rounded-[var(--radius-md,12px)] flex items-center justify-center text-[var(--system-green)]"
                 style={{
-                  width: 40,
-                  height: 40,
-                  borderRadius: "var(--radius-md, 12px)",
                   background:
                     "color-mix(in srgb, var(--system-green) 12%, transparent)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  color: "var(--system-green)",
                 }}
               >
                 <Users size={20} />
               </div>
               <div>
-                <p
-                  style={{
-                    fontSize: "var(--text-caption1)",
-                    color: "var(--text-tertiary)",
-                    fontWeight: "var(--weight-medium)",
-                    textTransform: "uppercase",
-                    letterSpacing: "0.05em",
-                  }}
-                >
+                <p className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)] font-[var(--weight-medium)] uppercase tracking-[0.05em]">
                   Active Sessions
                 </p>
-                <p
-                  style={{
-                    fontSize: "var(--text-title3)",
-                    fontWeight: "var(--weight-semibold)",
-                    color: "var(--text-primary)",
-                  }}
-                >
+                <p className="text-[length:var(--text-title3)] font-[var(--weight-semibold)] text-[var(--text-primary)]">
                   {status?.sessions?.active ?? "--"}
                 </p>
               </div>
@@ -284,40 +217,19 @@ export default function DashboardPage() {
           <Card className="py-4">
             <CardContent className="flex items-center gap-3">
               <div
+                className="w-10 h-10 rounded-[var(--radius-md,12px)] flex items-center justify-center text-[var(--accent)]"
                 style={{
-                  width: 40,
-                  height: 40,
-                  borderRadius: "var(--radius-md, 12px)",
                   background:
                     "color-mix(in srgb, var(--accent) 12%, transparent)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  color: "var(--accent)",
                 }}
               >
                 <Cpu size={20} />
               </div>
               <div>
-                <p
-                  style={{
-                    fontSize: "var(--text-caption1)",
-                    color: "var(--text-tertiary)",
-                    fontWeight: "var(--weight-medium)",
-                    textTransform: "uppercase",
-                    letterSpacing: "0.05em",
-                  }}
-                >
+                <p className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)] font-[var(--weight-medium)] uppercase tracking-[0.05em]">
                   Engines
                 </p>
-                <p
-                  style={{
-                    fontSize: "var(--text-title3)",
-                    fontWeight: "var(--weight-semibold)",
-                    color: "var(--text-primary)",
-                    textTransform: "capitalize",
-                  }}
-                >
+                <p className="text-[length:var(--text-title3)] font-[var(--weight-semibold)] text-[var(--text-primary)] capitalize">
                   {defaultEngine}
                 </p>
               </div>
@@ -327,39 +239,19 @@ export default function DashboardPage() {
           <Card className="py-4">
             <CardContent className="flex items-center gap-3">
               <div
+                className="w-10 h-10 rounded-[var(--radius-md,12px)] flex items-center justify-center text-[var(--system-orange)]"
                 style={{
-                  width: 40,
-                  height: 40,
-                  borderRadius: "var(--radius-md, 12px)",
                   background:
                     "color-mix(in srgb, var(--system-orange) 12%, transparent)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  color: "var(--system-orange)",
                 }}
               >
                 <CalendarClock size={20} />
               </div>
               <div>
-                <p
-                  style={{
-                    fontSize: "var(--text-caption1)",
-                    color: "var(--text-tertiary)",
-                    fontWeight: "var(--weight-medium)",
-                    textTransform: "uppercase",
-                    letterSpacing: "0.05em",
-                  }}
-                >
+                <p className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)] font-[var(--weight-medium)] uppercase tracking-[0.05em]">
                   Cron Jobs
                 </p>
-                <p
-                  style={{
-                    fontSize: "var(--text-title3)",
-                    fontWeight: "var(--weight-semibold)",
-                    color: "var(--text-primary)",
-                  }}
-                >
+                <p className="text-[length:var(--text-title3)] font-[var(--weight-semibold)] text-[var(--text-primary)]">
                   {cronCount ?? "--"}
                 </p>
               </div>
@@ -368,65 +260,29 @@ export default function DashboardPage() {
         </div>
 
         {/* Quick links */}
-        <div style={{ marginBottom: "var(--space-6)" }}>
-          <h3
-            style={{
-              fontSize: "var(--text-body)",
-              fontWeight: "var(--weight-semibold)",
-              color: "var(--text-primary)",
-              marginBottom: "var(--space-3)",
-            }}
-          >
+        <div className="mb-[var(--space-6)]">
+          <h3 className="text-[length:var(--text-body)] font-[var(--weight-semibold)] text-[var(--text-primary)] mb-[var(--space-3)]">
             Quick Links
           </h3>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
-              gap: "var(--space-3)",
-            }}
-          >
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-[var(--space-3)]">
             {getQuickLinks(portalName).map((link) => {
               const Icon = link.icon;
               return (
                 <Link
                   key={link.href}
                   href={link.href}
-                  style={{ textDecoration: "none" }}
+                  className="no-underline"
                 >
                   <Card className="py-4 h-full cursor-pointer transition-colors hover:border-[var(--accent)]">
                     <CardContent className="flex flex-col gap-2">
-                      <div
-                        style={{
-                          width: 36,
-                          height: 36,
-                          borderRadius: "var(--radius-sm, 8px)",
-                          background: "var(--fill-secondary)",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          color: "var(--accent)",
-                        }}
-                      >
+                      <div className="w-9 h-9 rounded-[var(--radius-sm,8px)] bg-[var(--fill-secondary)] flex items-center justify-center text-[var(--accent)]">
                         <Icon size={18} />
                       </div>
                       <div>
-                        <p
-                          style={{
-                            fontSize: "var(--text-body)",
-                            fontWeight: "var(--weight-semibold)",
-                            color: "var(--text-primary)",
-                          }}
-                        >
+                        <p className="text-[length:var(--text-body)] font-[var(--weight-semibold)] text-[var(--text-primary)]">
                           {link.name}
                         </p>
-                        <p
-                          style={{
-                            fontSize: "var(--text-caption1)",
-                            color: "var(--text-tertiary)",
-                            marginTop: 2,
-                          }}
-                        >
+                        <p className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)] mt-0.5">
                           {link.description}
                         </p>
                       </div>
@@ -440,103 +296,48 @@ export default function DashboardPage() {
 
         {/* Recent activity feed */}
         <div>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "var(--space-2)",
-              marginBottom: "var(--space-3)",
-            }}
-          >
-            <h3
-              style={{
-                fontSize: "var(--text-body)",
-                fontWeight: "var(--weight-semibold)",
-                color: "var(--text-primary)",
-              }}
-            >
+          <div className="flex items-center gap-[var(--space-2)] mb-[var(--space-3)]">
+            <h3 className="text-[length:var(--text-body)] font-[var(--weight-semibold)] text-[var(--text-primary)]">
               Recent Activity
             </h3>
             <span
-              style={{
-                width: 8,
-                height: 8,
-                borderRadius: "50%",
-                background: connected
-                  ? "var(--system-green)"
-                  : "var(--text-quaternary)",
-                display: "inline-block",
-              }}
+              className={`w-2 h-2 rounded-full inline-block ${
+                connected
+                  ? "bg-[var(--system-green)]"
+                  : "bg-[var(--text-quaternary)]"
+              }`}
             />
           </div>
           <Card className="py-0 overflow-hidden">
             {recentEvents.length === 0 ? (
-              <div
-                style={{
-                  padding: "var(--space-6)",
-                  textAlign: "center",
-                  fontSize: "var(--text-body)",
-                  color: "var(--text-tertiary)",
-                }}
-              >
+              <div className="p-[var(--space-6)] text-center text-[length:var(--text-body)] text-[var(--text-tertiary)]">
                 Waiting for events...
               </div>
             ) : (
-              <div
-                style={{
-                  maxHeight: 320,
-                  overflowY: "auto",
-                }}
-              >
+              <div className="max-h-80 overflow-y-auto">
                 {recentEvents.map((evt, i) => (
                   <div
                     key={i}
-                    style={{
-                      display: "flex",
-                      alignItems: "flex-start",
-                      gap: "var(--space-3)",
-                      padding: "var(--space-3) var(--space-4)",
-                      borderBottom:
-                        i < recentEvents.length - 1
-                          ? "1px solid var(--separator)"
-                          : "none",
-                    }}
+                    className="flex items-start gap-[var(--space-3)] px-[var(--space-4)] py-[var(--space-3)]"
+                    style={
+                      i < recentEvents.length - 1
+                        ? { borderBottom: "1px solid var(--separator)" }
+                        : undefined
+                    }
                   >
                     <span
+                      className="text-[length:var(--text-caption2)] font-[family-name:var(--font-mono)] text-[var(--accent)] rounded-[var(--radius-sm,8px)] whitespace-nowrap mt-px px-2 py-0.5"
                       style={{
-                        fontSize: "var(--text-caption2)",
-                        fontFamily: "var(--font-mono)",
-                        color: "var(--accent)",
                         background:
                           "color-mix(in srgb, var(--accent) 10%, transparent)",
-                        padding: "2px 8px",
-                        borderRadius: "var(--radius-sm, 8px)",
-                        whiteSpace: "nowrap",
-                        marginTop: 1,
                       }}
                     >
                       {evt.event}
                     </span>
-                    <span
-                      style={{
-                        fontSize: "var(--text-caption2)",
-                        fontFamily: "var(--font-mono)",
-                        color: "var(--text-tertiary)",
-                        flex: 1,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
+                    <span className="text-[length:var(--text-caption2)] font-[family-name:var(--font-mono)] text-[var(--text-tertiary)] flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
                       {JSON.stringify(evt.payload)}
                     </span>
-                    <span
-                      style={{
-                        fontSize: "var(--text-caption2)",
-                        color: "var(--text-quaternary)",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
+                    <span className="text-[length:var(--text-caption2)] text-[var(--text-quaternary)] whitespace-nowrap">
                       {formatTimestamp(Date.now() - (recentEvents.length - 1 - i) * 1000)}
                     </span>
                   </div>

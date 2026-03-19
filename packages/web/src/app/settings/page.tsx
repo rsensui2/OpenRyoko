@@ -4,6 +4,7 @@ import { useEffect, useState } from "react"
 import { RotateCcw, Trash2, Check, Save, Loader2 } from "lucide-react"
 import { PageLayout } from "@/components/page-layout"
 import { useSettings } from "@/app/settings-provider"
+import { useBreadcrumbs } from "@/context/breadcrumb-context"
 import { useTheme } from "@/app/providers"
 import { THEMES } from "@/lib/themes"
 import type { ThemeId } from "@/lib/themes"
@@ -93,26 +94,14 @@ function Section({
   children: React.ReactNode
 }) {
   return (
-    <section style={{ marginBottom: "var(--space-6)" }}>
+    <section className="mb-[var(--space-6)]">
       <div
-        style={{
-          fontSize: "var(--text-caption1)",
-          fontWeight: "var(--weight-semibold)",
-          letterSpacing: "var(--tracking-wide)",
-          textTransform: "uppercase",
-          color: "var(--text-tertiary)",
-          padding: "0 var(--space-2) var(--space-2)",
-        }}
+        className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] tracking-[var(--tracking-wide)] uppercase text-[var(--text-tertiary)] px-[var(--space-2)] pb-[var(--space-2)]"
       >
         {title}
       </div>
       <div
-        style={{
-          background: "var(--material-regular)",
-          borderRadius: "var(--radius-md)",
-          border: "1px solid var(--separator)",
-          padding: "var(--space-4)",
-        }}
+        className="bg-[var(--material-regular)] rounded-[var(--radius-md)] border border-[var(--separator)] p-[var(--space-4)]"
       >
         {children}
       </div>
@@ -129,24 +118,14 @@ function FieldRow({
 }) {
   return (
     <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        padding: "var(--space-2) 0",
-        gap: "var(--space-4)",
-      }}
+      className="flex items-center justify-between py-[var(--space-2)] gap-[var(--space-4)]"
     >
       <label
-        style={{
-          fontSize: "var(--text-subheadline)",
-          color: "var(--text-secondary)",
-          flexShrink: 0,
-        }}
+        className="text-[length:var(--text-subheadline)] text-[var(--text-secondary)] shrink-0"
       >
         {label}
       </label>
-      <div style={{ width: 240, flexShrink: 0 }}>{children}</div>
+      <div className="w-[240px] shrink-0">{children}</div>
     </div>
   )
 }
@@ -168,16 +147,7 @@ function SettingsInput({
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      className="apple-input"
-      style={{
-        width: "100%",
-        background: "var(--bg-secondary)",
-        border: "1px solid var(--separator)",
-        borderRadius: "var(--radius-sm)",
-        padding: "6px 10px",
-        fontSize: "var(--text-footnote)",
-        color: "var(--text-primary)",
-      }}
+      className="apple-input w-full bg-[var(--bg-secondary)] border border-[var(--separator)] rounded-[var(--radius-sm)] px-[10px] py-[6px] text-[length:var(--text-footnote)] text-[var(--text-primary)]"
     />
   )
 }
@@ -195,16 +165,7 @@ function SettingsSelect({
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      style={{
-        width: "100%",
-        background: "var(--bg-secondary)",
-        border: "1px solid var(--separator)",
-        borderRadius: "var(--radius-sm)",
-        padding: "6px 10px",
-        fontSize: "var(--text-footnote)",
-        color: "var(--text-primary)",
-        cursor: "pointer",
-      }}
+      className="w-full bg-[var(--bg-secondary)] border border-[var(--separator)] rounded-[var(--radius-sm)] px-[10px] py-[6px] text-[length:var(--text-footnote)] text-[var(--text-primary)] cursor-pointer"
     >
       {options.map((o) => (
         <option key={o.value} value={o.value}>
@@ -227,29 +188,15 @@ function ToggleSwitch({
       role="switch"
       aria-checked={checked}
       onClick={() => onChange(!checked)}
+      className="w-[44px] h-[24px] rounded-[12px] border-none cursor-pointer relative shrink-0 transition-[background] duration-200 ease-[var(--ease-smooth)]"
       style={{
-        width: 44,
-        height: 24,
-        borderRadius: 12,
         background: checked ? "var(--system-green)" : "var(--fill-primary)",
-        border: "none",
-        cursor: "pointer",
-        position: "relative",
-        flexShrink: 0,
-        transition: "background 200ms var(--ease-smooth)",
       }}
     >
       <span
+        className="absolute top-[2px] w-[20px] h-[20px] rounded-full bg-white shadow-[0_1px_3px_rgba(0,0,0,0.2)] transition-[left] duration-200 ease-[var(--ease-spring)]"
         style={{
-          position: "absolute",
-          top: 2,
           left: checked ? 22 : 2,
-          width: 20,
-          height: 20,
-          borderRadius: "50%",
-          background: "#fff",
-          boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
-          transition: "left 200ms var(--ease-spring)",
         }}
       />
     </button>
@@ -335,33 +282,20 @@ function SttSettingsSection() {
   return (
     <Section title="Voice Input">
       {/* Status row */}
-      <div style={{
-        display: "flex",
-        alignItems: "center",
-        gap: "var(--space-3)",
-        marginBottom: "var(--space-4)",
-      }}>
-        <div style={{
-          width: 8,
-          height: 8,
-          borderRadius: "50%",
-          background: status.available ? "var(--system-green)" : "var(--system-red)",
-          flexShrink: 0,
-        }} />
-        <div style={{ flex: 1 }}>
-          <div style={{
-            fontSize: "var(--text-subheadline)",
-            fontWeight: "var(--weight-medium)",
-            color: "var(--text-primary)",
-          }}>
+      <div className="flex items-center gap-[var(--space-3)] mb-[var(--space-4)]">
+        <div
+          className="w-[8px] h-[8px] rounded-full shrink-0"
+          style={{
+            background: status.available ? "var(--system-green)" : "var(--system-red)",
+          }}
+        />
+        <div className="flex-1">
+          <div className="text-[length:var(--text-subheadline)] font-[var(--weight-medium)] text-[var(--text-primary)]">
             {status.available
               ? `Whisper ${(status.model || "small").charAt(0).toUpperCase() + (status.model || "small").slice(1)}`
               : "No model installed"}
           </div>
-          <div style={{
-            fontSize: "var(--text-caption1)",
-            color: "var(--text-tertiary)",
-          }}>
+          <div className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">
             {status.available
               ? "Offline speech recognition ready"
               : "Download a model to enable voice input"}
@@ -373,18 +307,7 @@ function SttSettingsSection() {
       {!status.available && !status.downloading && (
         <button
           onClick={handleDownload}
-          style={{
-            width: "100%",
-            padding: "var(--space-3)",
-            borderRadius: "var(--radius-md)",
-            background: "var(--accent)",
-            color: "var(--accent-contrast)",
-            border: "none",
-            cursor: "pointer",
-            fontSize: "var(--text-footnote)",
-            fontWeight: "var(--weight-semibold)",
-            marginBottom: "var(--space-4)",
-          }}
+          className="w-full p-[var(--space-3)] rounded-[var(--radius-md)] bg-[var(--accent)] text-[var(--accent-contrast)] border-none cursor-pointer text-[length:var(--text-footnote)] font-[var(--weight-semibold)] mb-[var(--space-4)]"
         >
           Download Whisper Small (~500MB)
         </button>
@@ -392,30 +315,18 @@ function SttSettingsSection() {
 
       {/* Download progress */}
       {status.downloading && (
-        <div style={{ marginBottom: "var(--space-4)" }}>
-          <div style={{
-            display: "flex",
-            justifyContent: "space-between",
-            marginBottom: "var(--space-2)",
-            fontSize: "var(--text-caption1)",
-            color: "var(--text-tertiary)",
-          }}>
+        <div className="mb-[var(--space-4)]">
+          <div className="flex justify-between mb-[var(--space-2)] text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">
             <span>Downloading model…</span>
             <span>{status.progress}%</span>
           </div>
-          <div style={{
-            height: 6,
-            borderRadius: 3,
-            background: "var(--fill-tertiary)",
-            overflow: "hidden",
-          }}>
-            <div style={{
-              height: "100%",
-              width: `${status.progress}%`,
-              borderRadius: 3,
-              background: "var(--accent)",
-              transition: "width 300ms ease",
-            }} />
+          <div className="h-[6px] rounded-[3px] bg-[var(--fill-tertiary)] overflow-hidden">
+            <div
+              className="h-full rounded-[3px] bg-[var(--accent)] transition-[width] duration-300 ease-out"
+              style={{
+                width: `${status.progress}%`,
+              }}
+            />
           </div>
         </div>
       )}
@@ -423,57 +334,22 @@ function SttSettingsSection() {
       {/* Languages section — only when model is available */}
       {status.available && (
         <>
-          <div style={{
-            borderTop: "1px solid var(--separator)",
-            marginTop: "var(--space-2)",
-            paddingTop: "var(--space-3)",
-          }}>
-            <div style={{
-              fontSize: "var(--text-caption1)",
-              fontWeight: "var(--weight-semibold)",
-              color: "var(--text-tertiary)",
-              marginBottom: "var(--space-2)",
-            }}>
+          <div className="border-t border-[var(--separator)] mt-[var(--space-2)] pt-[var(--space-3)]">
+            <div className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--text-tertiary)] mb-[var(--space-2)]">
               Transcription Languages
             </div>
-            <div style={{
-              fontSize: "var(--text-caption2)",
-              color: "var(--text-tertiary)",
-              marginBottom: "var(--space-3)",
-            }}>
+            <div className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)] mb-[var(--space-3)]">
               First language is the default. Add multiple to show a language picker in chat.
             </div>
 
             {/* Language chips */}
-            <div style={{
-              display: "flex",
-              flexWrap: "wrap",
-              gap: "var(--space-2)",
-              marginBottom: "var(--space-3)",
-            }}>
+            <div className="flex flex-wrap gap-[var(--space-2)] mb-[var(--space-3)]">
               {status.languages.map((code) => (
                 <div
                   key={code}
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "var(--space-1)",
-                    padding: "3px 8px",
-                    borderRadius: "var(--radius-sm)",
-                    background: "var(--fill-secondary)",
-                    fontSize: "var(--text-caption1)",
-                    fontWeight: "var(--weight-medium)",
-                    color: "var(--text-primary)",
-                  }}
+                  className="inline-flex items-center gap-[var(--space-1)] px-[8px] py-[3px] rounded-[var(--radius-sm)] bg-[var(--fill-secondary)] text-[length:var(--text-caption1)] font-[var(--weight-medium)] text-[var(--text-primary)]"
                 >
-                  <span style={{
-                    fontFamily: "var(--font-mono)",
-                    textTransform: "uppercase",
-                    fontSize: "var(--text-caption2)",
-                    fontWeight: "var(--weight-semibold)",
-                    color: "var(--accent)",
-                    marginRight: 2,
-                  }}>
+                  <span className="font-[family-name:var(--font-mono)] uppercase text-[length:var(--text-caption2)] font-[var(--weight-semibold)] text-[var(--accent)] mr-[2px]">
                     {code}
                   </span>
                   {WHISPER_LANGUAGES[code] || code}
@@ -482,18 +358,7 @@ function SttSettingsSection() {
                       onClick={() => handleRemoveLanguage(code)}
                       disabled={saving}
                       aria-label={`Remove ${WHISPER_LANGUAGES[code] || code}`}
-                      style={{
-                        background: "none",
-                        border: "none",
-                        cursor: "pointer",
-                        padding: 0,
-                        marginLeft: 2,
-                        color: "var(--text-quaternary)",
-                        fontSize: 14,
-                        lineHeight: 1,
-                        display: "flex",
-                        alignItems: "center",
-                      }}
+                      className="bg-none border-none cursor-pointer p-0 ml-[2px] text-[var(--text-quaternary)] text-[14px] leading-none flex items-center"
                     >
                       ×
                     </button>
@@ -503,22 +368,13 @@ function SttSettingsSection() {
             </div>
 
             {/* Add language */}
-            <div style={{
-              display: "flex",
-              gap: "var(--space-2)",
-            }}>
+            <div className="flex gap-[var(--space-2)]">
               <select
                 value={addLang}
                 onChange={(e) => setAddLang(e.target.value)}
+                className="flex-1 bg-[var(--bg-secondary)] border border-[var(--separator)] rounded-[var(--radius-sm)] px-[10px] py-[6px] text-[length:var(--text-footnote)] cursor-pointer"
                 style={{
-                  flex: 1,
-                  background: "var(--bg-secondary)",
-                  border: "1px solid var(--separator)",
-                  borderRadius: "var(--radius-sm)",
-                  padding: "6px 10px",
-                  fontSize: "var(--text-footnote)",
                   color: addLang ? "var(--text-primary)" : "var(--text-tertiary)",
-                  cursor: "pointer",
                 }}
               >
                 <option value="">Add a language…</option>
@@ -531,16 +387,11 @@ function SttSettingsSection() {
               <button
                 onClick={handleAddLanguage}
                 disabled={!addLang || saving}
+                className="px-[14px] py-[6px] rounded-[var(--radius-sm)] border-none text-[length:var(--text-footnote)] font-[var(--weight-semibold)] shrink-0"
                 style={{
-                  padding: "6px 14px",
-                  borderRadius: "var(--radius-sm)",
                   background: addLang ? "var(--accent)" : "var(--fill-tertiary)",
                   color: addLang ? "var(--accent-contrast)" : "var(--text-quaternary)",
-                  border: "none",
                   cursor: addLang ? "pointer" : "default",
-                  fontSize: "var(--text-footnote)",
-                  fontWeight: "var(--weight-semibold)",
-                  flexShrink: 0,
                 }}
               >
                 Add
@@ -558,6 +409,7 @@ function SttSettingsSection() {
 // ---------------------------------------------------------------------------
 
 export default function SettingsPage() {
+  useBreadcrumbs([{ label: 'Settings' }])
   const {
     settings,
     setAccentColor,
@@ -694,49 +546,28 @@ export default function SettingsPage() {
   return (
     <PageLayout>
       <div
-        className="h-full overflow-y-auto"
-        style={{ background: "var(--bg)" }}
+        className="h-full overflow-y-auto bg-[var(--bg)]"
       >
         <div
-          style={{
-            maxWidth: 640,
-            margin: "0 auto",
-            padding: "var(--space-6) var(--space-4) var(--space-12)",
-          }}
+          className="max-w-[640px] mx-auto px-[var(--space-4)] py-[var(--space-6)] pb-[var(--space-12)]"
         >
           {/* Page header */}
           <h1
-            style={{
-              fontSize: "var(--text-title1)",
-              fontWeight: "var(--weight-bold)",
-              letterSpacing: "var(--tracking-tight)",
-              color: "var(--text-primary)",
-              margin: "0 0 var(--space-6)",
-            }}
+            className="text-[length:var(--text-title1)] font-[var(--weight-bold)] tracking-[var(--tracking-tight)] text-[var(--text-primary)] mb-[var(--space-6)]"
           >
             Settings
           </h1>
 
-          {/* ── Section 1: Appearance ── */}
+          {/* -- Section 1: Appearance -- */}
           <Section title="Appearance">
             {/* Theme picker */}
             <div
-              style={{
-                fontSize: "var(--text-footnote)",
-                fontWeight: "var(--weight-medium)",
-                color: "var(--text-secondary)",
-                marginBottom: "var(--space-2)",
-              }}
+              className="text-[length:var(--text-footnote)] font-[var(--weight-medium)] text-[var(--text-secondary)] mb-[var(--space-2)]"
             >
               Theme
             </div>
             <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(5, 1fr)",
-                gap: "var(--space-2)",
-                marginBottom: "var(--space-4)",
-              }}
+              className="grid grid-cols-5 gap-[var(--space-2)] mb-[var(--space-4)]"
             >
               {THEMES.map((t) => {
                 const isActive = theme === t.id
@@ -744,25 +575,17 @@ export default function SettingsPage() {
                   <button
                     key={t.id}
                     onClick={() => setTheme(t.id)}
+                    className="flex flex-col items-center gap-[var(--space-1)] px-[var(--space-2)] py-[var(--space-3)] rounded-[var(--radius-md)] bg-[var(--fill-quaternary)] cursor-pointer transition-all duration-150 ease-[var(--ease-smooth)]"
                     style={{
-                      display: "flex",
-                      flexDirection: "column",
-                      alignItems: "center",
-                      gap: "var(--space-1)",
-                      padding: "var(--space-3) var(--space-2)",
-                      borderRadius: "var(--radius-md)",
-                      background: "var(--fill-quaternary)",
                       border: isActive
                         ? "2px solid var(--accent)"
                         : "2px solid var(--separator)",
-                      cursor: "pointer",
-                      transition: "all 150ms var(--ease-smooth)",
                     }}
                   >
-                    <span style={{ fontSize: 24 }}>{t.emoji}</span>
+                    <span className="text-[24px]">{t.emoji}</span>
                     <span
+                      className="text-[length:var(--text-caption2)]"
                       style={{
-                        fontSize: "var(--text-caption2)",
                         fontWeight: isActive
                           ? "var(--weight-semibold)"
                           : "var(--weight-medium)",
@@ -780,22 +603,12 @@ export default function SettingsPage() {
 
             {/* Accent color */}
             <div
-              style={{
-                fontSize: "var(--text-footnote)",
-                fontWeight: "var(--weight-medium)",
-                color: "var(--text-secondary)",
-                marginBottom: "var(--space-2)",
-              }}
+              className="text-[length:var(--text-footnote)] font-[var(--weight-medium)] text-[var(--text-secondary)] mb-[var(--space-2)]"
             >
               Accent Color
             </div>
             <div
-              style={{
-                display: "flex",
-                flexWrap: "wrap",
-                gap: "var(--space-2)",
-                marginBottom: "var(--space-3)",
-              }}
+              className="flex flex-wrap gap-[var(--space-2)] mb-[var(--space-3)]"
             >
               {ACCENT_PRESETS.map((preset) => {
                 const isActive = settings.accentColor === preset.value
@@ -805,10 +618,8 @@ export default function SettingsPage() {
                     onClick={() => setAccentColor(preset.value)}
                     aria-label={preset.label}
                     title={preset.label}
+                    className="w-[32px] h-[32px] rounded-full cursor-pointer transition-all duration-100 ease-[var(--ease-smooth)] flex items-center justify-center"
                     style={{
-                      width: 32,
-                      height: 32,
-                      borderRadius: "50%",
                       background: preset.value,
                       border: isActive
                         ? "2px solid var(--text-primary)"
@@ -817,11 +628,6 @@ export default function SettingsPage() {
                         ? `2px solid ${preset.value}`
                         : "none",
                       outlineOffset: 2,
-                      cursor: "pointer",
-                      transition: "all 100ms var(--ease-smooth)",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
                     }}
                   >
                     {isActive && (
@@ -834,36 +640,17 @@ export default function SettingsPage() {
 
             {/* Custom hex input */}
             <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "var(--space-3)",
-              }}
+              className="flex items-center gap-[var(--space-3)]"
             >
               <label
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "var(--space-2)",
-                  fontSize: "var(--text-footnote)",
-                  color: "var(--text-secondary)",
-                  cursor: "pointer",
-                }}
+                className="flex items-center gap-[var(--space-2)] text-[length:var(--text-footnote)] text-[var(--text-secondary)] cursor-pointer"
               >
                 Custom:
                 <input
                   type="color"
                   value={settings.accentColor ?? "#3B82F6"}
                   onChange={(e) => setAccentColor(e.target.value)}
-                  style={{
-                    width: 28,
-                    height: 28,
-                    border: "none",
-                    borderRadius: "50%",
-                    cursor: "pointer",
-                    background: "none",
-                    padding: 0,
-                  }}
+                  className="w-[28px] h-[28px] border-none rounded-full cursor-pointer bg-transparent p-0"
                 />
               </label>
               <input
@@ -876,32 +663,12 @@ export default function SettingsPage() {
                     setAccentColor(e.target.value)
                   }
                 }}
-                className="apple-input"
-                style={{
-                  width: 90,
-                  padding: "4px 8px",
-                  fontSize: "var(--text-caption1)",
-                  background: "var(--bg-secondary)",
-                  border: "1px solid var(--separator)",
-                  borderRadius: "var(--radius-sm)",
-                  color: "var(--text-primary)",
-                  fontFamily: "monospace",
-                }}
+                className="apple-input w-[90px] px-[8px] py-[4px] text-[length:var(--text-caption1)] bg-[var(--bg-secondary)] border border-[var(--separator)] rounded-[var(--radius-sm)] text-[var(--text-primary)] font-mono"
               />
               {settings.accentColor && (
                 <button
                   onClick={() => setAccentColor(null)}
-                  style={{
-                    fontSize: "var(--text-footnote)",
-                    color: "var(--system-blue)",
-                    background: "none",
-                    border: "none",
-                    cursor: "pointer",
-                    padding: 0,
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 4,
-                  }}
+                  className="text-[length:var(--text-footnote)] text-[var(--system-blue)] bg-none border-none cursor-pointer p-0 inline-flex items-center gap-[4px]"
                 >
                   <RotateCcw size={12} />
                   Reset
@@ -910,29 +677,20 @@ export default function SettingsPage() {
             </div>
           </Section>
 
-          {/* ── Section 2: Branding ── */}
+          {/* -- Section 2: Branding -- */}
           <Section title="Branding">
             <div
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                gap: "var(--space-3)",
-              }}
+              className="flex flex-col gap-[var(--space-3)]"
             >
               <div>
                 <label
-                  style={{
-                    display: "block",
-                    fontSize: "var(--text-caption1)",
-                    color: "var(--text-tertiary)",
-                    marginBottom: "var(--space-1)",
-                  }}
+                  className="block text-[length:var(--text-caption1)] text-[var(--text-tertiary)] mb-[var(--space-1)]"
                 >
                   Portal Name
                 </label>
                 <input
                   type="text"
-                  className="apple-input"
+                  className="apple-input w-full bg-[var(--bg-secondary)] border border-[var(--separator)] rounded-[var(--radius-sm)] px-[10px] py-[6px] text-[length:var(--text-footnote)] text-[var(--text-primary)]"
                   placeholder="Jinn"
                   value={nameValue}
                   onChange={(e) => setNameValue(e.target.value)}
@@ -940,62 +698,34 @@ export default function SettingsPage() {
                     setPortalName(nameValue || null)
                     api.completeOnboarding({ portalName: nameValue || undefined }).catch(() => {})
                   }}
-                  style={{
-                    width: "100%",
-                    background: "var(--bg-secondary)",
-                    border: "1px solid var(--separator)",
-                    borderRadius: "var(--radius-sm)",
-                    padding: "6px 10px",
-                    fontSize: "var(--text-footnote)",
-                    color: "var(--text-primary)",
-                  }}
                 />
               </div>
 
               <div>
                 <label
-                  style={{
-                    display: "block",
-                    fontSize: "var(--text-caption1)",
-                    color: "var(--text-tertiary)",
-                    marginBottom: "var(--space-1)",
-                  }}
+                  className="block text-[length:var(--text-caption1)] text-[var(--text-tertiary)] mb-[var(--space-1)]"
                 >
                   Portal Subtitle
                 </label>
                 <input
                   type="text"
-                  className="apple-input"
+                  className="apple-input w-full bg-[var(--bg-secondary)] border border-[var(--separator)] rounded-[var(--radius-sm)] px-[10px] py-[6px] text-[length:var(--text-footnote)] text-[var(--text-primary)]"
                   placeholder="Command Centre"
                   value={subtitleValue}
                   onChange={(e) => setSubtitleValue(e.target.value)}
                   onBlur={() => setPortalSubtitle(subtitleValue || null)}
-                  style={{
-                    width: "100%",
-                    background: "var(--bg-secondary)",
-                    border: "1px solid var(--separator)",
-                    borderRadius: "var(--radius-sm)",
-                    padding: "6px 10px",
-                    fontSize: "var(--text-footnote)",
-                    color: "var(--text-primary)",
-                  }}
                 />
               </div>
 
               <div>
                 <label
-                  style={{
-                    display: "block",
-                    fontSize: "var(--text-caption1)",
-                    color: "var(--text-tertiary)",
-                    marginBottom: "var(--space-1)",
-                  }}
+                  className="block text-[length:var(--text-caption1)] text-[var(--text-tertiary)] mb-[var(--space-1)]"
                 >
                   Operator Name
                 </label>
                 <input
                   type="text"
-                  className="apple-input"
+                  className="apple-input w-full bg-[var(--bg-secondary)] border border-[var(--separator)] rounded-[var(--radius-sm)] px-[10px] py-[6px] text-[length:var(--text-footnote)] text-[var(--text-primary)]"
                   placeholder="Your Name"
                   value={operatorNameValue}
                   onChange={(e) => setOperatorNameValue(e.target.value)}
@@ -1003,56 +733,28 @@ export default function SettingsPage() {
                     setOperatorName(operatorNameValue || null)
                     api.completeOnboarding({ operatorName: operatorNameValue || undefined }).catch(() => {})
                   }}
-                  style={{
-                    width: "100%",
-                    background: "var(--bg-secondary)",
-                    border: "1px solid var(--separator)",
-                    borderRadius: "var(--radius-sm)",
-                    padding: "6px 10px",
-                    fontSize: "var(--text-footnote)",
-                    color: "var(--text-primary)",
-                  }}
                 />
               </div>
 
               <div>
                 <label
-                  style={{
-                    display: "block",
-                    fontSize: "var(--text-caption1)",
-                    color: "var(--text-tertiary)",
-                    marginBottom: "var(--space-1)",
-                  }}
+                  className="block text-[length:var(--text-caption1)] text-[var(--text-tertiary)] mb-[var(--space-1)]"
                 >
                   Portal Emoji
                 </label>
                 <input
                   type="text"
-                  className="apple-input"
+                  className="apple-input w-[80px] text-center text-[length:var(--text-title2)] px-[8px] py-[6px] bg-[var(--bg-secondary)] border border-[var(--separator)] rounded-[var(--radius-sm)]"
                   placeholder="\ud83e\udd16"
                   value={emojiValue}
                   onChange={(e) => setEmojiValue(e.target.value)}
                   onBlur={() => setPortalEmoji(emojiValue || null)}
-                  style={{
-                    width: 80,
-                    textAlign: "center",
-                    fontSize: "var(--text-title2)",
-                    padding: "6px 8px",
-                    background: "var(--bg-secondary)",
-                    border: "1px solid var(--separator)",
-                    borderRadius: "var(--radius-sm)",
-                  }}
                 />
               </div>
 
               <div>
                 <label
-                  style={{
-                    display: "block",
-                    fontSize: "var(--text-caption1)",
-                    color: "var(--text-tertiary)",
-                    marginBottom: "var(--space-1)",
-                  }}
+                  className="block text-[length:var(--text-caption1)] text-[var(--text-tertiary)] mb-[var(--space-1)]"
                 >
                   Language
                 </label>
@@ -1063,16 +765,7 @@ export default function SettingsPage() {
                     setLanguage(languageValue || "English")
                     api.completeOnboarding({ language: languageValue || undefined }).catch(() => {})
                   }}
-                  style={{
-                    width: "100%",
-                    background: "var(--bg-secondary)",
-                    border: "1px solid var(--separator)",
-                    borderRadius: "var(--radius-sm)",
-                    padding: "6px 10px",
-                    fontSize: "var(--text-footnote)",
-                    color: "var(--text-primary)",
-                    cursor: "pointer",
-                  }}
+                  className="w-full bg-[var(--bg-secondary)] border border-[var(--separator)] rounded-[var(--radius-sm)] px-[10px] py-[6px] text-[length:var(--text-footnote)] text-[var(--text-primary)] cursor-pointer"
                 >
                   <option value="English">English</option>
                   <option value="Spanish">Spanish</option>
@@ -1096,10 +789,8 @@ export default function SettingsPage() {
           {/* Gateway config feedback */}
           {feedback && (
             <div
+              className="mb-[var(--space-4)] px-[var(--space-4)] py-[var(--space-3)] rounded-[var(--radius-md)] text-[length:var(--text-footnote)]"
               style={{
-                marginBottom: "var(--space-4)",
-                padding: "var(--space-3) var(--space-4)",
-                borderRadius: "var(--radius-md)",
                 background:
                   feedback.type === "success"
                     ? "rgba(34,197,94,0.1)"
@@ -1109,7 +800,6 @@ export default function SettingsPage() {
                     ? "rgba(34,197,94,0.3)"
                     : "rgba(239,68,68,0.3)"
                 }`,
-                fontSize: "var(--text-footnote)",
                 color:
                   feedback.type === "success"
                     ? "var(--system-green)"
@@ -1122,36 +812,27 @@ export default function SettingsPage() {
 
           {configLoading ? (
             <div
-              style={{
-                textAlign: "center",
-                padding: "var(--space-8)",
-                color: "var(--text-tertiary)",
-                fontSize: "var(--text-footnote)",
-              }}
+              className="text-center p-[var(--space-8)] text-[var(--text-tertiary)] text-[length:var(--text-footnote)]"
             >
               <Loader2
                 size={20}
-                style={{ animation: "spin 1s linear infinite", margin: "0 auto var(--space-2)" }}
+                className="mx-auto mb-[var(--space-2)] animate-spin"
               />
               Loading gateway config...
             </div>
           ) : configError ? (
             <div
+              className="mb-[var(--space-6)] px-[var(--space-4)] py-[var(--space-3)] rounded-[var(--radius-md)] text-[length:var(--text-footnote)] text-[var(--system-red)]"
               style={{
-                marginBottom: "var(--space-6)",
-                padding: "var(--space-3) var(--space-4)",
-                borderRadius: "var(--radius-md)",
                 background: "rgba(239,68,68,0.1)",
                 border: "1px solid rgba(239,68,68,0.3)",
-                fontSize: "var(--text-footnote)",
-                color: "var(--system-red)",
               }}
             >
               Failed to load config: {configError}
             </div>
           ) : (
             <>
-              {/* ── Section 3: Gateway Configuration ── */}
+              {/* -- Section 3: Gateway Configuration -- */}
               <Section title="Gateway Configuration">
                 <FieldRow label="Port">
                   <SettingsInput
@@ -1182,15 +863,10 @@ export default function SettingsPage() {
                 </FieldRow>
               </Section>
 
-              {/* ── Section 4: Engine Configuration ── */}
+              {/* -- Section 4: Engine Configuration -- */}
               <Section title="Engine Configuration">
                 <div
-                  style={{
-                    fontSize: "var(--text-caption1)",
-                    fontWeight: "var(--weight-semibold)",
-                    color: "var(--text-tertiary)",
-                    marginBottom: "var(--space-2)",
-                  }}
+                  className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--text-tertiary)] mb-[var(--space-2)]"
                 >
                   Claude
                 </div>
@@ -1232,20 +908,11 @@ export default function SettingsPage() {
                 </FieldRow>
 
                 <div
-                  style={{
-                    borderTop: "1px solid var(--separator)",
-                    marginTop: "var(--space-3)",
-                    paddingTop: "var(--space-3)",
-                  }}
+                  className="border-t border-[var(--separator)] mt-[var(--space-3)] pt-[var(--space-3)]"
                 />
 
                 <div
-                  style={{
-                    fontSize: "var(--text-caption1)",
-                    fontWeight: "var(--weight-semibold)",
-                    color: "var(--text-tertiary)",
-                    marginBottom: "var(--space-2)",
-                  }}
+                  className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--text-tertiary)] mb-[var(--space-2)]"
                 >
                   Codex
                 </div>
@@ -1291,7 +958,7 @@ export default function SettingsPage() {
                 </FieldRow>
               </Section>
 
-              {/* ── Section 5: Sessions ── */}
+              {/* -- Section 5: Sessions -- */}
               <Section title="Sessions">
                 <FieldRow label="Interrupt on New Message">
                   <ToggleSwitch
@@ -1302,11 +969,7 @@ export default function SettingsPage() {
                   />
                 </FieldRow>
                 <div
-                  style={{
-                    fontSize: "var(--text-caption1)",
-                    color: "var(--label-secondary)",
-                    marginTop: 4,
-                  }}
+                  className="text-[length:var(--text-caption1)] text-[var(--label-secondary)] mt-[4px]"
                 >
                   When enabled, sending a new message to a running session will stop the
                   current agent and start processing your new message immediately. When
@@ -1314,11 +977,7 @@ export default function SettingsPage() {
                 </div>
 
                 <div
-                  style={{
-                    borderTop: "1px solid var(--separator)",
-                    marginTop: "var(--space-3)",
-                    paddingTop: "var(--space-3)",
-                  }}
+                  className="border-t border-[var(--separator)] mt-[var(--space-3)] pt-[var(--space-3)]"
                 />
 
                 <FieldRow label="When Claude Hits Usage Limit">
@@ -1334,26 +993,17 @@ export default function SettingsPage() {
                   />
                 </FieldRow>
                 <div
-                  style={{
-                    fontSize: "var(--text-caption1)",
-                    color: "var(--label-secondary)",
-                    marginTop: 4,
-                  }}
+                  className="text-[length:var(--text-caption1)] text-[var(--label-secondary)] mt-[4px]"
                 >
-                  “Wait” pauses the session and continues automatically when Claude resets.
-                  “Switch” answers immediately using GPT, then returns to Claude once the reset window passes.
+                  "Wait" pauses the session and continues automatically when Claude resets.
+                  "Switch" answers immediately using GPT, then returns to Claude once the reset window passes.
                 </div>
               </Section>
 
-              {/* ── Section 6: Connectors ── */}
+              {/* -- Section 6: Connectors -- */}
               <Section title="Connectors">
                 <div
-                  style={{
-                    fontSize: "var(--text-caption1)",
-                    fontWeight: "var(--weight-semibold)",
-                    color: "var(--text-tertiary)",
-                    marginBottom: "var(--space-2)",
-                  }}
+                  className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--text-tertiary)] mb-[var(--space-2)]"
                 >
                   Slack
                 </div>
@@ -1409,20 +1059,11 @@ export default function SettingsPage() {
                 </FieldRow>
 
                 <div
-                  style={{
-                    borderTop: "1px solid var(--separator)",
-                    marginTop: "var(--space-3)",
-                    paddingTop: "var(--space-3)",
-                  }}
+                  className="border-t border-[var(--separator)] mt-[var(--space-3)] pt-[var(--space-3)]"
                 />
 
                 <div
-                  style={{
-                    fontSize: "var(--text-caption1)",
-                    fontWeight: "var(--weight-semibold)",
-                    color: "var(--text-tertiary)",
-                    marginBottom: "var(--space-2)",
-                  }}
+                  className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--text-tertiary)] mb-[var(--space-2)]"
                 >
                   Discord
                 </div>
@@ -1471,22 +1112,12 @@ export default function SettingsPage() {
 
                 {/* WhatsApp */}
                 <div
-                  style={{
-                    fontSize: "var(--text-caption1)",
-                    fontWeight: "var(--weight-semibold)",
-                    color: "var(--text-tertiary)",
-                    marginTop: "var(--space-4)",
-                    marginBottom: "var(--space-2)",
-                  }}
+                  className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--text-tertiary)] mt-[var(--space-4)] mb-[var(--space-2)]"
                 >
                   WhatsApp
                 </div>
                 <div
-                  style={{
-                    fontSize: "var(--text-caption2)",
-                    color: "var(--text-tertiary)",
-                    marginBottom: "var(--space-3)",
-                  }}
+                  className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)] mb-[var(--space-3)]"
                 >
                   On first start, scan the QR code below with your WhatsApp app to connect. Credentials are cached for subsequent runs.
                 </div>
@@ -1516,40 +1147,20 @@ export default function SettingsPage() {
 
                 {waQr && (
                   <div
-                    style={{
-                      marginTop: "var(--space-3)",
-                      display: "flex",
-                      flexDirection: "column",
-                      alignItems: "center",
-                      gap: "var(--space-2)",
-                    }}
+                    className="mt-[var(--space-3)] flex flex-col items-center gap-[var(--space-2)]"
                   >
                     <div
-                      style={{
-                        fontSize: "var(--text-caption1)",
-                        fontWeight: 600,
-                        color: "var(--text-secondary)",
-                      }}
+                      className="text-[length:var(--text-caption1)] font-semibold text-[var(--text-secondary)]"
                     >
                       Scan with WhatsApp to connect
                     </div>
                     <img
                       src={waQr}
                       alt="WhatsApp QR Code"
-                      style={{
-                        width: 200,
-                        height: 200,
-                        borderRadius: "var(--radius-md)",
-                        border: "1px solid var(--separator)",
-                        background: "white",
-                        padding: 8,
-                      }}
+                      className="w-[200px] h-[200px] rounded-[var(--radius-md)] border border-[var(--separator)] bg-white p-[8px]"
                     />
                     <div
-                      style={{
-                        fontSize: "var(--text-caption2)",
-                        color: "var(--text-tertiary)",
-                      }}
+                      className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)]"
                     >
                       Open WhatsApp → Linked Devices → Link a Device
                     </div>
@@ -1557,63 +1168,37 @@ export default function SettingsPage() {
                 )}
                 {config.connectors?.whatsapp && waStatus === "ok" && (
                   <div
-                    style={{
-                      marginTop: "var(--space-2)",
-                      fontSize: "var(--text-caption1)",
-                      color: "var(--system-green)",
-                      fontWeight: 600,
-                    }}
+                    className="mt-[var(--space-2)] text-[length:var(--text-caption1)] text-[var(--system-green)] font-semibold"
                   >
                     ✓ Connected
                   </div>
                 )}
 
                 <div
-                  style={{
-                    borderTop: "1px solid var(--separator)",
-                    marginTop: "var(--space-3)",
-                    paddingTop: "var(--space-3)",
-                  }}
+                  className="border-t border-[var(--separator)] mt-[var(--space-3)] pt-[var(--space-3)]"
                 />
 
                 <div
-                  style={{
-                    fontSize: "var(--text-caption1)",
-                    fontWeight: "var(--weight-semibold)",
-                    color: "var(--text-tertiary)",
-                    marginBottom: "var(--space-2)",
-                  }}
+                  className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--text-tertiary)] mb-[var(--space-2)]"
                 >
                   Web UI
                 </div>
                 <div
-                  style={{
-                    fontSize: "var(--text-caption2)",
-                    color: "var(--text-tertiary)",
-                  }}
+                  className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)]"
                 >
                   Web conversations use queued one-shot resume flow for both engines.
                 </div>
               </Section>
 
-              {/* ── Section 6: Cron ── */}
+              {/* -- Section 6: Cron -- */}
               <Section title="Cron">
                 <div
-                  style={{
-                    fontSize: "var(--text-caption1)",
-                    fontWeight: "var(--weight-semibold)",
-                    color: "var(--text-tertiary)",
-                    marginBottom: "var(--space-2)",
-                  }}
+                  className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--text-tertiary)] mb-[var(--space-2)]"
                 >
                   Default Delivery
                 </div>
                 <div
-                  style={{
-                    fontSize: "var(--text-caption2)",
-                    color: "var(--text-tertiary)",
-                    marginBottom: "var(--space-3)",
-                  }}
+                  className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)] mb-[var(--space-3)]"
                 >
                   When a cron job has no delivery configured, results will be sent here.
                 </div>
@@ -1643,7 +1228,7 @@ export default function SettingsPage() {
                 )}
               </Section>
 
-              {/* ── Section 7: Logging ── */}
+              {/* -- Section 7: Logging -- */}
               <Section title="Logging">
                 <FieldRow label="Level">
                   <SettingsSelect
@@ -1671,33 +1256,16 @@ export default function SettingsPage() {
                 </FieldRow>
               </Section>
 
-              {/* ── Section 8: Voice Input (STT) ── */}
+              {/* -- Section 8: Voice Input (STT) -- */}
               <SttSettingsSection />
 
               {/* Save button for gateway config */}
               <div
-                style={{
-                  display: "flex",
-                  justifyContent: "flex-end",
-                  gap: "var(--space-3)",
-                  marginBottom: "var(--space-6)",
-                }}
+                className="flex justify-end gap-[var(--space-3)] mb-[var(--space-6)]"
               >
                 <button
                   onClick={() => loadConfig()}
-                  style={{
-                    padding: "var(--space-2) var(--space-4)",
-                    borderRadius: "var(--radius-md)",
-                    background: "var(--fill-tertiary)",
-                    color: "var(--text-secondary)",
-                    border: "none",
-                    cursor: "pointer",
-                    fontSize: "var(--text-footnote)",
-                    fontWeight: "var(--weight-medium)",
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 6,
-                  }}
+                  className="px-[var(--space-4)] py-[var(--space-2)] rounded-[var(--radius-md)] bg-[var(--fill-tertiary)] text-[var(--text-secondary)] border-none cursor-pointer text-[length:var(--text-footnote)] font-[var(--weight-medium)] inline-flex items-center gap-[6px]"
                 >
                   <RotateCcw size={14} />
                   Reload
@@ -1705,20 +1273,10 @@ export default function SettingsPage() {
                 <button
                   onClick={handleSave}
                   disabled={saving}
+                  className="px-[var(--space-5)] py-[var(--space-2)] rounded-[var(--radius-md)] bg-[var(--accent)] text-[var(--accent-contrast)] border-none text-[length:var(--text-footnote)] font-[var(--weight-semibold)] inline-flex items-center gap-[6px] transition-all duration-150 ease-[var(--ease-smooth)]"
                   style={{
-                    padding: "var(--space-2) var(--space-5)",
-                    borderRadius: "var(--radius-md)",
-                    background: "var(--accent)",
-                    color: "var(--accent-contrast)",
-                    border: "none",
                     cursor: saving ? "wait" : "pointer",
-                    fontSize: "var(--text-footnote)",
-                    fontWeight: "var(--weight-semibold)",
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 6,
                     opacity: saving ? 0.7 : 1,
-                    transition: "all 150ms var(--ease-smooth)",
                   }}
                 >
                   <Save size={14} />
@@ -1728,36 +1286,17 @@ export default function SettingsPage() {
             </>
           )}
 
-          {/* ── Section 7: Reset ── */}
+          {/* -- Section 7: Reset -- */}
           <Section title="Reset">
             <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: "var(--space-3)",
-                flexWrap: "wrap",
-              }}
+              className="flex items-center justify-center gap-[var(--space-3)] flex-wrap"
             >
               <button
                 onClick={() => {
                   localStorage.removeItem("jinn-onboarded")
                   window.location.reload()
                 }}
-                style={{
-                  padding: "var(--space-2) var(--space-5)",
-                  borderRadius: "var(--radius-md)",
-                  background: "var(--accent)",
-                  color: "var(--accent-contrast)",
-                  border: "none",
-                  cursor: "pointer",
-                  fontSize: "var(--text-footnote)",
-                  fontWeight: "var(--weight-semibold)",
-                  transition: "all 150ms var(--ease-spring)",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "var(--space-2)",
-                }}
+                className="px-[var(--space-5)] py-[var(--space-2)] rounded-[var(--radius-md)] bg-[var(--accent)] text-[var(--accent-contrast)] border-none cursor-pointer text-[length:var(--text-footnote)] font-[var(--weight-semibold)] transition-all duration-150 ease-[var(--ease-spring)] inline-flex items-center gap-[var(--space-2)]"
               >
                 <RotateCcw size={14} />
                 Re-run Onboarding Wizard
@@ -1773,20 +1312,7 @@ export default function SettingsPage() {
                     window.location.reload()
                   }
                 }}
-                style={{
-                  padding: "var(--space-2) var(--space-5)",
-                  borderRadius: "var(--radius-md)",
-                  background: "var(--system-red)",
-                  color: "#fff",
-                  border: "none",
-                  cursor: "pointer",
-                  fontSize: "var(--text-footnote)",
-                  fontWeight: "var(--weight-semibold)",
-                  transition: "all 150ms var(--ease-spring)",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "var(--space-2)",
-                }}
+                className="px-[var(--space-5)] py-[var(--space-2)] rounded-[var(--radius-md)] bg-[var(--system-red)] text-white border-none cursor-pointer text-[length:var(--text-footnote)] font-[var(--weight-semibold)] transition-all duration-150 ease-[var(--ease-spring)] inline-flex items-center gap-[var(--space-2)]"
               >
                 <Trash2 size={14} />
                 Reset All Settings

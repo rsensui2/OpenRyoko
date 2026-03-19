@@ -73,85 +73,41 @@ export function QueuePanel({ sessionId, events, paused: initialPaused = false }:
   }
 
   return (
-    <div style={{
-      borderTop: '1px solid var(--separator)',
-      padding: 'var(--space-2) var(--space-4)',
-      background: 'var(--fill-quaternary)',
-      flexShrink: 0,
-    }}>
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        marginBottom: 'var(--space-1)',
-      }}>
-        <span style={{
-          fontSize: 'var(--text-caption2)',
-          fontWeight: 600,
-          color: 'var(--text-secondary)',
-          textTransform: 'uppercase',
-          letterSpacing: '0.5px',
-        }}>
+    <div className="border-t border-[var(--separator)] px-[var(--space-4)] py-[var(--space-2)] bg-[var(--fill-quaternary)] shrink-0">
+      <div className="flex items-center justify-between mb-[var(--space-1)]">
+        <span className="text-[length:var(--text-caption2)] font-semibold text-[var(--text-secondary)] uppercase tracking-[0.5px]">
           {pendingItems.length} queued {paused && '· Paused'}
         </span>
-        <div style={{ display: 'flex', gap: 'var(--space-1)' }}>
+        <div className="flex gap-[var(--space-1)]">
           <button
             onClick={handlePauseResume}
             title={paused ? 'Resume queue' : 'Pause queue'}
-            style={{
-              background: 'none', border: 'none', cursor: 'pointer',
-              color: 'var(--text-secondary)', padding: '2px',
-              display: 'flex', alignItems: 'center',
-            }}
+            className="bg-transparent border-none cursor-pointer text-[var(--text-secondary)] p-0.5 flex items-center"
           >
             {paused ? <Play size={13} /> : <Pause size={13} />}
           </button>
           <button
             onClick={handleClear}
             title="Clear all queued messages"
-            style={{
-              background: 'none', border: 'none', cursor: 'pointer',
-              color: 'var(--text-secondary)', padding: '2px',
-              display: 'flex', alignItems: 'center',
-            }}
+            className="bg-transparent border-none cursor-pointer text-[var(--text-secondary)] p-0.5 flex items-center"
           >
             <Trash2 size={13} />
           </button>
         </div>
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+      <div className="flex flex-col gap-0.5">
         {pendingItems.map((item) => (
-          <div key={item.id} style={{
-            display: 'flex', alignItems: 'center', gap: 'var(--space-2)',
-            padding: '3px var(--space-2)',
-            borderRadius: 'var(--radius-sm)',
-            background: 'var(--fill-tertiary)',
-          }}>
-            <span style={{
-              fontSize: 'var(--text-caption2)',
-              color: 'var(--text-tertiary)',
-              minWidth: 16,
-            }}>
+          <div key={item.id} className="flex items-center gap-[var(--space-2)] px-[var(--space-2)] py-[3px] rounded-[var(--radius-sm)] bg-[var(--fill-tertiary)]">
+            <span className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)] min-w-4">
               {item.position}.
             </span>
-            <span style={{
-              flex: 1,
-              fontSize: 'var(--text-caption1)',
-              color: 'var(--text-secondary)',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-            }}>
+            <span className="flex-1 text-[length:var(--text-caption1)] text-[var(--text-secondary)] overflow-hidden text-ellipsis whitespace-nowrap">
               {item.prompt.length > 60 ? item.prompt.slice(0, 57) + '...' : item.prompt}
             </span>
             <button
               onClick={() => handleCancel(item.id)}
               title="Cancel this message"
-              style={{
-                background: 'none', border: 'none', cursor: 'pointer',
-                color: 'var(--text-tertiary)', padding: '1px',
-                display: 'flex', alignItems: 'center', flexShrink: 0,
-              }}
+              className="bg-transparent border-none cursor-pointer text-[var(--text-tertiary)] p-px flex items-center shrink-0"
             >
               <X size={11} />
             </button>

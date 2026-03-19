@@ -118,45 +118,20 @@ export function EmployeePicker({ employees, value, onChange }: EmployeePickerPro
   }
 
   return (
-    <div ref={containerRef} style={{ position: 'relative' }} onKeyDown={handleKeyDown}>
+    <div ref={containerRef} className="relative" onKeyDown={handleKeyDown}>
       {/* Trigger button */}
       <button
         type="button"
         onClick={() => setOpen(!open)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        style={{
-          width: '100%',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 'var(--space-2)',
-          padding: '8px 12px',
-          fontSize: 'var(--text-body)',
-          color: selected ? 'var(--text-primary)' : 'var(--text-tertiary)',
-          cursor: 'pointer',
-          textAlign: 'left',
-          border: '1px solid var(--separator)',
-          borderRadius: 'var(--radius-md)',
-          background: 'var(--fill-tertiary)',
-          backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")`,
-          backgroundRepeat: 'no-repeat',
-          backgroundPosition: 'right 12px center',
-          paddingRight: 36,
-          minHeight: 40,
-          fontFamily: 'inherit',
-        }}
+        className={`w-full flex items-center gap-[var(--space-2)] py-2 pl-3 pr-9 text-[length:var(--text-body)] cursor-pointer text-left border border-[var(--separator)] rounded-[var(--radius-md)] bg-[var(--fill-tertiary)] bg-[url("data:image/svg+xml,%3Csvg_xmlns='http://www.w3.org/2000/svg'_width='12'_height='12'_viewBox='0_0_24_24'_fill='none'_stroke='%23888'_stroke-width='2'_stroke-linecap='round'_stroke-linejoin='round'%3E%3Cpath_d='m6_9_6_6_6-6'/%3E%3C/svg%3E")] bg-no-repeat bg-[position:right_12px_center] min-h-[40px] font-[inherit] ${selected ? 'text-[var(--text-primary)]' : 'text-[var(--text-tertiary)]'}`}
       >
         {selected ? (
           <>
-            <span style={{ fontWeight: 'var(--weight-medium)' }}>{selected.displayName}</span>
+            <span className="font-[var(--weight-medium)]">{selected.displayName}</span>
             {RANK_LABELS[selected.rank] && (
-              <span style={{
-                fontSize: 'var(--text-caption2)',
-                color: 'var(--text-tertiary)',
-                background: 'var(--fill-secondary)',
-                borderRadius: 'var(--radius-sm)',
-                padding: '1px 6px',
-              }}>
+              <span className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)] bg-[var(--fill-secondary)] rounded-[var(--radius-sm)] px-1.5 py-px">
                 {RANK_LABELS[selected.rank]}
               </span>
             )}
@@ -169,39 +144,17 @@ export function EmployeePicker({ employees, value, onChange }: EmployeePickerPro
       {/* Dropdown */}
       {open && (
         <div
-          style={{
-            position: 'absolute',
-            top: '100%',
-            left: 0,
-            right: 0,
-            marginTop: 4,
-            zIndex: 50,
-            background: 'var(--material-regular)',
-            border: '1px solid var(--separator)',
-            borderRadius: 'var(--radius-md)',
-            boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
-            overflow: 'hidden',
-          }}
+          className="absolute top-full left-0 right-0 mt-1 z-50 bg-[var(--material-regular)] border border-[var(--separator)] rounded-[var(--radius-md)] shadow-[0_8px_32px_rgba(0,0,0,0.3)] overflow-hidden"
         >
           {/* Search */}
-          <div style={{ padding: '8px 8px 4px' }}>
+          <div className="pt-2 px-2 pb-1">
             <input
               ref={searchRef}
               type="text"
               placeholder="Search employees..."
               value={search}
               onChange={e => setSearch(e.target.value)}
-              style={{
-                width: '100%',
-                padding: '6px 10px',
-                fontSize: 'var(--text-footnote)',
-                border: '1px solid var(--separator)',
-                borderRadius: 'var(--radius-sm)',
-                background: 'var(--fill-tertiary)',
-                color: 'var(--text-primary)',
-                outline: 'none',
-                fontFamily: 'inherit',
-              }}
+              className="w-full py-1.5 px-2.5 text-[length:var(--text-footnote)] border border-[var(--separator)] rounded-[var(--radius-sm)] bg-[var(--fill-tertiary)] text-[var(--text-primary)] outline-none font-[inherit]"
             />
           </div>
 
@@ -209,11 +162,7 @@ export function EmployeePicker({ employees, value, onChange }: EmployeePickerPro
           <div
             ref={listRef}
             role="listbox"
-            style={{
-              maxHeight: 280,
-              overflowY: 'auto',
-              padding: '4px',
-            }}
+            className="max-h-[280px] overflow-y-auto p-1"
           >
             {/* Unassigned option */}
             {hasUnassigned && (
@@ -222,42 +171,22 @@ export function EmployeePicker({ employees, value, onChange }: EmployeePickerPro
                 role="option"
                 aria-selected={value === ''}
                 onClick={() => selectEmployee('')}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 'var(--space-2)',
-                  padding: '8px 10px',
-                  borderRadius: 'var(--radius-sm)',
-                  cursor: 'pointer',
-                  background: highlightIdx === 0 ? 'var(--fill-secondary)' : 'transparent',
-                  transition: 'background 100ms',
-                }}
+                className={`flex items-center gap-[var(--space-2)] py-2 px-2.5 rounded-[var(--radius-sm)] cursor-pointer transition-[background] duration-100 ${highlightIdx === 0 ? 'bg-[var(--fill-secondary)]' : 'bg-transparent'}`}
                 onMouseEnter={() => setHighlightIdx(0)}
               >
-                <div style={{
-                  width: 32,
-                  height: 32,
-                  borderRadius: 8,
-                  background: 'var(--fill-tertiary)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: 14,
-                  color: 'var(--text-tertiary)',
-                  flexShrink: 0,
-                }}>
+                <div className="w-8 h-8 rounded-lg bg-[var(--fill-tertiary)] flex items-center justify-center text-sm text-[var(--text-tertiary)] shrink-0">
                   &#x2014;
                 </div>
                 <div>
-                  <div style={{ fontSize: 'var(--text-footnote)', fontWeight: 'var(--weight-medium)', color: 'var(--text-secondary)' }}>
+                  <div className="text-[length:var(--text-footnote)] font-[var(--weight-medium)] text-[var(--text-secondary)]">
                     Unassigned
                   </div>
-                  <div style={{ fontSize: 'var(--text-caption2)', color: 'var(--text-tertiary)' }}>
+                  <div className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)]">
                     No employee assigned
                   </div>
                 </div>
                 {value === '' && (
-                  <span style={{ marginLeft: 'auto', color: 'var(--accent)', fontSize: 13, flexShrink: 0 }}>&#10003;</span>
+                  <span className="ml-auto text-[var(--accent)] text-[13px] shrink-0">&#10003;</span>
                 )}
               </div>
             )}
@@ -276,73 +205,28 @@ export function EmployeePicker({ employees, value, onChange }: EmployeePickerPro
                   aria-selected={isSelected}
                   onClick={() => selectEmployee(emp.name)}
                   onMouseEnter={() => setHighlightIdx(optionIdx)}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 'var(--space-2)',
-                    padding: '8px 10px',
-                    borderRadius: 'var(--radius-sm)',
-                    cursor: 'pointer',
-                    background: isHighlighted ? 'var(--fill-secondary)' : 'transparent',
-                    transition: 'background 100ms',
-                  }}
+                  className={`flex items-center gap-[var(--space-2)] py-2 px-2.5 rounded-[var(--radius-sm)] cursor-pointer transition-[background] duration-100 ${isHighlighted ? 'bg-[var(--fill-secondary)]' : 'bg-transparent'}`}
                 >
-                  <div style={{
-                    width: 32,
-                    height: 32,
-                    borderRadius: 8,
-                    background: 'var(--accent)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: 14,
-                    color: '#fff',
-                    fontWeight: 600,
-                    flexShrink: 0,
-                  }}>
+                  <div className="w-8 h-8 rounded-lg bg-[var(--accent)] flex items-center justify-center text-sm text-white font-semibold shrink-0">
                     {emp.displayName.charAt(0).toUpperCase()}
                   </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 'var(--space-1)',
-                    }}>
-                      <span style={{
-                        fontSize: 'var(--text-footnote)',
-                        fontWeight: 'var(--weight-semibold)',
-                        color: 'var(--text-primary)',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      }}>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-[var(--space-1)]">
+                      <span className="text-[length:var(--text-footnote)] font-[var(--weight-semibold)] text-[var(--text-primary)] overflow-hidden text-ellipsis whitespace-nowrap">
                         {emp.displayName}
                       </span>
                       {RANK_LABELS[emp.rank] && (
-                        <span style={{
-                          fontSize: 'var(--text-caption2)',
-                          color: 'var(--text-tertiary)',
-                          background: 'var(--fill-secondary)',
-                          borderRadius: 'var(--radius-sm)',
-                          padding: '0 4px',
-                          flexShrink: 0,
-                        }}>
+                        <span className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)] bg-[var(--fill-secondary)] rounded-[var(--radius-sm)] px-1 shrink-0">
                           {RANK_LABELS[emp.rank]}
                         </span>
                       )}
                     </div>
-                    <div style={{
-                      fontSize: 'var(--text-caption2)',
-                      color: 'var(--text-tertiary)',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}>
+                    <div className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)] overflow-hidden text-ellipsis whitespace-nowrap">
                       {emp.department || emp.name}
                     </div>
                   </div>
                   {isSelected && (
-                    <span style={{ color: 'var(--accent)', fontSize: 13, flexShrink: 0 }}>&#10003;</span>
+                    <span className="text-[var(--accent)] text-[13px] shrink-0">&#10003;</span>
                   )}
                 </div>
               )
@@ -350,12 +234,7 @@ export function EmployeePicker({ employees, value, onChange }: EmployeePickerPro
 
             {/* No results */}
             {filtered.length === 0 && !hasUnassigned && (
-              <div style={{
-                padding: 'var(--space-4)',
-                textAlign: 'center',
-                fontSize: 'var(--text-footnote)',
-                color: 'var(--text-tertiary)',
-              }}>
+              <div className="p-[var(--space-4)] text-center text-[length:var(--text-footnote)] text-[var(--text-tertiary)]">
                 No employees match &ldquo;{search}&rdquo;
               </div>
             )}

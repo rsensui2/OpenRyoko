@@ -60,20 +60,11 @@ export function TicketCard({ ticket, assigneeName, onClick, onDelete }: TicketCa
           onClick()
         }
       }}
+      className="relative bg-[var(--material-regular)] rounded-[var(--radius-md)] p-[var(--space-3)] border border-[var(--separator)] flex flex-col gap-[var(--space-2)] select-none transition-opacity duration-150 ease-[var(--ease-smooth)]"
       style={{
-        position: 'relative',
-        background: 'var(--material-regular)',
-        borderRadius: 'var(--radius-md)',
-        padding: 'var(--space-3)',
         cursor: isDragging ? 'grabbing' : 'grab',
         opacity: isDragging ? 0.6 : 1,
-        border: '1px solid var(--separator)',
         borderLeft: `3px solid ${PRIORITY_COLORS[ticket.priority]}`,
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 'var(--space-2)',
-        userSelect: 'none',
-        transition: 'opacity 150ms var(--ease-smooth)',
       }}
     >
       {/* Delete button (visible on hover) */}
@@ -85,22 +76,9 @@ export function TicketCard({ ticket, assigneeName, onClick, onDelete }: TicketCa
           }}
           aria-label="Delete ticket"
           title="Delete ticket"
+          className="absolute top-1.5 right-1.5 w-6 h-6 rounded-[var(--radius-sm)] flex items-center justify-center text-[var(--system-red)] border-none cursor-pointer p-0 z-[1]"
           style={{
-            position: 'absolute',
-            top: 6,
-            right: 6,
-            width: 24,
-            height: 24,
-            borderRadius: 'var(--radius-sm)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
             background: 'color-mix(in srgb, var(--system-red) 12%, transparent)',
-            color: 'var(--system-red)',
-            border: 'none',
-            cursor: 'pointer',
-            padding: 0,
-            zIndex: 1,
           }}
         >
           <Trash2 size={13} />
@@ -108,101 +86,39 @@ export function TicketCard({ ticket, assigneeName, onClick, onDelete }: TicketCa
       )}
 
       {/* Priority + Title */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'flex-start',
-          gap: 'var(--space-2)',
-        }}
-      >
+      <div className="flex items-start gap-[var(--space-2)]">
         <span
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 3,
-            fontSize: 'var(--text-caption2)',
-            fontWeight: 600,
-            color: PRIORITY_COLORS[ticket.priority],
-            flexShrink: 0,
-            marginTop: 2,
-          }}
+          className="inline-flex items-center gap-[3px] text-[length:var(--text-caption2)] font-semibold shrink-0 mt-0.5"
+          style={{ color: PRIORITY_COLORS[ticket.priority] }}
         >
           <span
-            style={{
-              width: 6,
-              height: 6,
-              borderRadius: '50%',
-              background: PRIORITY_COLORS[ticket.priority],
-            }}
+            className="w-1.5 h-1.5 rounded-full"
+            style={{ background: PRIORITY_COLORS[ticket.priority] }}
           />
           {PRIORITY_LABELS[ticket.priority]}
         </span>
-        <span
-          style={{
-            fontSize: 'var(--text-footnote)',
-            fontWeight: 'var(--weight-semibold)',
-            color: 'var(--text-primary)',
-            lineHeight: 1.3,
-            display: '-webkit-box',
-            WebkitLineClamp: 2,
-            WebkitBoxOrient: 'vertical',
-            overflow: 'hidden',
-            wordBreak: 'break-word',
-          }}
-        >
+        <span className="text-[length:var(--text-footnote)] font-[var(--weight-semibold)] text-[var(--text-primary)] leading-[1.3] line-clamp-2 overflow-hidden break-words">
           {ticket.title}
         </span>
       </div>
 
       {/* Description preview */}
       {ticket.description && (
-        <div
-          style={{
-            fontSize: 'var(--text-caption2)',
-            color: 'var(--text-tertiary)',
-            lineHeight: 1.4,
-            display: '-webkit-box',
-            WebkitLineClamp: 2,
-            WebkitBoxOrient: 'vertical',
-            overflow: 'hidden',
-            wordBreak: 'break-word',
-          }}
-        >
+        <div className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)] leading-[1.4] line-clamp-2 overflow-hidden break-words">
           {ticket.description}
         </div>
       )}
 
       {/* Bottom row: assignee + timestamp */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 'var(--space-2)',
-          flexWrap: 'wrap',
-        }}
-      >
+      <div className="flex items-center gap-[var(--space-2)] flex-wrap">
         {assigneeName && (
-          <span
-            style={{
-              fontSize: 'var(--text-caption2)',
-              fontWeight: 'var(--weight-medium)',
-              color: 'var(--text-secondary)',
-              background: 'var(--fill-tertiary)',
-              borderRadius: 'var(--radius-sm)',
-              padding: '1px var(--space-2)',
-              lineHeight: 1.5,
-            }}
-          >
+          <span className="text-[length:var(--text-caption2)] font-[var(--weight-medium)] text-[var(--text-secondary)] bg-[var(--fill-tertiary)] rounded-[var(--radius-sm)] py-px px-[var(--space-2)] leading-[1.5]">
             {assigneeName}
           </span>
         )}
 
         <span
-          style={{
-            fontSize: 'var(--text-caption2)',
-            color: 'var(--text-quaternary)',
-            marginLeft: 'auto',
-          }}
+          className="text-[length:var(--text-caption2)] text-[var(--text-quaternary)] ml-auto"
           title={new Date(ticket.createdAt).toLocaleString()}
         >
           {relativeTime(ticket.createdAt)}

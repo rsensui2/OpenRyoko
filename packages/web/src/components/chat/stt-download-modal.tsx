@@ -15,38 +15,14 @@ export function SttDownloadModal({ open, progress, onDownload, onCancel }: SttDo
 
   return (
     <div
-      style={{
-        position: "fixed",
-        top: 0, left: 0, right: 0, bottom: 0,
-        background: "rgba(0,0,0,0.5)",
-        zIndex: 60,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-      }}
+      className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center"
       onClick={isDownloading ? undefined : onCancel}
     >
       <div
-        style={{
-          background: "var(--bg)",
-          borderRadius: "var(--radius-lg)",
-          padding: "var(--space-6)",
-          maxWidth: 400,
-          width: "90%",
-          boxShadow: "var(--shadow-overlay)",
-        }}
+        className="bg-[var(--bg)] rounded-[var(--radius-lg)] p-[var(--space-6)] max-w-[400px] w-[90%] shadow-[var(--shadow-overlay)]"
         onClick={(e) => e.stopPropagation()}
       >
-        <div style={{
-          width: 48,
-          height: 48,
-          borderRadius: "var(--radius-md)",
-          background: "var(--fill-secondary)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          marginBottom: "var(--space-4)",
-        }}>
+        <div className="w-12 h-12 rounded-[var(--radius-md)] bg-[var(--fill-secondary)] flex items-center justify-center mb-[var(--space-4)]">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
             <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
@@ -55,70 +31,34 @@ export function SttDownloadModal({ open, progress, onDownload, onCancel }: SttDo
           </svg>
         </div>
 
-        <h3 style={{
-          fontSize: "var(--text-headline)",
-          fontWeight: "var(--weight-bold)",
-          color: "var(--text-primary)",
-          marginBottom: "var(--space-2)",
-        }}>
+        <h3 className="text-[length:var(--text-headline)] font-[var(--weight-bold)] text-[var(--text-primary)] mb-[var(--space-2)]">
           Enable voice input?
         </h3>
 
-        <p style={{
-          fontSize: "var(--text-body)",
-          color: "var(--text-secondary)",
-          marginBottom: "var(--space-5)",
-          lineHeight: "var(--leading-relaxed)",
-        }}>
+        <p className="text-[length:var(--text-body)] text-[var(--text-secondary)] mb-[var(--space-5)] leading-[var(--leading-relaxed)]">
           This will download a speech recognition model (~500MB). Transcription runs locally on your server — no data leaves your network.
         </p>
 
         {isDownloading && (
-          <div style={{ marginBottom: "var(--space-5)" }}>
-            <div style={{
-              display: "flex",
-              justifyContent: "space-between",
-              marginBottom: "var(--space-2)",
-              fontSize: "var(--text-footnote)",
-              color: "var(--text-tertiary)",
-            }}>
+          <div className="mb-[var(--space-5)]">
+            <div className="flex justify-between mb-[var(--space-2)] text-[length:var(--text-footnote)] text-[var(--text-tertiary)]">
               <span>Downloading model…</span>
               <span>{progress}%</span>
             </div>
-            <div style={{
-              height: 6,
-              borderRadius: 3,
-              background: "var(--fill-tertiary)",
-              overflow: "hidden",
-            }}>
-              <div style={{
-                height: "100%",
-                width: `${progress}%`,
-                borderRadius: 3,
-                background: "var(--accent)",
-                transition: "width 300ms ease",
-              }} />
+            <div className="h-1.5 rounded-[3px] bg-[var(--fill-tertiary)] overflow-hidden">
+              <div
+                className="h-full rounded-[3px] bg-[var(--accent)] transition-[width] duration-300 ease-in-out"
+                style={{ width: `${progress}%` }}
+              />
             </div>
           </div>
         )}
 
-        <div style={{
-          display: "flex",
-          gap: "var(--space-3)",
-          justifyContent: "flex-end",
-        }}>
+        <div className="flex gap-[var(--space-3)] justify-end">
           {!isDownloading && (
             <button
               onClick={onCancel}
-              style={{
-                padding: "var(--space-2) var(--space-4)",
-                borderRadius: "var(--radius-md)",
-                background: "var(--fill-tertiary)",
-                color: "var(--text-primary)",
-                border: "none",
-                cursor: "pointer",
-                fontSize: "var(--text-body)",
-              }}
+              className="px-[var(--space-4)] py-[var(--space-2)] rounded-[var(--radius-md)] bg-[var(--fill-tertiary)] text-[var(--text-primary)] border-none cursor-pointer text-[length:var(--text-body)]"
             >
               Cancel
             </button>
@@ -126,16 +66,11 @@ export function SttDownloadModal({ open, progress, onDownload, onCancel }: SttDo
           <button
             onClick={onDownload}
             disabled={isDownloading}
-            style={{
-              padding: "var(--space-2) var(--space-4)",
-              borderRadius: "var(--radius-md)",
-              background: isDownloading ? "var(--fill-tertiary)" : "var(--accent)",
-              color: isDownloading ? "var(--text-tertiary)" : "#000",
-              border: "none",
-              cursor: isDownloading ? "default" : "pointer",
-              fontSize: "var(--text-body)",
-              fontWeight: "var(--weight-semibold)",
-            }}
+            className={`px-[var(--space-4)] py-[var(--space-2)] rounded-[var(--radius-md)] border-none text-[length:var(--text-body)] font-[var(--weight-semibold)] ${
+              isDownloading
+                ? "bg-[var(--fill-tertiary)] text-[var(--text-tertiary)] cursor-default"
+                : "bg-[var(--accent)] text-black cursor-pointer"
+            }`}
           >
             {isDownloading ? "Downloading…" : "Download"}
           </button>

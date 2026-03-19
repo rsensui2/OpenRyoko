@@ -14,7 +14,7 @@ import {
   deleteTicket,
   type KanbanStore,
 } from '@/lib/kanban/store'
-import { PageLayout } from '@/components/page-layout'
+import { PageLayout, ToolbarActions } from '@/components/page-layout'
 import {
   Dialog,
   DialogContent,
@@ -41,30 +41,16 @@ function DeleteConfirmDialog({
     <Dialog open onOpenChange={(open) => { if (!open) onCancel() }}>
       <DialogContent
         showCloseButton={false}
-        style={{
-          background: 'var(--bg)',
-          border: '1px solid var(--separator)',
-          borderRadius: 'var(--radius-lg)',
-          boxShadow: 'var(--shadow-card)',
-          maxWidth: 400,
-        }}
+        className="bg-[var(--bg)] border border-[var(--separator)] rounded-[var(--radius-lg)] shadow-[var(--shadow-card)] max-w-[400px]"
       >
         <DialogHeader>
           <DialogTitle
-            style={{
-              fontSize: 'var(--text-title3)',
-              fontWeight: 'var(--weight-bold)',
-              color: 'var(--text-primary)',
-            }}
+            className="text-[length:var(--text-title3)] font-[var(--weight-bold)] text-[var(--text-primary)]"
           >
             Delete Ticket
           </DialogTitle>
           <DialogDescription
-            style={{
-              fontSize: 'var(--text-footnote)',
-              color: 'var(--text-secondary)',
-              lineHeight: 1.5,
-            }}
+            className="text-[length:var(--text-footnote)] text-[var(--text-secondary)] leading-[1.5]"
           >
             Are you sure you want to delete &ldquo;{ticket.title}&rdquo;? This cannot be undone.
           </DialogDescription>
@@ -72,32 +58,14 @@ function DeleteConfirmDialog({
         <DialogFooter>
           <button
             onClick={onCancel}
-            style={{
-              padding: 'var(--space-2) var(--space-4)',
-              borderRadius: 'var(--radius-md)',
-              border: '1px solid var(--separator)',
-              background: 'transparent',
-              color: 'var(--text-secondary)',
-              fontSize: 'var(--text-footnote)',
-              fontWeight: 600,
-              cursor: 'pointer',
-            }}
+            className="px-[var(--space-4)] py-[var(--space-2)] rounded-[var(--radius-md)] border border-[var(--separator)] bg-transparent text-[var(--text-secondary)] text-[length:var(--text-footnote)] font-semibold cursor-pointer"
           >
             Cancel
           </button>
           <button
             onClick={onConfirm}
             autoFocus
-            style={{
-              padding: 'var(--space-2) var(--space-4)',
-              borderRadius: 'var(--radius-md)',
-              border: 'none',
-              background: 'var(--system-red)',
-              color: '#fff',
-              fontSize: 'var(--text-footnote)',
-              fontWeight: 600,
-              cursor: 'pointer',
-            }}
+            className="px-[var(--space-4)] py-[var(--space-2)] rounded-[var(--radius-md)] border-none bg-[var(--system-red)] text-white text-[length:var(--text-footnote)] font-semibold cursor-pointer"
           >
             Delete
           </button>
@@ -376,40 +344,16 @@ export default function KanbanPage() {
     return (
       <PageLayout>
         <div
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'center',
-            height: '100%',
-            gap: 'var(--space-4)',
-            color: 'var(--text-tertiary)',
-          }}
+          className="flex flex-col items-center justify-center h-full gap-[var(--space-4)] text-[var(--text-tertiary)]"
         >
           <div
-            style={{
-              borderRadius: 'var(--radius-md)',
-              background: 'color-mix(in srgb, var(--system-red) 10%, transparent)',
-              border: '1px solid color-mix(in srgb, var(--system-red) 30%, transparent)',
-              padding: 'var(--space-3) var(--space-4)',
-              fontSize: 'var(--text-body)',
-              color: 'var(--system-red)',
-            }}
+            className="rounded-[var(--radius-md)] bg-[color-mix(in_srgb,var(--system-red)_10%,transparent)] border border-[color-mix(in_srgb,var(--system-red)_30%,transparent)] px-[var(--space-4)] py-[var(--space-3)] text-[length:var(--text-body)] text-[var(--system-red)]"
           >
             Failed to load employees: {error}
           </div>
           <button
             onClick={loadData}
-            style={{
-              padding: 'var(--space-2) var(--space-4)',
-              borderRadius: 'var(--radius-md)',
-              background: 'var(--accent)',
-              color: 'var(--accent-contrast)',
-              border: 'none',
-              cursor: 'pointer',
-              fontSize: 'var(--text-body)',
-              fontWeight: 'var(--weight-semibold)',
-            }}
+            className="px-[var(--space-4)] py-[var(--space-2)] rounded-[var(--radius-md)] bg-[var(--accent)] text-[var(--accent-contrast)] border-none cursor-pointer text-[length:var(--text-body)] font-[var(--weight-semibold)]"
           >
             Retry
           </button>
@@ -430,92 +374,49 @@ export default function KanbanPage() {
 
   return (
     <PageLayout>
-      <div className="flex h-full relative" style={{ background: 'var(--bg)' }}>
+      <div className="flex h-full relative bg-[var(--bg)]">
         {/* Board area */}
-        <div className="flex-1 h-full flex flex-col" style={{ minWidth: 0 }}>
+        <div className="flex-1 h-full flex flex-col min-w-0">
           {/* Header */}
           <div
-            style={{
-              padding: 'var(--space-4) var(--space-5)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              flexShrink: 0,
-              borderBottom: '1px solid var(--separator)',
-            }}
+            className="px-[var(--space-5)] py-[var(--space-4)] flex items-center justify-between shrink-0 border-b border-[var(--separator)]"
           >
             <div>
               <h1
-                style={{
-                  fontSize: 'var(--text-title2)',
-                  fontWeight: 'var(--weight-bold)',
-                  color: 'var(--text-primary)',
-                  margin: 0,
-                  letterSpacing: '-0.3px',
-                }}
+                className="text-[length:var(--text-title2)] font-[var(--weight-bold)] text-[var(--text-primary)] m-0 tracking-[-0.3px]"
               >
                 Kanban Board
               </h1>
               <p
-                style={{
-                  fontSize: 'var(--text-caption1)',
-                  color: 'var(--text-tertiary)',
-                  margin: '2px 0 0',
-                }}
+                className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)] mt-[2px] mb-0"
               >
                 {ticketCount} ticket{ticketCount !== 1 ? 's' : ''}
               </p>
             </div>
 
-            <button
-              onClick={() => setCreateOpen(true)}
-              style={{
-                borderRadius: 'var(--radius-md)',
-                padding: '8px 16px',
-                fontSize: 'var(--text-footnote)',
-                fontWeight: 'var(--weight-semibold)',
-                border: 'none',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 'var(--space-2)',
-                background: 'var(--accent)',
-                color: '#fff',
-                cursor: 'pointer',
-              }}
-            >
-              <Plus size={16} />
-              New Ticket
-            </button>
+            <ToolbarActions>
+              <button
+                onClick={() => setCreateOpen(true)}
+                className="rounded-[var(--radius-md)] px-4 py-2 text-[length:var(--text-footnote)] font-[var(--weight-semibold)] border-none flex items-center gap-[var(--space-2)] bg-[var(--accent)] text-white cursor-pointer"
+              >
+                <Plus size={16} />
+                New Ticket
+              </button>
+            </ToolbarActions>
           </div>
 
           {/* Employee filter bar */}
           {assignedEmployees.length > 0 && (
             <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 'var(--space-2)',
-                padding: 'var(--space-2) var(--space-5)',
-                overflowX: 'auto',
-                flexShrink: 0,
-              }}
+              className="flex items-center gap-[var(--space-2)] px-[var(--space-5)] py-[var(--space-2)] overflow-x-auto shrink-0"
             >
               <button
                 onClick={() => setFilterEmployeeId(null)}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 'var(--space-1)',
-                  padding: '4px 12px',
-                  borderRadius: 'var(--radius-full)',
-                  border: 'none',
-                  fontSize: 'var(--text-caption1)',
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  background: filterEmployeeId === null ? 'var(--accent)' : 'var(--fill-tertiary)',
-                  color: filterEmployeeId === null ? 'white' : 'var(--text-secondary)',
-                  flexShrink: 0,
-                }}
+                className={`flex items-center gap-[var(--space-1)] px-3 py-1 rounded-full border-none text-[length:var(--text-caption1)] font-semibold cursor-pointer shrink-0 ${
+                  filterEmployeeId === null
+                    ? 'bg-[var(--accent)] text-white'
+                    : 'bg-[var(--fill-tertiary)] text-[var(--text-secondary)]'
+                }`}
               >
                 All
               </button>
@@ -525,26 +426,11 @@ export default function KanbanPage() {
                   onClick={() =>
                     setFilterEmployeeId(filterEmployeeId === emp.name ? null : emp.name)
                   }
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 'var(--space-1)',
-                    padding: '4px 12px',
-                    borderRadius: 'var(--radius-full)',
-                    border: 'none',
-                    fontSize: 'var(--text-caption1)',
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                    background:
-                      filterEmployeeId === emp.name
-                        ? 'var(--accent)'
-                        : 'var(--fill-tertiary)',
-                    color:
-                      filterEmployeeId === emp.name
-                        ? 'white'
-                        : 'var(--text-secondary)',
-                    flexShrink: 0,
-                  }}
+                  className={`flex items-center gap-[var(--space-1)] px-3 py-1 rounded-full border-none text-[length:var(--text-caption1)] font-semibold cursor-pointer shrink-0 ${
+                    filterEmployeeId === emp.name
+                      ? 'bg-[var(--accent)] text-white'
+                      : 'bg-[var(--fill-tertiary)] text-[var(--text-secondary)]'
+                  }`}
                 >
                   {emp.displayName}
                 </button>
@@ -553,17 +439,10 @@ export default function KanbanPage() {
           )}
 
           {/* Board */}
-          <div style={{ flex: 1, padding: '0 var(--space-3)', minHeight: 0 }}>
+          <div className="flex-1 px-[var(--space-3)] min-h-0">
             {loading ? (
               <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  height: '100%',
-                  color: 'var(--text-tertiary)',
-                  fontSize: 'var(--text-caption1)',
-                }}
+                className="flex items-center justify-center h-full text-[var(--text-tertiary)] text-[length:var(--text-caption1)]"
               >
                 Loading...
               </div>
@@ -584,8 +463,7 @@ export default function KanbanPage() {
         {/* Mobile backdrop */}
         {selectedTicket && (
           <div
-            className="fixed inset-0 z-30 lg:hidden"
-            style={{ background: 'rgba(0,0,0,0.5)' }}
+            className="fixed inset-0 z-30 lg:hidden bg-black/50"
             onClick={() => setSelectedTicket(null)}
           />
         )}

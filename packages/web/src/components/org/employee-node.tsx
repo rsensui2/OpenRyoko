@@ -17,82 +17,32 @@ export function EmployeeNode({ data, selected }: NodeProps) {
 
   return (
     <div
+      className="bg-[var(--material-regular)] backdrop-blur-[20px] backdrop-saturate-[180%] [-webkit-backdrop-filter:blur(20px)_saturate(180%)] rounded-[var(--radius-md,12px)] py-[var(--space-3)] px-[var(--space-4)] w-[240px] cursor-pointer relative transition-shadow duration-150 ease-in-out"
       style={{
-        background: "var(--material-regular)",
-        backdropFilter: "blur(20px) saturate(180%)",
-        WebkitBackdropFilter: "blur(20px) saturate(180%)",
-        borderRadius: "var(--radius-md, 12px)",
         border: `1px solid ${selected ? "var(--accent)" : "var(--separator)"}`,
-        padding: "var(--space-3) var(--space-4)",
-        width: 240,
-        cursor: "pointer",
-        position: "relative",
         boxShadow: selected
           ? "0 0 0 1px var(--accent), var(--shadow-card)"
           : "var(--shadow-card)",
-        transition: "box-shadow 150ms ease",
       }}
     >
       {/* Emoji + Name row */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: "var(--space-2)",
-          marginBottom: "var(--space-1)",
-        }}
-      >
-        <span style={{ fontSize: 20, lineHeight: 1, flexShrink: 0 }}>
+      <div className="flex items-center gap-[var(--space-2)] mb-[var(--space-1)]">
+        <span className="text-[20px] leading-none shrink-0">
           {emoji}
         </span>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div
-            style={{
-              fontSize: "var(--text-body)",
-              fontWeight: "var(--weight-semibold)",
-              color: "var(--text-primary)",
-              whiteSpace: "nowrap",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              lineHeight: "var(--leading-tight)",
-            }}
-          >
+        <div className="flex-1 min-w-0">
+          <div className="text-[length:var(--text-body)] font-[var(--weight-semibold)] text-[var(--text-primary)] whitespace-nowrap overflow-hidden text-ellipsis leading-[var(--leading-tight)]">
             {employee.displayName || employee.name}
           </div>
-          <div
-            style={{
-              fontSize: "var(--text-caption2)",
-              color: "var(--text-tertiary)",
-              whiteSpace: "nowrap",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              marginTop: 1,
-            }}
-          >
+          <div className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)] whitespace-nowrap overflow-hidden text-ellipsis mt-px">
             {employee.department}
           </div>
         </div>
       </div>
 
       {/* Engine badge */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: "var(--space-2)",
-          marginTop: "var(--space-2)",
-        }}
-      >
-        <span
-          style={{
-            fontSize: "var(--text-caption2)",
-            fontWeight: "var(--weight-semibold)",
-            color: "var(--accent)",
-            background: "var(--accent-fill)",
-            padding: "1px 7px",
-            borderRadius: 10,
-          }}
-        >
+      <div className="flex items-center gap-[var(--space-2)] mt-[var(--space-2)]">
+        <span className="text-[length:var(--text-caption2)] font-[var(--weight-semibold)] text-[var(--accent)] bg-[var(--accent-fill)] py-px px-[7px] rounded-[10px]">
           {employee.engine}
         </span>
       </div>
@@ -106,29 +56,8 @@ export function EmployeeNode({ data, selected }: NodeProps) {
 export function DepartmentGroupNode({ data }: NodeProps) {
   const { label } = data as { label: string } & Record<string, unknown>
   return (
-    <div
-      style={{
-        width: "100%",
-        height: "100%",
-        position: "relative",
-      }}
-    >
-      <div
-        style={{
-          position: "absolute",
-          top: 10,
-          left: 0,
-          right: 0,
-          textAlign: "center",
-          fontSize: "var(--text-caption2)",
-          fontWeight: "var(--weight-semibold)",
-          letterSpacing: "var(--tracking-wide)",
-          textTransform: "uppercase",
-          color: "var(--text-tertiary)",
-          userSelect: "none",
-          pointerEvents: "none",
-        }}
-      >
+    <div className="w-full h-full relative">
+      <div className="absolute top-[10px] left-0 right-0 text-center text-[length:var(--text-caption2)] font-[var(--weight-semibold)] tracking-[var(--tracking-wide)] uppercase text-[var(--text-tertiary)] select-none pointer-events-none">
         {label}
       </div>
     </div>

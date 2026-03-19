@@ -1,6 +1,7 @@
 "use client"
 
 import type { Employee } from "@/lib/api"
+import { cn } from "@/lib/utils"
 
 interface FeedViewProps {
   employees: Employee[]
@@ -41,16 +42,8 @@ function RankBadge({ rank }: { rank: string }) {
 
   return (
     <span
-      style={{
-        fontSize: "var(--text-caption2)",
-        fontWeight: "var(--weight-semibold)",
-        color: c.text,
-        background: c.bg,
-        padding: "2px 8px",
-        borderRadius: 10,
-        textTransform: "uppercase",
-        letterSpacing: "0.02em",
-      }}
+      className="rounded-[10px] px-2 py-0.5 text-[length:var(--text-caption2)] font-[var(--weight-semibold)] uppercase tracking-[0.02em]"
+      style={{ color: c.text, background: c.bg }}
     >
       {rank}
     </span>
@@ -70,58 +63,22 @@ export function FeedView({ employees, selectedName, onSelect }: FeedViewProps) {
   )
 
   return (
-    <div
-      style={{
-        overflowY: "auto",
-        padding: "var(--space-6)",
-        height: "100%",
-      }}
-    >
-      {/* Summary row */}
-      <div
-        style={{
-          display: "flex",
-          gap: "var(--space-3)",
-          marginBottom: "var(--space-5)",
-        }}
-      >
+    <div className="h-full overflow-y-auto p-[var(--space-6)]">
+      <div className="mb-[var(--space-5)] flex gap-[var(--space-3)]">
         {(["executive", "manager", "senior", "employee"] as const).map(
           (rank) => {
             const count = employees.filter((e) => e.rank === rank).length
             return (
               <div
                 key={rank}
-                style={{
-                  flex: 1,
-                  background: "var(--material-regular)",
-                  border: "1px solid var(--separator)",
-                  borderRadius: "var(--radius-md, 12px)",
-                  padding: "var(--space-3) var(--space-4)",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "var(--space-3)",
-                }}
+                className="flex flex-1 items-center gap-[var(--space-3)] rounded-[var(--radius-md,12px)] border border-[var(--separator)] bg-[var(--material-regular)] px-[var(--space-4)] py-[var(--space-3)]"
               >
-                <span style={{ fontSize: 20 }}>{RANK_EMOJI[rank]}</span>
+                <span className="text-[20px]">{RANK_EMOJI[rank]}</span>
                 <div>
-                  <div
-                    style={{
-                      fontSize: "var(--text-title3)",
-                      fontWeight: "var(--weight-bold)",
-                      color: "var(--text-primary)",
-                      lineHeight: 1,
-                    }}
-                  >
+                  <div className="text-[length:var(--text-title3)] font-[var(--weight-bold)] leading-none text-[var(--text-primary)]">
                     {count}
                   </div>
-                  <div
-                    style={{
-                      fontSize: "var(--text-caption2)",
-                      color: "var(--text-tertiary)",
-                      marginTop: 2,
-                      textTransform: "capitalize",
-                    }}
-                  >
+                  <div className="mt-0.5 text-[length:var(--text-caption2)] capitalize text-[var(--text-tertiary)]">
                     {rank}s
                   </div>
                 </div>
@@ -133,31 +90,13 @@ export function FeedView({ employees, selectedName, onSelect }: FeedViewProps) {
 
       {/* Employee list */}
       {sorted.length === 0 ? (
-        <div
-          style={{
-            textAlign: "center",
-            padding: "var(--space-16) var(--space-4)",
-            color: "var(--text-tertiary)",
-          }}
-        >
-          <div
-            style={{
-              fontSize: "var(--text-body)",
-              fontWeight: "var(--weight-medium)",
-            }}
-          >
+        <div className="px-[var(--space-4)] py-[var(--space-16)] text-center text-[var(--text-tertiary)]">
+          <div className="text-[length:var(--text-body)] font-[var(--weight-medium)]">
             No employees found
           </div>
         </div>
       ) : (
-        <div
-          style={{
-            background: "var(--bg-secondary)",
-            borderRadius: "var(--radius-lg, 16px)",
-            border: "1px solid var(--separator)",
-            overflow: "hidden",
-          }}
-        >
+        <div className="overflow-hidden rounded-[var(--radius-lg,16px)] border border-[var(--separator)] bg-[var(--bg-secondary)]">
           {sorted.map((emp, idx) => {
             const isSelected = selectedName === emp.name
             const emoji = RANK_EMOJI[emp.rank] || RANK_EMOJI.employee
@@ -166,68 +105,25 @@ export function FeedView({ employees, selectedName, onSelect }: FeedViewProps) {
               <button
                 key={emp.name}
                 onClick={() => onSelect(emp)}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "var(--space-3)",
-                  padding: "var(--space-3) var(--space-4)",
-                  width: "100%",
-                  background: isSelected
-                    ? "var(--fill-secondary)"
-                    : "transparent",
-                  border: "none",
-                  borderTop:
-                    idx > 0 ? "1px solid var(--separator)" : undefined,
-                  cursor: "pointer",
-                  textAlign: "left",
-                  transition: "background 150ms ease",
-                }}
+                className={cn(
+                  "flex w-full items-center gap-[var(--space-3)] px-[var(--space-4)] py-[var(--space-3)] text-left transition-colors",
+                  isSelected ? "bg-[var(--fill-secondary)]" : "bg-transparent hover:bg-accent"
+                )}
+                style={idx > 0 ? { borderTop: "1px solid var(--separator)" } : undefined}
               >
-                <span style={{ fontSize: 20, lineHeight: 1, flexShrink: 0 }}>
-                  {emoji}
-                </span>
+                <span className="shrink-0 text-[20px] leading-none">{emoji}</span>
 
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "var(--space-2)",
-                    }}
-                  >
-                    <span
-                      style={{
-                        fontSize: "var(--text-body)",
-                        fontWeight: "var(--weight-semibold)",
-                        color: "var(--text-primary)",
-                      }}
-                    >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-[var(--space-2)]">
+                    <span className="text-[length:var(--text-body)] font-[var(--weight-semibold)] text-[var(--text-primary)]">
                       {emp.displayName || emp.name}
                     </span>
-                    <span
-                      style={{
-                        fontSize: "var(--text-caption1)",
-                        color: "var(--text-quaternary)",
-                        fontFamily: "var(--font-mono)",
-                      }}
-                    >
+                    <span className="font-[family-name:var(--font-mono)] text-[length:var(--text-caption1)] text-[var(--text-quaternary)]">
                       {emp.name}
                     </span>
                   </div>
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "var(--space-2)",
-                      marginTop: 2,
-                    }}
-                  >
-                    <span
-                      style={{
-                        fontSize: "var(--text-caption1)",
-                        color: "var(--text-tertiary)",
-                      }}
-                    >
+                  <div className="mt-0.5 flex items-center gap-[var(--space-2)]">
+                    <span className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">
                       {emp.department || "No department"}
                     </span>
                   </div>

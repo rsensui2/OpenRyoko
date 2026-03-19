@@ -42,38 +42,13 @@ const statusVariant: Record<string, "default" | "secondary" | "destructive" | "o
 
 function Field({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <div
-      style={{
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "flex-start",
-        gap: "var(--space-3)",
-        padding: "var(--space-2) 0",
-        borderBottom: "1px solid var(--separator)",
-      }}
-    >
-      <span
-        style={{
-          fontSize: "var(--text-caption1)",
-          fontWeight: "var(--weight-medium)",
-          textTransform: "uppercase",
-          letterSpacing: "0.05em",
-          color: "var(--text-tertiary)",
-          flexShrink: 0,
-        }}
-      >
+    <div className="flex justify-between items-start gap-[var(--space-3)] py-[var(--space-2)] border-b border-[var(--separator)]">
+      <span className="text-[length:var(--text-caption1)] font-[var(--weight-medium)] uppercase tracking-[0.05em] text-[var(--text-tertiary)] shrink-0">
         {label}
       </span>
-      <span
-        style={{
-          fontSize: "var(--text-body)",
-          color: "var(--text-primary)",
-          textAlign: "right",
-          wordBreak: "break-all",
-        }}
-      >
+      <span className="text-[length:var(--text-body)] text-[var(--text-primary)] text-right break-all">
         {value || (
-          <span style={{ color: "var(--text-quaternary)" }}>--</span>
+          <span className="text-[var(--text-quaternary)]">--</span>
         )}
       </span>
     </div>
@@ -106,31 +81,16 @@ export function SessionDetail({
   return (
     <Card>
       <CardHeader>
-        <CardTitle
-          style={{
-            fontSize: "var(--text-headline)",
-            color: "var(--text-primary)",
-          }}
-        >
+        <CardTitle className="text-[length:var(--text-headline)] text-[var(--text-primary)]">
           {session.title || "Session Detail"}
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-          }}
-        >
+        <div className="flex flex-col">
           <Field
             label="Session ID"
             value={
-              <span
-                style={{
-                  fontFamily: "var(--font-mono)",
-                  fontSize: "var(--text-caption1)",
-                }}
-              >
+              <span className="font-[family-name:var(--font-mono)] text-[length:var(--text-caption1)]">
                 {session.id}
               </span>
             }
@@ -138,7 +98,7 @@ export function SessionDetail({
           <Field
             label="Engine"
             value={
-              <span style={{ textTransform: "capitalize" }}>
+              <span className="capitalize">
                 {session.engine}
                 {session.model ? ` (${session.model})` : ""}
               </span>
@@ -172,16 +132,7 @@ export function SessionDetail({
               value={
                 <button
                   onClick={() => onNavigate?.(session.parentSessionId!)}
-                  style={{
-                    fontFamily: "var(--font-mono)",
-                    fontSize: "var(--text-caption1)",
-                    color: "var(--accent)",
-                    background: "none",
-                    border: "none",
-                    cursor: "pointer",
-                    textDecoration: "underline",
-                    padding: 0,
-                  }}
+                  className="font-[family-name:var(--font-mono)] text-[length:var(--text-caption1)] text-[var(--accent)] bg-none border-none cursor-pointer underline p-0"
                 >
                   {session.parentSessionId.slice(0, 12)}...
                 </button>
@@ -191,38 +142,18 @@ export function SessionDetail({
 
           {/* Child sessions */}
           {children.length > 0 && (
-            <div style={{ marginTop: "var(--space-3)" }}>
-              <span
-                style={{
-                  fontSize: "var(--text-caption1)",
-                  fontWeight: "var(--weight-medium)",
-                  textTransform: "uppercase",
-                  letterSpacing: "0.05em",
-                  color: "var(--text-tertiary)",
-                  display: "block",
-                  marginBottom: "var(--space-2)",
-                }}
-              >
+            <div className="mt-[var(--space-3)]">
+              <span className="text-[length:var(--text-caption1)] font-[var(--weight-medium)] uppercase tracking-[0.05em] text-[var(--text-tertiary)] block mb-[var(--space-2)]">
                 Child Sessions ({children.length})
               </span>
-              <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-1)" }}>
+              <div className="flex flex-col gap-[var(--space-1)]">
                 {children.map((child) => (
                   <button
                     key={child.id}
                     onClick={() => onNavigate?.(child.id)}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      padding: "var(--space-2) var(--space-3)",
-                      background: "var(--fill-secondary)",
-                      borderRadius: "var(--radius-sm, 8px)",
-                      border: "none",
-                      cursor: "pointer",
-                      textAlign: "left",
-                    }}
+                    className="flex items-center justify-between py-[var(--space-2)] px-[var(--space-3)] bg-[var(--fill-secondary)] rounded-[var(--radius-sm,8px)] border-none cursor-pointer text-left"
                   >
-                    <span style={{ fontSize: "var(--text-caption1)", color: "var(--text-primary)", fontWeight: "var(--weight-medium)" }}>
+                    <span className="text-[length:var(--text-caption1)] text-[var(--text-primary)] font-[var(--weight-medium)]">
                       {child.title || child.employee || "Session"}
                     </span>
                     <Badge variant={statusVariant[child.status] ?? "secondary"}>
@@ -235,29 +166,15 @@ export function SessionDetail({
           )}
 
           {session.lastError && (
-            <div style={{ marginTop: "var(--space-3)" }}>
-              <span
-                style={{
-                  fontSize: "var(--text-caption1)",
-                  fontWeight: "var(--weight-medium)",
-                  textTransform: "uppercase",
-                  letterSpacing: "0.05em",
-                  color: "var(--system-red)",
-                  display: "block",
-                  marginBottom: "var(--space-2)",
-                }}
-              >
+            <div className="mt-[var(--space-3)]">
+              <span className="text-[length:var(--text-caption1)] font-[var(--weight-medium)] uppercase tracking-[0.05em] text-[var(--system-red)] block mb-[var(--space-2)]">
                 Last Error
               </span>
               <div
+                className="text-[length:var(--text-caption1)] font-[family-name:var(--font-mono)] text-[var(--system-red)] rounded-[var(--radius-sm,8px)] p-[var(--space-3)]"
                 style={{
-                  fontSize: "var(--text-caption1)",
-                  fontFamily: "var(--font-mono)",
-                  color: "var(--system-red)",
                   background:
                     "color-mix(in srgb, var(--system-red) 10%, transparent)",
-                  borderRadius: "var(--radius-sm, 8px)",
-                  padding: "var(--space-3)",
                 }}
               >
                 {session.lastError}

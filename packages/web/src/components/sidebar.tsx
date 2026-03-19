@@ -14,6 +14,7 @@ import { useSettings } from "@/app/settings-provider"
 import { THEMES } from "@/lib/themes"
 import { NAV_ITEMS } from "@/lib/nav"
 import type { ThemeId } from "@/lib/themes"
+import { cn } from "@/lib/utils"
 
 // ---------------------------------------------------------------------------
 // Theme icon helper
@@ -64,153 +65,60 @@ export function Sidebar() {
     <aside
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      style={{
-        position: "fixed",
-        left: 0,
-        top: 0,
-        bottom: 0,
-        width: hovered ? 200 : 56,
-        background: "var(--bg-secondary)",
-        borderRight: "1px solid var(--separator)",
-        flexDirection: "column",
-        zIndex: 50,
-        transition: "width 200ms var(--ease-smooth)",
-        overflow: "hidden",
-      }}
-      className="hidden lg:flex"
+      className={cn(
+        "fixed inset-y-0 left-0 z-[60] hidden overflow-hidden border-r border-border bg-[var(--bg-secondary)] transition-[width] duration-200 ease-out lg:flex lg:flex-col",
+        hovered ? "w-[200px]" : "w-14"
+      )}
     >
-      {/* App icon + title */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          padding: "16px 14px 12px",
-          minHeight: 56,
-          flexShrink: 0,
-        }}
-      >
-        <span
-          style={{
-            fontSize: 24,
-            lineHeight: 1,
-            flexShrink: 0,
-            width: 28,
-            textAlign: "center",
-          }}
-        >
-          {emoji}
-        </span>
-        <span
-          style={{
-            fontSize: 17,
-            fontWeight: 600,
-            color: "var(--text-primary)",
-            whiteSpace: "nowrap",
-            opacity: hovered ? 1 : 0,
-            transition: "opacity 200ms var(--ease-smooth)",
-          }}
-        >
+      <div className="flex min-h-14 shrink-0 items-center gap-2.5 px-3.5 pb-3 pt-4">
+        <span className="w-7 shrink-0 text-center text-2xl leading-none">{emoji}</span>
+        <span className={cn("whitespace-nowrap text-[17px] font-semibold text-foreground transition-opacity duration-200", hovered ? "opacity-100" : "opacity-0")}>
           {portalName}
         </span>
       </div>
 
-      {/* Navigation */}
-      <nav style={{ flex: 1, display: "flex", flexDirection: "column", gap: 2, padding: "0 8px" }}>
+      <nav className="flex flex-1 flex-col gap-0.5 px-2">
         {NAV_ITEMS.map((item) => {
           const isActive =
             item.href === "/" ? pathname === "/" : pathname.startsWith(item.href)
           const Icon = item.icon
 
           return (
-            <Link
+            <a
               key={item.href}
               href={item.href}
-              className="nav-item"
+              className={cn(
+                "group flex h-10 items-center gap-2.5 rounded-md px-3 text-[13px] whitespace-nowrap transition-colors",
+                isActive
+                  ? "bg-[var(--accent-fill)] font-semibold text-[var(--accent)]"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground"
+              )}
               aria-label={item.label}
               aria-current={isActive ? "page" : undefined}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-                height: 40,
-                padding: "0 12px",
-                textDecoration: "none",
-                color: isActive ? "var(--accent)" : "var(--text-secondary)",
-                background: isActive ? "var(--accent-fill)" : "transparent",
-                fontWeight: isActive ? 600 : 400,
-                fontSize: 13,
-                whiteSpace: "nowrap",
-              }}
             >
-              <Icon
-                size={18}
-                style={{
-                  flexShrink: 0,
-                  color: isActive ? "var(--accent)" : "var(--text-secondary)",
-                }}
-              />
-              <span
-                style={{
-                  opacity: hovered ? 1 : 0,
-                  transition: "opacity 200ms var(--ease-smooth)",
-                }}
-              >
+              <Icon size={18} className="shrink-0" />
+              <span className={cn("transition-opacity duration-200", hovered ? "opacity-100" : "opacity-0")}>
                 {item.label}
               </span>
-            </Link>
+            </a>
           )
         })}
       </nav>
 
-      {/* Instance switcher */}
       {instances.length > 1 && (
-        <div style={{ padding: "4px 8px 0", flexShrink: 0, position: "relative" }}>
+        <div className="relative shrink-0 px-2 pt-1">
           <button
             onClick={() => setShowSwitcher(v => !v)}
-            className="nav-item"
             aria-label="Switch instance"
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-              height: 40,
-              padding: "0 12px",
-              width: "100%",
-              border: "none",
-              background: "transparent",
-              color: "var(--text-secondary)",
-              cursor: "pointer",
-              fontSize: 13,
-              whiteSpace: "nowrap",
-            }}
+            className="flex h-10 w-full items-center gap-2.5 rounded-md px-3 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           >
-            <span style={{ flexShrink: 0 }}>
-              <ArrowLeftRight size={18} />
-            </span>
-            <span
-              style={{
-                opacity: hovered ? 1 : 0,
-                transition: "opacity 200ms var(--ease-smooth)",
-              }}
-            >
+            <ArrowLeftRight size={18} className="shrink-0" />
+            <span className={cn("transition-opacity duration-200", hovered ? "opacity-100" : "opacity-0")}>
               Switch
             </span>
           </button>
           {showSwitcher && hovered && (
-            <div style={{
-              position: "absolute",
-              bottom: "100%",
-              left: 8,
-              marginBottom: 4,
-              background: "var(--material-thick)",
-              border: "1px solid var(--separator)",
-              borderRadius: 12,
-              boxShadow: "var(--shadow-overlay)",
-              minWidth: 180,
-              padding: 4,
-              zIndex: 100,
-            }}>
+            <div className="absolute bottom-full left-2 z-100 mb-1 min-w-[180px] rounded-xl border border-border bg-[var(--material-thick)] p-1 shadow-[var(--shadow-overlay)] backdrop-blur-xl">
               {instances.map(inst => (
                 <button
                   key={inst.port}
@@ -220,30 +128,20 @@ export function Sidebar() {
                     }
                     setShowSwitcher(false)
                   }}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    width: "100%",
-                    padding: "8px 12px",
-                    border: "none",
-                    borderRadius: 8,
-                    background: inst.current ? "var(--accent-fill)" : "transparent",
-                    color: inst.current ? "var(--accent)" : inst.running ? "var(--text-primary)" : "var(--text-quaternary)",
-                    cursor: inst.running && !inst.current ? "pointer" : "default",
-                    fontSize: 13,
-                    fontWeight: inst.current ? 600 : 400,
-                    textAlign: "left",
-                  }}
+                  className={cn(
+                    "flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-[13px] transition-colors",
+                    inst.current
+                      ? "bg-[var(--accent-fill)] font-semibold text-[var(--accent)]"
+                      : inst.running
+                        ? "text-foreground hover:bg-accent"
+                        : "cursor-default text-[var(--text-quaternary)]"
+                  )}
                 >
                   <span>{inst.name}</span>
-                  <span style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: "50%",
-                    background: inst.running ? "var(--system-green)" : "var(--text-quaternary)",
-                    flexShrink: 0,
-                  }} />
+                  <span
+                    className="size-2 shrink-0 rounded-full"
+                    style={{ background: inst.running ? "var(--system-green)" : "var(--text-quaternary)" }}
+                  />
                 </button>
               ))}
             </div>
@@ -251,37 +149,16 @@ export function Sidebar() {
         </div>
       )}
 
-      {/* Theme toggle at bottom */}
-      <div style={{ padding: "8px 8px 12px", flexShrink: 0 }}>
+      <div className="shrink-0 px-2 pb-3 pt-2">
         <button
           onClick={cycleTheme}
-          className="nav-item"
           aria-label={`Theme: ${theme}. Click to cycle.`}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            height: 40,
-            padding: "0 12px",
-            width: "100%",
-            border: "none",
-            background: "transparent",
-            color: "var(--text-secondary)",
-            cursor: "pointer",
-            fontSize: 13,
-            whiteSpace: "nowrap",
-          }}
+          className="flex h-10 w-full items-center gap-2.5 rounded-md px-3 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
-          <span style={{ flexShrink: 0 }}>
+          <span className="shrink-0">
             <ThemeIcon theme={theme} />
           </span>
-          <span
-            style={{
-              opacity: hovered ? 1 : 0,
-              transition: "opacity 200ms var(--ease-smooth)",
-              textTransform: "capitalize",
-            }}
-          >
+          <span className={cn("capitalize transition-opacity duration-200", hovered ? "opacity-100" : "opacity-0")}>
             {theme}
           </span>
         </button>

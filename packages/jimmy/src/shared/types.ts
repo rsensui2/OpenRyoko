@@ -160,6 +160,20 @@ export interface Session {
   lastError: string | null;
 }
 
+export interface Goal {
+  id: string;
+  title: string;
+  description: string | null;
+  status: 'not_started' | 'in_progress' | 'at_risk' | 'completed';
+  level: 'company' | 'department' | 'task';
+  parentId: string | null;
+  department: string | null;
+  owner: string | null;
+  progress: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface CronJob {
   id: string;
   name: string;

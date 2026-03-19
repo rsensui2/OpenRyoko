@@ -30,86 +30,29 @@ function EmployeeCard({
   return (
     <button
       onClick={onSelect}
+      className={`flex items-center gap-[var(--space-3)] px-[var(--space-4)] py-[var(--space-3)] rounded-[var(--radius-md,12px)] bg-[var(--material-regular)] cursor-pointer w-full text-left transition-all duration-150 ease-in-out ${selected ? "border-[1.5px] border-[var(--accent)]" : "border border-[var(--separator)]"}`}
       style={{
-        display: "flex",
-        alignItems: "center",
-        gap: "var(--space-3)",
-        padding: "var(--space-3) var(--space-4)",
-        borderRadius: "var(--radius-md, 12px)",
-        background: "var(--material-regular)",
-        border: selected
-          ? "1.5px solid var(--accent)"
-          : "1px solid var(--separator)",
-        cursor: "pointer",
-        width: "100%",
-        textAlign: "left",
-        transition: "all 150ms ease",
         boxShadow: selected
           ? "0 0 0 1px var(--accent), var(--shadow-subtle)"
           : "var(--shadow-subtle)",
       }}
     >
-      <span style={{ fontSize: 24, lineHeight: 1, flexShrink: 0 }}>
+      <span className="text-2xl leading-none shrink-0">
         {emoji}
       </span>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div
-          style={{
-            fontSize: "var(--text-body)",
-            fontWeight: "var(--weight-semibold)",
-            color: "var(--text-primary)",
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            lineHeight: "var(--leading-tight)",
-          }}
-        >
+      <div className="flex-1 min-w-0">
+        <div className="text-[length:var(--text-body)] font-[var(--weight-semibold)] text-[var(--text-primary)] whitespace-nowrap overflow-hidden text-ellipsis leading-[var(--leading-tight)]">
           {employee.displayName || employee.name}
         </div>
-        <div
-          style={{
-            fontSize: "var(--text-caption1)",
-            color: "var(--text-tertiary)",
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            marginTop: 1,
-          }}
-        >
+        <div className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)] whitespace-nowrap overflow-hidden text-ellipsis mt-px">
           {employee.department}
         </div>
       </div>
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "flex-end",
-          gap: 4,
-          flexShrink: 0,
-        }}
-      >
-        <span
-          style={{
-            fontSize: "var(--text-caption2)",
-            fontWeight: "var(--weight-semibold)",
-            color: "var(--accent)",
-            background: "var(--accent-fill)",
-            padding: "1px 7px",
-            borderRadius: 10,
-          }}
-        >
+      <div className="flex flex-col items-end gap-1 shrink-0">
+        <span className="text-[length:var(--text-caption2)] font-[var(--weight-semibold)] text-[var(--accent)] bg-[var(--accent-fill)] px-[7px] py-px rounded-[10px]">
           {employee.engine}
         </span>
-        <span
-          style={{
-            fontSize: "var(--text-caption2)",
-            fontWeight: "var(--weight-medium)",
-            color: "var(--text-quaternary)",
-            background: "var(--fill-quaternary)",
-            padding: "1px 7px",
-            borderRadius: 10,
-          }}
-        >
+        <span className="text-[length:var(--text-caption2)] font-[var(--weight-medium)] text-[var(--text-quaternary)] bg-[var(--fill-quaternary)] px-[7px] py-px rounded-[10px]">
           {employee.model}
         </span>
       </div>
@@ -127,49 +70,14 @@ function DepartmentSection({
   children: React.ReactNode
 }) {
   return (
-    <Card
-      className="p-0 shadow-none"
-      style={{
-        background: "var(--bg-secondary)",
-        borderRadius: "var(--radius-lg, 16px)",
-        border: "1px solid var(--separator)",
-      }}
-    >
-      <CardContent
-        className="p-4"
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          gap: "var(--space-2)",
-        }}
-      >
+    <Card className="p-0 shadow-none bg-[var(--bg-secondary)] rounded-[var(--radius-lg,16px)] border border-[var(--separator)]">
+      <CardContent className="p-4 flex flex-col gap-[var(--space-2)]">
         {/* Header */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "var(--space-2)",
-            marginBottom: "var(--space-1)",
-          }}
-        >
-          <span
-            style={{
-              fontSize: "var(--text-caption1)",
-              fontWeight: "var(--weight-semibold)",
-              letterSpacing: "var(--tracking-wide)",
-              textTransform: "uppercase",
-              color: "var(--text-tertiary)",
-            }}
-          >
+        <div className="flex items-center gap-[var(--space-2)] mb-[var(--space-1)]">
+          <span className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] tracking-[var(--tracking-wide)] uppercase text-[var(--text-tertiary)]">
             {label}
           </span>
-          <span
-            style={{
-              fontSize: "var(--text-caption2)",
-              color: "var(--text-quaternary)",
-              marginLeft: "auto",
-            }}
-          >
+          <span className="text-[length:var(--text-caption2)] text-[var(--text-quaternary)] ml-auto">
             {count} employee{count !== 1 ? "s" : ""}
           </span>
         </div>
@@ -198,117 +106,45 @@ export function GridView({ employees, selectedName, onSelect }: GridViewProps) {
   const executive = employees.find((e) => e.rank === "executive")
 
   return (
-    <div
-      style={{
-        overflowY: "auto",
-        padding: "var(--space-6)",
-        height: "100%",
-      }}
-    >
+    <div className="overflow-y-auto p-[var(--space-6)] h-full">
       {/* Executive banner */}
       {executive && (
         <button
           onClick={() => onSelect(executive)}
+          className={`flex items-center gap-[var(--space-5)] w-full px-[var(--space-6)] py-[var(--space-5)] rounded-[var(--radius-xl,20px)] bg-[var(--material-regular)] cursor-pointer text-left mb-[var(--space-6)] transition-all duration-150 ease-in-out ${selectedName === executive.name ? "border-[1.5px] border-[var(--accent)]" : "border border-[var(--separator)]"}`}
           style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "var(--space-5)",
-            width: "100%",
-            padding: "var(--space-5) var(--space-6)",
-            borderRadius: "var(--radius-xl, 20px)",
-            background: "var(--material-regular)",
-            border:
-              selectedName === executive.name
-                ? "1.5px solid var(--accent)"
-                : "1px solid var(--separator)",
-            cursor: "pointer",
-            textAlign: "left",
-            marginBottom: "var(--space-6)",
-            transition: "all 150ms ease",
             boxShadow:
               selectedName === executive.name
                 ? "0 0 0 1px var(--accent), var(--shadow-card)"
                 : "var(--shadow-card)",
           }}
         >
-          <span style={{ fontSize: 40, lineHeight: 1 }}>
+          <span className="text-[40px] leading-none">
             {RANK_EMOJI.executive}
           </span>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div
-              style={{
-                fontSize: "var(--text-title2)",
-                fontWeight: "var(--weight-bold)",
-                color: "var(--text-primary)",
-                letterSpacing: "var(--tracking-tight)",
-                lineHeight: "var(--leading-tight)",
-              }}
-            >
+          <div className="flex-1 min-w-0">
+            <div className="text-[length:var(--text-title2)] font-[var(--weight-bold)] text-[var(--text-primary)] tracking-[var(--tracking-tight)] leading-[var(--leading-tight)]">
               {executive.displayName || executive.name}
             </div>
-            <div
-              style={{
-                fontSize: "var(--text-subheadline)",
-                color: "var(--text-secondary)",
-                marginTop: 2,
-              }}
-            >
+            <div className="text-[length:var(--text-subheadline)] text-[var(--text-secondary)] mt-0.5">
               {executive.department}
             </div>
           </div>
-          <div
-            style={{
-              display: "flex",
-              gap: "var(--space-4)",
-              flexShrink: 0,
-            }}
-          >
-            <div style={{ textAlign: "center" }}>
-              <div
-                style={{
-                  fontSize: "var(--text-title3)",
-                  fontWeight: "var(--weight-bold)",
-                  color: "var(--text-primary)",
-                  lineHeight: 1,
-                }}
-              >
+          <div className="flex gap-[var(--space-4)] shrink-0">
+            <div className="text-center">
+              <div className="text-[length:var(--text-title3)] font-[var(--weight-bold)] text-[var(--text-primary)] leading-none">
                 {employees.length}
               </div>
-              <div
-                style={{
-                  fontSize: "var(--text-caption2)",
-                  color: "var(--text-tertiary)",
-                  marginTop: 2,
-                }}
-              >
+              <div className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)] mt-0.5">
                 employees
               </div>
             </div>
-            <div
-              style={{
-                width: 1,
-                alignSelf: "stretch",
-                background: "var(--separator)",
-              }}
-            />
-            <div style={{ textAlign: "center" }}>
-              <div
-                style={{
-                  fontSize: "var(--text-title3)",
-                  fontWeight: "var(--weight-bold)",
-                  color: "var(--text-primary)",
-                  lineHeight: 1,
-                }}
-              >
+            <div className="w-px self-stretch bg-[var(--separator)]" />
+            <div className="text-center">
+              <div className="text-[length:var(--text-title3)] font-[var(--weight-bold)] text-[var(--text-primary)] leading-none">
                 {deptMap.size}
               </div>
-              <div
-                style={{
-                  fontSize: "var(--text-caption2)",
-                  color: "var(--text-tertiary)",
-                  marginTop: 2,
-                }}
-              >
+              <div className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)] mt-0.5">
                 depts
               </div>
             </div>
@@ -317,14 +153,7 @@ export function GridView({ employees, selectedName, onSelect }: GridViewProps) {
       )}
 
       {/* Department columns */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))",
-          gap: "var(--space-5)",
-          alignItems: "start",
-        }}
-      >
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-[var(--space-5)] items-start">
         {Array.from(deptMap.entries()).map(([dept, members]) => {
           const filtered = members.filter((m) => m.name !== executive?.name)
           if (filtered.length === 0) return null

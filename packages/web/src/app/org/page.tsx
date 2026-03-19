@@ -9,6 +9,7 @@ import { FeedView } from "@/components/org/feed-view";
 import { PageLayout } from "@/components/page-layout";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { useSettings } from "@/app/settings-provider";
+import { useBreadcrumbs } from "@/context/breadcrumb-context";
 
 const OrgMap = dynamic(
   () =>
@@ -16,18 +17,7 @@ const OrgMap = dynamic(
   {
     ssr: false,
     loading: () => (
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          height: "100%",
-          gap: "var(--space-3)",
-          color: "var(--text-tertiary)",
-          fontSize: "var(--text-caption1)",
-        }}
-      >
+      <div className="flex flex-col items-center justify-center h-full gap-[var(--space-3)] text-[var(--text-tertiary)] text-[length:var(--text-caption1)]">
         Loading map...
       </div>
     ),
@@ -35,6 +25,7 @@ const OrgMap = dynamic(
 );
 
 export default function OrgPage() {
+  useBreadcrumbs([{ label: 'Organization' }])
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -110,43 +101,13 @@ export default function OrgPage() {
   if (error) {
     return (
       <PageLayout>
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            height: "100%",
-            gap: "var(--space-4)",
-            color: "var(--text-tertiary)",
-          }}
-        >
-          <div
-            style={{
-              borderRadius: "var(--radius-md, 12px)",
-              background:
-                "color-mix(in srgb, var(--system-red) 10%, transparent)",
-              border:
-                "1px solid color-mix(in srgb, var(--system-red) 30%, transparent)",
-              padding: "var(--space-3) var(--space-4)",
-              fontSize: "var(--text-body)",
-              color: "var(--system-red)",
-            }}
-          >
+        <div className="flex flex-col items-center justify-center h-full gap-[var(--space-4)] text-[var(--text-tertiary)]">
+          <div className="rounded-[var(--radius-md,12px)] px-[var(--space-4)] py-[var(--space-3)] text-[length:var(--text-body)] text-[var(--system-red)]" style={{ background: "color-mix(in srgb, var(--system-red) 10%, transparent)", border: "1px solid color-mix(in srgb, var(--system-red) 30%, transparent)" }}>
             Failed to load organization: {error}
           </div>
           <button
             onClick={loadData}
-            style={{
-              padding: "var(--space-2) var(--space-4)",
-              borderRadius: "var(--radius-md, 12px)",
-              background: "var(--accent)",
-              color: "var(--accent-contrast)",
-              border: "none",
-              cursor: "pointer",
-              fontSize: "var(--text-body)",
-              fontWeight: "var(--weight-semibold)",
-            }}
+            className="px-[var(--space-4)] py-[var(--space-2)] rounded-[var(--radius-md,12px)] bg-[var(--accent)] text-[var(--accent-contrast)] border-none cursor-pointer text-[length:var(--text-body)] font-[var(--weight-semibold)]"
           >
             Retry
           </button>
@@ -157,30 +118,16 @@ export default function OrgPage() {
 
   return (
     <PageLayout>
-      <div
-        style={{
-          display: "flex",
-          height: "100%",
-          position: "relative",
-          background: "var(--bg)",
-        }}
-      >
+      <div className="flex h-full relative bg-[var(--bg)]">
         {/* Main content area */}
-        <div style={{ flex: 1, height: "100%", position: "relative" }}>
+        <div className="flex-1 h-full relative">
           <Tabs
             value={view}
             onValueChange={setView}
             className="h-full flex flex-col"
           >
             {/* Tab bar at top */}
-            <div
-              style={{
-                position: "absolute",
-                top: "var(--space-4)",
-                left: "var(--space-4)",
-                zIndex: 10,
-              }}
-            >
+            <div className="absolute top-[var(--space-4)] left-[var(--space-4)] z-10">
               <TabsList>
                 <TabsTrigger value="map">Map</TabsTrigger>
                 <TabsTrigger value="grid">Grid</TabsTrigger>
@@ -190,16 +137,7 @@ export default function OrgPage() {
 
             <TabsContent value="map" className="flex-1">
               {loading ? (
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    height: "100%",
-                    color: "var(--text-tertiary)",
-                    fontSize: "var(--text-caption1)",
-                  }}
-                >
+                <div className="flex items-center justify-center h-full text-[var(--text-tertiary)] text-[length:var(--text-caption1)]">
                   Loading...
                 </div>
               ) : (
@@ -213,16 +151,7 @@ export default function OrgPage() {
 
             <TabsContent value="grid" className="flex-1 overflow-hidden">
               {loading ? (
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    height: "100%",
-                    color: "var(--text-tertiary)",
-                    fontSize: "var(--text-caption1)",
-                  }}
-                >
+                <div className="flex items-center justify-center h-full text-[var(--text-tertiary)] text-[length:var(--text-caption1)]">
                   Loading...
                 </div>
               ) : (
@@ -236,16 +165,7 @@ export default function OrgPage() {
 
             <TabsContent value="list" className="flex-1 overflow-hidden">
               {loading ? (
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    height: "100%",
-                    color: "var(--text-tertiary)",
-                    fontSize: "var(--text-caption1)",
-                  }}
-                >
+                <div className="flex items-center justify-center h-full text-[var(--text-tertiary)] text-[length:var(--text-caption1)]">
                   Loading...
                 </div>
               ) : (
@@ -262,72 +182,29 @@ export default function OrgPage() {
         {/* Mobile backdrop */}
         {selected && (
           <div
-            className="fixed inset-0 z-30 lg:hidden"
-            style={{ background: "rgba(0,0,0,0.5)" }}
+            className="fixed inset-0 z-30 lg:hidden bg-black/50"
             onClick={() => setSelected(null)}
           />
         )}
 
         {/* Detail panel */}
         {selected && (
-          <div
-            style={{
-              position: "absolute",
-              top: 0,
-              right: 0,
-              bottom: 0,
-              zIndex: 30,
-            }}
-          >
-            <div
-              style={{
-                width: 380,
-                maxWidth: "100vw",
-                height: "100%",
-                overflowY: "auto",
-                background: "var(--bg)",
-                boxShadow: "var(--shadow-overlay)",
-                display: "flex",
-                flexDirection: "column",
-              }}
-            >
+          <div className="absolute top-0 right-0 bottom-0 z-30">
+            <div className="w-[380px] max-w-[100vw] h-full overflow-y-auto bg-[var(--bg)] flex flex-col shadow-[var(--shadow-overlay)]">
               {/* Close button */}
-              <div
-                style={{
-                  position: "sticky",
-                  top: 0,
-                  zIndex: 10,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "flex-end",
-                  padding: "var(--space-3) var(--space-4)",
-                  background: "var(--bg)",
-                }}
-              >
+              <div className="sticky top-0 z-10 flex items-center justify-end px-[var(--space-4)] py-[var(--space-3)] bg-[var(--bg)]">
                 <button
                   ref={closeRef}
                   onClick={() => setSelected(null)}
                   aria-label="Close detail panel"
-                  style={{
-                    width: 30,
-                    height: 30,
-                    borderRadius: "50%",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    background: "var(--fill-tertiary)",
-                    color: "var(--text-secondary)",
-                    border: "none",
-                    cursor: "pointer",
-                    fontSize: 14,
-                  }}
+                  className="w-[30px] h-[30px] rounded-full flex items-center justify-center bg-[var(--fill-tertiary)] text-[var(--text-secondary)] border-none cursor-pointer text-sm"
                 >
                   &#x2715;
                 </button>
               </div>
 
               {/* Employee detail */}
-              <div style={{ padding: "0 var(--space-4) var(--space-6)" }}>
+              <div className="px-[var(--space-4)] pb-[var(--space-6)]">
                 <EmployeeDetail name={selected.name} />
               </div>
             </div>

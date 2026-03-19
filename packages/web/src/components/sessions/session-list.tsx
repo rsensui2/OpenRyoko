@@ -88,14 +88,7 @@ export function SessionList({
     return (
       <Card>
         <CardContent>
-          <div
-            style={{
-              textAlign: "center",
-              padding: "var(--space-6)",
-              color: "var(--text-tertiary)",
-              fontSize: "var(--text-body)",
-            }}
-          >
+          <div className="text-center p-[var(--space-6)] text-[var(--text-tertiary)] text-[length:var(--text-body)]">
             No sessions found
           </div>
         </CardContent>
@@ -106,11 +99,7 @@ export function SessionList({
   return (
     <>
       <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          gap: "var(--space-3)",
-        }}
+        className="flex flex-col gap-[var(--space-3)]"
         onClick={() => setContextMenu(null)}
       >
         {sessions.map((s) => (
@@ -120,7 +109,6 @@ export function SessionList({
             onClick={() => onSelect(s.id)}
             onContextMenu={(e) => handleContextMenu(e, s.id)}
             style={{
-              cursor: "pointer",
               borderColor:
                 selectedId === s.id
                   ? "var(--accent)"
@@ -132,70 +120,23 @@ export function SessionList({
             }}
           >
             <CardContent className="flex items-center justify-between gap-4">
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "var(--space-3)",
-                  flex: 1,
-                  minWidth: 0,
-                }}
-              >
+              <div className="flex items-center gap-[var(--space-3)] flex-1 min-w-0">
                 {/* Engine icon */}
-                <div
-                  style={{
-                    width: 36,
-                    height: 36,
-                    borderRadius: "var(--radius-sm, 8px)",
-                    background: "var(--fill-secondary)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    fontFamily: "var(--font-mono)",
-                    fontSize: "var(--text-caption1)",
-                    fontWeight: "var(--weight-semibold)",
-                    color: "var(--text-secondary)",
-                    flexShrink: 0,
-                    textTransform: "uppercase",
-                  }}
-                >
+                <div className="w-9 h-9 rounded-[var(--radius-sm,8px)] bg-[var(--fill-secondary)] flex items-center justify-center font-[var(--font-mono)] text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--text-secondary)] shrink-0 uppercase">
                   {s.engine.charAt(0)}
                 </div>
 
                 {/* Info */}
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "var(--space-2)",
-                      marginBottom: 2,
-                    }}
-                  >
-                    <span
-                      style={{
-                        fontSize: "var(--text-body)",
-                        fontWeight: "var(--weight-semibold)",
-                        color: "var(--text-primary)",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-[var(--space-2)] mb-0.5">
+                    <span className="text-[length:var(--text-body)] font-[var(--weight-semibold)] text-[var(--text-primary)] overflow-hidden text-ellipsis whitespace-nowrap">
                       {s.title || s.employee || portalName}
                     </span>
                     <Badge variant={statusVariant[s.status] ?? "secondary"}>
                       {statusLabel[s.transportState || s.status] || s.transportState || s.status}
                     </Badge>
                   </div>
-                  <div
-                    style={{
-                      fontSize: "var(--text-caption1)",
-                      color: "var(--text-tertiary)",
-                      display: "flex",
-                      gap: "var(--space-3)",
-                    }}
-                  >
+                  <div className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)] flex gap-[var(--space-3)]">
                     <span>{s.connector || s.source}</span>
                     <span>{s.employee || portalName}</span>
                     {typeof s.queueDepth === "number" && s.queueDepth > 0 ? <span>Queue {s.queueDepth}</span> : null}
@@ -204,14 +145,7 @@ export function SessionList({
               </div>
 
               {/* Time */}
-              <span
-                style={{
-                  fontSize: "var(--text-caption2)",
-                  color: "var(--text-quaternary)",
-                  whiteSpace: "nowrap",
-                  flexShrink: 0,
-                }}
-              >
+              <span className="text-[length:var(--text-caption2)] text-[var(--text-quaternary)] whitespace-nowrap shrink-0">
                 {relativeTime(s.lastActivity)}
               </span>
             </CardContent>
@@ -222,47 +156,20 @@ export function SessionList({
       {/* Context menu */}
       {contextMenu && (
         <div
-          style={{
-            position: "fixed",
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            zIndex: 50,
-          }}
+          className="fixed inset-0 z-50"
           onClick={() => setContextMenu(null)}
         >
           <div
+            className="fixed bg-[var(--bg)] border border-[var(--separator)] rounded-[var(--radius-md)] shadow-[var(--shadow-lg)] p-[var(--space-1)] z-[51] min-w-[160px]"
             style={{
-              position: "fixed",
               top: contextMenu.y,
               left: contextMenu.x,
-              background: "var(--bg)",
-              border: "1px solid var(--separator)",
-              borderRadius: "var(--radius-md)",
-              boxShadow: "var(--shadow-lg)",
-              padding: "var(--space-1)",
-              zIndex: 51,
-              minWidth: 160,
             }}
             onClick={(e) => e.stopPropagation()}
           >
             <button
               onClick={() => handleDelete(contextMenu.sessionId)}
-              style={{
-                width: "100%",
-                textAlign: "left",
-                padding: "var(--space-2) var(--space-3)",
-                fontSize: "var(--text-footnote)",
-                color: "var(--system-red)",
-                background: "transparent",
-                border: "none",
-                cursor: "pointer",
-                borderRadius: "var(--radius-sm)",
-                display: "flex",
-                alignItems: "center",
-                gap: "var(--space-2)",
-              }}
+              className="w-full text-left px-[var(--space-3)] py-[var(--space-2)] text-[length:var(--text-footnote)] text-[var(--system-red)] bg-transparent border-none cursor-pointer rounded-[var(--radius-sm)] flex items-center gap-[var(--space-2)]"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="3 6 5 6 21 6" />
@@ -277,65 +184,29 @@ export function SessionList({
       {/* Confirm delete dialog */}
       {confirmDelete && (
         <div
-          style={{
-            position: "fixed",
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            background: "rgba(0,0,0,0.5)",
-            zIndex: 60,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
+          className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center"
           onClick={() => setConfirmDelete(null)}
         >
           <div
-            style={{
-              background: "var(--bg)",
-              borderRadius: "var(--radius-lg)",
-              padding: "var(--space-6)",
-              maxWidth: 400,
-              width: "90%",
-              boxShadow: "var(--shadow-overlay)",
-            }}
+            className="bg-[var(--bg)] rounded-[var(--radius-lg)] p-[var(--space-6)] max-w-[400px] w-[90%] shadow-[var(--shadow-overlay)]"
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 style={{ fontSize: "var(--text-headline)", fontWeight: "var(--weight-bold)", color: "var(--text-primary)", marginBottom: "var(--space-2)" }}>
+            <h3 className="text-[length:var(--text-headline)] font-[var(--weight-bold)] text-[var(--text-primary)] mb-[var(--space-2)]">
               Delete Session?
             </h3>
-            <p style={{ fontSize: "var(--text-body)", color: "var(--text-secondary)", marginBottom: "var(--space-5)" }}>
+            <p className="text-[length:var(--text-body)] text-[var(--text-secondary)] mb-[var(--space-5)]">
               This will permanently delete the session and all its messages. This cannot be undone.
             </p>
-            <div style={{ display: "flex", gap: "var(--space-3)", justifyContent: "flex-end" }}>
+            <div className="flex gap-[var(--space-3)] justify-end">
               <button
                 onClick={() => setConfirmDelete(null)}
-                style={{
-                  padding: "var(--space-2) var(--space-4)",
-                  borderRadius: "var(--radius-md)",
-                  background: "var(--fill-tertiary)",
-                  color: "var(--text-primary)",
-                  border: "none",
-                  cursor: "pointer",
-                  fontSize: "var(--text-body)",
-                  fontWeight: "var(--weight-medium)",
-                }}
+                className="px-[var(--space-4)] py-[var(--space-2)] rounded-[var(--radius-md)] bg-[var(--fill-tertiary)] text-[var(--text-primary)] border-none cursor-pointer text-[length:var(--text-body)] font-[var(--weight-medium)]"
               >
                 Cancel
               </button>
               <button
                 onClick={confirmDeleteSession}
-                style={{
-                  padding: "var(--space-2) var(--space-4)",
-                  borderRadius: "var(--radius-md)",
-                  background: "var(--system-red)",
-                  color: "#fff",
-                  border: "none",
-                  cursor: "pointer",
-                  fontSize: "var(--text-body)",
-                  fontWeight: "var(--weight-semibold)",
-                }}
+                className="px-[var(--space-4)] py-[var(--space-2)] rounded-[var(--radius-md)] bg-[var(--system-red)] text-white border-none cursor-pointer text-[length:var(--text-body)] font-[var(--weight-semibold)]"
               >
                 Delete
               </button>

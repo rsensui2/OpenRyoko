@@ -9,6 +9,7 @@ import { isInterruptibleEngine } from "../shared/types.js";
 import type { SessionManager } from "../sessions/manager.js";
 import { buildContext } from "../sessions/context.js";
 import {
+  initDb,
   listSessions,
   getSession,
   createSession,
@@ -1418,6 +1419,123 @@ export async function handleApiRequest(
     if (pathname.startsWith("/api/files")) {
       const handled = await handleFilesRequest(req, res, pathname, method, context);
       if (handled) return;
+    }
+
+    // ── Goals ────────────────────────────────────────────────────────
+    // GET /api/goals
+    if (method === "GET" && pathname === "/api/goals") {
+      const { listGoals } = await import("./goals.js");
+      const db = initDb();
+      return json(res, listGoals(db));
+    }
+
+    // GET /api/goals/tree
+    if (method === "GET" && pathname === "/api/goals/tree") {
+      const { getGoalTree } = await import("./goals.js");
+      const db = initDb();
+      return json(res, getGoalTree(db));
+    }
+
+    // POST /api/goals
+    if (method === "POST" && pathname === "/api/goals") {
+      const _parsed = await readJsonBody(req, res);
+      if (!_parsed.ok) return;
+      const { createGoal } = await import("./goals.js");
+      const db = initDb();
+      const goal = createGoal(db, _parsed.body as Record<string, unknown>);
+      return json(res, goal, 201);
+    }
+
+    // GET /api/goals/:id
+    params = matchRoute("/api/goals/:id", pathname);
+    if (method === "GET" && params) {
+      const { getGoal } = await import("./goals.js");
+      const db = initDb();
+      const goal = getGoal(db, params.id);
+      if (!goal) return notFound(res);
+      return json(res, goal);
+    }
+
+    // PUT /api/goals/:id
+    params = matchRoute("/api/goals/:id", pathname);
+    if (method === "PUT" && params) {
+      const _parsed = await readJsonBody(req, res);
+      if (!_parsed.ok) return;
+      const { updateGoal } = await import("./goals.js");
+      const db = initDb();
+      const goal = updateGoal(db, params.id, _parsed.body as Record<string, unknown>);
+      if (!goal) return notFound(res);
+      return json(res, goal);
+    }
+
+    // DELETE /api/goals/:id
+    params = matchRoute("/api/goals/:id", pathname);
+    if (method === "DELETE" && params) {
+      const { deleteGoal } = await import("./goals.js");
+      const db = initDb();
+      deleteGoal(db, params.id);
+      return json(res, { status: "ok" });
+    }
+
+    // ── Costs ────────────────────────────────────────────────────────
+    // GET /api/costs/summary
+    if (method === "GET" && pathname === "/api/costs/summary") {
+      const { getCostSummary } = await import("./costs.js");
+      const rawPeriod = url.searchParams.get("period") ?? "month";
+      const period = (rawPeriod === "day" || rawPeriod === "week" || rawPeriod === "month") ? rawPeriod : "month";
+      return json(res, getCostSummary(period));
+    }
+
+    // GET /api/costs/by-employee
+    if (method === "GET" && pathname === "/api/costs/by-employee") {
+      const { getCostsByEmployee } = await import("./costs.js");
+      const rawPeriod = url.searchParams.get("period") ?? "month";
+      const period = (rawPeriod === "week") ? "week" : "month";
+      return json(res, getCostsByEmployee(period));
+    }
+
+    // ── Budgets ──────────────────────────────────────────────────────
+    // GET /api/budgets
+    if (method === "GET" && pathname === "/api/budgets") {
+      const { getBudgetStatus } = await import("./budgets.js");
+      const config = context.getConfig();
+      const budgetConfig = (config as any).budgets?.employees as Record<string, number> | undefined ?? {};
+      const employees = Object.keys(budgetConfig);
+      const statuses = employees.map((emp) => ({
+        employee: emp,
+        ...getBudgetStatus(emp, budgetConfig),
+      }));
+      return json(res, { employees: budgetConfig, statuses });
+    }
+
+    // PUT /api/budgets
+    if (method === "PUT" && pathname === "/api/budgets") {
+      const _parsed = await readJsonBody(req, res);
+      if (!_parsed.ok) return;
+      const body = _parsed.body as Record<string, unknown>;
+      let existing: Record<string, unknown> = {};
+      try {
+        existing = yaml.load(fs.readFileSync(CONFIG_PATH, "utf-8")) as Record<string, unknown> || {};
+      } catch { /* start fresh if unreadable */ }
+      const merged = deepMerge(existing, { budgets: { employees: body } });
+      fs.writeFileSync(CONFIG_PATH, yaml.dump(merged));
+      logger.info("Budget limits updated via API");
+      return json(res, { status: "ok" });
+    }
+
+    // POST /api/budgets/:employee/override
+    params = matchRoute("/api/budgets/:employee/override", pathname);
+    if (method === "POST" && params) {
+      const { overrideBudget } = await import("./budgets.js");
+      const config = context.getConfig();
+      const budgetConfig = (config as any).budgets?.employees as Record<string, number> | undefined ?? {};
+      return json(res, overrideBudget(params.employee, budgetConfig));
+    }
+
+    // GET /api/budgets/events
+    if (method === "GET" && pathname === "/api/budgets/events") {
+      const { getBudgetEvents } = await import("./budgets.js");
+      return json(res, getBudgetEvents());
     }
 
     return notFound(res);

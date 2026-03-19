@@ -43,69 +43,34 @@ function LogRow({ entry }: { entry: ParsedLogEntry }) {
 
   return (
     <div
-      style={{
-        borderBottom: "1px solid var(--separator)",
-        background:
-          entry.level === "error" ? "rgba(255,69,58,0.03)" : undefined,
-      }}
+      className={`border-b border-[var(--separator)] ${entry.level === "error" ? "bg-[rgba(255,69,58,0.03)]" : ""}`}
     >
       <button
         onClick={() => isLong && setOpen((o) => !o)}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          width: "100%",
-          padding: "5px 12px",
-          gap: 8,
-          border: "none",
-          background: "transparent",
-          cursor: isLong ? "pointer" : "default",
-          textAlign: "left",
-        }}
+        className={`flex items-center w-full px-3 py-[5px] gap-2 border-none bg-transparent text-left ${isLong ? "cursor-pointer" : "cursor-default"}`}
       >
         {/* Expand chevron */}
         {isLong ? (
           <span
-            style={{
-              fontSize: 10,
-              color: "var(--text-tertiary)",
-              flexShrink: 0,
-              transition: "transform 150ms var(--ease-smooth)",
-              transform: open ? "rotate(90deg)" : "rotate(0deg)",
-              display: "inline-block",
-            }}
+            className={`text-[10px] text-[var(--text-tertiary)] shrink-0 inline-block transition-transform duration-150 ${open ? "rotate-90" : "rotate-0"}`}
           >
             &#8250;
           </span>
         ) : (
-          <span style={{ width: 10, flexShrink: 0 }} />
+          <span className="w-[10px] shrink-0" />
         )}
 
         {/* Time */}
-        <span
-          className="font-mono"
-          style={{
-            color: "var(--text-tertiary)",
-            fontSize: 10,
-            flexShrink: 0,
-            minWidth: 58,
-          }}
-        >
+        <span className="font-mono text-[var(--text-tertiary)] text-[10px] shrink-0 min-w-[58px]">
           {formatTime(entry.timestamp)}
         </span>
 
         {/* Level pill */}
         <span
+          className="text-[9px] font-bold tracking-wide px-[5px] py-px rounded-[3px] shrink-0 leading-[14px]"
           style={{
-            fontSize: 9,
-            fontWeight: 700,
-            letterSpacing: "0.5px",
-            padding: "1px 5px",
-            borderRadius: 3,
             background: lvl.bg,
             color: lvl.color,
-            flexShrink: 0,
-            lineHeight: "14px",
           }}
         >
           {lvl.label}
@@ -113,20 +78,9 @@ function LogRow({ entry }: { entry: ParsedLogEntry }) {
 
         {/* Message (truncated) */}
         <span
-          className="font-mono"
-          style={{
-            color:
-              entry.level === "error"
-                ? "var(--system-red)"
-                : "var(--text-secondary)",
-            fontSize: 10,
-            lineHeight: 1.4,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            flex: 1,
-            minWidth: 0,
-          }}
+          className={`font-mono text-[10px] leading-snug overflow-hidden text-ellipsis whitespace-nowrap flex-1 min-w-0 ${
+            entry.level === "error" ? "text-[var(--system-red)]" : "text-[var(--text-secondary)]"
+          }`}
         >
           {entry.message}
         </span>
@@ -134,24 +88,8 @@ function LogRow({ entry }: { entry: ParsedLogEntry }) {
 
       {/* Expanded detail */}
       {open && isLong && (
-        <div
-          style={{
-            padding: "6px 12px 8px 30px",
-            borderTop: "1px solid var(--separator)",
-            background: "var(--fill-secondary)",
-          }}
-        >
-          <pre
-            className="font-mono"
-            style={{
-              fontSize: 9,
-              lineHeight: 1.5,
-              color: "var(--text-secondary)",
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-word",
-              margin: 0,
-            }}
-          >
+        <div className="px-3 pt-1.5 pb-2 pl-[30px] border-t border-[var(--separator)] bg-[var(--fill-secondary)]">
+          <pre className="font-mono text-[9px] leading-normal text-[var(--text-secondary)] whitespace-pre-wrap break-words m-0">
             {entry.message}
           </pre>
         </div>
@@ -252,52 +190,17 @@ export function LiveStreamWidget() {
     return (
       <button
         onClick={() => setState("expanded")}
-        className="focus-ring flex items-center"
+        className="focus-ring flex items-center fixed bottom-5 right-5 z-50 px-3.5 py-2 rounded-[var(--radius-pill)] border border-[var(--separator)] bg-[var(--material-regular)] cursor-pointer gap-2 backdrop-blur-[40px] backdrop-saturate-[1.8] shadow-[0_4px_24px_rgba(0,0,0,0.25)]"
         style={{
-          position: "fixed",
-          bottom: 20,
-          right: 20,
-          zIndex: 50,
-          padding: "8px 14px",
-          borderRadius: "var(--radius-pill)",
-          border: "1px solid var(--separator)",
-          background: "var(--material-regular)",
-          backdropFilter: "blur(40px) saturate(180%)",
           WebkitBackdropFilter: "blur(40px) saturate(180%)",
-          cursor: "pointer",
-          gap: 8,
-          boxShadow: "0 4px 24px rgba(0,0,0,0.25)",
         }}
       >
-        <span
-          style={{
-            width: 8,
-            height: 8,
-            borderRadius: "50%",
-            background: "var(--system-green)",
-            animation: "lsw-pulse 2s ease-in-out infinite",
-            flexShrink: 0,
-          }}
-        />
-        <span
-          style={{
-            fontSize: "var(--text-caption1)",
-            color: "var(--text-secondary)",
-            fontWeight: "var(--weight-medium)",
-          }}
-        >
+        <span className="w-2 h-2 rounded-full bg-[var(--system-green)] shrink-0 animate-[lsw-pulse_2s_ease-in-out_infinite]" />
+        <span className="text-[length:var(--text-caption1)] text-[var(--text-secondary)] font-[var(--weight-medium)]">
           Live Stream
         </span>
         {entries.length > 0 && (
-          <span
-            style={{
-              fontSize: "var(--text-caption2)",
-              color: "var(--text-tertiary)",
-              background: "var(--fill-secondary)",
-              padding: "1px 6px",
-              borderRadius: "var(--radius-sm)",
-            }}
-          >
+          <span className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)] bg-[var(--fill-secondary)] px-1.5 py-px rounded-[var(--radius-sm)]">
             {entries.length}
           </span>
         )}
@@ -310,124 +213,45 @@ export function LiveStreamWidget() {
 
   return (
     <div
-      className="panel-slide-in"
+      className="panel-slide-in fixed bottom-5 right-5 z-50 w-[440px] h-[400px] rounded-[var(--radius-lg)] border border-[var(--separator)] bg-[var(--material-regular)] flex flex-col overflow-hidden backdrop-blur-[40px] backdrop-saturate-[1.8] shadow-[0_8px_40px_rgba(0,0,0,0.35)]"
       style={{
-        position: "fixed",
-        bottom: 20,
-        right: 20,
-        zIndex: 50,
-        width: 440,
-        height: 400,
-        borderRadius: "var(--radius-lg)",
-        border: "1px solid var(--separator)",
-        background: "var(--material-regular)",
-        backdropFilter: "blur(40px) saturate(180%)",
         WebkitBackdropFilter: "blur(40px) saturate(180%)",
-        boxShadow: "0 8px 40px rgba(0,0,0,0.35)",
-        display: "flex",
-        flexDirection: "column",
-        overflow: "hidden",
       }}
     >
       {/* Header */}
-      <div
-        className="flex items-center flex-shrink-0"
-        style={{
-          padding: "10px 14px",
-          borderBottom: "1px solid var(--separator)",
-          gap: 8,
-        }}
-      >
-        <span
-          style={{
-            width: 8,
-            height: 8,
-            borderRadius: "50%",
-            background: "var(--system-green)",
-            animation: "lsw-pulse 2s ease-in-out infinite",
-            flexShrink: 0,
-          }}
-        />
-        <span
-          style={{
-            fontSize: "var(--text-footnote)",
-            fontWeight: "var(--weight-semibold)",
-            color: "var(--text-primary)",
-          }}
-        >
+      <div className="flex items-center shrink-0 px-3.5 py-2.5 border-b border-[var(--separator)] gap-2">
+        <span className="w-2 h-2 rounded-full bg-[var(--system-green)] shrink-0 animate-[lsw-pulse_2s_ease-in-out_infinite]" />
+        <span className="text-[length:var(--text-footnote)] font-[var(--weight-semibold)] text-[var(--text-primary)]">
           Live Stream
         </span>
         {entries.length > 0 && (
-          <span
-            style={{
-              fontSize: "var(--text-caption2)",
-              color: "var(--text-tertiary)",
-            }}
-          >
+          <span className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)]">
             {entries.length} line{entries.length !== 1 ? "s" : ""}
           </span>
         )}
 
-        <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+        <div className="ml-auto flex gap-1">
           <button
             onClick={handleCopy}
-            className="focus-ring"
             title="Copy all logs"
             disabled={entries.length === 0}
-            style={{
-              width: 28,
-              height: 28,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              borderRadius: "var(--radius-sm)",
-              border: "none",
-              background: copied ? "var(--accent-fill)" : "transparent",
-              color: copied ? "var(--accent)" : "var(--text-tertiary)",
-              cursor: entries.length === 0 ? "default" : "pointer",
-              opacity: entries.length === 0 ? 0.3 : 1,
-              transition: "all 150ms var(--ease-smooth)",
-            }}
+            className={`focus-ring w-7 h-7 flex items-center justify-center rounded-[var(--radius-sm)] border-none transition-all duration-150 ${
+              copied ? "bg-[var(--accent-fill)] text-[var(--accent)]" : "bg-transparent text-[var(--text-tertiary)]"
+            } ${entries.length === 0 ? "cursor-default opacity-30" : "cursor-pointer opacity-100"}`}
           >
             <Copy size={14} />
           </button>
           <button
             onClick={() => setState("collapsed")}
-            className="focus-ring"
+            className="focus-ring w-7 h-7 flex items-center justify-center rounded-[var(--radius-sm)] border-none bg-transparent text-[var(--text-tertiary)] cursor-pointer transition-colors duration-150"
             title="Minimize"
-            style={{
-              width: 28,
-              height: 28,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              borderRadius: "var(--radius-sm)",
-              border: "none",
-              background: "transparent",
-              color: "var(--text-tertiary)",
-              cursor: "pointer",
-              transition: "color 150ms var(--ease-smooth)",
-            }}
           >
             <Minimize2 size={14} />
           </button>
           <button
             onClick={handleClose}
-            className="focus-ring"
+            className="focus-ring w-7 h-7 flex items-center justify-center rounded-[var(--radius-sm)] border-none bg-transparent text-[var(--text-tertiary)] cursor-pointer transition-colors duration-150"
             title="Close"
-            style={{
-              width: 28,
-              height: 28,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              borderRadius: "var(--radius-sm)",
-              border: "none",
-              background: "transparent",
-              color: "var(--text-tertiary)",
-              cursor: "pointer",
-              transition: "color 150ms var(--ease-smooth)",
-            }}
           >
             <X size={14} />
           </button>
@@ -436,16 +260,7 @@ export function LiveStreamWidget() {
 
       {/* Error banner */}
       {error && (
-        <div
-          style={{
-            padding: "6px 14px",
-            background: "rgba(255,69,58,0.06)",
-            borderBottom: "1px solid rgba(255,69,58,0.15)",
-            fontSize: "var(--text-caption2)",
-            color: "var(--system-red)",
-            flexShrink: 0,
-          }}
-        >
+        <div className="px-3.5 py-1.5 bg-[rgba(255,69,58,0.06)] border-b border-[rgba(255,69,58,0.15)] text-[length:var(--text-caption2)] text-[var(--system-red)] shrink-0">
           {error}
         </div>
       )}
@@ -454,23 +269,10 @@ export function LiveStreamWidget() {
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        style={{
-          flex: 1,
-          minHeight: 0,
-          overflowY: "auto",
-          overflowX: "hidden",
-        }}
+        className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden"
       >
         {entries.length === 0 ? (
-          <div
-            className="flex flex-col items-center justify-center"
-            style={{
-              height: "100%",
-              color: "var(--text-secondary)",
-              gap: "var(--space-2)",
-              padding: "var(--space-4)",
-            }}
-          >
+          <div className="flex flex-col items-center justify-center h-full text-[var(--text-secondary)] gap-[var(--space-2)] p-[var(--space-4)]">
             <svg
               width="28"
               height="28"
@@ -480,16 +282,11 @@ export function LiveStreamWidget() {
               strokeWidth="1.5"
               strokeLinecap="round"
               strokeLinejoin="round"
-              style={{ color: "var(--text-tertiary)" }}
+              className="text-[var(--text-tertiary)]"
             >
               <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
             </svg>
-            <span
-              style={{
-                fontSize: "var(--text-caption1)",
-                fontWeight: "var(--weight-medium)",
-              }}
-            >
+            <span className="text-[length:var(--text-caption1)] font-[var(--weight-medium)]">
               Waiting for log data...
             </span>
           </div>
@@ -503,28 +300,11 @@ export function LiveStreamWidget() {
       </div>
 
       {/* Footer */}
-      <div
-        className="flex items-center flex-shrink-0"
-        style={{
-          padding: "8px 14px",
-          borderTop: "1px solid var(--separator)",
-          gap: 8,
-        }}
-      >
+      <div className="flex items-center shrink-0 px-3.5 py-2 border-t border-[var(--separator)] gap-2">
         {!autoScroll && entries.length > 0 && (
           <button
             onClick={() => setAutoScroll(true)}
-            className="focus-ring"
-            style={{
-              padding: "4px 10px",
-              borderRadius: "var(--radius-sm)",
-              border: "none",
-              cursor: "pointer",
-              fontSize: "var(--text-caption2)",
-              fontWeight: "var(--weight-medium)",
-              background: "var(--fill-secondary)",
-              color: "var(--text-secondary)",
-            }}
+            className="focus-ring px-2.5 py-1 rounded-[var(--radius-sm)] border-none cursor-pointer text-[length:var(--text-caption2)] font-[var(--weight-medium)] bg-[var(--fill-secondary)] text-[var(--text-secondary)]"
           >
             Scroll to bottom
           </button>

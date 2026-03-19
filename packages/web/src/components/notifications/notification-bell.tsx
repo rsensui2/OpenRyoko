@@ -4,6 +4,8 @@ import { useState, useRef, useEffect } from "react";
 import { Bell, CheckCircle, XCircle, AlertTriangle, Info, Check, Trash2 } from "lucide-react";
 import { useNotifications } from "@/hooks/use-notifications";
 import type { NotificationType } from "@/lib/notifications";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 const ICON_MAP: Record<NotificationType, typeof CheckCircle> = {
   success: CheckCircle,
@@ -13,10 +15,10 @@ const ICON_MAP: Record<NotificationType, typeof CheckCircle> = {
 };
 
 const COLOR_MAP: Record<NotificationType, string> = {
-  success: "var(--system-green)",
-  error: "var(--system-red)",
-  warning: "var(--system-orange)",
-  info: "var(--system-blue)",
+  success: "text-[var(--system-green)]",
+  error: "text-[var(--system-red)]",
+  warning: "text-[var(--system-orange)]",
+  info: "text-[var(--system-blue)]",
 };
 
 function formatTimeAgo(ts: number): string {
@@ -46,113 +48,32 @@ export function NotificationBell() {
   }, [open]);
 
   return (
-    <div ref={panelRef} style={{ position: "relative" }}>
-      {/* Bell button */}
-      <button
+    <div ref={panelRef} className="relative">
+      <Button
         onClick={() => setOpen((prev) => !prev)}
         aria-label={`Notifications${unreadCount > 0 ? ` (${unreadCount} unread)` : ""}`}
-        className="nav-item"
-        style={{
-          position: "relative",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          width: 36,
-          height: 36,
-          background: "transparent",
-          border: "none",
-          cursor: "pointer",
-          color: "var(--text-secondary)",
-          borderRadius: "var(--radius-sm)",
-        }}
+        variant="ghost"
+        size="icon-sm"
+        className="relative text-muted-foreground"
       >
         <Bell size={18} />
         {unreadCount > 0 && (
-          <span
-            style={{
-              position: "absolute",
-              top: 4,
-              right: 4,
-              minWidth: 16,
-              height: 16,
-              borderRadius: 8,
-              background: "var(--system-red)",
-              color: "#fff",
-              fontSize: 10,
-              fontWeight: 700,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              padding: "0 4px",
-              lineHeight: 1,
-            }}
-          >
+          <span className="absolute right-0.5 top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--system-red)] px-1 text-[10px] font-bold leading-none text-white">
             {unreadCount > 99 ? "99+" : unreadCount}
           </span>
         )}
-      </button>
+      </Button>
 
-      {/* Dropdown panel */}
       {open && (
-        <div
-          className="animate-scale-up"
-          style={{
-            position: "absolute",
-            top: "calc(100% + 8px)",
-            right: 0,
-            width: 360,
-            maxHeight: 480,
-            display: "flex",
-            flexDirection: "column",
-            background: "var(--material-thick)",
-            backdropFilter: "blur(40px) saturate(180%)",
-            WebkitBackdropFilter: "blur(40px) saturate(180%)",
-            border: "1px solid var(--separator)",
-            borderRadius: "var(--radius-lg)",
-            boxShadow: "var(--shadow-overlay)",
-            overflow: "hidden",
-            zIndex: 200,
-          }}
-        >
-          {/* Header */}
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              padding: "12px 16px",
-              borderBottom: "1px solid var(--separator)",
-              flexShrink: 0,
-            }}
-          >
-            <span
-              style={{
-                fontSize: 15,
-                fontWeight: 600,
-                color: "var(--text-primary)",
-              }}
-            >
-              Notifications
-            </span>
-            <div style={{ display: "flex", gap: 4 }}>
+        <div className="animate-scale-up absolute right-0 top-[calc(100%+8px)] z-[200] flex max-h-[480px] w-[360px] max-w-[calc(100vw-1rem)] flex-col overflow-hidden rounded-[var(--radius-lg)] border border-border bg-[var(--material-thick)] shadow-[var(--shadow-overlay)] backdrop-blur-[40px]">
+          <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
+            <span className="text-[15px] font-semibold text-foreground">Notifications</span>
+            <div className="flex items-center gap-1">
               {unreadCount > 0 && (
                 <button
                   onClick={markAllRead}
                   title="Mark all as read"
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 4,
-                    background: "transparent",
-                    border: "none",
-                    cursor: "pointer",
-                    color: "var(--system-blue)",
-                    fontSize: 12,
-                    fontWeight: 500,
-                    padding: "4px 8px",
-                    borderRadius: "var(--radius-sm)",
-                  }}
-                  className="hover-bg"
+                  className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-[var(--system-blue)] transition-colors hover:bg-accent"
                 >
                   <Check size={14} />
                   Read all
@@ -165,20 +86,7 @@ export function NotificationBell() {
                     setOpen(false);
                   }}
                   title="Clear all"
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 4,
-                    background: "transparent",
-                    border: "none",
-                    cursor: "pointer",
-                    color: "var(--text-tertiary)",
-                    fontSize: 12,
-                    fontWeight: 500,
-                    padding: "4px 8px",
-                    borderRadius: "var(--radius-sm)",
-                  }}
-                  className="hover-bg"
+                  className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                 >
                   <Trash2 size={14} />
                 </button>
@@ -186,92 +94,37 @@ export function NotificationBell() {
             </div>
           </div>
 
-          {/* List */}
-          <div style={{ flex: 1, overflowY: "auto" }}>
+          <div className="flex-1 overflow-y-auto">
             {notifications.length === 0 ? (
-              <div
-                style={{
-                  padding: "32px 16px",
-                  textAlign: "center",
-                  color: "var(--text-tertiary)",
-                  fontSize: 13,
-                }}
-              >
+              <div className="px-4 py-8 text-center text-[13px] text-muted-foreground">
                 No notifications yet
               </div>
             ) : (
               notifications.map((notif) => {
                 const Icon = ICON_MAP[notif.type];
-                const color = COLOR_MAP[notif.type];
                 return (
                   <div
                     key={notif.id}
                     onClick={() => markRead(notif.id)}
-                    style={{
-                      display: "flex",
-                      alignItems: "flex-start",
-                      gap: 10,
-                      padding: "10px 16px",
-                      borderBottom: "1px solid var(--separator)",
-                      cursor: "pointer",
-                      background: notif.read
-                        ? "transparent"
-                        : "var(--material-ultra-thin)",
-                      transition: "background 150ms ease",
-                    }}
-                    className="hover-bg"
+                    className={cn(
+                      "flex cursor-pointer items-start gap-2.5 border-b border-border px-4 py-2.5 transition-colors hover:bg-accent",
+                      notif.read ? "bg-transparent" : "bg-[var(--material-ultra-thin)]"
+                    )}
                   >
-                    <Icon
-                      size={16}
-                      style={{ color, flexShrink: 0, marginTop: 2 }}
-                    />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div
-                        style={{
-                          fontSize: 13,
-                          fontWeight: notif.read ? 400 : 600,
-                          color: "var(--text-primary)",
-                          lineHeight: 1.3,
-                        }}
-                      >
+                    <Icon size={16} className={cn("mt-0.5 shrink-0", COLOR_MAP[notif.type])} />
+                    <div className="min-w-0 flex-1">
+                      <div className={cn("text-[13px] leading-[1.3] text-foreground", notif.read ? "font-normal" : "font-semibold")}>
                         {notif.title}
                       </div>
-                      <div
-                        style={{
-                          fontSize: 12,
-                          color: "var(--text-secondary)",
-                          marginTop: 2,
-                          lineHeight: 1.3,
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
+                      <div className="mt-0.5 truncate text-xs leading-[1.3] text-[var(--text-secondary)]">
                         {notif.message}
                       </div>
                     </div>
-                    <span
-                      style={{
-                        fontSize: 11,
-                        color: "var(--text-quaternary)",
-                        whiteSpace: "nowrap",
-                        flexShrink: 0,
-                        marginTop: 2,
-                      }}
-                    >
+                    <span className="mt-0.5 shrink-0 whitespace-nowrap text-[11px] text-[var(--text-quaternary)]">
                       {formatTimeAgo(notif.timestamp)}
                     </span>
                     {!notif.read && (
-                      <span
-                        style={{
-                          width: 8,
-                          height: 8,
-                          borderRadius: 4,
-                          background: "var(--system-blue)",
-                          flexShrink: 0,
-                          marginTop: 5,
-                        }}
-                      />
+                      <span className="mt-[5px] size-2 shrink-0 rounded-full bg-[var(--system-blue)]" />
                     )}
                   </div>
                 );

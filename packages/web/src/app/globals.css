@@ -1,6 +1,36 @@
 @import "tailwindcss";
 @import "@xyflow/react/dist/style.css";
 
+/* :where() has zero specificity so shadcn's dark: utilities remain overridable.
+   data-theme is never "system" after JS hydration — ThemeProvider resolves it to dark/light. */
+@custom-variant dark (:where([data-theme="dark"], [data-theme="glass"], [data-theme="color"]) &);
+
+@theme inline {
+  --color-background: var(--bg);
+  --color-foreground: var(--text-primary);
+  --color-card: var(--bg-secondary);
+  --color-card-foreground: var(--text-primary);
+  --color-popover: var(--material-thick);
+  --color-popover-foreground: var(--text-primary);
+  --color-primary: var(--accent);
+  --color-primary-foreground: var(--accent-contrast);
+  --color-secondary: var(--fill-secondary);
+  --color-secondary-foreground: var(--text-primary);
+  --color-muted: var(--fill-tertiary);
+  --color-muted-foreground: var(--text-tertiary);
+  --color-accent: var(--fill-secondary);
+  --color-accent-foreground: var(--text-primary);
+  --color-destructive: var(--system-red);
+  --color-destructive-foreground: #ffffff;
+  --color-border: var(--separator);
+  --color-input: var(--fill-tertiary);
+  --color-ring: var(--accent);
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
+}
+
 /* ============================================
    Tailwind v4 Theme Tokens
    ============================================ */

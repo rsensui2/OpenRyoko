@@ -388,30 +388,10 @@ export function ChatInput({
   const hasContent = value.trim().length > 0 || pendingAttachments.length > 0
 
   return (
-    <div className="px-3 sm:px-4" style={{
-      paddingTop: 'var(--space-3)',
-      paddingBottom: 'var(--space-3)',
-      borderTop: '1px solid var(--separator)',
-      background: 'var(--material-regular)',
-      flexShrink: 0,
-      position: 'relative',
-    }}>
+    <div className="px-3 sm:px-4 pt-[var(--space-3)] pb-[var(--space-3)] border-t border-t-[var(--separator)] bg-[var(--material-regular)] shrink-0 relative">
       {/* Slash command autocomplete */}
       {showCommands && filteredCommands.length > 0 && (
-        <div style={{
-          position: 'absolute',
-          bottom: '100%',
-          left: 'var(--space-4)',
-          right: 'var(--space-4)',
-          marginBottom: 4,
-          background: 'var(--bg)',
-          border: '1px solid var(--separator)',
-          borderRadius: 'var(--radius-md)',
-          boxShadow: 'var(--shadow-lg)',
-          maxHeight: 240,
-          overflowY: 'auto',
-          zIndex: 10,
-        }}>
+        <div className="absolute bottom-full left-[var(--space-4)] right-[var(--space-4)] mb-1 bg-[var(--bg)] border border-[var(--separator)] rounded-[var(--radius-md)] shadow-[var(--shadow-lg)] max-h-60 overflow-y-auto z-10">
           {filteredCommands.map((cmd, idx) => {
             const isHighlighted = idx === commandIndex
             return (
@@ -421,30 +401,10 @@ export function ChatInput({
                   if (isHighlighted && el) el.scrollIntoView({ block: 'nearest' })
                 }}
                 onClick={() => handleCommandSelect(cmd)}
-                style={{
-                  width: '100%',
-                  textAlign: 'left',
-                  padding: 'var(--space-2) var(--space-3)',
-                  fontSize: 'var(--text-footnote)',
-                  background: isHighlighted ? 'var(--fill-secondary)' : 'transparent',
-                  border: 'none',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 'var(--space-2)',
-                  color: 'var(--text-primary)',
-                }}
+                className={`w-full text-left py-[var(--space-2)] px-[var(--space-3)] text-[length:var(--text-footnote)] ${isHighlighted ? 'bg-[var(--fill-secondary)]' : 'bg-transparent'} border-none cursor-pointer flex items-center gap-[var(--space-2)] text-[var(--text-primary)]`}
               >
-                <span style={{
-                  fontFamily: 'var(--font-mono)',
-                  fontWeight: 'var(--weight-semibold)',
-                  color: 'var(--accent)',
-                  fontSize: 'var(--text-footnote)',
-                }}>/{cmd.name}</span>
-                <span style={{
-                  color: 'var(--text-tertiary)',
-                  fontSize: 'var(--text-caption1)',
-                }}>{cmd.description}</span>
+                <span className="font-[family-name:var(--font-mono)] font-[var(--weight-semibold)] text-[var(--accent)] text-[length:var(--text-footnote)]">/{cmd.name}</span>
+                <span className="text-[var(--text-tertiary)] text-[length:var(--text-caption1)]">{cmd.description}</span>
               </button>
             )
           })}
@@ -453,20 +413,7 @@ export function ChatInput({
 
       {/* Mention autocomplete */}
       {showMentions && filteredEmployees.length > 0 && (
-        <div style={{
-          position: 'absolute',
-          bottom: '100%',
-          left: 'var(--space-4)',
-          right: 'var(--space-4)',
-          marginBottom: 4,
-          background: 'var(--bg)',
-          border: '1px solid var(--separator)',
-          borderRadius: 'var(--radius-md)',
-          boxShadow: 'var(--shadow-lg)',
-          maxHeight: 160,
-          overflowY: 'auto',
-          zIndex: 10,
-        }}>
+        <div className="absolute bottom-full left-[var(--space-4)] right-[var(--space-4)] mb-1 bg-[var(--bg)] border border-[var(--separator)] rounded-[var(--radius-md)] shadow-[var(--shadow-lg)] max-h-40 overflow-y-auto z-10">
           {filteredEmployees.slice(0, 8).map((emp, idx) => {
             const rankEmoji: Record<string, string> = { executive: '🎯', manager: '📋', senior: '⭐', employee: '👤' }
             const isHighlighted = idx === mentionIndex
@@ -479,31 +426,19 @@ export function ChatInput({
                   if (isHighlighted && el) el.scrollIntoView({ block: 'nearest' })
                 }}
                 onClick={() => handleMentionSelect(emp.name)}
-                style={{
-                  width: '100%',
-                  textAlign: 'left',
-                  padding: 'var(--space-2) var(--space-3)',
-                  fontSize: 'var(--text-footnote)',
-                  background: isHighlighted ? 'var(--fill-secondary)' : 'transparent',
-                  border: 'none',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 'var(--space-2)',
-                  color: 'var(--text-primary)',
-                }}
+                className={`w-full text-left py-[var(--space-2)] px-[var(--space-3)] text-[length:var(--text-footnote)] ${isHighlighted ? 'bg-[var(--fill-secondary)]' : 'bg-transparent'} border-none cursor-pointer flex items-center gap-[var(--space-2)] text-[var(--text-primary)]`}
               >
-                <span style={{ fontSize: 16, lineHeight: 1 }}>{rankEmoji[emp.rank || 'employee'] || '👤'}</span>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-                    <span style={{ fontWeight: 'var(--weight-semibold)' }}>{emp.displayName || emp.name}</span>
-                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-caption2)', color: 'var(--text-tertiary)' }}>@{emp.name}</span>
+                <span className="text-base leading-none">{rankEmoji[emp.rank || 'employee'] || '👤'}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-[var(--space-2)]">
+                    <span className="font-[var(--weight-semibold)]">{emp.displayName || emp.name}</span>
+                    <span className="font-[family-name:var(--font-mono)] text-[length:var(--text-caption2)] text-[var(--text-tertiary)]">@{emp.name}</span>
                   </div>
                   {emp.department && (
-                    <div style={{ fontSize: 'var(--text-caption2)', color: 'var(--text-quaternary)', display: 'flex', gap: 'var(--space-2)', marginTop: 1 }}>
+                    <div className="text-[length:var(--text-caption2)] text-[var(--text-quaternary)] flex gap-[var(--space-2)] mt-px">
                       <span>{emp.department}</span>
                       {emp.engine && (
-                        <span style={{ color: 'var(--accent)', fontWeight: 'var(--weight-medium)' }}>{emp.engine}</span>
+                        <span className="text-[var(--accent)] font-[var(--weight-medium)]">{emp.engine}</span>
                       )}
                     </div>
                   )}
@@ -516,7 +451,7 @@ export function ChatInput({
 
       {/* Pending attachments preview */}
       {pendingAttachments.length > 0 && (
-        <div style={{ marginBottom: 'var(--space-2)' }}>
+        <div className="mb-[var(--space-2)]">
           <MediaPreview
             attachments={pendingAttachments}
             onRemove={removePendingAttachment}
@@ -524,35 +459,12 @@ export function ChatInput({
         </div>
       )}
 
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 'var(--space-2)',
-        background: 'var(--fill-secondary)',
-        borderRadius: 'var(--radius-lg)',
-        padding: '6px var(--space-3)',
-        border: loading ? '1px solid var(--accent)' : '1px solid var(--separator)',
-        minHeight: 44,
-        transition: 'border-color 200ms ease',
-      }}>
+      <div className={`flex items-center gap-[var(--space-2)] bg-[var(--fill-secondary)] rounded-[var(--radius-lg)] py-1.5 px-[var(--space-3)] min-h-11 transition-[border-color] duration-200 ease-in-out border ${loading ? 'border-[var(--accent)]' : 'border-[var(--separator)]'}`}>
         {/* Attach button */}
         <button
           aria-label="Attach file"
           onClick={() => fileInputRef.current?.click()}
-          style={{
-            width: 32,
-            height: 32,
-            flexShrink: 0,
-            borderRadius: 'var(--radius-sm)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            background: 'transparent',
-            border: 'none',
-            cursor: 'pointer',
-            color: 'var(--text-secondary)',
-            marginBottom: 0,
-          }}
+          className="w-8 h-8 shrink-0 rounded-[var(--radius-sm)] flex items-center justify-center bg-transparent border-none cursor-pointer text-[var(--text-secondary)] mb-0"
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
@@ -563,7 +475,7 @@ export function ChatInput({
           type="file"
           accept="image/*,audio/*,.pdf,.doc,.docx,.txt,.csv,.json,.zip"
           multiple
-          style={{ display: 'none' }}
+          className="hidden"
           onChange={handleFileAttach}
         />
 
@@ -581,22 +493,7 @@ export function ChatInput({
           }
           rows={1}
           disabled={disabled}
-          style={{
-            flex: 1,
-            background: 'transparent',
-            border: 'none',
-            outline: 'none',
-            resize: 'none',
-            color: 'var(--text-primary)',
-            fontSize: 'var(--text-subheadline)',
-            lineHeight: '20px',
-            maxHeight: 120,
-            minHeight: 20,
-            height: 20,
-            padding: 0,
-            margin: 0,
-            opacity: disabled ? 0.5 : 1,
-          }}
+          className={`flex-1 bg-transparent border-none outline-none resize-none text-[var(--text-primary)] text-[length:var(--text-subheadline)] leading-5 max-h-30 min-h-5 h-5 p-0 m-0 ${disabled ? 'opacity-50' : 'opacity-100'}`}
           onInput={(e) => {
             const target = e.target as HTMLTextAreaElement
             target.style.height = 'auto'
@@ -609,25 +506,7 @@ export function ChatInput({
           <button
             aria-label={`STT language: ${stt.selectedLanguage.toUpperCase()}. Click to switch.`}
             onClick={stt.cycleLanguage}
-            style={{
-              height: 24,
-              padding: '0 6px',
-              flexShrink: 0,
-              borderRadius: 'var(--radius-sm)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              background: 'var(--fill-tertiary)',
-              border: 'none',
-              cursor: 'pointer',
-              color: 'var(--text-secondary)',
-              fontSize: 11,
-              fontWeight: 600,
-              fontFamily: 'var(--font-mono)',
-              letterSpacing: '0.5px',
-              textTransform: 'uppercase',
-              transition: 'all 150ms ease',
-            }}
+            className="h-6 px-1.5 shrink-0 rounded-[var(--radius-sm)] flex items-center justify-center bg-[var(--fill-tertiary)] border-none cursor-pointer text-[var(--text-secondary)] text-[11px] font-semibold font-[family-name:var(--font-mono)] tracking-[0.5px] uppercase transition-all duration-150 ease-in-out"
             title={`Transcription language: ${stt.selectedLanguage.toUpperCase()}. Click to cycle.`}
           >
             {stt.selectedLanguage}
@@ -643,20 +522,7 @@ export function ChatInput({
           }
           onClick={handleMicClick}
           disabled={stt.state === 'transcribing'}
-          style={{
-            width: 32,
-            height: 32,
-            flexShrink: 0,
-            borderRadius: stt.state === 'recording' ? '999px' : 'var(--radius-sm)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            background: stt.state === 'recording' ? 'var(--system-red)' : 'transparent',
-            border: 'none',
-            cursor: stt.state === 'transcribing' ? 'wait' : 'pointer',
-            color: stt.state === 'recording' ? '#fff' : 'var(--text-secondary)',
-            transition: 'all 150ms ease',
-          }}
+          className={`w-8 h-8 shrink-0 flex items-center justify-center border-none transition-all duration-150 ease-in-out ${stt.state === 'recording' ? 'rounded-full bg-[var(--system-red)] text-white cursor-pointer' : `rounded-[var(--radius-sm)] bg-transparent text-[var(--text-secondary)] ${stt.state === 'transcribing' ? 'cursor-wait' : 'cursor-pointer'}`}`}
           title={
             stt.state === 'recording' ? 'Stop recording'
             : stt.state === 'transcribing' ? 'Transcribing…'
@@ -664,7 +530,7 @@ export function ChatInput({
           }
         >
           {stt.state === 'transcribing' ? (
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ animation: 'stt-spin 1s linear infinite' }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="animate-[stt-spin_1s_linear_infinite]">
               <path d="M12 2a10 10 0 0 1 10 10" />
             </svg>
           ) : (
@@ -687,20 +553,7 @@ export function ChatInput({
           <button
             onClick={onInterrupt}
             aria-label="Stop"
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: '50%',
-              background: 'var(--system-red)',
-              color: '#fff',
-              border: 'none',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              flexShrink: 0,
-              transition: 'all 150ms ease',
-            }}
+            className="w-8 h-8 rounded-full bg-[var(--system-red)] text-white border-none cursor-pointer flex items-center justify-center shrink-0 transition-all duration-150 ease-in-out"
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
               <rect x="4" y="4" width="16" height="16" rx="2" />
@@ -713,20 +566,7 @@ export function ChatInput({
           onClick={handleSubmit}
           disabled={!hasContent || disabled}
           aria-label="Send message"
-          style={{
-            width: 32,
-            height: 32,
-            borderRadius: '50%',
-            background: hasContent ? 'var(--accent)' : 'var(--fill-tertiary)',
-            color: hasContent ? 'var(--accent-contrast)' : 'var(--text-quaternary)',
-            border: 'none',
-            cursor: hasContent ? 'pointer' : 'default',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            flexShrink: 0,
-            transition: 'all 150ms ease',
-          }}
+          className={`w-8 h-8 rounded-full border-none flex items-center justify-center shrink-0 transition-all duration-150 ease-in-out ${hasContent ? 'bg-[var(--accent)] text-[var(--accent-contrast)] cursor-pointer' : 'bg-[var(--fill-tertiary)] text-[var(--text-quaternary)] cursor-default'}`}
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
             <line x1="12" y1="19" x2="12" y2="5" />
@@ -736,14 +576,7 @@ export function ChatInput({
       </div>
 
       {/* Hint — hidden on mobile for space */}
-      <div className="hidden sm:flex" style={{
-        fontSize: 'var(--text-caption2)',
-        color: 'var(--text-quaternary)',
-        textAlign: 'center',
-        marginTop: 'var(--space-1)',
-        justifyContent: 'center',
-        gap: 'var(--space-3)',
-      }}>
+      <div className="hidden sm:flex text-[length:var(--text-caption2)] text-[var(--text-quaternary)] text-center mt-[var(--space-1)] justify-center gap-[var(--space-3)]">
         <span>Enter to send</span>
         <span>/ - commands</span>
         <span>@name - mention</span>
@@ -751,29 +584,11 @@ export function ChatInput({
 
       {/* STT error banner */}
       {stt.state === 'error' && stt.error && (
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 'var(--space-2)',
-          marginTop: 'var(--space-2)',
-          padding: 'var(--space-2) var(--space-3)',
-          background: 'color-mix(in srgb, var(--system-red) 12%, transparent)',
-          borderRadius: 'var(--radius-sm)',
-          fontSize: 'var(--text-caption1)',
-          color: 'var(--system-red)',
-        }}>
-          <span style={{ flex: 1 }}>Voice input error: {stt.error}</span>
+        <div className="flex items-center gap-[var(--space-2)] mt-[var(--space-2)] py-[var(--space-2)] px-[var(--space-3)] rounded-[var(--radius-sm)] text-[length:var(--text-caption1)] text-[var(--system-red)]" style={{ background: 'color-mix(in srgb, var(--system-red) 12%, transparent)' }}>
+          <span className="flex-1">Voice input error: {stt.error}</span>
           <button
             onClick={stt.dismissError}
-            style={{
-              background: 'none',
-              border: 'none',
-              cursor: 'pointer',
-              color: 'var(--system-red)',
-              fontSize: 'var(--text-caption1)',
-              fontWeight: 600,
-              padding: '2px 6px',
-            }}
+            className="bg-none border-none cursor-pointer text-[var(--system-red)] text-[length:var(--text-caption1)] font-semibold py-0.5 px-1.5"
           >Dismiss</button>
         </div>
       )}

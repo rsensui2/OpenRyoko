@@ -27,6 +27,7 @@ import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit } 
 import { getClaudeExpectedResetAt, isLikelyNearClaudeUsageLimit, recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { loadJobs } from "../cron/jobs.js";
 import { setCronJobEnabled, triggerCronJob } from "../cron/scheduler.js";
+import { checkBudget } from "../gateway/budgets.js";
 import { resolveMcpServers, writeMcpConfigFile, cleanupMcpConfigFile } from "../mcp/resolver.js";
 
 export interface RouteOptions {
@@ -275,6 +276,31 @@ export class SessionManager {
         const transcript = sinceMessages.slice(-20).join("\n\n");
         promptToRun =
           `We temporarily switched to GPT due to a Claude usage limit. Sync your context with this transcript (most recent last), then respond to the last USER message.\n\n${transcript}`;
+      }
+
+      // Budget enforcement — check BEFORE engine.run()
+      if (session.employee) {
+        const budgetConfig = (this.config as any).budgets?.employees as Record<string, number> | undefined;
+        if (budgetConfig && session.employee in budgetConfig) {
+          const budgetStatus = checkBudget(session.employee, budgetConfig);
+          if (budgetStatus === 'paused') {
+            logger.warn(`Session ${session.id} blocked: employee "${session.employee}" has exceeded their budget`);
+            const pausedMsg = `Budget limit exceeded for employee "${session.employee}". Session blocked.`;
+            updateSession(session.id, {
+              status: 'error',
+              lastActivity: new Date().toISOString(),
+              lastError: pausedMsg,
+            });
+            if (decorateMessages && connector.setTypingStatus) {
+              await connector.setTypingStatus(target.channel, threadTs, '').catch(() => {});
+            }
+            await connector.replyMessage(target, `⛔ ${pausedMsg}`).catch(() => {});
+            if (decorateMessages && capabilities.reactions) {
+              await connector.removeReaction(target, 'eyes').catch(() => {});
+            }
+            return;
+          }
+        }
       }
 
       // Heuristic preflight warning: Claude usage limits don't expose a precise "remaining" budget.

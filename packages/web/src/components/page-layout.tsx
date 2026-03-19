@@ -10,10 +10,13 @@ import { LiveStreamWidget } from "./live-stream-widget"
 import { OnboardingWizard } from "./onboarding-wizard"
 import { NotificationBell } from "./notifications/notification-bell"
 import { ToastContainer } from "./notifications/toast-container"
+import { BreadcrumbBar } from "./breadcrumb-bar"
+import { useBreadcrumbs } from "@/context/breadcrumb-context"
 import { Menu, X } from "lucide-react"
 import { NAV_ITEMS } from "@/lib/nav"
+import { cn } from "@/lib/utils"
 
-function MobileHeader() {
+function MobileHeader({ actions }: { actions?: React.ReactNode }) {
   const [open, setOpen] = useState(false)
   const pathname = usePathname()
   const { settings } = useSettings()
@@ -22,93 +25,42 @@ function MobileHeader() {
 
   return (
     <>
-      <div
-        className="lg:hidden"
-        style={{
-          height: 48,
-          display: "flex",
-          alignItems: "center",
-          padding: "0 12px",
-          borderBottom: "1px solid var(--separator)",
-          background: "var(--material-thick)",
-          flexShrink: 0,
-          position: "relative",
-          zIndex: 60,
-        }}
-      >
+      <div className="relative z-60 flex h-12 shrink-0 items-center border-b border-border bg-[var(--material-thick)] px-3 lg:hidden">
         <button
           onClick={() => setOpen(true)}
           aria-label="Open menu"
-          style={{
-            width: 36,
-            height: 36,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            background: "transparent",
-            border: "none",
-            cursor: "pointer",
-            color: "var(--text-primary)",
-          }}
+          className="inline-flex size-9 items-center justify-center rounded-md text-foreground transition-colors hover:bg-accent"
         >
           <Menu size={20} />
         </button>
-        <div style={{ flex: 1, textAlign: "center" }}>
-          <span style={{ fontSize: 18, marginRight: 6 }}>{emoji}</span>
-          <span style={{ fontSize: 15, fontWeight: 600, color: "var(--text-primary)" }}>{portalName}</span>
+        <div className="flex flex-1 items-center justify-center text-center">
+          <span className="mr-1.5 text-lg">{emoji}</span>
+          <span className="text-sm font-semibold text-foreground">{portalName}</span>
         </div>
-        <NotificationBell />
+        <div className="flex items-center gap-1">
+          {actions}
+          <NotificationBell />
+        </div>
       </div>
 
-      {/* Drawer overlay */}
       {open && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 100,
-          }}
-          className="lg:hidden"
-        >
-          {/* Backdrop */}
-          <div
-            style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.5)" }}
-            onClick={() => setOpen(false)}
-          />
-          {/* Drawer */}
-          <nav
-            style={{
-              position: "absolute",
-              top: 0,
-              left: 0,
-              bottom: 0,
-              width: 260,
-              background: "var(--bg-secondary)",
-              borderRight: "1px solid var(--separator)",
-              display: "flex",
-              flexDirection: "column",
-              animation: "slideInLeft 200ms ease",
-            }}
-          >
-            {/* Drawer header */}
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", borderBottom: "1px solid var(--separator)" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ fontSize: 22 }}>{emoji}</span>
-                <span style={{ fontSize: 16, fontWeight: 600, color: "var(--text-primary)" }}>{portalName}</span>
+        <div className="fixed inset-0 z-100 lg:hidden">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-[1px]" onClick={() => setOpen(false)} />
+          <nav className="absolute inset-y-0 left-0 flex w-[260px] animate-slide-in flex-col border-r border-border bg-[var(--bg-secondary)]">
+            <div className="flex items-center justify-between border-b border-border px-3.5 py-3">
+              <div className="flex items-center gap-2">
+                <span className="text-[22px]">{emoji}</span>
+                <span className="text-base font-semibold text-foreground">{portalName}</span>
               </div>
               <button
                 onClick={() => setOpen(false)}
                 aria-label="Close menu"
-                style={{
-                  width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center",
-                  background: "transparent", border: "none", cursor: "pointer", color: "var(--text-secondary)",
-                }}
+                className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               >
                 <X size={18} />
               </button>
             </div>
-            {/* Nav items */}
-            <div style={{ flex: 1, padding: "8px", display: "flex", flexDirection: "column", gap: 2 }}>
+            <div className="flex flex-1 flex-col gap-1 p-2">
               {NAV_ITEMS.map((item) => {
                 const isActive = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href)
                 const Icon = item.icon
@@ -117,21 +69,14 @@ function MobileHeader() {
                     key={item.href}
                     href={item.href}
                     onClick={() => setOpen(false)}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 12,
-                      height: 44,
-                      padding: "0 14px",
-                      borderRadius: 10,
-                      textDecoration: "none",
-                      color: isActive ? "var(--accent)" : "var(--text-secondary)",
-                      background: isActive ? "var(--accent-fill)" : "transparent",
-                      fontWeight: isActive ? 600 : 400,
-                      fontSize: 15,
-                    }}
+                    className={cn(
+                      "flex h-11 items-center gap-3 rounded-[10px] px-3.5 text-[15px] transition-colors",
+                      isActive
+                        ? "bg-[var(--accent-fill)] font-semibold text-[var(--accent)]"
+                        : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                    )}
                   >
-                    <Icon size={18} style={{ flexShrink: 0 }} />
+                    <Icon size={18} className="shrink-0" />
                     {item.label}
                   </Link>
                 )
@@ -152,27 +97,36 @@ function MobileHeader() {
   )
 }
 
-export function PageLayout({ children }: { children: React.ReactNode }) {
+export function ToolbarActions({ children }: { children?: React.ReactNode }) {
   return (
-    <div className="flex h-dvh overflow-hidden" style={{ background: 'var(--bg)' }}>
+    <div className="hidden items-center gap-2 lg:flex">
+      {children}
+      <NotificationBell />
+    </div>
+  )
+}
+
+function DesktopHeader() {
+  const { items } = useBreadcrumbs()
+  if (items.length === 0) return null
+  return (
+    <div className="hidden h-12 shrink-0 items-center border-b border-border bg-[var(--material-thick)] px-5 lg:flex">
+      <BreadcrumbBar />
+    </div>
+  )
+}
+
+export function PageLayout({ children, mobileHeaderActions }: { children: React.ReactNode; mobileHeaderActions?: React.ReactNode }) {
+  return (
+    <div className="flex h-dvh overflow-hidden bg-background">
       <Sidebar />
       <GlobalSearch />
-      <main className="flex-1 overflow-hidden lg:ml-[56px]">
-        <MobileHeader />
-        {/* Desktop notification bell — top-right corner */}
-        <div
-          className="hidden lg:flex"
-          style={{
-            position: "fixed",
-            top: 12,
-            right: 16,
-            zIndex: 60,
-            alignItems: "center",
-          }}
-        >
-          <NotificationBell />
+      <main className="flex-1 overflow-hidden flex flex-col lg:ml-[56px]">
+        <MobileHeader actions={mobileHeaderActions} />
+        <DesktopHeader />
+        <div className="flex-1 overflow-hidden">
+          {children}
         </div>
-        {children}
       </main>
       <ToastContainer />
       <LiveStreamWidget />

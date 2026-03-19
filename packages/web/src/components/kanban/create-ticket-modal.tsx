@@ -76,29 +76,16 @@ export function CreateTicketModal({
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
         showCloseButton
-        style={{
-          background: 'var(--bg)',
-          border: '1px solid var(--separator)',
-          borderRadius: 'var(--radius-lg)',
-          boxShadow: 'var(--shadow-card)',
-          maxWidth: 480,
-        }}
+        className="bg-[var(--bg)] border border-[var(--separator)] rounded-[var(--radius-lg)] shadow-[var(--shadow-card)] max-w-[480px]"
       >
         <DialogHeader>
           <DialogTitle
-            style={{
-              fontSize: 'var(--text-title3)',
-              fontWeight: 'var(--weight-bold)',
-              color: 'var(--text-primary)',
-            }}
+            className="text-[length:var(--text-title3)] font-[var(--weight-bold)] text-[var(--text-primary)]"
           >
             Create Ticket
           </DialogTitle>
           <DialogDescription
-            style={{
-              fontSize: 'var(--text-caption1)',
-              color: 'var(--text-tertiary)',
-            }}
+            className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]"
           >
             Add a new ticket to the backlog.
           </DialogDescription>
@@ -106,21 +93,13 @@ export function CreateTicketModal({
 
         <form
           onSubmit={handleSubmit}
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 'var(--space-4)',
-          }}
+          className="flex flex-col gap-[var(--space-4)]"
         >
           {/* Title */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
+          <div className="flex flex-col gap-[var(--space-1)]">
             <label
               htmlFor="ticket-title"
-              style={{
-                fontSize: 'var(--text-caption1)',
-                fontWeight: 'var(--weight-medium)',
-                color: 'var(--text-secondary)',
-              }}
+              className="text-[length:var(--text-caption1)] font-[var(--weight-medium)] text-[var(--text-secondary)]"
             >
               Title
             </label>
@@ -132,28 +111,15 @@ export function CreateTicketModal({
               onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
               required
               autoFocus
-              style={{
-                fontSize: 'var(--text-body)',
-                color: 'var(--text-primary)',
-                padding: '8px 12px',
-                border: '1px solid var(--separator)',
-                borderRadius: 'var(--radius-md)',
-                background: 'var(--fill-tertiary)',
-                outline: 'none',
-                fontFamily: 'inherit',
-              }}
+              className="text-[length:var(--text-body)] text-[var(--text-primary)] py-2 px-3 border border-[var(--separator)] rounded-[var(--radius-md)] bg-[var(--fill-tertiary)] outline-none font-[inherit]"
             />
           </div>
 
           {/* Description */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
+          <div className="flex flex-col gap-[var(--space-1)]">
             <label
               htmlFor="ticket-description"
-              style={{
-                fontSize: 'var(--text-caption1)',
-                fontWeight: 'var(--weight-medium)',
-                color: 'var(--text-secondary)',
-              }}
+              className="text-[length:var(--text-caption1)] font-[var(--weight-medium)] text-[var(--text-secondary)]"
             >
               Description
             </label>
@@ -163,33 +129,18 @@ export function CreateTicketModal({
               rows={3}
               value={form.description}
               onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
-              style={{
-                fontSize: 'var(--text-body)',
-                color: 'var(--text-primary)',
-                resize: 'vertical',
-                minHeight: 72,
-                padding: '8px 12px',
-                border: '1px solid var(--separator)',
-                borderRadius: 'var(--radius-md)',
-                background: 'var(--fill-tertiary)',
-                outline: 'none',
-                fontFamily: 'inherit',
-              }}
+              className="text-[length:var(--text-body)] text-[var(--text-primary)] resize-y min-h-[72px] py-2 px-3 border border-[var(--separator)] rounded-[var(--radius-md)] bg-[var(--fill-tertiary)] outline-none font-[inherit]"
             />
           </div>
 
           {/* Priority */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+          <div className="flex flex-col gap-[var(--space-2)]">
             <span
-              style={{
-                fontSize: 'var(--text-caption1)',
-                fontWeight: 'var(--weight-medium)',
-                color: 'var(--text-secondary)',
-              }}
+              className="text-[length:var(--text-caption1)] font-[var(--weight-medium)] text-[var(--text-secondary)]"
             >
               Priority
             </span>
-            <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+            <div className="flex gap-[var(--space-2)]">
               {PRIORITIES.map((p) => {
                 const isSelected = form.priority === p
                 return (
@@ -197,33 +148,18 @@ export function CreateTicketModal({
                     key={p}
                     type="button"
                     onClick={() => setForm((f) => ({ ...f, priority: p }))}
+                    className="flex-1 flex items-center justify-center gap-[var(--space-1)] py-[var(--space-2)] px-[var(--space-3)] rounded-[var(--radius-md)] cursor-pointer text-[length:var(--text-caption1)] font-[var(--weight-medium)] transition-all duration-150 ease-[var(--ease-smooth)]"
                     style={{
-                      flex: 1,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: 'var(--space-1)',
-                      padding: 'var(--space-2) var(--space-3)',
-                      borderRadius: 'var(--radius-md)',
                       border: isSelected
                         ? `2px solid ${PRIORITY_COLORS[p]}`
                         : '2px solid var(--separator)',
                       background: isSelected ? 'var(--fill-tertiary)' : 'transparent',
-                      cursor: 'pointer',
-                      fontSize: 'var(--text-caption1)',
-                      fontWeight: 'var(--weight-medium)',
                       color: isSelected ? 'var(--text-primary)' : 'var(--text-tertiary)',
-                      transition: 'all 150ms var(--ease-smooth)',
                     }}
                   >
                     <span
-                      style={{
-                        width: 8,
-                        height: 8,
-                        borderRadius: '50%',
-                        background: PRIORITY_COLORS[p],
-                        flexShrink: 0,
-                      }}
+                      className="w-2 h-2 rounded-full shrink-0"
+                      style={{ background: PRIORITY_COLORS[p] }}
                     />
                     {PRIORITY_LABELS[p]}
                   </button>
@@ -233,13 +169,9 @@ export function CreateTicketModal({
           </div>
 
           {/* Assignee */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
+          <div className="flex flex-col gap-[var(--space-1)]">
             <label
-              style={{
-                fontSize: 'var(--text-caption1)',
-                fontWeight: 'var(--weight-medium)',
-                color: 'var(--text-secondary)',
-              }}
+              className="text-[length:var(--text-caption1)] font-[var(--weight-medium)] text-[var(--text-secondary)]"
             >
               Assignee
             </label>
@@ -254,23 +186,10 @@ export function CreateTicketModal({
           <button
             type="submit"
             disabled={!form.title.trim()}
+            className="rounded-[var(--radius-md)] py-3 px-5 w-full text-[length:var(--text-body)] font-[var(--weight-semibold)] border-none flex items-center justify-center gap-[var(--space-2)] mt-[var(--space-2)] bg-[var(--accent)] text-white transition-opacity duration-150 ease-linear"
             style={{
-              borderRadius: 'var(--radius-md)',
-              padding: '12px 20px',
-              width: '100%',
-              fontSize: 'var(--text-body)',
-              fontWeight: 'var(--weight-semibold)',
-              border: 'none',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 'var(--space-2)',
-              marginTop: 'var(--space-2)',
-              background: 'var(--accent)',
-              color: '#fff',
               cursor: form.title.trim() ? 'pointer' : 'default',
               opacity: form.title.trim() ? 1 : 0.5,
-              transition: 'opacity 150ms ease',
             }}
           >
             <Plus size={16} />
