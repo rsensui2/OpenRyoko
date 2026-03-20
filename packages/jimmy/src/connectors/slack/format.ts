@@ -5,15 +5,50 @@ import { randomUUID } from "node:crypto";
 const SLACK_MAX_LENGTH = 3000;
 
 /**
+ * Convert standard markdown to Slack mrkdwn format.
+ * Handles headings, bold, strikethrough, links, and bullet lists.
+ * Preserves code blocks and inline code untouched.
+ */
+export function markdownToSlackMrkdwn(text: string): string {
+  // Split text into code and non-code segments to protect code from conversion
+  const segments = text.split(/(```[\s\S]*?```|`[^`]+`)/g);
+
+  return segments
+    .map((segment, i) => {
+      // Odd indices are code matches — leave them untouched
+      if (i % 2 === 1) return segment;
+
+      return (
+        segment
+          // Headings: ## text → *text* (must be at start of line)
+          .replace(/^(#{1,6})\s+(.+)$/gm, (_match, _hashes, content) => `*${content}*`)
+          // Bold: **text** or __text__ → *text*
+          .replace(/\*\*(.+?)\*\*/g, "*$1*")
+          .replace(/__(.+?)__/g, "*$1*")
+          // Strikethrough: ~~text~~ → ~text~
+          .replace(/~~(.+?)~~/g, "~$1~")
+          // Links: [text](url) → <url|text>
+          .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "<$2|$1>")
+          // Bullet lists: - item or * item → • item (with optional indentation)
+          .replace(/^(\s*)[-*]\s+/gm, "$1• ")
+      );
+    })
+    .join("");
+}
+
+/**
  * Split text into chunks that fit within Slack's message length limit.
+ * Converts markdown to Slack mrkdwn format before chunking.
  */
 export function formatResponse(text: string): string[] {
-  if (text.length <= SLACK_MAX_LENGTH) {
-    return [text];
+  const converted = markdownToSlackMrkdwn(text);
+
+  if (converted.length <= SLACK_MAX_LENGTH) {
+    return [converted];
   }
 
   const chunks: string[] = [];
-  let remaining = text;
+  let remaining = converted;
 
   while (remaining.length > 0) {
     if (remaining.length <= SLACK_MAX_LENGTH) {
