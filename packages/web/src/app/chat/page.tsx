@@ -23,7 +23,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
-import { ChevronLeft, Check, EllipsisVertical, Trash2 } from 'lucide-react'
+import { ChevronLeft, Check, EllipsisVertical, PanelLeftClose, PanelLeftOpen, Trash2 } from 'lucide-react'
 
 function getOnboardingPrompt(portalName: string, userMessage: string) {
   return `This is your first time being activated. The user just set up ${portalName} and opened the web dashboard for the first time.
@@ -91,6 +91,19 @@ function ChatPage() {
   const [employeeSessions, setEmployeeSessions] = useState<Array<{ id: string; title?: string; lastActivity?: string; createdAt?: string }>>([])
   // When true, user explicitly started a new chat — don't auto-select first session
   const newChatIntentRef = useRef(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('jinn-chat-sidebar-collapsed') === 'true'
+    }
+    return false
+  })
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev
+      localStorage.setItem('jinn-chat-sidebar-collapsed', String(next))
+      return next
+    })
+  }, [])
   const [viewMode, setViewMode] = useState<'chat' | 'cli'>('chat')
   const [showMoreMenu, setShowMoreMenu] = useState(false)
   const [showSessionPicker, setShowSessionPicker] = useState(false)
@@ -379,16 +392,32 @@ function ChatPage() {
   return (
     <PageLayout mobileHeaderActions={moreMenu}>
       <div className="flex h-[calc(100%-48px)] overflow-hidden lg:h-full">
-        <div className="hidden h-full w-[280px] shrink-0 lg:block">
-          <ChatSidebar
-            selectedId={selectedId}
-            onSelect={handleSelect}
-            onNewChat={handleNewChat}
-            onDelete={handleDeleteSession}
-            onSessionsLoaded={handleSessionsLoaded}
-            onEmployeeSessionsAvailable={handleEmployeeSessionsAvailable}
-          />
+        <div
+          className="hidden h-full shrink-0 overflow-hidden lg:block"
+          style={{
+            width: sidebarCollapsed ? 0 : 280,
+            transition: 'width 200ms ease-in-out',
+          }}
+        >
+          <div className="h-full w-[280px]">
+            <ChatSidebar
+              selectedId={selectedId}
+              onSelect={handleSelect}
+              onNewChat={handleNewChat}
+              onDelete={handleDeleteSession}
+              onSessionsLoaded={handleSessionsLoaded}
+              onEmployeeSessionsAvailable={handleEmployeeSessionsAvailable}
+            />
+          </div>
         </div>
+
+        <button
+          onClick={toggleSidebar}
+          aria-label={sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}
+          className="hidden h-full w-5 shrink-0 items-center justify-center border-r border-border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground lg:flex"
+        >
+          {sidebarCollapsed ? <PanelLeftOpen className="size-3.5" /> : <PanelLeftClose className="size-3.5" />}
+        </button>
 
         <div
           className={mobileView === 'sidebar' ? 'block lg:hidden' : 'hidden'}
