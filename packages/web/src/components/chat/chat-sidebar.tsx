@@ -33,6 +33,12 @@ interface Session {
   [key: string]: unknown
 }
 
+export interface SidebarOrder {
+  sessionIds: string[]
+  employeeNames: string[]
+  employeeSessionMap: Record<string, string[]>
+}
+
 interface ChatSidebarProps {
   selectedId: string | null
   onSelect: (id: string) => void
@@ -40,6 +46,7 @@ interface ChatSidebarProps {
   onDelete?: (id: string) => void
   onSessionsLoaded?: (sessions: Session[]) => void
   onEmployeeSessionsAvailable?: (sessions: Session[]) => void
+  onOrderComputed?: (order: SidebarOrder) => void
 }
 
 interface FlatItem {
@@ -219,6 +226,7 @@ export function ChatSidebar({
   onDelete,
   onSessionsLoaded,
   onEmployeeSessionsAvailable,
+  onOrderComputed,
 }: ChatSidebarProps) {
   const { settings } = useSettings()
   const portalName = settings.portalName ?? "Jinn"
@@ -455,6 +463,31 @@ export function ChatSidebar({
 
   const cronCollapsed = collapsed.has("cron")
   const sortedCron = sortSessionsByActivity(cronSessions)
+
+  // Emit flat session order for keyboard navigation (J/K/E shortcuts)
+  const orderRef = useRef<string>('')
+  const allFlatIds = useMemo(() => {
+    const ids: string[] = []
+    const empNames: string[] = []
+    const empMap: Record<string, string[]> = {}
+    for (const item of [...pinnedFlat, ...unpinnedFlat]) {
+      const name = item.employeeName!
+      empNames.push(name)
+      const sessionIds = item.sessions!.map(s => s.id)
+      empMap[name] = sessionIds
+      ids.push(...sessionIds)
+    }
+    for (const s of sortedCron) ids.push(s.id)
+    return { sessionIds: ids, employeeNames: empNames, employeeSessionMap: empMap }
+  }, [pinnedFlat, unpinnedFlat, sortedCron])
+
+  useEffect(() => {
+    const key = allFlatIds.sessionIds.join(',')
+    if (key !== orderRef.current) {
+      orderRef.current = key
+      onOrderComputed?.(allFlatIds)
+    }
+  }, [allFlatIds, onOrderComputed])
 
   function isEmployeeActive(empSessions: Session[]): boolean {
     return empSessions.some((s) => s.id === selectedId)
@@ -726,6 +759,7 @@ export function ChatSidebar({
         <div className="flex items-center gap-2 rounded-[var(--radius-md)] bg-[var(--fill-tertiary)] px-3 py-2">
           <Search className="size-3.5 shrink-0 text-[var(--text-tertiary)]" />
           <input
+            id="chat-search"
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
