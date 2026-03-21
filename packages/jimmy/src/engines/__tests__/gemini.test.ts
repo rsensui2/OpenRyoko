@@ -1,6 +1,28 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { EventEmitter } from "node:events";
 import { GeminiEngine } from "../gemini.js";
-import type { EngineRunOpts } from "../../shared/types.js";
+import type { EngineRunOpts, StreamDelta } from "../../shared/types.js";
+
+// Mock child_process.spawn
+vi.mock("node:child_process", () => ({
+  spawn: vi.fn(),
+}));
+
+import { spawn } from "node:child_process";
+const mockSpawn = vi.mocked(spawn);
+
+/** Creates a mock ChildProcess that emits events and has controllable stdout/stderr */
+function createMockProcess() {
+  const proc = new EventEmitter() as any;
+  proc.stdout = new EventEmitter();
+  proc.stderr = new EventEmitter();
+  proc.stdin = { end: vi.fn() };
+  proc.pid = 12345;
+  proc.exitCode = null;
+  proc.killed = false;
+  proc.kill = vi.fn(() => { proc.killed = true; });
+  return proc;
+}
 
 describe("GeminiEngine", () => {
   let engine: GeminiEngine;
@@ -241,6 +263,201 @@ describe("GeminiEngine", () => {
 
     it("killAll should not throw when no processes", () => {
       expect(() => engine.killAll()).not.toThrow();
+    });
+  });
+
+  describe("run() with mocked spawn", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("should resolve with result on successful non-streaming run", async () => {
+      const proc = createMockProcess();
+      mockSpawn.mockReturnValue(proc as any);
+
+      const resultPromise = engine.run({ prompt: "hello", cwd: "/tmp" });
+
+      // Simulate JSON output from gemini CLI
+      const output = JSON.stringify({ type: "result", result: "Hello! How can I help?", session_id: "gem-s1" });
+      proc.stdout.emit("data", Buffer.from(output));
+      proc.exitCode = 0;
+      proc.emit("close", 0);
+
+      const result = await resultPromise;
+      expect(result.result).toBe("Hello! How can I help?");
+      expect(result.sessionId).toBe("gem-s1");
+      expect(result.error).toBeUndefined();
+    });
+
+    it("should resolve with streamed text on streaming run", async () => {
+      const proc = createMockProcess();
+      mockSpawn.mockReturnValue(proc as any);
+
+      const deltas: StreamDelta[] = [];
+      const resultPromise = engine.run({
+        prompt: "hello",
+        cwd: "/tmp",
+        sessionId: "test-sess",
+        onStream: (d) => deltas.push(d),
+      });
+
+      // Simulate streaming events
+      proc.stdout.emit("data", Buffer.from(
+        JSON.stringify({ type: "session.start", session_id: "gem-s2" }) + "\n" +
+        JSON.stringify({ type: "text", text: "Hello " }) + "\n" +
+        JSON.stringify({ type: "text", text: "world!" }) + "\n" +
+        JSON.stringify({ type: "turn.complete" }) + "\n",
+      ));
+
+      proc.exitCode = 0;
+      proc.emit("close", 0);
+
+      const result = await resultPromise;
+      expect(result.sessionId).toBe("gem-s2");
+      expect(result.result).toBe("Hello world!");
+      expect(result.numTurns).toBe(1);
+      expect(result.error).toBeUndefined();
+      expect(deltas).toHaveLength(2);
+      expect(deltas[0]).toEqual({ type: "text", content: "Hello " });
+      expect(deltas[1]).toEqual({ type: "text", content: "world!" });
+    });
+
+    it("should handle non-zero exit code as error", async () => {
+      const proc = createMockProcess();
+      mockSpawn.mockReturnValue(proc as any);
+
+      const resultPromise = engine.run({ prompt: "hello", cwd: "/tmp" });
+
+      proc.stderr.emit("data", Buffer.from("gemini: command not found"));
+      proc.exitCode = 127;
+      proc.emit("close", 127);
+
+      const result = await resultPromise;
+      expect(result.error).toContain("Gemini exited with code 127");
+      expect(result.error).toContain("command not found");
+    });
+
+    it("should reject on spawn error", async () => {
+      const proc = createMockProcess();
+      mockSpawn.mockReturnValue(proc as any);
+
+      const resultPromise = engine.run({ prompt: "hello", cwd: "/tmp" });
+
+      proc.emit("error", new Error("ENOENT: gemini not found"));
+
+      await expect(resultPromise).rejects.toThrow("Failed to spawn Gemini CLI");
+    });
+
+    it("should handle termination reason from kill()", async () => {
+      const proc = createMockProcess();
+      mockSpawn.mockReturnValue(proc as any);
+
+      const resultPromise = engine.run({
+        prompt: "long task",
+        cwd: "/tmp",
+        sessionId: "kill-test",
+      });
+
+      // Simulate kill during execution
+      engine.kill("kill-test", "User cancelled");
+
+      proc.exitCode = null;
+      proc.emit("close", null);
+
+      const result = await resultPromise;
+      expect(result.error).toBe("User cancelled");
+    });
+
+    it("should track live processes and report isAlive correctly", async () => {
+      const proc = createMockProcess();
+      mockSpawn.mockReturnValue(proc as any);
+
+      const resultPromise = engine.run({
+        prompt: "hello",
+        cwd: "/tmp",
+        sessionId: "alive-test",
+      });
+
+      // Process is running
+      expect(engine.isAlive("alive-test")).toBe(true);
+
+      proc.exitCode = 0;
+      proc.emit("close", 0);
+
+      await resultPromise;
+
+      // Process has exited
+      expect(engine.isAlive("alive-test")).toBe(false);
+    });
+
+    it("should stream tool use events", async () => {
+      const proc = createMockProcess();
+      mockSpawn.mockReturnValue(proc as any);
+
+      const deltas: StreamDelta[] = [];
+      const resultPromise = engine.run({
+        prompt: "read file",
+        cwd: "/tmp",
+        sessionId: "tool-test",
+        onStream: (d) => deltas.push(d),
+      });
+
+      proc.stdout.emit("data", Buffer.from(
+        JSON.stringify({ type: "tool.start", name: "read_file", id: "t-1" }) + "\n" +
+        JSON.stringify({ type: "tool.end", output: "file contents" }) + "\n" +
+        JSON.stringify({ type: "text", text: "I read the file." }) + "\n",
+      ));
+
+      proc.exitCode = 0;
+      proc.emit("close", 0);
+
+      const result = await resultPromise;
+      expect(result.result).toBe("I read the file.");
+      expect(deltas).toHaveLength(3);
+      expect(deltas[0].type).toBe("tool_use");
+      expect(deltas[0].toolName).toBe("read_file");
+      expect(deltas[1].type).toBe("tool_result");
+      expect(deltas[2].type).toBe("text");
+    });
+
+    it("should use custom bin from opts", async () => {
+      const proc = createMockProcess();
+      mockSpawn.mockReturnValue(proc as any);
+
+      const resultPromise = engine.run({
+        prompt: "hello",
+        cwd: "/tmp",
+        bin: "/usr/local/bin/gemini",
+      });
+
+      proc.exitCode = 0;
+      proc.stdout.emit("data", Buffer.from(JSON.stringify({ type: "result", result: "ok" })));
+      proc.emit("close", 0);
+
+      await resultPromise;
+      expect(mockSpawn).toHaveBeenCalledWith(
+        "/usr/local/bin/gemini",
+        expect.any(Array),
+        expect.any(Object),
+      );
+    });
+
+    it("should default bin to 'gemini'", async () => {
+      const proc = createMockProcess();
+      mockSpawn.mockReturnValue(proc as any);
+
+      const resultPromise = engine.run({ prompt: "hello", cwd: "/tmp" });
+
+      proc.exitCode = 0;
+      proc.stdout.emit("data", Buffer.from(JSON.stringify({ type: "result", result: "ok" })));
+      proc.emit("close", 0);
+
+      await resultPromise;
+      expect(mockSpawn).toHaveBeenCalledWith(
+        "gemini",
+        expect.any(Array),
+        expect.any(Object),
+      );
     });
   });
 });
