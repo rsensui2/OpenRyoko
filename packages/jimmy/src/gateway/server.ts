@@ -20,6 +20,7 @@ import { SlackConnector } from "../connectors/slack/index.js";
 import { DiscordConnector } from "../connectors/discord/index.js";
 import { RemoteDiscordConnector } from "../connectors/discord/remote.js";
 import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
+import { TelegramConnector } from "../connectors/telegram/index.js";
 import { loadJobs } from "../cron/jobs.js";
 import { startScheduler, reloadScheduler, stopScheduler } from "../cron/scheduler.js";
 import { scanOrg } from "./org.js";
@@ -142,6 +143,9 @@ export async function startGateway(
   if (config.connectors?.discord?.botToken || config.connectors?.discord?.proxyVia) {
     connectorNames.push("discord");
   }
+  if (config.connectors?.telegram?.botToken) {
+    connectorNames.push("telegram");
+  }
   if (config.connectors?.whatsapp) {
     connectorNames.push("whatsapp");
   }
@@ -227,6 +231,26 @@ export async function startGateway(
       logger.info(`Discord connector started in remote mode (via ${config.connectors.discord.proxyVia})`);
     } catch (err) {
       logger.error(`Failed to start remote Discord connector: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  if (config.connectors?.telegram?.botToken) {
+    try {
+      const telegram = new TelegramConnector({
+        botToken: config.connectors.telegram.botToken,
+        allowFrom: config.connectors.telegram.allowFrom,
+        ignoreOldMessagesOnBoot: config.connectors.telegram.ignoreOldMessagesOnBoot,
+      });
+      telegram.onMessage((msg) => {
+        sessionManager.route(msg, telegram).catch((err) => {
+          logger.error(`Telegram route error: ${err instanceof Error ? err.message : err}`);
+        });
+      });
+      await telegram.start();
+      connectors.push(telegram);
+      connectorMap.set("telegram", telegram);
+    } catch (err) {
+      logger.error(`Failed to start Telegram connector: ${err instanceof Error ? err.message : err}`);
     }
   }
 

@@ -285,6 +285,12 @@ export interface DiscordConnectorConfig {
   proxyVia?: string;
 }
 
+export interface TelegramConnectorConfig {
+  botToken: string;
+  allowFrom?: number[];
+  ignoreOldMessagesOnBoot?: boolean;
+}
+
 export interface WhatsAppConnectorConfig {
   /** Where to store session credentials (default: JINN_HOME/.whatsapp-auth) */
   authDir?: string;
@@ -311,6 +317,7 @@ export interface JinnConfig {
   connectors: Record<string, any> & {
     web?: WebConnectorConfig;
     slack?: SlackConnectorConfig;
+    telegram?: TelegramConnectorConfig;
     discord?: DiscordConnectorConfig;
     whatsapp?: WhatsAppConnectorConfig;
   };

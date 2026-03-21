@@ -6,16 +6,11 @@ import type {
   IncomingMessage,
   ReplyContext,
   Target,
+  TelegramConnectorConfig,
 } from "../../shared/types.js";
 import { deriveSessionKey, buildReplyContext, isOldTelegramMessage } from "./threads.js";
 import { formatResponse } from "./format.js";
 import { logger } from "../../shared/logger.js";
-
-export interface TelegramConnectorConfig {
-  botToken: string;
-  allowFrom?: number[];
-  ignoreOldMessagesOnBoot?: boolean;
-}
 
 export class TelegramConnector implements Connector {
   name = "telegram";
