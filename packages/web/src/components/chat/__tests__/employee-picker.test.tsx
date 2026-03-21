@@ -192,4 +192,21 @@ describe('ChatEmployeePicker', () => {
     fireEvent.click(screen.getByRole('button', { name: /less/i }))
     expect(screen.queryByText('Reddit Scout')).toBeNull()
   })
+
+  it('renders only COO chip when employees array is empty', () => {
+    render(
+      <ChatEmployeePicker
+        employees={[]}
+        selectedEmployee={null}
+        onSelect={onChange}
+        portalName="Jinn"
+      />
+    )
+    // COO chip should still render
+    expect(screen.getByRole('button', { name: /jinn/i })).toBeDefined()
+    // No employee chips, no More button
+    const allButtons = screen.getAllByRole('button')
+    expect(allButtons).toHaveLength(1) // Only COO
+    expect(screen.queryByRole('button', { name: /more/i })).toBeNull()
+  })
 })

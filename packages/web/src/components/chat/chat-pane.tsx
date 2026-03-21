@@ -8,6 +8,7 @@ import { ChatEmployeePicker } from '@/components/chat/chat-employee-picker'
 import { QueuePanel } from '@/components/chat/queue-panel'
 import { CliTranscript } from '@/components/chat/cli-transcript'
 import { buildNewSessionParams } from '@/components/chat/new-chat-helpers'
+import type { Employee } from '@/lib/api'
 import type { Message, MediaAttachment } from '@/lib/conversations'
 import { saveIntermediateMessages, loadIntermediateMessages, clearIntermediateMessages } from '@/lib/conversations'
 
@@ -73,11 +74,15 @@ export function ChatPane({
 
   // Employee picker state for new chat
   const [selectedEmployee, setSelectedEmployee] = useState<string | null>(null)
-  const [pickerEmployees, setPickerEmployees] = useState<Array<{ name: string; displayName: string; department: string; rank: string }>>([])
+  const [pickerEmployees, setPickerEmployees] = useState<Pick<Employee, 'name' | 'displayName' | 'department' | 'rank'>[]>([])
+  const employeesFetchedRef = useRef(false)
 
-  // Fetch employees for picker when in new-chat mode
+  // TODO: Replace N+1 getEmployee calls with a single bulk endpoint (e.g. GET /api/org/employees)
+  // Currently fetches getOrg() + getEmployee(name) for each employee. Cached after first load
+  // so it only fires once per page lifecycle, but a bulk endpoint would be cleaner.
   useEffect(() => {
     if (sessionId) return // Only fetch when no active session
+    if (employeesFetchedRef.current && pickerEmployees.length > 0) return // Use cached result
     api.getOrg().then(async (data) => {
       if (!Array.isArray(data.employees)) return
       const details = await Promise.all(
@@ -86,13 +91,14 @@ export function ChatPane({
             const emp = await api.getEmployee(name)
             return { name: emp.name, displayName: emp.displayName, department: emp.department, rank: emp.rank }
           } catch {
-            return { name, displayName: name, department: '', rank: 'employee' }
+            return { name, displayName: name, department: '', rank: 'employee' as const }
           }
         })
       )
       setPickerEmployees(details)
+      employeesFetchedRef.current = true
     }).catch(() => {})
-  }, [sessionId])
+  }, [sessionId, pickerEmployees.length])
   useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
 
   // Helper: persist intermediate messages to localStorage

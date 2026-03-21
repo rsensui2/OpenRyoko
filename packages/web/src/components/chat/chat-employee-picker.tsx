@@ -3,13 +3,9 @@
 import { useState } from 'react'
 import { EmployeeAvatar } from '@/components/ui/employee-avatar'
 import { cn } from '@/lib/utils'
+import type { Employee } from '@/lib/api'
 
-interface PickerEmployee {
-  name: string
-  displayName: string
-  department: string
-  rank: string
-}
+type PickerEmployee = Pick<Employee, 'name' | 'displayName' | 'department' | 'rank'>
 
 interface ChatEmployeePickerProps {
   employees: PickerEmployee[]
@@ -40,7 +36,6 @@ export function ChatEmployeePicker({
         {/* COO chip */}
         <button
           type="button"
-          role="button"
           aria-pressed={selectedEmployee === null}
           aria-label={portalName}
           onClick={() => onSelect(null)}
@@ -64,7 +59,6 @@ export function ChatEmployeePicker({
             <button
               key={emp.name}
               type="button"
-              role="button"
               aria-pressed={isSelected}
               onClick={() => onSelect(emp.name)}
               className={cn(
