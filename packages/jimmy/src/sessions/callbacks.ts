@@ -11,8 +11,10 @@ import type { Session } from "../shared/types.js";
 export function notifyParentSession(
   childSession: Session,
   result: { result?: string | null; error?: string | null; cost?: number; durationMs?: number },
+  options?: { alwaysNotify?: boolean },
 ): void {
   if (!childSession.parentSessionId) return;
+  if (options?.alwaysNotify === false) return;
 
   // Run asynchronously — do not await in the caller
   _sendNotification(childSession, result).catch((err) => {

@@ -148,3 +148,57 @@ describe("notifyParentSession", () => {
     expect(body.role).toBe("notification");
   });
 });
+
+describe("notifyParentSession — alwaysNotify suppression", () => {
+  let fetchSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchSpy = vi.fn().mockResolvedValue({ ok: true });
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    vi.mocked(getSession).mockReturnValue(
+      makeSession({ id: "parent-001", parentSessionId: null, status: "idle" }),
+    );
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    globalThis.fetch = originalFetch as typeof fetch;
+  });
+
+  it("skips notification when alwaysNotify is false (success)", async () => {
+    const child = makeSession();
+
+    notifyParentSession(child, { result: "done" }, { alwaysNotify: false });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("skips notification when alwaysNotify is false (error)", async () => {
+    const child = makeSession();
+
+    notifyParentSession(child, { error: "Something broke" }, { alwaysNotify: false });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("sends notification when alwaysNotify is true", async () => {
+    const child = makeSession();
+
+    notifyParentSession(child, { result: "done" }, { alwaysNotify: true });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(fetchSpy).toHaveBeenCalledOnce();
+  });
+
+  it("sends notification when options is undefined (backward compat)", async () => {
+    const child = makeSession();
+
+    notifyParentSession(child, { result: "done" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(fetchSpy).toHaveBeenCalledOnce();
+  });
+});

@@ -466,7 +466,7 @@ export class SessionManager {
               lastError: fallbackResult.error ?? null,
             });
             if (updated) {
-              notifyParentSession(updated, { result: fallbackResult.result, error: fallbackResult.error ?? null, cost: fallbackResult.cost, durationMs: fallbackResult.durationMs });
+              notifyParentSession(updated, { result: fallbackResult.result, error: fallbackResult.error ?? null, cost: fallbackResult.cost, durationMs: fallbackResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
             }
             return;
           }
@@ -631,7 +631,7 @@ export class SessionManager {
               notifyDiscordChannel(
                 `✅ Claude usage limit cleared. Session ${session.id}${session.employee ? ` (${session.employee})` : ""} resumed.`,
               );
-              notifyParentSession(retryUpdated, { result: retryResult.result, error: retryResult.error ?? null, cost: retryResult.cost, durationMs: retryResult.durationMs });
+              notifyParentSession(retryUpdated, { result: retryResult.result, error: retryResult.error ?? null, cost: retryResult.cost, durationMs: retryResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
             }
             logger.info(`Session ${session.id} resumed after usage reset`);
             return;
@@ -692,7 +692,7 @@ export class SessionManager {
         lastError: wasInterrupted ? null : (result.error ?? null),
       });
       if (updatedSession) {
-        notifyParentSession(updatedSession, { result: result.result, error: wasInterrupted ? null : (result.error ?? null), cost: result.cost, durationMs: result.durationMs });
+        notifyParentSession(updatedSession, { result: result.result, error: wasInterrupted ? null : (result.error ?? null), cost: result.cost, durationMs: result.durationMs }, { alwaysNotify: employee?.alwaysNotify });
       }
 
       logger.info(
@@ -709,7 +709,7 @@ export class SessionManager {
         lastError: errMsg,
       });
       if (erroredSession) {
-        notifyParentSession(erroredSession, { error: errMsg });
+        notifyParentSession(erroredSession, { error: errMsg }, { alwaysNotify: employee?.alwaysNotify });
       }
 
       // Clear typing indicator on error
