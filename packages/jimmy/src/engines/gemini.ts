@@ -50,7 +50,7 @@ export class GeminiEngine implements InterruptibleEngine {
     const args = this.buildArgs(opts, prompt, streaming);
 
     logger.info(
-      `Gemini engine starting: ${bin} -p --output-format ${streaming ? "stream-json" : "json"} --model ${opts.model || "default"} (resume: ${opts.resumeSessionId || "none"})`,
+      `Gemini engine starting: ${bin} --output-format ${streaming ? "stream-json" : "json"} --model ${opts.model || "default"} (resume: ${opts.resumeSessionId || "none"})`,
     );
 
     const cleanEnv = this.buildCleanEnv();
@@ -217,7 +217,7 @@ export class GeminiEngine implements InterruptibleEngine {
   }
 
   buildArgs(opts: EngineRunOpts, prompt: string, streaming: boolean): string[] {
-    const args = ["-p", "--output-format", streaming ? "stream-json" : "json", "--sandbox", "false"];
+    const args = ["--output-format", streaming ? "stream-json" : "json", "--yolo"];
 
     if (opts.model) args.push("--model", opts.model);
     if (opts.resumeSessionId) args.push("--resume", opts.resumeSessionId);
@@ -351,7 +351,6 @@ export class GeminiEngine implements InterruptibleEngine {
     const cleanEnv: Record<string, string> = {};
     for (const [k, v] of Object.entries(process.env)) {
       if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_")) continue;
-      if (k.startsWith("GEMINI_")) continue;
       if (v !== undefined) cleanEnv[k] = v;
     }
     return cleanEnv;

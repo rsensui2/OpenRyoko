@@ -49,12 +49,12 @@ describe("GeminiEngine", () => {
 
     it("should build fresh args with streaming", () => {
       const args = engine.buildArgs(baseOpts, "test prompt", true);
-      expect(args).toEqual(["-p", "--output-format", "stream-json", "--sandbox", "false", "test prompt"]);
+      expect(args).toEqual(["--output-format", "stream-json", "--yolo", "test prompt"]);
     });
 
     it("should build fresh args without streaming (json mode)", () => {
       const args = engine.buildArgs(baseOpts, "test prompt", false);
-      expect(args).toEqual(["-p", "--output-format", "json", "--sandbox", "false", "test prompt"]);
+      expect(args).toEqual(["--output-format", "json", "--yolo", "test prompt"]);
     });
 
     it("should include --model when specified", () => {
@@ -458,6 +458,50 @@ describe("GeminiEngine", () => {
         expect.any(Array),
         expect.any(Object),
       );
+    });
+
+    it("should preserve GEMINI_API_KEY in child env", async () => {
+      const proc = createMockProcess();
+      mockSpawn.mockReturnValue(proc as any);
+
+      const origKey = process.env.GEMINI_API_KEY;
+      process.env.GEMINI_API_KEY = "test-gemini-key";
+
+      try {
+        const resultPromise = engine.run({ prompt: "hello", cwd: "/tmp" });
+        proc.exitCode = 0;
+        proc.stdout.emit("data", Buffer.from(JSON.stringify({ type: "result", result: "ok" })));
+        proc.emit("close", 0);
+        await resultPromise;
+
+        const spawnEnv = mockSpawn.mock.lastCall?.[2]?.env as Record<string, string>;
+        expect(spawnEnv.GEMINI_API_KEY).toBe("test-gemini-key");
+      } finally {
+        if (origKey !== undefined) process.env.GEMINI_API_KEY = origKey;
+        else delete process.env.GEMINI_API_KEY;
+      }
+    });
+
+    it("should strip CLAUDE_CODE_ vars from child env", async () => {
+      const proc = createMockProcess();
+      mockSpawn.mockReturnValue(proc as any);
+
+      const origVar = process.env.CLAUDE_CODE_SOMETHING;
+      process.env.CLAUDE_CODE_SOMETHING = "should-be-stripped";
+
+      try {
+        const resultPromise = engine.run({ prompt: "hello", cwd: "/tmp" });
+        proc.exitCode = 0;
+        proc.stdout.emit("data", Buffer.from(JSON.stringify({ type: "result", result: "ok" })));
+        proc.emit("close", 0);
+        await resultPromise;
+
+        const spawnEnv = mockSpawn.mock.lastCall?.[2]?.env as Record<string, string>;
+        expect(spawnEnv.CLAUDE_CODE_SOMETHING).toBeUndefined();
+      } finally {
+        if (origVar !== undefined) process.env.CLAUDE_CODE_SOMETHING = origVar;
+        else delete process.env.CLAUDE_CODE_SOMETHING;
+      }
     });
   });
 });
