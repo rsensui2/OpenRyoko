@@ -281,6 +281,10 @@ function ChatPage() {
       return
     }
     const idx = sessionIds.indexOf(selectedId)
+    if (idx === -1) {
+      handleSelect(direction === 1 ? sessionIds[0] : sessionIds[sessionIds.length - 1])
+      return
+    }
     const next = (idx + direction + sessionIds.length) % sessionIds.length
     handleSelect(sessionIds[next])
   }, [selectedId, handleSelect])

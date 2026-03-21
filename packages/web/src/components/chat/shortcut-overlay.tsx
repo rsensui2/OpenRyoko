@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import type { ShortcutDef } from '@/hooks/use-keyboard-shortcuts'
 
@@ -29,16 +29,22 @@ interface ShortcutOverlayProps {
 
 export function ShortcutOverlay({ shortcuts, onClose }: ShortcutOverlayProps) {
   const ref = useRef<HTMLDivElement>(null)
+  const [isClosing, setIsClosing] = useState(false)
+
+  const handleClose = useCallback(() => {
+    setIsClosing(true)
+    setTimeout(() => onClose(), 150)
+  }, [onClose])
 
   useEffect(() => {
     function handleMouseDown(e: MouseEvent) {
       if (ref.current && !ref.current.contains(e.target as Node)) {
-        onClose()
+        handleClose()
       }
     }
     document.addEventListener('mousedown', handleMouseDown)
     return () => document.removeEventListener('mousedown', handleMouseDown)
-  }, [onClose])
+  }, [handleClose])
 
   const enabled = shortcuts.filter(s => s.enabled !== false)
   const grouped = CATEGORY_ORDER
@@ -53,12 +59,12 @@ export function ShortcutOverlay({ shortcuts, onClose }: ShortcutOverlayProps) {
       ref={ref}
       role="complementary"
       aria-label="Keyboard shortcuts"
-      className="fixed bottom-4 right-4 z-40 w-[280px] overflow-hidden rounded-[var(--radius-lg)] border border-border bg-[var(--material-thick)] shadow-[var(--shadow-overlay)] backdrop-blur-xl animate-fade-in"
+      className={`fixed bottom-4 right-4 z-40 w-[280px] overflow-hidden rounded-[var(--radius-lg)] border border-border bg-[var(--material-thick)] shadow-[var(--shadow-overlay)] backdrop-blur-xl transition-opacity duration-150 ${isClosing ? 'opacity-0' : 'animate-fade-in'}`}
     >
       <div className="flex items-center justify-between px-3 py-2.5 border-b border-border">
         <span className="text-sm font-semibold text-foreground">Keyboard Shortcuts</span>
         <button
-          onClick={onClose}
+          onClick={handleClose}
           className="rounded-sm p-0.5 text-muted-foreground transition-colors hover:text-foreground"
           aria-label="Close"
         >
