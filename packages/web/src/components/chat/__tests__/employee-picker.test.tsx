@@ -24,10 +24,10 @@ const mockEmployees = [
 ]
 
 describe('ChatEmployeePicker', () => {
-  let onChange: ReturnType<typeof vi.fn>
+  let onChange: ReturnType<typeof vi.fn<(name: string | null) => void>>
 
   beforeEach(() => {
-    onChange = vi.fn()
+    onChange = vi.fn<(name: string | null) => void>()
   })
 
   it('renders COO as the default selected option', () => {
