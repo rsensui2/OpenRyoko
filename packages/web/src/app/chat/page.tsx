@@ -8,6 +8,7 @@ import { ChatSidebar, type SidebarOrder } from '@/components/chat/chat-sidebar'
 import { ChatTabBar } from '@/components/chat/chat-tabs'
 import { ChatPane } from '@/components/chat/chat-pane'
 import { ShortcutOverlay } from '@/components/chat/shortcut-overlay'
+import { ShortcutHint } from '@/components/chat/shortcut-hint'
 import { useChatTabs } from '@/hooks/use-chat-tabs'
 import { useKeyboardShortcuts, type ShortcutDef } from '@/hooks/use-keyboard-shortcuts'
 import { useDeleteSession } from '@/hooks/use-sessions'
@@ -400,7 +401,8 @@ function ChatPage() {
             className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-[var(--system-red)] transition-colors hover:bg-accent"
           >
             <Trash2 className="size-3.5" />
-            Delete Session
+            <span className="flex-1">Delete Session</span>
+            <kbd className="font-mono text-[10px] text-[var(--text-quaternary)]">⌫</kbd>
           </button>
         </div>
       )}
@@ -524,6 +526,10 @@ function ChatPage() {
           </div>
         </div>
       </div>
+
+      {!showShortcutOverlay && (
+        <ShortcutHint onClick={() => setShowShortcutOverlay(true)} />
+      )}
 
       {showShortcutOverlay && (
         <ShortcutOverlay

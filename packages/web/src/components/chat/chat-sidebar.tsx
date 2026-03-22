@@ -593,7 +593,8 @@ export function ChatSidebar({
           </ContextMenuItem>
           <ContextMenuSeparator />
           <ContextMenuItem variant="destructive" onClick={() => { if (window.confirm('Delete this session?')) handleDelete(session.id) }}>
-            Delete session
+            <span className="flex-1">Delete session</span>
+            <kbd className="ml-auto pl-3 font-mono text-[10px] text-[var(--text-quaternary)]">⌫</kbd>
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
@@ -749,7 +750,7 @@ export function ChatSidebar({
             <p className="text-xs text-muted-foreground">Sessions, employees, and cron runs</p>
           </div>
           <div className="flex items-center gap-1.5">
-            <Button size="sm" className="gap-1.5" onClick={onNewChat}>
+            <Button size="sm" className="gap-1.5" onClick={onNewChat} title="New chat (N)">
               <Plus className="size-3.5" />
               New
             </Button>
@@ -763,7 +764,7 @@ export function ChatSidebar({
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search chats..."
+            placeholder="Search... (/)"
             aria-label="Search chats"
             className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-[var(--text-tertiary)]"
           />
