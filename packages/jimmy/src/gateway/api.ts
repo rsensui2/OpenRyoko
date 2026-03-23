@@ -14,6 +14,7 @@ import {
   getSession,
   createSession,
   updateSession,
+  UpdateSessionFields,
   deleteSession,
   deleteSessions,
   insertMessage,
@@ -384,6 +385,29 @@ export async function handleApiRequest(
       }
 
       return json(res, { ...serializeSession(session, context), messages });
+    }
+
+    // PUT /api/sessions/:id
+    params = matchRoute("/api/sessions/:id", pathname);
+    if (method === "PUT" && params) {
+      const session = getSession(params.id);
+      if (!session) return notFound(res);
+      const _parsed = await readJsonBody(req, res);
+      if (!_parsed.ok) return;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const body = _parsed.body as any;
+      const updates: UpdateSessionFields = {};
+      if (body.title !== undefined) {
+        if (typeof body.title !== "string") return badRequest(res, "title must be a string");
+        const trimmed = body.title.trim();
+        if (!trimmed) return badRequest(res, "title must not be empty");
+        updates.title = trimmed.slice(0, 200);
+      }
+      if (Object.keys(updates).length === 0) return badRequest(res, "no valid fields to update");
+      const updated = updateSession(params.id, updates);
+      if (!updated) return notFound(res);
+      context.emit("session:updated", { sessionId: params.id });
+      return json(res, serializeSession(updated, context));
     }
 
     // DELETE /api/sessions/:id

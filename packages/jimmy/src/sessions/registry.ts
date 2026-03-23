@@ -307,6 +307,7 @@ export interface UpdateSessionFields {
   transportMeta?: JsonObject | null;
   lastActivity?: string;
   lastError?: string | null;
+  title?: string;
 }
 
 export function updateSession(id: string, updates: UpdateSessionFields): Session | undefined {
@@ -349,6 +350,10 @@ export function updateSession(id: string, updates: UpdateSessionFields): Session
   if (updates.lastError !== undefined) {
     sets.push('last_error = ?');
     values.push(updates.lastError);
+  }
+  if (updates.title !== undefined) {
+    sets.push('title = ?');
+    values.push(updates.title);
   }
 
   if (sets.length === 0) return getSession(id);
