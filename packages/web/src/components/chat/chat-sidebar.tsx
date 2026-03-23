@@ -647,7 +647,7 @@ export function ChatSidebar({
                 onMouseLeave={() => setHoveredKey(null)}
               >
                 <button
-                  onClick={(e) => { e.stopPropagation(); setHoveredKey(null); setRenamingSessionId(session.id) }}
+                  onClick={(e) => { e.stopPropagation(); setHoveredKey(null); renameCancelledRef.current = false; setRenamingSessionId(session.id) }}
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-foreground transition-colors hover:bg-accent"
                 >
                   <Pencil className="size-3" /> Rename
@@ -670,7 +670,7 @@ export function ChatSidebar({
           </RowTag>
         </ContextMenuTrigger>
         <ContextMenuContent>
-          <ContextMenuItem onClick={() => setRenamingSessionId(session.id)}>
+          <ContextMenuItem onClick={() => { renameCancelledRef.current = false; setRenamingSessionId(session.id) }}>
             Rename
           </ContextMenuItem>
           <ContextMenuItem onClick={() => togglePin(session.id)}>
