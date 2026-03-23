@@ -556,6 +556,7 @@ export function ChatSidebar({
     const sessionDotColor = getStatusDotColor(session, readSessions)
     const sessionIsRunning = session.status === "running"
     const sessionTitle = fixTitle(session.title, session.employee)
+    const displayTitle = cleanPreview(sessionTitle) || sessionTitle
     const sessionTime = formatTime(getSessionActivity(session))
     const isPinned = pinnedSessions.has(session.id)
     const isHovered = hoveredKey === session.id
@@ -587,7 +588,7 @@ export function ChatSidebar({
               <input
                 autoFocus
                 maxLength={200}
-                defaultValue={sessionTitle}
+                defaultValue={displayTitle}
                 className={cn(
                   "min-w-0 flex-1 truncate border-none bg-transparent text-xs outline-none ring-1 ring-[var(--accent)] rounded px-0.5",
                   sessionIsActive ? "font-semibold text-foreground" : "text-[var(--text-secondary)]"
@@ -608,7 +609,7 @@ export function ChatSidebar({
                     return
                   }
                   const val = e.target.value.trim()
-                  if (val && val !== sessionTitle) {
+                  if (val && val !== displayTitle) {
                     updateSessionMutation.mutate({ id: session.id, data: { title: val } })
                   }
                   setRenamingSessionId(null)
