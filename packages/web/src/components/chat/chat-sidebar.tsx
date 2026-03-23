@@ -488,15 +488,17 @@ export function ChatSidebar({
     const sessionTime = formatTime(getSessionActivity(session))
     const isPinned = pinnedSessions.has(session.id)
     const isHovered = hoveredKey === session.id
+    const isRenaming = renamingSessionId === session.id
+    const RowTag = isRenaming ? "div" : "button"
 
     return (
       <ContextMenu key={session.id}>
         <ContextMenuTrigger asChild>
-          <button
-            onClick={() => {
+          <RowTag
+            {...(!isRenaming && { onClick: () => {
               onSelect(session.id)
               onEmployeeSessionsAvailable?.(parentSessions ?? [session])
-            }}
+            }})}
             onMouseEnter={() => setHoveredKey(session.id)}
             onMouseLeave={() => { if (hoveredKey !== `menu:${session.id}`) setHoveredKey(null) }}
             className={cn(
@@ -510,7 +512,7 @@ export function ChatSidebar({
             )}
           >
             <StatusDot color={sessionDotColor} pulse={sessionIsRunning} className="size-1.5" />
-            {renamingSessionId === session.id ? (
+            {isRenaming ? (
               <input
                 autoFocus
                 defaultValue={sessionTitle}
@@ -594,7 +596,7 @@ export function ChatSidebar({
                 </button>
               </div>
             ) : null}
-          </button>
+          </RowTag>
         </ContextMenuTrigger>
         <ContextMenuContent>
           <ContextMenuItem onClick={() => setRenamingSessionId(session.id)}>
