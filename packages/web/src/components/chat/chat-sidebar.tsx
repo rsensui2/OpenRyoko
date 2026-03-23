@@ -936,6 +936,7 @@ export function ChatSidebar({
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>Cancel</Button>
             <Button
               variant="destructive"
+              autoFocus
               onClick={() => {
                 if (!deleteTarget) return
                 if (deleteTarget.type === "employee" && deleteTarget.sessions) {
