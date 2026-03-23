@@ -15,6 +15,14 @@ import {
   ContextMenuSeparator,
 } from "@/components/ui/context-menu"
 import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { cn } from "@/lib/utils"
 
 interface Session {
@@ -267,6 +275,12 @@ export function ChatSidebar({
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [fullyExpanded, setFullyExpanded] = useState<Record<string, boolean>>({})
+  const [deleteTarget, setDeleteTarget] = useState<{
+    type: "session" | "employee"
+    id: string
+    label: string
+    sessions?: Session[]
+  } | null>(null)
   const [employeeData, setEmployeeData] = useState<Map<string, Employee>>(new Map())
   const onSessionsLoadedRef = useRef(onSessionsLoaded)
 
@@ -661,7 +675,7 @@ export function ChatSidebar({
                 </button>
                 <div className="my-0.5 border-t border-border" />
                 <button
-                  onClick={(e) => { e.stopPropagation(); setHoveredKey(null); if (window.confirm('Delete this session?')) handleDelete(session.id) }}
+                  onClick={(e) => { e.stopPropagation(); setHoveredKey(null); setDeleteTarget({ type: "session", id: session.id, label: cleanPreview(sessionTitle) || "Untitled" }) }}
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-[var(--system-red)] transition-colors hover:bg-accent"
                 >
                   <Trash2 className="size-3" /> Delete
@@ -678,7 +692,7 @@ export function ChatSidebar({
             {isPinned ? "Unpin" : "Pin"}
           </ContextMenuItem>
           <ContextMenuSeparator />
-          <ContextMenuItem variant="destructive" onClick={() => { if (window.confirm('Delete this session?')) handleDelete(session.id) }}>
+          <ContextMenuItem variant="destructive" onClick={() => setDeleteTarget({ type: "session", id: session.id, label: cleanPreview(sessionTitle) || "Untitled" })}>
             <span className="flex-1">Delete session</span>
             <kbd className="ml-auto pl-3 font-mono text-[10px] text-[var(--text-quaternary)]">⌫</kbd>
           </ContextMenuItem>
@@ -790,7 +804,7 @@ export function ChatSidebar({
                     onClick={(e) => {
                       e.stopPropagation()
                       setHoveredKey(null)
-                      if (window.confirm(`Delete all ${empSessions.length} chats with "${displayName}"?`)) handleDeleteEmployee(empName, empSessions)
+                      setDeleteTarget({ type: "employee", id: empName, label: displayName, sessions: empSessions })
                     }}
                     className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-[var(--system-red)] transition-colors hover:bg-accent"
                   >
@@ -903,6 +917,40 @@ export function ChatSidebar({
           </>
         )}
       </div>
+
+      <Dialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) setDeleteTarget(null) }}>
+        <DialogContent showCloseButton={false} className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>
+              {deleteTarget?.type === "employee"
+                ? `Delete all chats with "${deleteTarget.label}"?`
+                : `Delete "${deleteTarget?.label}"?`}
+            </DialogTitle>
+            <DialogDescription>
+              {deleteTarget?.type === "employee"
+                ? `This will permanently delete ${deleteTarget.sessions?.length ?? 0} session(s) and all their messages. This cannot be undone.`
+                : "This will permanently delete the session and all its messages. This cannot be undone."}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>Cancel</Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                if (!deleteTarget) return
+                if (deleteTarget.type === "employee" && deleteTarget.sessions) {
+                  handleDeleteEmployee(deleteTarget.id, deleteTarget.sessions)
+                } else {
+                  handleDelete(deleteTarget.id)
+                }
+                setDeleteTarget(null)
+              }}
+            >
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <style jsx>{`
         @keyframes sidebar-pulse {
