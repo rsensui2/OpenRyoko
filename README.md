@@ -160,7 +160,8 @@ Open [http://localhost:3000](http://localhost:3000) to use the web dashboard.
 (web dashboard with hot reload). Next.js rewrites proxy `/api/*` and `/ws`
 requests from `:3000` to the gateway, so you only need to visit `:3000`. The
 gateway auto-restarts when you edit backend source files via Node's built-in
-`--watch` mode.
+`--watch` mode. To use a non-default gateway port, set `GATEWAY_PORT=<port>`
+before running `pnpm dev`.
 
 > **Prerequisites:** Node.js 22+, pnpm 10+, and the
 > [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`npm install -g @anthropic-ai/claude-code`).

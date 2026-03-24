@@ -15,7 +15,7 @@
   ],
   "scripts": {
     "build": "tsc && rm -rf dist/web && cp -r ../web/out dist/web 2>/dev/null || true",
-    "dev": "tsc --watch & node --watch-path=src --watch-path=bin dist/bin/jimmy.js start",
+    "dev": "tsc && (tsc --watch &) && node --watch-path=dist dist/bin/jimmy.js start",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

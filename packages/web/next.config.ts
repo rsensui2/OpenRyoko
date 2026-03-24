@@ -7,9 +7,10 @@ export default (phase: string): NextConfig => {
   };
 
   if (phase === PHASE_DEVELOPMENT_SERVER) {
+    const gatewayPort = process.env.GATEWAY_PORT ?? "7777";
     config.rewrites = async () => [
-      { source: "/api/:path*", destination: "http://127.0.0.1:7777/api/:path*" },
-      { source: "/ws", destination: "http://127.0.0.1:7777/ws" },
+      { source: "/api/:path*", destination: `http://127.0.0.1:${gatewayPort}/api/:path*` },
+      { source: "/ws", destination: `http://127.0.0.1:${gatewayPort}/ws` },
     ];
   } else {
     config.output = "export";
