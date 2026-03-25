@@ -10,11 +10,12 @@ import {
 } from "@xyflow/react"
 import { useCallback, useEffect } from "react"
 import dagre from "@dagrejs/dagre"
-import type { Employee } from "@/lib/api"
+import type { Employee, OrgHierarchy } from "@/lib/api"
 import { nodeTypes } from "@/components/org/employee-node"
 
 interface OrgMapProps {
   employees: Employee[]
+  hierarchy?: OrgHierarchy
   selectedName: string | null
   onNodeClick: (employee: Employee) => void
 }
@@ -281,24 +282,138 @@ function buildDepartmentLayout(
   return { nodes, edges }
 }
 
+// ── Build layout from hierarchy tree ──────────────────────────
+
+function buildHierarchyLayout(
+  employees: Employee[],
+  hierarchy: OrgHierarchy,
+  selectedName: string | null,
+): { nodes: Node[]; edges: Edge[] } {
+  if (employees.length === 0) return { nodes: [], edges: [] }
+
+  // Compute selected chain for highlighting
+  const highlightedNames = new Set<string>()
+  if (selectedName) {
+    const selectedEmp = employees.find((e) => e.name === selectedName)
+    if (selectedEmp?.chain) {
+      for (const name of selectedEmp.chain) highlightedNames.add(name)
+    }
+    function addDescendants(name: string) {
+      highlightedNames.add(name)
+      const emp = employees.find((e) => e.name === name)
+      if (emp?.directReports) {
+        for (const child of emp.directReports) addDescendants(child)
+      }
+    }
+    addDescendants(selectedName)
+  }
+
+  const nodeIds = hierarchy.sorted
+  const edgePairs: [string, string][] = []
+
+  for (const name of nodeIds) {
+    const emp = employees.find((e) => e.name === name)
+    if (emp?.parentName && nodeIds.includes(emp.parentName)) {
+      edgePairs.push([emp.parentName, name])
+    }
+  }
+
+  const positions = dagreLayout(nodeIds, edgePairs, { nodesep: 60, ranksep: 120 })
+
+  // Department bounding boxes for overlays
+  const deptBounds = new Map<string, { minX: number; maxX: number; minY: number; maxY: number }>()
+  for (const name of nodeIds) {
+    const emp = employees.find((e) => e.name === name)
+    const pos = positions.get(name)
+    if (!emp || !pos || !emp.department) continue
+    const bounds = deptBounds.get(emp.department) ?? { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity }
+    bounds.minX = Math.min(bounds.minX, pos.x)
+    bounds.maxX = Math.max(bounds.maxX, pos.x + NODE_W)
+    bounds.minY = Math.min(bounds.minY, pos.y)
+    bounds.maxY = Math.max(bounds.maxY, pos.y + NODE_H)
+    deptBounds.set(emp.department, bounds)
+  }
+
+  const rfNodes: Node[] = []
+
+  // Department group overlays
+  let gi = 0
+  for (const [dept, bounds] of deptBounds) {
+    rfNodes.push({
+      id: `group-${gi}`,
+      type: "departmentGroup",
+      data: { label: dept },
+      position: {
+        x: bounds.minX - GROUP_PAD_X,
+        y: bounds.minY - GROUP_PAD_TOP,
+      },
+      style: {
+        width: bounds.maxX - bounds.minX + GROUP_PAD_X * 2,
+        height: bounds.maxY - bounds.minY + GROUP_PAD_TOP + GROUP_PAD_BOTTOM,
+        background: "var(--fill-quaternary)",
+        borderRadius: 12,
+        border: "1px solid var(--separator)",
+        padding: 0,
+      },
+      selectable: false,
+      draggable: false,
+    })
+    gi++
+  }
+
+  // Employee nodes
+  for (const name of nodeIds) {
+    const pos = positions.get(name)
+    const emp = employees.find((e) => e.name === name)
+    if (!pos || !emp) continue
+    rfNodes.push({
+      id: name,
+      type: "employeeNode",
+      data: emp as unknown as Record<string, unknown>,
+      position: { x: pos.x, y: pos.y },
+      selected: name === selectedName,
+    })
+  }
+
+  // Edges
+  const rfEdges: Edge[] = []
+  for (const [source, target] of edgePairs) {
+    const isHighlighted = highlightedNames.has(source) && highlightedNames.has(target)
+    rfEdges.push({
+      id: `${source}-${target}`,
+      source,
+      target,
+      type: "smoothstep",
+      style: {
+        stroke: isHighlighted ? "var(--accent)" : "var(--text-quaternary)",
+        strokeWidth: isHighlighted ? 2.5 : 1.5,
+        opacity: isHighlighted ? 1 : 0.7,
+      },
+      animated: isHighlighted,
+    })
+  }
+
+  return { nodes: rfNodes, edges: rfEdges }
+}
+
 // ── Component ──────────────────────────────────────────────────
 
-export function OrgMap({ employees, selectedName, onNodeClick }: OrgMapProps) {
-  const { nodes: initialNodes, edges: initialEdges } = buildDepartmentLayout(
-    employees,
-    selectedName,
-  )
+export function OrgMap({ employees, hierarchy, selectedName, onNodeClick }: OrgMapProps) {
+  const buildLayout = useCallback(() => {
+    return hierarchy
+      ? buildHierarchyLayout(employees, hierarchy, selectedName)
+      : buildDepartmentLayout(employees, selectedName)
+  }, [employees, hierarchy, selectedName])
+
+  const { nodes: initialNodes, edges: initialEdges } = buildLayout()
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes)
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges)
 
   useEffect(() => {
-    const { nodes: n, edges: e } = buildDepartmentLayout(
-      employees,
-      selectedName,
-    )
+    const { nodes: n, edges: e } = buildLayout()
     setNodes(n)
     setEdges(e)
-  }, [employees, selectedName, setNodes, setEdges])
+  }, [buildLayout, setNodes, setEdges])
 
   const handleNodeClick = useCallback(
     (_: React.MouseEvent, node: Node) => {

@@ -1,18 +1,6 @@
 "use client";
 import React, { useState } from "react";
-
-interface Employee {
-  name: string;
-  displayName?: string;
-  rank?: string;
-  engine?: string;
-  department?: string;
-}
-
-interface OrgData {
-  departments: string[];
-  employees: Employee[];
-}
+import type { Employee, OrgData, OrgHierarchy } from "@/lib/api";
 
 const rankStyles: Record<string, React.CSSProperties> = {
   executive: { background: 'color-mix(in srgb, var(--system-purple) 15%, transparent)', color: 'var(--system-purple)' },
@@ -72,6 +60,78 @@ function EmployeeNode({
       {employee.rank && <RankBadge rank={employee.rank} />}
       {employee.engine && <EngineIcon engine={employee.engine} />}
     </button>
+  );
+}
+
+function HierarchyNode({
+  name,
+  employees,
+  hierarchy,
+  depth,
+  selectedEmployee,
+  onSelectEmployee,
+}: {
+  name: string;
+  employees: Employee[];
+  hierarchy: OrgHierarchy;
+  depth: number;
+  selectedEmployee: string | null;
+  onSelectEmployee: (name: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(depth < 2);
+  const employee = employees.find((e) => e.name === name);
+  const directReports = employee?.directReports ?? [];
+  const hasChildren = directReports.length > 0;
+
+  if (!employee) return null;
+
+  return (
+    <div>
+      <div className="flex items-center" style={{ paddingLeft: depth * 16 }}>
+        {hasChildren ? (
+          <button
+            onClick={() => setExpanded(!expanded)}
+            className="w-5 h-5 flex items-center justify-center text-[var(--text-quaternary)] text-xs shrink-0 bg-none border-none cursor-pointer"
+          >
+            {expanded ? "\u25BC" : "\u25B6"}
+          </button>
+        ) : (
+          <span className="w-5 shrink-0" />
+        )}
+        <button
+          onClick={() => onSelectEmployee(employee.name)}
+          className="flex-1 text-left flex items-center gap-2 py-[6px] px-2 rounded-[var(--radius-md)] text-[length:var(--text-subheadline)] border-none cursor-pointer transition-[background,color] duration-150 ease-in-out"
+          style={{
+            background: selectedEmployee === employee.name ? 'var(--accent-fill)' : 'transparent',
+            color: selectedEmployee === employee.name ? 'var(--accent)' : 'var(--text-secondary)',
+          }}
+          onMouseEnter={(e) => { if (selectedEmployee !== employee.name) e.currentTarget.style.background = 'var(--fill-tertiary)' }}
+          onMouseLeave={(e) => { if (selectedEmployee !== employee.name) e.currentTarget.style.background = 'transparent' }}
+        >
+          <span className="flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
+            {employee.displayName || employee.name}
+          </span>
+          {hasChildren && (
+            <span className="text-[10px] text-[var(--text-tertiary)] bg-[var(--fill-tertiary)] py-[2px] px-[6px] rounded-full">
+              {directReports.length}
+            </span>
+          )}
+          {employee.rank && <RankBadge rank={employee.rank} />}
+          {employee.engine && <EngineIcon engine={employee.engine} />}
+        </button>
+      </div>
+      {expanded && hasChildren && directReports.map((childName) => (
+        <HierarchyNode
+          key={childName}
+          name={childName}
+          employees={employees}
+          hierarchy={hierarchy}
+          depth={depth + 1}
+          selectedEmployee={selectedEmployee}
+          onSelectEmployee={onSelectEmployee}
+        />
+      ))}
+    </div>
   );
 }
 
@@ -135,6 +195,39 @@ function DepartmentNode({
   );
 }
 
+function ViewToggle({
+  viewMode,
+  setViewMode,
+}: {
+  viewMode: "hierarchy" | "department";
+  setViewMode: (mode: "hierarchy" | "department") => void;
+}) {
+  return (
+    <div className="flex gap-1 mb-2 px-1">
+      <button
+        onClick={() => setViewMode("hierarchy")}
+        className="text-[10px] py-[2px] px-[8px] rounded-full border-none cursor-pointer"
+        style={{
+          background: viewMode === "hierarchy" ? "var(--accent-fill)" : "var(--fill-tertiary)",
+          color: viewMode === "hierarchy" ? "var(--accent)" : "var(--text-tertiary)",
+        }}
+      >
+        Hierarchy
+      </button>
+      <button
+        onClick={() => setViewMode("department")}
+        className="text-[10px] py-[2px] px-[8px] rounded-full border-none cursor-pointer"
+        style={{
+          background: viewMode === "department" ? "var(--accent-fill)" : "var(--fill-tertiary)",
+          color: viewMode === "department" ? "var(--accent)" : "var(--text-tertiary)",
+        }}
+      >
+        Department
+      </button>
+    </div>
+  );
+}
+
 export function OrgTree({
   data,
   selectedEmployee,
@@ -148,7 +241,33 @@ export function OrgTree({
   onSelectEmployee: (name: string) => void;
   onSelectDepartment: (name: string) => void;
 }) {
-  // Group employees by department
+  const hasHierarchy = data.employees.some((e) => e.directReports && e.directReports.length > 0);
+  const [viewMode, setViewMode] = useState<"hierarchy" | "department">(hasHierarchy ? "hierarchy" : "department");
+
+  if (viewMode === "hierarchy" && data.hierarchy) {
+    const rootEmployees = data.employees.filter(
+      (e) => e.parentName === null || e.parentName === undefined,
+    );
+
+    return (
+      <div className="flex flex-col gap-1">
+        {hasHierarchy && <ViewToggle viewMode={viewMode} setViewMode={setViewMode} />}
+        {rootEmployees.map((emp) => (
+          <HierarchyNode
+            key={emp.name}
+            name={emp.name}
+            employees={data.employees}
+            hierarchy={data.hierarchy}
+            depth={0}
+            selectedEmployee={selectedEmployee}
+            onSelectEmployee={onSelectEmployee}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  // Department view (existing logic)
   const byDept: Record<string, Employee[]> = {};
   const ungrouped: Employee[] = [];
 
@@ -161,18 +280,16 @@ export function OrgTree({
     }
   }
 
-  // Include departments from data.departments even if no employees
   for (const dept of data.departments) {
     if (!byDept[dept]) byDept[dept] = [];
   }
 
-  // Find the executive (COO) to show at top
-  const executive = data.employees.find(
-    (e) => e.rank === "executive",
-  );
+  const executive = data.employees.find((e) => e.rank === "executive");
 
   return (
     <div className="flex flex-col gap-1">
+      {hasHierarchy && <ViewToggle viewMode={viewMode} setViewMode={setViewMode} />}
+
       {executive && (
         <div className="mb-2">
           <EmployeeNode

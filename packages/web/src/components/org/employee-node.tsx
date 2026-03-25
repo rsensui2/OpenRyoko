@@ -38,6 +38,15 @@ export function EmployeeNode({ data, selected }: NodeProps) {
         </span>
       </div>
 
+      {/* Direct reports badge */}
+      {employee.directReports && employee.directReports.length > 0 && (
+        <div className="flex items-center gap-[var(--space-2)] mt-[var(--space-1)]">
+          <span className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)] bg-[var(--fill-tertiary)] py-px px-[6px] rounded-full">
+            {employee.directReports.length} report{employee.directReports.length !== 1 ? "s" : ""}
+          </span>
+        </div>
+      )}
+
       <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />
       <Handle type="source" position={Position.Bottom} style={{ opacity: 0 }} />
     </div>
