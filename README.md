@@ -68,6 +68,15 @@ jinn setup
 jinn start
 ```
 
+Or install via Homebrew:
+
+```bash
+brew tap hristo2612/jinn https://github.com/hristo2612/jinn
+brew install jinn
+jinn setup
+jinn start
+```
+
 Then open [http://localhost:7777](http://localhost:7777).
 
 ## 🏗️ Architecture

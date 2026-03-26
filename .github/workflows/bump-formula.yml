@@ -1,0 +1,45 @@
+name: Bump Homebrew Formula
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  bump-formula:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_ENV"
+
+      - name: Wait for npm tarball
+        run: |
+          for i in {1..30}; do
+            if curl -sI "https://registry.npmjs.org/jinn-cli/-/jinn-cli-${VERSION}.tgz" | grep -q "200"; then
+              echo "Tarball available"
+              exit 0
+            fi
+            echo "Waiting for npm publish... (attempt $i/30)"
+            sleep 10
+          done
+          echo "Tarball not found after 5 minutes"
+          exit 1
+
+      - name: Update formula
+        run: |
+          SHA=$(curl -sL "https://registry.npmjs.org/jinn-cli/-/jinn-cli-${VERSION}.tgz" | shasum -a 256 | cut -d' ' -f1)
+          sed -i "s|jinn-cli-.*\.tgz|jinn-cli-${VERSION}.tgz|" Formula/jinn.rb
+          sed -i "s|sha256 \".*\"|sha256 \"${SHA}\"|" Formula/jinn.rb
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/jinn.rb
+          git diff --cached --quiet && echo "No changes" && exit 0
+          git commit -m "formula: bump to v${VERSION}"
+          git push
