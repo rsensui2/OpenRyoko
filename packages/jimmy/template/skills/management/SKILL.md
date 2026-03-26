@@ -47,6 +47,16 @@ Required fields:
 - `engine` — AI engine to use: `claude` or `codex`
 - `model` — model identifier (e.g., `sonnet`, `opus`, `o3`)
 - `persona` — multiline description of who this employee is and how they behave
+- `reportsTo` — (optional) who this employee reports to (employee name)
+
+**Auto-determining `reportsTo`** when the user does not specify:
+1. Find the highest-ranked employee in the target department (manager > senior > employee)
+2. If a manager exists → set `reportsTo: <manager-name>`
+3. If only seniors exist → set `reportsTo: <first-senior-alphabetically>`
+4. If the department is empty → omit `reportsTo` (smart defaults attach to root)
+5. Confirm to the user: "Assigned X to report to Y. Change this?"
+
+When the user specifies a report-to explicitly, validate the target exists in the registry. If not, warn and ask for correction.
 
 Example (`org/marketing/seo-specialist.yaml`):
 
@@ -57,6 +67,7 @@ department: marketing
 rank: employee
 engine: claude
 model: sonnet
+reportsTo: marketing-lead
 persona: |
   You are Sarah, an SEO specialist in the marketing department.
   You focus on keyword research, content optimization, and
@@ -76,9 +87,13 @@ Steps:
 
 1. Locate the employee's YAML file under `org/<department>/<name>.yaml`.
 2. Check if the employee has any active tasks on the department board (`board.json` with status other than `done`). Warn the user if so.
-3. Delete the YAML file.
-4. Remove the employee as assignee from any tasks in `board.json` (set assignee to `unassigned`).
-5. Confirm the removal to the user.
+3. **Check for direct reports**: Call `GET /api/org` and check the employee's `directReports` field.
+   - If they have direct reports: warn "X has N direct reports. They will be reassigned to X's manager (Y)."
+   - On confirmation, update each report's YAML: set `reportsTo` to the fired employee's own `parentName` (their grandparent in the tree).
+   - If the fired employee reported to root (parentName null), remove the `reportsTo` field from each orphaned report (smart defaults will re-resolve).
+4. Delete the YAML file.
+5. Remove the employee as assignee from any tasks in `board.json` (set assignee to `unassigned`).
+6. Confirm the removal to the user.
 
 ### Creating a Department
 
@@ -100,9 +115,15 @@ Steps:
 4. Write the updated YAML back to the file.
 5. Confirm the change to the user, stating the old and new rank.
 
-### Promoting to Manager
+### Promoting to Manager — Report Reassignment
 
-When promoting an employee to manager rank, their persona must be extended with delegation capabilities so they can manage their own reports. Append the following to their existing persona:
+When promoting an employee to manager rank:
+
+1. Check if other department members currently report elsewhere (or have no explicit `reportsTo`).
+2. Offer to reassign: "Promoting X to manager. Currently N employees have no explicit reporting chain in this department. Should they report to X?"
+3. On confirmation, update each employee's YAML with `reportsTo: <new-manager-name>`.
+
+Their persona must also be extended with delegation capabilities so they can manage their own reports. Append the following to their existing persona:
 
 ```yaml
 persona: |
@@ -184,10 +205,12 @@ Steps:
 
 1. Read the employee's YAML from the source department.
 2. Update the `department` field to the new department name.
-3. Write the YAML to the new department directory.
-4. Delete the YAML from the old department directory.
-5. Move any assigned tasks from the old board to the new board (or reassign them, based on user preference).
-6. Confirm the move to the user.
+3. Offer to update `reportsTo`: "Should X report to <new-dept-manager>?"
+4. If the moved employee had direct reports, offer to reassign them to the next highest-ranked person in the old department.
+5. Write the YAML to the new department directory.
+6. Delete the YAML from the old department directory.
+7. Move any assigned tasks from the old board to the new board (or reassign them, based on user preference).
+8. Confirm the move to the user.
 
 ## Communication Rules
 
