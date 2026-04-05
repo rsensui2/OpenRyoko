@@ -21,6 +21,7 @@ export class TelegramConnector implements Connector {
   private readonly bootTimeMs = Date.now();
   private started = false;
   private lastError: string | null = null;
+  private typingIntervals = new Map<string, ReturnType<typeof setInterval>>();
 
   private readonly capabilities: ConnectorCapabilities = {
     threading: false,
@@ -110,6 +111,10 @@ export class TelegramConnector implements Connector {
   }
 
   async stop(): Promise<void> {
+    for (const interval of this.typingIntervals.values()) {
+      clearInterval(interval);
+    }
+    this.typingIntervals.clear();
     await this.bot.stopPolling();
     this.started = false;
     logger.info("[telegram] Connector stopped");
@@ -189,6 +194,27 @@ export class TelegramConnector implements Connector {
       if (id) lastMessageId = id;
     }
     return lastMessageId;
+  }
+
+  async setTypingStatus(channelId: string, _threadTs: string | undefined, status: string): Promise<void> {
+    const existing = this.typingIntervals.get(channelId);
+    if (existing) {
+      clearInterval(existing);
+      this.typingIntervals.delete(channelId);
+    }
+    if (!status) return;
+    try {
+      await this.bot.sendChatAction(channelId, "typing");
+      // Telegram typing expires after ~5s — refresh every 4s
+      const interval = setInterval(async () => {
+        try {
+          await this.bot.sendChatAction(channelId, "typing");
+        } catch { /* non-fatal */ }
+      }, 4_000);
+      this.typingIntervals.set(channelId, interval);
+    } catch {
+      // non-fatal
+    }
   }
 
   async addReaction(_target: Target, _emoji: string): Promise<void> {
