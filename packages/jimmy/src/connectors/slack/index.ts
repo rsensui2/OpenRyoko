@@ -97,6 +97,11 @@ export class SlackConnector implements Connector {
         logger.info(`[slack] Skipping bot message`);
         return;
       }
+      // Skip ghost events from URL unfurls (user=undefined, text="")
+      if (!(event as any).user) {
+        logger.debug(`[slack] Skipping event with no user (likely URL unfurl)`);
+        return;
+      }
       if (!this.handler) {
         logger.info(`[slack] No handler registered, dropping message`);
         return;
