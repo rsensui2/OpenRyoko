@@ -1,5 +1,5 @@
 {
-  "name": "jinn",
+  "name": "openryoko",
   "private": true,
   "packageManager": "pnpm@10.6.4",
   "scripts": {
@@ -10,7 +10,7 @@
     "test": "turbo run test",
     "test:e2e": "playwright test",
     "clean": "rm -rf .turbo node_modules/.cache && turbo clean",
-    "jinn": "node packages/jimmy/dist/bin/jimmy.js",
+    "ryoko": "node packages/jimmy/dist/bin/jimmy.js",
     "setup": "pnpm build && node packages/jimmy/dist/bin/jimmy.js setup",
     "setup:force": "pnpm build && node packages/jimmy/dist/bin/jimmy.js setup --force",
     "start": "pnpm clean && pnpm build && node packages/jimmy/dist/bin/jimmy.js start",

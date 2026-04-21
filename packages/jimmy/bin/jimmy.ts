@@ -6,24 +6,24 @@ import pkg from "../package.json" with { type: "json" };
 
 const program = new Command();
 program
-  .name("jinn")
-  .description("Lightweight AI gateway daemon")
+  .name("ryoko")
+  .description("OpenRyoko — Slackで空気を読んで働くAIゲートウェイ")
   .version(pkg.version)
-  .option("-i, --instance <name>", "Target a specific instance (default: jinn)");
+  .option("-i, --instance <name>", "特定のインスタンスを対象にする（デフォルト: ryoko）");
 
-// Pre-parse to set JINN_HOME before any module imports resolve paths
+// 任意のコマンド実行前に、指定インスタンスのホームディレクトリを環境変数に反映
 program.hook("preAction", (thisCommand) => {
   const opts = thisCommand.opts();
   if (opts.instance) {
-    process.env.JINN_INSTANCE = opts.instance;
-    process.env.JINN_HOME = path.join(os.homedir(), `.${opts.instance}`);
+    process.env.RYOKO_INSTANCE = opts.instance;
+    process.env.RYOKO_HOME = path.join(os.homedir(), `.${opts.instance}`);
   }
 });
 
 program
   .command("setup")
-  .description("Initialize Jinn and install dependencies")
-  .option("--force", "Delete existing home dir and reinitialize from scratch")
+  .description("OpenRyokoを初期化し依存関係をインストールする")
+  .option("--force", "既存のホームディレクトリを削除して最初から作り直す")
   .action(async (opts) => {
     const { runSetup } = await import("../src/cli/setup.js");
     await runSetup(opts);
@@ -31,9 +31,9 @@ program
 
 program
   .command("start")
-  .description("Start the gateway daemon")
-  .option("--daemon", "Run in background")
-  .option("-p, --port <port>", "Override the gateway port from config")
+  .description("ゲートウェイデーモンを起動する")
+  .option("--daemon", "バックグラウンドで実行")
+  .option("-p, --port <port>", "configのポートを上書き")
   .action(async (opts) => {
     const { runStart } = await import("../src/cli/start.js");
     await runStart({ daemon: opts.daemon, port: opts.port ? parseInt(opts.port, 10) : undefined });
@@ -41,8 +41,8 @@ program
 
 program
   .command("stop")
-  .description("Stop the gateway daemon")
-  .option("-p, --port <port>", "Port to kill the process on (default: from config or 7777)")
+  .description("ゲートウェイデーモンを停止する")
+  .option("-p, --port <port>", "プロセスをkillするポート（デフォルト: config or 7777）")
   .action(async (opts: { port?: string }) => {
     const { runStop } = await import("../src/cli/stop.js");
     await runStop(opts.port ? parseInt(opts.port, 10) : undefined);
@@ -50,7 +50,7 @@ program
 
 program
   .command("status")
-  .description("Show gateway status")
+  .description("ゲートウェイの状態を表示")
   .action(async () => {
     const { runStatus } = await import("../src/cli/status.js");
     await runStatus();
@@ -58,8 +58,8 @@ program
 
 program
   .command("create <name>")
-  .description("Create a new Jinn instance")
-  .option("-p, --port <port>", "Set gateway port (auto-assigned if omitted)")
+  .description("新しいOpenRyokoインスタンスを作成する")
+  .option("-p, --port <port>", "ゲートウェイのポート（省略時は自動割当）")
   .action(async (name: string, opts: { port?: string }) => {
     const { runCreate } = await import("../src/cli/create.js");
     await runCreate(name, opts.port ? parseInt(opts.port, 10) : undefined);
@@ -67,7 +67,7 @@ program
 
 program
   .command("list")
-  .description("List all Jinn instances")
+  .description("すべてのOpenRyokoインスタンスを一覧表示")
   .action(async () => {
     const { runList } = await import("../src/cli/list.js");
     await runList();
@@ -75,8 +75,8 @@ program
 
 program
   .command("remove <name>")
-  .description("Remove a Jinn instance from the registry")
-  .option("--force", "Also delete the instance home directory")
+  .description("OpenRyokoインスタンスをレジストリから除外する")
+  .option("--force", "インスタンスのホームディレクトリも削除する")
   .action(async (name: string, opts: { force?: boolean }) => {
     const { runRemove } = await import("../src/cli/remove.js");
     await runRemove(name, opts);
@@ -84,7 +84,7 @@ program
 
 program
   .command("nuke [name]")
-  .description("Permanently delete a Jinn instance and all its data")
+  .description("OpenRyokoインスタンスと全データを完全に削除する")
   .action(async (name?: string) => {
     const { runNuke } = await import("../src/cli/nuke.js");
     await runNuke(name);
@@ -92,23 +92,23 @@ program
 
 program
   .command("migrate")
-  .description("Apply pending template migrations to update this instance")
-  .option("--check", "Only check for pending migrations, don't apply")
-  .option("--auto", "Apply safe changes automatically without launching AI")
+  .description("未適用のテンプレート・マイグレーションを適用する")
+  .option("--check", "未適用のマイグレーションをチェックのみ（適用はしない）")
+  .option("--auto", "安全な変更のみをAI起動なしで自動適用")
   .action(async (opts) => {
     const { runMigrate } = await import("../src/cli/migrate.js");
     await runMigrate(opts);
   });
 
-// Skills subcommands (jinn skills find|add|remove|list|update|restore)
+// Skillsサブコマンド（ryoko skills find|add|remove|list|update|restore）
 {
   const skillsCmd = program
     .command("skills")
-    .description("Manage skills from the skills.sh registry");
+    .description("skills.shレジストリのスキルを管理する");
 
   skillsCmd
     .command("find [query]")
-    .description("Search the skills.sh registry")
+    .description("skills.shレジストリを検索する")
     .action(async (query?: string) => {
       const { skillsFind } = await import("../src/cli/skills.js");
       skillsFind(query);
@@ -116,7 +116,7 @@ program
 
   skillsCmd
     .command("add <package>")
-    .description("Install a skill from skills.sh")
+    .description("skills.shからスキルをインストール")
     .action(async (pkg: string) => {
       const { skillsAdd } = await import("../src/cli/skills.js");
       skillsAdd(pkg);
@@ -124,7 +124,7 @@ program
 
   skillsCmd
     .command("remove <name>")
-    .description("Remove a skill from this instance")
+    .description("このインスタンスからスキルを削除")
     .action(async (name: string) => {
       const { skillsRemove } = await import("../src/cli/skills.js");
       skillsRemove(name);
@@ -132,7 +132,7 @@ program
 
   skillsCmd
     .command("list")
-    .description("List installed skills")
+    .description("インストール済みスキルを一覧表示")
     .action(async () => {
       const { skillsList } = await import("../src/cli/skills.js");
       skillsList();
@@ -140,7 +140,7 @@ program
 
   skillsCmd
     .command("update")
-    .description("Re-install all skills to get latest versions")
+    .description("全スキルを最新版で再インストール")
     .action(async () => {
       const { skillsUpdate } = await import("../src/cli/skills.js");
       skillsUpdate();
@@ -148,7 +148,7 @@ program
 
   skillsCmd
     .command("restore")
-    .description("Install all skills listed in skills.json")
+    .description("skills.jsonに記載された全スキルをインストール")
     .action(async () => {
       const { skillsRestore } = await import("../src/cli/skills.js");
       skillsRestore();
@@ -157,9 +157,9 @@ program
 
 program
   .command("chrome-allow")
-  .description("Pre-approve all sites for the Claude Chrome extension")
-  .option("--no-restart", "Don't restart Chrome automatically")
-  .option("--comet-browser", "Target Comet browser instead of Google Chrome")
+  .description("Claude Chrome拡張で全サイトを事前承認する")
+  .option("--no-restart", "Chromeを自動再起動しない")
+  .option("--comet-browser", "Google ChromeではなくCometブラウザを対象にする")
   .action(async (opts) => {
     const { runChromeAllow } = await import("../src/cli/chrome-allow.js");
     await runChromeAllow(opts);

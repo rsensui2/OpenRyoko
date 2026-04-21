@@ -307,7 +307,7 @@ function SttSettingsSection() {
     .sort((a, b) => a[1].localeCompare(b[1]))
 
   return (
-    <Section title="Voice Input">
+    <Section title="音声入力">
       {/* Status row */}
       <div className="flex items-center gap-[var(--space-3)] mb-[var(--space-4)]">
         <div
@@ -598,7 +598,7 @@ export default function SettingsPage() {
           </h1>
 
           {/* -- Section 1: Appearance -- */}
-          <Section title="Appearance">
+          <Section title="外観">
             {/* Theme picker */}
             <div
               className="text-[length:var(--text-footnote)] font-[var(--weight-medium)] text-[var(--text-secondary)] mb-[var(--space-2)]"
@@ -717,7 +717,7 @@ export default function SettingsPage() {
           </Section>
 
           {/* -- COO Emoji -- */}
-          <Section title="COO Emoji">
+          <Section title="COO絵文字">
             <div>
               <div className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)] mb-[var(--space-3)]">
                 Choose an emoji for the COO shown in the sidebar.
@@ -752,7 +752,7 @@ export default function SettingsPage() {
           </Section>
 
           {/* -- Section 2: Branding -- */}
-          <Section title="Branding">
+          <Section title="ブランディング">
             <div
               className="flex flex-col gap-[var(--space-3)]"
             >
@@ -907,7 +907,7 @@ export default function SettingsPage() {
           ) : (
             <>
               {/* -- Section 3: Gateway Configuration -- */}
-              <Section title="Gateway Configuration">
+              <Section title="ゲートウェイ設定">
                 <FieldRow label="Port">
                   <SettingsInput
                     type="number"
@@ -938,7 +938,7 @@ export default function SettingsPage() {
               </Section>
 
               {/* -- Section 4: Engine Configuration -- */}
-              <Section title="Engine Configuration">
+              <Section title="エンジン設定">
                 <div
                   className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--text-tertiary)] mb-[var(--space-2)]"
                 >
@@ -1033,7 +1033,7 @@ export default function SettingsPage() {
               </Section>
 
               {/* -- Section 5: Sessions -- */}
-              <Section title="Sessions">
+              <Section title="セッション">
                 <FieldRow label="Interrupt on New Message">
                   <ToggleSwitch
                     checked={config.sessions?.interruptOnNewMessage ?? true}
@@ -1075,7 +1075,7 @@ export default function SettingsPage() {
               </Section>
 
               {/* -- Section 6: Connectors -- */}
-              <Section title="Connectors">
+              <Section title="コネクタ">
                 <div
                   className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--text-tertiary)] mb-[var(--space-2)]"
                 >
@@ -1101,7 +1101,7 @@ export default function SettingsPage() {
                     placeholder="xoxb-..."
                   />
                 </FieldRow>
-                <FieldRow label="Share Session in Channel">
+                <FieldRow label="チャンネルでセッションを共有">
                   <ToggleSwitch
                     checked={config.connectors?.slack?.shareSessionInChannel ?? false}
                     onChange={(v) =>
@@ -1109,7 +1109,7 @@ export default function SettingsPage() {
                     }
                   />
                 </FieldRow>
-                <FieldRow label="Allowed Users">
+                <FieldRow label="許可ユーザー">
                   <SettingsInput
                     value={Array.isArray(config.connectors?.slack?.allowFrom)
                       ? config.connectors?.slack?.allowFrom?.join(", ")
@@ -1123,7 +1123,7 @@ export default function SettingsPage() {
                     placeholder="U123, U456"
                   />
                 </FieldRow>
-                <FieldRow label="Ignore Old Messages on Boot">
+                <FieldRow label="起動時に古いメッセージを無視">
                   <ToggleSwitch
                     checked={config.connectors?.slack?.ignoreOldMessagesOnBoot ?? true}
                     onChange={(v) =>
@@ -1135,9 +1135,9 @@ export default function SettingsPage() {
                 <div
                   className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--text-tertiary)] mt-[var(--space-3)] mb-[var(--space-2)]"
                 >
-                  Triage (Air-reading)
+                  空気読みトリアージ
                 </div>
-                <FieldRow label="Enabled">
+                <FieldRow label="有効化">
                   <ToggleSwitch
                     checked={config.connectors?.slack?.triage?.enabled ?? false}
                     onChange={(v) =>
@@ -1157,7 +1157,7 @@ export default function SettingsPage() {
                     placeholder="claude-haiku-4-5"
                   />
                 </FieldRow>
-                <FieldRow label="Timeout (ms)">
+                <FieldRow label="タイムアウト (ms)">
                   <SettingsInput
                     type="number"
                     value={
@@ -1174,7 +1174,7 @@ export default function SettingsPage() {
                     placeholder="20000"
                   />
                 </FieldRow>
-                <FieldRow label="Thread Context Limit">
+                <FieldRow label="スレッド文脈の取得件数">
                   <SettingsInput
                     type="number"
                     value={
@@ -1191,7 +1191,7 @@ export default function SettingsPage() {
                     placeholder="10"
                   />
                 </FieldRow>
-                <FieldRow label="Persona (optional)">
+                <FieldRow label="ペルソナ（任意）">
                   <SettingsInput
                     value={config.connectors?.slack?.triage?.persona ?? ""}
                     onChange={(v) =>
@@ -1203,7 +1203,7 @@ export default function SettingsPage() {
                     placeholder="Short description of what this bot is good at"
                   />
                 </FieldRow>
-                <FieldRow label="Bin override (optional)">
+                <FieldRow label="バイナリパス上書き（任意）">
                   <SettingsInput
                     value={config.connectors?.slack?.triage?.bin ?? ""}
                     onChange={(v) =>
@@ -1301,7 +1301,7 @@ export default function SettingsPage() {
                     placeholder="Telegram user IDs, comma-separated (optional)"
                   />
                 </FieldRow>
-                <FieldRow label="Ignore Old Messages on Boot">
+                <FieldRow label="起動時に古いメッセージを無視">
                   <ToggleSwitch
                     checked={config.connectors?.telegram?.ignoreOldMessagesOnBoot ?? true}
                     onChange={(v) =>

@@ -1,11 +1,11 @@
 {
-  "name": "jinn-cli",
-  "version": "0.9.3",
-  "description": "Lightweight AI gateway daemon orchestrating Claude Code, Codex, and Gemini CLI",
+  "name": "openryoko",
+  "version": "0.9.4-ryoko.1",
+  "description": "OpenRyoko — Slackで空気を読んで働くAIアシスタント・ゲートウェイ（Jinnベース、Claude Code/Codex/Gemini CLI対応）",
   "license": "MIT",
   "type": "module",
   "bin": {
-    "jinn": "./dist/bin/jimmy.js"
+    "ryoko": "./dist/bin/jimmy.js"
   },
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",

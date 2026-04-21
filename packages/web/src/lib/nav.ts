@@ -17,12 +17,12 @@ export interface NavItem {
 }
 
 export const NAV_ITEMS: NavItem[] = [
-  { href: "/", label: "Home", icon: Home },
-  { href: "/chat", label: "Chat", icon: MessageSquare },
-  { href: "/org", label: "Organization", icon: Users },
-  { href: "/kanban", label: "Kanban", icon: LayoutGrid },
-  { href: "/cron", label: "Cron", icon: Clock },
-  { href: "/logs", label: "Activity", icon: Activity },
-  { href: "/skills", label: "Skills", icon: Zap },
-  { href: "/settings", label: "Settings", icon: Settings },
+  { href: "/", label: "ホーム", icon: Home },
+  { href: "/chat", label: "チャット", icon: MessageSquare },
+  { href: "/org", label: "組織", icon: Users },
+  { href: "/kanban", label: "カンバン", icon: LayoutGrid },
+  { href: "/cron", label: "スケジュール", icon: Clock },
+  { href: "/logs", label: "アクティビティ", icon: Activity },
+  { href: "/skills", label: "スキル", icon: Zap },
+  { href: "/settings", label: "設定", icon: Settings },
 ]

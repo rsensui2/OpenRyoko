@@ -20,21 +20,29 @@ connectors:
   slack:
     shareSessionInChannel: false
     ignoreOldMessagesOnBoot: true
+    # 空気読み（air-reading）トリアージ層
+    # 有効化すると、Slack受信メッセージごとに軽量LLMで
+    # silent/react/replyを判定し、不要な反応を抑制する。
+    # triage:
+    #   enabled: true
+    #   model: claude-haiku-4-5
+    #   timeoutMs: 20000
+    #   threadContextLimit: 10
 
-# MCP servers provide employees with browser, search, and messaging capabilities.
-# These are injected automatically into Claude Code sessions via --mcp-config.
+# MCPサーバーは従業員にブラウザ・検索・メッセージング機能を提供する。
+# Claude Codeセッションに --mcp-config 経由で自動注入される。
 mcp:
   browser:
     enabled: true
-    provider: playwright   # or "puppeteer"
+    provider: playwright   # または "puppeteer"
   search:
-    enabled: false         # Set to true and add apiKey or set BRAVE_API_KEY env var
+    enabled: false         # trueにしてapiKeyを指定するかBRAVE_API_KEY環境変数をセット
     provider: brave
     # apiKey: ${BRAVE_API_KEY}
   fetch:
     enabled: true
   gateway:
-    enabled: true          # Built-in MCP server for messaging, org, cron, sessions
+    enabled: true          # メッセージング・組織・cron・セッション用の内蔵MCPサーバー
   # custom:
   #   my-server:
   #     enabled: true
@@ -43,18 +51,19 @@ mcp:
   #     env:
   #       API_KEY: ${MY_API_KEY}
 
-# Session limits (can be overridden per-employee in their YAML)
+# セッション上限（従業員ごとにYAMLで上書き可）
 sessions:
   maxDurationMinutes: 30
   maxCostUsd: 10.00
 
-# Cron configuration
+# Cron設定
 cron:
   # alertConnector: slack
   # alertChannel: "#alerts"
 
 portal:
-  language: English
+  portalName: Ryoko
+  language: Japanese
 
 logging:
   file: true

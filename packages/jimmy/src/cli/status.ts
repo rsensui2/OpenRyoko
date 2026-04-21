@@ -5,24 +5,24 @@ import fs from "node:fs";
 
 export async function runStatus(): Promise<void> {
   if (!fs.existsSync(JINN_HOME)) {
-    console.log("Gateway is not set up. Run \"jinn setup\" first.");
+    console.log("ゲートウェイはセットアップされていません。まず \"ryoko setup\" を実行してください。");
     return;
   }
 
   const status = getStatus();
 
   if (!status.running) {
-    console.log("Gateway: stopped");
+    console.log("ゲートウェイ: 停止中");
     if (status.pid) {
-      console.log(`  Stale PID file found (PID ${status.pid}). Process is not alive.`);
+      console.log(`  古いPIDファイルが残っています（PID ${status.pid}）。プロセスは生存していません。`);
     }
     return;
   }
 
-  console.log("Gateway: running");
+  console.log("ゲートウェイ: 稼働中");
   console.log(`  PID: ${status.pid}`);
 
-  // Try to get uptime from PID file mtime
+  // PIDファイルのmtimeから稼働時間を算出
   try {
     const stat = fs.statSync(PID_FILE);
     const uptimeMs = Date.now() - stat.mtimeMs;
@@ -30,39 +30,39 @@ export async function runStatus(): Promise<void> {
     const hours = Math.floor(uptimeSec / 3600);
     const minutes = Math.floor((uptimeSec % 3600) / 60);
     const seconds = uptimeSec % 60;
-    console.log(`  Uptime: ${hours}h ${minutes}m ${seconds}s`);
+    console.log(`  稼働時間: ${hours}時間 ${minutes}分 ${seconds}秒`);
   } catch {
     // ignore
   }
 
-  // Try to get live stats from the gateway
+  // ゲートウェイからライブ統計を取得
   try {
     const config = loadConfig();
     const url = `http://${config.gateway.host}:${config.gateway.port}/api/status`;
     const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
     if (res.ok) {
       const data = await res.json();
-      console.log(`  Port: ${config.gateway.port}`);
+      console.log(`  ポート: ${config.gateway.port}`);
       if (data.sessions !== undefined) {
         if (typeof data.sessions === "object" && data.sessions && !Array.isArray(data.sessions)) {
           const s = data.sessions as { total?: number; active?: number; running?: number };
           const total = s.total ?? 0;
           const active = s.active ?? 0;
           const running = s.running ?? 0;
-          console.log(`  Active sessions: ${active} (running: ${running}, total: ${total})`);
+          console.log(`  アクティブセッション: ${active}（実行中: ${running}、合計: ${total}）`);
         } else {
-          console.log(`  Active sessions: ${data.sessions}`);
+          console.log(`  アクティブセッション: ${data.sessions}`);
         }
       }
       if (data.uptime !== undefined) {
-        console.log(`  Server uptime: ${data.uptime}s`);
+        console.log(`  サーバー稼働時間: ${data.uptime}秒`);
       }
     }
   } catch {
-    // Gateway not responding to HTTP, that's fine
+    // HTTPに応答しない場合はスキップ
     try {
       const config = loadConfig();
-      console.log(`  Port: ${config.gateway.port} (not responding to HTTP)`);
+      console.log(`  ポート: ${config.gateway.port}（HTTPに応答なし）`);
     } catch {
       // no config
     }

@@ -3,7 +3,8 @@ import { ClientProviders } from "./client-providers"
 import "./globals.css"
 
 export const metadata: Metadata = {
-  description: "AI Gateway Dashboard",
+  title: "OpenRyoko",
+  description: "OpenRyoko — Slackで空気を読んで働くAIゲートウェイ",
 }
 
 export const viewport: Viewport = {
@@ -15,7 +16,7 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="ja" suppressHydrationWarning>
       <head>
         <script
           dangerouslySetInnerHTML={{

@@ -1,116 +1,121 @@
-# 🧞 Jinn
+# 🐕 OpenRyoko
 
-Lightweight AI gateway daemon orchestrating Claude Code, Codex, and Gemini CLI.
+Slackで空気を読んで働くAIゲートウェイ。必要なときだけ発言し、雑談には入らない。Claude Code / Codex / Gemini CLI を統合するデーモン型のアシスタント基盤です。
+
+> OpenRyokoは [Jinn](https://github.com/hristo2612/jinn)（MIT License, by Hristo Stoyanov）をベースにした日本語ファーストの派生版です。
 
 <p align="center">
-  <img src="assets/jinn-showcase.gif" alt="Jinn Web Dashboard" width="800" />
+  <img src="assets/jinn-showcase.gif" alt="OpenRyoko Web Dashboard" width="800" />
 </p>
 
-## What is Jinn?
+## 🐕 OpenRyokoとは
 
-Jinn is an open-source AI gateway that wraps the Claude Code CLI, Codex SDK,
-and Gemini CLI behind a unified daemon process. It routes tasks to AI engines,
-manages connectors like Slack, and schedules background work via cron. Jinn is
-a bus, not a brain.
+OpenRyokoは、Claude Code CLI / Codex SDK / Gemini CLI をひとつの常駐デーモンにまとめ、Slack等のチャンネルに「AI同僚」として配置できるゲートウェイです。OpenRyokoはバス（導管）であり、脳ではありません — 知能はラップするCLI側に任せ、OpenRyokoは「どこに流すか／誰に任せるか／いつ沈黙するか」を担当します。
 
-## 💡 Why Jinn?
+### Jinn との違い（OpenRyoko独自の追加機能）
 
-Most AI agent frameworks reinvent the wheel — custom tool-calling loops, brittle context management, hand-rolled retry logic. Then they charge you per API call on top.
+- **発言者認識**: SlackのユーザーIDからdisplay nameを解決し、operatorと混同しないように system prompt を組み立てる
+- **空気読みトリアージ**: メッセージごとに軽量LLM（Haikuをデフォルト採用）で `silent / react / reply` を判定。メンションされない限り基本沈黙、自分が役に立てる話題にだけ介入
+- **日本語デフォルト**: UI・CLI・設定テンプレートが日本語
+- **`~/.ryoko` ホームディレクトリ**: 既存 `~/.jinn` からの自動マイグレーション付き
 
-**Jinn takes a different approach.** It wraps battle-tested professional CLI tools (Claude Code, Codex, Gemini CLI) and adds only what they're missing: routing, scheduling, connectors, and an org system.
+## 💡 なぜOpenRyokoか
 
-### 🔑 Works with your Anthropic Max subscription
+### 🔑 Anthropic Maxサブスクリプションで動く
 
-Because Jinn uses **Claude Code CLI under the hood** — Anthropic's own first-party tool — it works with the [$200/mo Max subscription](https://www.anthropic.com/pricing). No per-token API billing. No surprise $500 invoices. Flat rate, unlimited usage.
+OpenRyokoはClaude Code CLIを子プロセスとして起動するため、Anthropicの公式クライアントとして扱われ、[月額$200のMaxサブスクリプション](https://www.anthropic.com/pricing)の枠内で動作します。APIトークン従量課金ではありません。
 
-Other frameworks can't do this. Anthropic [banned third-party tools from using Max subscription OAuth tokens](https://docs.anthropic.com/en/docs/claude-code/bedrock-vertex#max-plan) in January 2026. Since Jinn delegates to the official CLI, it's fully supported.
+空気読みトリアージは軽量Haikuを使いますが、こちらもClaude Code CLI経由なのでMaxサブスクに含まれます（$0）。
 
-### 🧞 Jinn vs OpenClaw
+### 🧠 「バス、脳ではない」哲学
 
-| | Jinn | OpenClaw |
-|---|---|---|
-| **Architecture** | Wraps professional CLIs (Claude Code, Codex, Gemini) | Custom agentic loop |
-| **Max subscription** | ✅ Works (uses official Claude Code CLI) | ❌ Banned since Jan 2026 |
-| **Typical cost** | $200/mo flat (Max) or pay-per-use | $300–750/mo API bills ([reported by users](https://www.reddit.com/r/OpenClaw/)) |
-| **Security** | Inherits Claude Code's security model | 512 vulnerabilities found by CrowdStrike |
-| **Memory & context** | Handled natively by Claude Code | Custom implementation with [known context-drop bugs](https://github.com/openclaw/openclaw/issues/5429) |
-| **Cron scheduling** | ✅ Built-in, hot-reloadable | ❌ [Fires in wrong agent context](https://github.com/openclaw/openclaw/issues/16053) |
-| **Slack integration** | ✅ Thread-aware, reaction workflow | ❌ [Drops agent-to-agent messages](https://github.com/openclaw/openclaw/issues/15836) |
-| **Multi-agent org** | Departments, ranks, managers, boards | Flat agent list |
-| **Self-modification** | Agents can edit their own config at runtime | Limited |
+OpenRyokoは独自のプロンプトエンジニアリング層を持ちません。Claude Codeが既にツール利用・ファイル編集・マルチステップ推論・記憶を担当しているので、OpenRyokoはそれを外の世界（Slack、cron、WebUI）に接続するだけ。Claude Codeが進化すれば、OpenRyokoも自動的に強くなります。
 
-### 🧠 The "bus, not brain" philosophy
+### 🐕 空気読み能力
 
-Jinn adds **zero custom AI logic**. No prompt engineering layer. No opinions on how agents should think. All intelligence comes from the engines themselves — Claude Code already handles tool use, file editing, multi-step reasoning, and memory. Jinn just connects it to the outside world.
+「うざくならず、必要な時には出てくる」を守るため、Slackメッセージは受信時に以下のフローで判定されます：
 
-When Claude Code gets better, Jinn gets better — automatically.
-
-## ✨ Features
-
-- 🔌 **Triple engine support** — Claude Code CLI + Codex SDK + Gemini CLI
-- 💬 **Connectors** — Slack (threads + reactions), WhatsApp (QR auth), Discord (bot)
-- 📎 **File attachments** — drag & drop files into web chat, passed through to engines
-- 📱 **Mobile-responsive** — collapsible sidebar and mobile-friendly dashboard
-- ⏰ **Cron scheduling** — hot-reloadable background jobs
-- 👥 **AI org system** — departments, ranks, managers, employees, task boards
-- 🌐 **Web dashboard** — chat, org map, kanban, cost tracking, cron visualizer
-- 🔄 **Hot-reload** — change config, cron, or org files without restarting
-- 🛠️ **Self-modification** — agents can edit their own config, skills, and org at runtime
-- 📦 **Skills system** — reusable markdown playbooks that engines follow natively
-- 🏢 **Multi-instance** — run multiple isolated Jinn instances side by side
-- 🔗 **MCP support** — connect to any MCP server
-
-## 🚀 Quick Start
-
-```bash
-npm install -g jinn-cli
-jinn setup
-jinn start
+```
+受信メッセージ
+  ├─ DM？               ──→ 常に返信
+  ├─ @メンション？       ──→ 常に返信
+  └─ グレーゾーン        ──→ 軽量LLM（Haiku）でトリアージ
+                             ├─ silent → 何もしない
+                             ├─ react  → 絵文字スタンプだけ付ける
+                             └─ reply  → 本エンジンで返信
 ```
 
-Or install via Homebrew:
+判定基準（デフォルトプロンプトより）:
+- 明らかに自分宛 → reply
+- 自分の専門領域で役に立てる → reply
+- 単なる同意・感謝 → react（絵文字のみ）
+- それ以外 → silent（雑談には絶対に割り込まない）
+
+確信度 60% 未満なら silent に倒す保守的設計です。
+
+## ✨ 主要機能
+
+- 🔌 **3エンジン対応** — Claude Code CLI + Codex SDK + Gemini CLI
+- 💬 **コネクタ** — Slack（スレッド・リアクション・空気読み）、WhatsApp、Discord、Telegram
+- 📎 **ファイル添付** — Web チャットにドラッグ&ドロップしたファイルをエンジンへパススルー
+- 📱 **モバイル対応** — サイドバー折りたたみ・モバイル向けダッシュボード
+- ⏰ **Cron スケジューリング** — ホットリロード対応のバックグラウンドジョブ
+- 👥 **AI組織システム** — 部門・階級・マネージャー・従業員・タスクボード
+- 🌐 **Web ダッシュボード** — チャット、組織図、カンバン、コスト追跡、cron可視化
+- 🔄 **ホットリロード** — config、cron、組織ファイルを再起動なしで反映
+- 🛠️ **自己改変** — エージェントが自分の設定・スキル・組織を実行中に編集可能
+- 📦 **スキルシステム** — エンジンがネイティブに従う再利用可能なMarkdownプレイブック
+- 🏢 **マルチインスタンス** — 複数のOpenRyokoインスタンスを並列起動
+- 🔗 **MCP対応** — 任意のMCPサーバーに接続
+
+## 🚀 クイックスタート
 
 ```bash
-brew tap hristo2612/jinn https://github.com/hristo2612/jinn
-brew install jinn
-jinn setup
-jinn start
+# このリポジトリをクローンして開発インストール
+git clone https://github.com/rsensui2/OpenRyoko.git
+cd OpenRyoko
+pnpm install
+pnpm --filter "@openryoko/web" build
+pnpm --filter openryoko build
+npm install -g ./packages/jimmy
+
+# 初期化
+ryoko setup
+ryoko start
 ```
 
-Then open [http://localhost:7777](http://localhost:7777).
+ブラウザで [http://localhost:7777](http://localhost:7777) を開くとダッシュボードが表示されます。
 
-## 🏗️ Architecture
+## 🏗️ アーキテクチャ
 
 ```
                           +----------------+
-                          |   jinn CLI     |
+                          |   ryoko CLI    |
                           +-------+--------+
                                   |
                           +-------v--------+
-                          |    Gateway     |
-                          |    Daemon      |
+                          |   ゲートウェイ  |
+                          |    デーモン     |
                           +--+--+--+--+---+
                              |  |  |  |
               +--------------+  |  |  +--------------+
               |                 |  |                  |
       +-------v-------+ +------v------+  +-----------v---+
-      |    Engines     | | Connectors  |  |    Web UI     |
+      |    エンジン    | |  コネクタ    |  |    Web UI     |
       |Claude|Codex|Gem| | Slack|WA|DC |  | localhost:7777|
       +----------------+ +-------------+  +---------------+
               |                 |
       +-------v-------+ +------v------+
-      |     Cron      | |    Org      |
-      |   Scheduler   | |   System    |
+      |     Cron      | |   組織       |
+      | スケジューラ    | |  システム     |
       +---------------+ +-------------+
 ```
 
-The CLI sends commands to the gateway daemon. The daemon dispatches work to AI
-engines (Claude Code, Codex, Gemini CLI), manages connector integrations, runs
-scheduled cron jobs, and serves the web dashboard.
+CLI がゲートウェイデーモンにコマンドを送信。デーモンがAIエンジンへ作業を振り分け、コネクタ統合を管理し、cron ジョブを実行し、Web ダッシュボードを配信します。
 
-## ⚙️ Configuration
+## ⚙️ 設定
 
-Jinn reads its configuration from `~/.jinn/config.yaml`. An example:
+OpenRyokoは `~/.ryoko/config.yaml` から設定を読み込みます（`~/.jinn/` が既存の場合、初回起動時に自動マイグレーション）。
 
 ```yaml
 gateway:
@@ -124,15 +129,25 @@ engines:
 
 connectors:
   slack:
-    enabled: true
     app_token: xapp-...
     bot_token: xoxb-...
+    # 空気読みトリアージ（メンションなしメッセージへの過剰反応を抑制）
+    triage:
+      enabled: true
+      model: claude-haiku-4-5
+      timeoutMs: 20000
+      threadContextLimit: 10
 
 cron:
   jobs:
     - name: daily-review
       schedule: "0 9 * * *"
-      task: "Review open PRs"
+      task: "PRをレビューして要約を投稿"
+
+portal:
+  portalName: Ryoko
+  operatorName: 亮介
+  language: Japanese
 
 org:
   agents:
@@ -140,107 +155,66 @@ org:
       role: code-review
 ```
 
-## 📁 Project Structure
+## 📁 プロジェクト構成
 
 ```
-jinn/
+OpenRyoko/
   packages/
-    jimmy/          # Core gateway daemon + CLI
-    web/            # Web dashboard (frontend)
-  turbo.json        # Turborepo build configuration
+    jimmy/          # ゲートウェイデーモン + CLI（パッケージ名: openryoko）
+    web/            # Web ダッシュボード（パッケージ名: @openryoko/web）
+  turbo.json
   pnpm-workspace.yaml
-  tsconfig.base.json
 ```
 
-## 🧑‍💻 Development
+## 🧑‍💻 開発
 
 ```bash
-git clone https://github.com/hristo2612/jinn.git
-cd jinn
+git clone https://github.com/rsensui2/OpenRyoko.git
+cd OpenRyoko
 pnpm install
-pnpm setup   # one-time: builds all packages and creates ~/.jinn
-pnpm dev     # starts gateway + Next.js dev server with hot reload
+pnpm setup   # 一回限り: 全パッケージビルド + ~/.ryoko 作成
+pnpm dev     # ゲートウェイ + Next.js dev サーバーをホットリロードで起動
 ```
 
-Open [http://localhost:3000](http://localhost:3000) to use the web dashboard.
+[http://localhost:3000](http://localhost:3000) で Web ダッシュボードが開けます。
 
-`pnpm dev` starts two servers behind the scenes: the **gateway daemon** on
-`:7777` (API, WebSocket, connectors) and the **Next.js dev server** on `:3000`
-(web dashboard with hot reload). Next.js rewrites proxy `/api/*` and `/ws`
-requests from `:3000` to the gateway, so you only need to visit `:3000`. The
-gateway auto-restarts when you edit backend source files via Node's built-in
-`--watch` mode. To use a non-default gateway port, set `GATEWAY_PORT=<port>`
-before running `pnpm dev`.
+> **前提条件:** Node.js 22+、pnpm 10+、[Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)（`npm install -g @anthropic-ai/claude-code`）
 
-> **Prerequisites:** Node.js 22+, pnpm 10+, and the
-> [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`npm install -g @anthropic-ai/claude-code`).
+### 主要スクリプト
 
-### Available Scripts
+| コマンド | 説明 |
+| --- | --- |
+| `pnpm setup` | 全パッケージビルド + `~/.ryoko` 初期化（一回限り） |
+| `pnpm dev` | ゲートウェイ（`:7777`）と Next.js dev サーバー（`:3000`）をホットリロードで起動 |
+| `pnpm start` | クリーンビルド後にゲートウェイを `:7777` で起動 |
+| `pnpm stop` | 稼働中のゲートウェイデーモンを停止 |
+| `pnpm status` | ゲートウェイの稼働状態を確認 |
+| `pnpm build` | 全パッケージをビルド |
+| `pnpm typecheck` | TypeScript 型チェックを実行 |
+| `pnpm lint` | 全パッケージを lint |
+| `pnpm clean` | ビルド成果物を削除 |
 
-| Command            | Description                                                         |
-| ------------------ | ------------------------------------------------------------------- |
-| `pnpm setup`       | Build all packages and initialize `~/.jinn` (one-time)              |
-| `pnpm dev`         | Start gateway (`:7777`) + Next.js dev server (`:3000`) with hot reload |
-| `pnpm start`       | Production-style clean build + start gateway on `:7777`             |
-| `pnpm stop`        | Stop the running gateway daemon                                     |
-| `pnpm status`      | Check if the gateway daemon is running                              |
-| `pnpm build`       | Build all packages                                                  |
-| `pnpm typecheck`   | Run TypeScript type checking                                        |
-| `pnpm lint`        | Lint all packages                                                   |
-| `pnpm clean`       | Clean build artifacts                                               |
+## 🔗 Jinn からの移行
 
-## 🗺️ Roadmap
+既に `~/.jinn/` で Jinn を運用している場合、OpenRyoko は初回起動時に自動でディレクトリを `~/.ryoko/` にリネームします。トークン・セッション履歴・スキル・組織ファイルはすべてそのまま引き継がれます。
 
-Jinn is under active development. Here's what's coming:
+環境変数で古い設定を尊重することもできます：
 
-### 🔌 Connectors
-- [x] **Discord** — bot integration via discord.js
-- [x] **WhatsApp** — Baileys-based connector with QR auth and media support
-- [x] **Telegram** — bot API connector with polling and user allowlist
-- [ ] **iMessage** — macOS-native via AppleScript bridge
-- [ ] **Email** — IMAP/SMTP connector for inbox monitoring and replies
-- [ ] **Webhooks** — generic inbound/outbound HTTP webhooks
+- `JINN_HOME` — 指定パスをホームとして使用（後方互換）
+- `JINN_INSTANCE` — インスタンス名指定（後方互換）
+- `RYOKO_HOME` / `RYOKO_INSTANCE` — 新推奨
 
-### 🧠 Engines
-- [x] **Gemini CLI** — Google's Gemini as a third engine option
-- [ ] **Local models** — Ollama / llama.cpp integration for offline use
-- [ ] **Engine fallback chains** — auto-failover when primary engine is unavailable
-
-### 👥 Org System
-- [x] **Agent-to-agent messaging** — direct communication without board intermediary
-- [x] **Shared memory** — cross-session knowledge that persists across employees
-- [ ] **Performance tracking** — automatic quality scoring per employee over time
-- [x] **Auto-promotion** — promote employees to manager based on track record
-
-### 🌐 Web Dashboard
-- [x] **Mobile-responsive UI** — collapsible sidebar, mobile-friendly chat
-- [x] **Live streaming** — watch agent responses stream in real-time
-- [x] **File attachments** — drag & drop files into chat with engine passthrough
-- [ ] **Approval workflows** — approve/reject agent actions from the dashboard
-- [ ] **Cost analytics** — per-employee, per-department cost breakdowns
-
-### 🛠️ Platform
-- [ ] **Plugin system** — installable plugins for common integrations (Stripe, Linear, GitHub)
-- [ ] **REST API auth** — API keys for secure remote access
-- [ ] **Multi-user support** — team access with roles and permissions
-- [ ] **Docker image** — one-command deployment with `docker run`
-
-### 📦 Skills
-- [ ] **Skills marketplace** — browse and install community skills from [skills.sh](https://skills.sh)
-- [ ] **Skill versioning** — pin skill versions, auto-update with changelogs
-- [ ] **Skill templates** — scaffolding for common patterns (blog pipeline, support inbox, etc.)
-
-Want to suggest a feature? [Open an issue](https://github.com/hristo2612/jinn/issues).
-
-## 🙏 Acknowledgments
-
-The web dashboard UI is built on components from [ClawPort UI](https://github.com/JohnRiceML/clawport-ui) by John Rice, adapted for Jinn's architecture. ClawPort provides the foundation for the theme system, shadcn components, org map, kanban board, cost dashboard, and activity console.
-
-## 📄 License
+## 📄 ライセンス
 
 [MIT](LICENSE)
 
-## 🤝 Contributing
+元の著作権表記（Jimmy AI Contributors / Hristo Stoyanov）は `LICENSE` ファイルに保持されています。OpenRyoko の追加変更も同じく MIT ライセンスで提供されます。
 
-See [CONTRIBUTING.md](.github/CONTRIBUTING.md) for guidelines on setting up
-your development environment and submitting pull requests.
+## 🙏 謝辞
+
+- 本体の 95% は [Jinn](https://github.com/hristo2612/jinn) のコードそのものです。素晴らしい基盤を公開してくれた Hristo Stoyanov 氏に感謝します
+- Web ダッシュボードのUIコンポーネントは [ClawPort UI](https://github.com/JohnRiceML/clawport-ui) by John Rice を基礎にしています
+
+## 🤝 コントリビュート
+
+本リポジトリは現在、個人利用に合わせた日本語ファーストの実験的派生版です。上流 Jinn に還元できる汎用的な改善は積極的に PR を送る方針です。

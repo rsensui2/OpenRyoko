@@ -11,33 +11,33 @@ const RESET = "\x1b[0m";
 export async function runStart(opts: { daemon?: boolean; port?: number }): Promise<void> {
   if (!fs.existsSync(JINN_HOME)) {
     console.error(
-      `Error: ${JINN_HOME} does not exist. Run "jinn setup" first.`
+      `エラー: ${JINN_HOME} が存在しません。まず "ryoko setup" を実行してください。`
     );
     process.exit(1);
   }
 
   const config = loadConfig();
 
-  // Check for pending migrations
+  // 未適用のマイグレーションがあるかチェック
   const instanceVersion = getInstanceVersion();
   const pkgVersion = getPackageVersion();
   if (compareSemver(instanceVersion, pkgVersion) < 0) {
     console.log(
-      `${YELLOW}[migrate]${RESET} Instance is at v${instanceVersion}, CLI is v${pkgVersion}. Run ${DIM}jinn migrate${RESET} to update.`
+      `${YELLOW}[migrate]${RESET} インスタンスは v${instanceVersion}、CLIは v${pkgVersion} です。${DIM}ryoko migrate${RESET} で更新してください。`
     );
   }
 
-  // Allow CLI --port to override config
+  // CLIの --port で config を上書き
   if (opts.port) {
     config.gateway.port = opts.port;
   }
 
   if (opts.daemon) {
     startDaemon(config);
-    console.log("Gateway started in background.");
+    console.log("ゲートウェイをバックグラウンドで起動しました。");
   } else {
     console.log(
-      `Starting gateway on ${config.gateway.host}:${config.gateway.port}...`
+      `ゲートウェイを ${config.gateway.host}:${config.gateway.port} で起動中...`
     );
     await startForeground(config);
   }
