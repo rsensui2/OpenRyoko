@@ -324,6 +324,12 @@ export interface SlackTriageConfig {
   threadContextLimit?: number;
   /** Optional persona override for the triage prompt. Defaults to the bot's configured persona. */
   persona?: string;
+  /**
+   * If the bot has posted in a thread within this window, skip triage and always reply.
+   * This prevents air-reading from silently dropping follow-up messages in an active
+   * conversation (e.g. mid-skill execution). Default: 600000ms (10 minutes).
+   */
+  activeThreadTtlMs?: number;
 }
 
 export interface SlackConnectorConfig {
