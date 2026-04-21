@@ -11,8 +11,17 @@ import type {
 import { buildReplyContext, deriveSessionKey, isOldSlackMessage } from "./threads.js";
 import { formatResponse, downloadAttachment } from "./format.js";
 import { normalizeSpeakerInfo, type SpeakerInfo } from "./speaker.js";
+import { runTriage } from "./triage.js";
+import type { SlackTriageConfig } from "../../shared/types.js";
 import { TMP_DIR } from "../../shared/paths.js";
 import { logger } from "../../shared/logger.js";
+
+export interface SlackConnectorContext {
+  /** Display name of the Jinn instance (used as botName in triage) */
+  portalName?: string;
+  /** Configured operator name — used to identify operator vs third party */
+  operatorName?: string;
+}
 
 export class SlackConnector implements Connector {
   name = "slack";
@@ -26,6 +35,9 @@ export class SlackConnector implements Connector {
   private channelNameCache = new Map<string, { name: string; cachedAt: number }>();
   private userInfoCache = new Map<string, { info: SpeakerInfo; cachedAt: number }>();
   private botUserId: string | null = null;
+  private readonly triageConfig: SlackTriageConfig | undefined;
+  private readonly portalName: string | undefined;
+  private readonly operatorName: string | undefined;
   private static CHANNEL_CACHE_TTL_MS = 3600_000; // 1 hour
   private static USER_CACHE_TTL_MS = 3600_000; // 1 hour
 
@@ -59,7 +71,7 @@ export class SlackConnector implements Connector {
     }
   }
 
-  constructor(config: SlackConnectorConfig) {
+  constructor(config: SlackConnectorConfig, context: SlackConnectorContext = {}) {
     this.app = new App({
       token: config.botToken,
       appToken: config.appToken,
@@ -72,6 +84,9 @@ export class SlackConnector implements Connector {
         ? config.allowFrom.split(",").map((value) => value.trim()).filter(Boolean)
         : [];
     this.allowedUsers = allowFrom.length > 0 ? new Set(allowFrom) : null;
+    this.triageConfig = config.triage;
+    this.portalName = context.portalName;
+    this.operatorName = context.operatorName;
   }
 
   private async resolveSpeakerInfo(userId: string | undefined): Promise<SpeakerInfo | null> {
@@ -101,6 +116,97 @@ export class SlackConnector implements Connector {
       speakerIsBot: speaker?.isBot ?? null,
       speakerTz: speaker?.tz ?? null,
     };
+  }
+
+  private async runSlackTriage(
+    event: { channel: string; ts?: string; thread_ts?: string },
+    ctx: {
+      speaker: SpeakerInfo | null;
+      channelType: string;
+      channelName?: string;
+      wasMentioned: boolean;
+      messageText: string;
+    },
+  ): Promise<{ action: "silent" | "react" | "reply"; emoji?: string; reason?: string }> {
+    const threadLimit = this.triageConfig?.threadContextLimit ?? 10;
+    const recentThread = await this.fetchRecentThreadForTriage(
+      event.channel,
+      event.thread_ts,
+      event.ts,
+      threadLimit,
+    );
+
+    const speakerName = ctx.speaker?.name ?? "unknown";
+    const speakerIsOperator = !!this.operatorName && !!ctx.speaker && [
+      ctx.speaker.name,
+      ctx.speaker.realName,
+      ctx.speaker.displayName,
+      ctx.speaker.handle,
+    ].filter((v): v is string => !!v).includes(this.operatorName);
+
+    const channelDescription = ctx.channelName ? `#${ctx.channelName}` : event.channel;
+
+    return runTriage(
+      {
+        botName: this.portalName || "Jinn",
+        persona: this.triageConfig?.persona,
+        operatorName: this.operatorName,
+        channelType: ctx.channelType,
+        channelDescription,
+        speakerName,
+        speakerIsOperator,
+        wasMentioned: ctx.wasMentioned,
+        recentThread,
+        messageText: ctx.messageText,
+      },
+      {
+        bin: this.triageConfig?.bin,
+        model: this.triageConfig?.model,
+        timeoutMs: this.triageConfig?.timeoutMs,
+      },
+    );
+  }
+
+  private async fetchRecentThreadForTriage(
+    channelId: string,
+    threadTs: string | undefined,
+    messageTs: string | undefined,
+    limit: number,
+  ): Promise<Array<{ speaker: string; text: string }>> {
+    try {
+      const messages = threadTs
+        ? (await this.app.client.conversations.replies({
+            channel: channelId,
+            ts: threadTs,
+            limit: Math.max(1, limit),
+          })).messages
+        : (await this.app.client.conversations.history({
+            channel: channelId,
+            limit: Math.max(1, limit),
+            latest: messageTs,
+            inclusive: false,
+          })).messages;
+
+      if (!messages) return [];
+      const chronological = threadTs ? messages : [...messages].reverse();
+      const result: Array<{ speaker: string; text: string }> = [];
+      for (const m of chronological) {
+        const text = (m as any).text as string | undefined;
+        if (!text) continue;
+        const userId = (m as any).user as string | undefined;
+        const botId = (m as any).bot_id as string | undefined;
+        const speakerLabel = userId
+          ? (await this.resolveSpeakerInfo(userId))?.name ?? userId
+          : botId
+            ? `bot:${botId}`
+            : "unknown";
+        result.push({ speaker: speakerLabel, text });
+      }
+      return result;
+    } catch (err) {
+      logger.debug(`[triage] failed to fetch recent thread: ${err}`);
+      return [];
+    }
   }
 
   private async resolveChannelName(channelId: string): Promise<string | undefined> {
@@ -198,6 +304,10 @@ export class SlackConnector implements Connector {
         this.resolveSpeakerInfo(slackUserId),
       ]);
 
+      const channelType = ((event as any).channel_type as string) || "channel";
+      const rawText = ((event as any).text || "") as string;
+      const wasMentioned = !!this.botUserId && rawText.includes(`<@${this.botUserId}>`);
+
       const msg: IncomingMessage = {
         connector: this.name,
         source: "slack",
@@ -208,16 +318,54 @@ export class SlackConnector implements Connector {
         thread: (event as any).thread_ts,
         user: (event as any).user,
         userId: (event as any).user,
-        text: parentContext + ((event as any).text || ""),
+        text: parentContext + rawText,
         attachments,
         raw: event,
         transportMeta: {
-          channelType: ((event as any).channel_type as string) || "channel",
+          channelType,
           team: ((event as any).team as string) || null,
           channelName: channelName || null,
+          wasMentioned,
           ...this.speakerTransportFields(speaker, slackUserId),
         },
       };
+
+      // Air-reading triage gate.
+      // Fast paths that bypass the LLM triage entirely:
+      //   - DMs: always reply (1:1 context is implicitly addressed to the bot)
+      //   - Explicit @-mention: always reply
+      const triageEnabled = this.triageConfig?.enabled === true;
+      const skipTriage = !triageEnabled || channelType === "im" || wasMentioned;
+
+      if (!skipTriage) {
+        const decision = await this.runSlackTriage(event as any, {
+          speaker,
+          channelType,
+          channelName: channelName ?? undefined,
+          wasMentioned,
+          messageText: rawText,
+        });
+
+        if (decision.action === "silent") {
+          logger.info(`[slack] triage → silent (${decision.reason ?? "no reason"}) for ts=${(event as any).ts}`);
+          return;
+        }
+        if (decision.action === "react") {
+          const emoji = decision.emoji || "eyes";
+          logger.info(`[slack] triage → react :${emoji}: (${decision.reason ?? "no reason"}) for ts=${(event as any).ts}`);
+          try {
+            await this.app.client.reactions.add({
+              channel: (event as any).channel,
+              timestamp: (event as any).ts,
+              name: emoji,
+            });
+          } catch (err) {
+            logger.debug(`[slack] failed to add triage reaction: ${err}`);
+          }
+          return;
+        }
+        logger.info(`[slack] triage → reply (${decision.reason ?? "no reason"}) for ts=${(event as any).ts}`);
+      }
 
       this.handler(msg);
     });

@@ -168,12 +168,19 @@ export async function startGateway(
 
   if (config.connectors?.slack?.appToken && config.connectors?.slack?.botToken) {
     try {
-      const slack = new SlackConnector({
-        appToken: config.connectors.slack.appToken,
-        botToken: config.connectors.slack.botToken,
-        allowFrom: config.connectors.slack.allowFrom,
-        ignoreOldMessagesOnBoot: config.connectors.slack.ignoreOldMessagesOnBoot,
-      });
+      const slack = new SlackConnector(
+        {
+          appToken: config.connectors.slack.appToken,
+          botToken: config.connectors.slack.botToken,
+          allowFrom: config.connectors.slack.allowFrom,
+          ignoreOldMessagesOnBoot: config.connectors.slack.ignoreOldMessagesOnBoot,
+          triage: config.connectors.slack.triage,
+        },
+        {
+          portalName: config.portal?.portalName,
+          operatorName: config.portal?.operatorName,
+        },
+      );
       slack.onMessage((msg) => {
         const routeOpts: RouteOptions = {};
         if (config.connectors.slack?.employee) {
@@ -341,7 +348,10 @@ export async function startGateway(
           }
           case "slack": {
             const slackConfig = { ...typeConfig, id } as any;
-            const slack = new SlackConnector(slackConfig);
+            const slack = new SlackConnector(slackConfig, {
+              portalName: config.portal?.portalName,
+              operatorName: config.portal?.operatorName,
+            });
             slack.onMessage((msg) => {
               const routeOpts: RouteOptions = {};
               if (employee) {
@@ -466,7 +476,10 @@ export async function startGateway(
             }
             case "slack": {
               const slackConfig = { ...typeConfig, id } as any;
-              const slack = new SlackConnector(slackConfig);
+              const slack = new SlackConnector(slackConfig, {
+                portalName: config.portal?.portalName,
+                operatorName: config.portal?.operatorName,
+              });
               slack.onMessage((msg) => {
                 const routeOpts: RouteOptions = {};
                 if (employee) {

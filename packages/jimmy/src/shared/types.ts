@@ -311,6 +311,21 @@ export interface McpGlobalConfig {
 
 export interface WebConnectorConfig {}
 
+export interface SlackTriageConfig {
+  /** Enable the air-reading triage layer. Default: false (legacy behavior). */
+  enabled?: boolean;
+  /** Binary to invoke for triage. Default: "claude" (Claude Code CLI). */
+  bin?: string;
+  /** Model to use for triage calls. Default: "claude-haiku-4-5". */
+  model?: string;
+  /** Soft timeout before falling back to "silent". Default: 8000ms. */
+  timeoutMs?: number;
+  /** How many recent thread messages to include as context. Default: 10. */
+  threadContextLimit?: number;
+  /** Optional persona override for the triage prompt. Defaults to the bot's configured persona. */
+  persona?: string;
+}
+
 export interface SlackConnectorConfig {
   /** Unique instance identifier (e.g. "slack-support") */
   id?: string;
@@ -320,6 +335,8 @@ export interface SlackConnectorConfig {
   botToken: string;
   allowFrom?: string | string[];
   ignoreOldMessagesOnBoot?: boolean;
+  /** Air-reading triage: decide per-message whether to reply/react/stay silent */
+  triage?: SlackTriageConfig;
 }
 
 export interface DiscordConnectorConfig {
