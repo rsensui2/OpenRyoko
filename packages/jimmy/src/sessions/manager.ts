@@ -340,7 +340,7 @@ export class SessionManager {
         }
       }
 
-      const result = await engine.run({
+      let result = await engine.run({
         prompt: promptToRun,
         resumeSessionId: session.engineSessionId ?? undefined,
         systemPrompt,
@@ -354,13 +354,13 @@ export class SessionManager {
         sessionId: session.id,
       });
 
-      const wasInterrupted = result.error?.startsWith("Interrupted");
+      let wasInterrupted = result.error?.startsWith("Interrupted");
 
       // Dead session detection: if the engine session ID is stale (expired/invalid),
       // clear cached engine sessions from transportMeta so the next attempt starts fresh.
       // Also sets a flag so we skip the rate-limit retry loop below (a dead session
       // error can contain text like "429" that would otherwise match RATE_LIMIT_ERROR_RE).
-      const isDead = !wasInterrupted && isDeadSessionError(result);
+      let isDead = !wasInterrupted && isDeadSessionError(result);
       if (isDead) {
         logger.warn(`Dead session detected for ${session.id} — clearing stale engine IDs`);
         const meta = { ...(session.transportMeta || {}) } as Record<string, unknown>;
@@ -372,6 +372,33 @@ export class SessionManager {
         });
         // Update local reference so subsequent code doesn't re-read stale IDs
         session = { ...session, engineSessionId: null, transportMeta: meta as any };
+
+        // Auto-retry once with a fresh engine session. Without this, a user
+        // message that happens to land on a stale resume ID is silently lost
+        // (the raw engine error propagates back instead of a real answer).
+        logger.info(`Retrying session ${session.id} with fresh engine session after dead-session`);
+        result = await engine.run({
+          prompt: promptToRun,
+          resumeSessionId: undefined,
+          systemPrompt,
+          cwd: JINN_HOME,
+          bin: engineConfig.bin,
+          model: session.model ?? engineConfig.model,
+          effortLevel,
+          cliFlags: employee?.cliFlags,
+          mcpConfigPath,
+          attachments: attachments.length > 0 ? attachments : undefined,
+          sessionId: session.id,
+        });
+
+        // Re-evaluate the flags against the retry result. If the retry also
+        // comes back dead, something deeper is wrong — log and fall through to
+        // normal error handling (which will post the error to the user).
+        wasInterrupted = result.error?.startsWith("Interrupted");
+        isDead = !wasInterrupted && isDeadSessionError(result);
+        if (isDead) {
+          logger.error(`Retry with fresh session for ${session.id} also reported dead-session; giving up`);
+        }
       }
 
       // Detect rate limit / usage limit errors and auto-retry.

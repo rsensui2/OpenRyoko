@@ -67,34 +67,34 @@ describe("runTriage", () => {
     expect(decision.emoji).toBe("thumbsup");
   });
 
-  it("falls back to silent on non-zero exit", async () => {
+  it("fails open to reply on non-zero exit (missing a reply is worse than a wrong reply)", async () => {
     const decision = await runTriage(baseInput, {
       spawnImpl: makeFakeSpawn({ exitCode: 2, stderr: "auth error" }) as any,
     });
-    expect(decision).toEqual({ action: "silent", reason: "triage_error" });
+    expect(decision).toEqual({ action: "reply", reason: "triage_error" });
   });
 
-  it("falls back to silent on spawn error", async () => {
+  it("fails open to reply on spawn error", async () => {
     const decision = await runTriage(baseInput, {
       spawnImpl: makeFakeSpawn({ error: new Error("ENOENT") }) as any,
     });
-    expect(decision).toEqual({ action: "silent", reason: "triage_error" });
+    expect(decision).toEqual({ action: "reply", reason: "triage_error" });
   });
 
-  it("falls back to silent when output is unparseable", async () => {
+  it("fails open to reply when output is unparseable", async () => {
     const decision = await runTriage(baseInput, {
       spawnImpl: makeFakeSpawn({
         stdout: JSON.stringify({ type: "result", result: "definitely not json" }),
       }) as any,
     });
-    expect(decision).toEqual({ action: "silent", reason: "parse_failed" });
+    expect(decision).toEqual({ action: "reply", reason: "parse_failed" });
   });
 
-  it("times out and falls back to silent when the process hangs", async () => {
+  it("fails open to reply when the process times out", async () => {
     const decision = await runTriage(baseInput, {
       timeoutMs: 30,
       spawnImpl: makeFakeSpawn({ hangForever: true }) as any,
     });
-    expect(decision).toEqual({ action: "silent", reason: "triage_error" });
+    expect(decision).toEqual({ action: "reply", reason: "triage_error" });
   });
 });
