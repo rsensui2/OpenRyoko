@@ -43,8 +43,8 @@ export default function OrgPage() {
       .getOrg()
       .then((data: OrgData) => {
         const coo: Employee = {
-          name: (settings.portalName ?? "Jinn").toLowerCase(),
-          displayName: settings.portalName ?? "Jinn",
+          name: (settings.portalName ?? "Ryoko").toLowerCase(),
+          displayName: settings.portalName ?? "Ryoko",
           department: "",
           rank: "executive",
           engine: "claude",
@@ -115,10 +115,10 @@ export default function OrgPage() {
             {/* Tab bar at top */}
             <div className="absolute top-[var(--space-4)] left-[var(--space-4)] z-10">
               <TabsList>
-                <TabsTrigger value="map">Map</TabsTrigger>
-                <TabsTrigger value="grid">Grid</TabsTrigger>
-                <TabsTrigger value="list">List</TabsTrigger>
-                <TabsTrigger value="tree">Tree</TabsTrigger>
+                <TabsTrigger value="map">マップ</TabsTrigger>
+                <TabsTrigger value="grid">グリッド</TabsTrigger>
+                <TabsTrigger value="list">リスト</TabsTrigger>
+                <TabsTrigger value="tree">ツリー</TabsTrigger>
               </TabsList>
             </div>
 

@@ -61,7 +61,7 @@ export function SessionList({
   onDeleted?: () => void;
 }) {
   const { settings } = useSettings();
-  const portalName = settings.portalName ?? "Jinn";
+  const portalName = settings.portalName ?? "Ryoko";
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; sessionId: string } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 

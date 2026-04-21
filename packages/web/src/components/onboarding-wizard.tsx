@@ -43,12 +43,12 @@ const ACCENT_PRESETS = [
 // ---------------------------------------------------------------------------
 
 const FEATURES = [
-  { icon: MessageSquare, name: "Chat", desc: "Direct conversations with any employee" },
-  { icon: Users, name: "Organization", desc: "Visual org chart of your AI team" },
-  { icon: Columns3, name: "Kanban", desc: "Task boards for work management" },
-  { icon: Clock, name: "Cron", desc: "Scheduled jobs with status monitoring" },
-  { icon: DollarSign, name: "Costs", desc: "Token usage and cost tracking" },
-  { icon: Activity, name: "Activity", desc: "Real-time logs and event stream" },
+  { icon: MessageSquare, name: "チャット", desc: "従業員との直接対話" },
+  { icon: Users, name: "組織", desc: "AIチームの組織図をビジュアル表示" },
+  { icon: Columns3, name: "カンバン", desc: "タスクボードで作業を管理" },
+  { icon: Clock, name: "スケジュール", desc: "cronジョブとステータス監視" },
+  { icon: DollarSign, name: "コスト", desc: "トークン使用量とコストの追跡" },
+  { icon: Activity, name: "アクティビティ", desc: "リアルタイムログ・イベントストリーム" },
 ]
 
 // ---------------------------------------------------------------------------
@@ -78,7 +78,7 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
   // Local input values
   const [localName, setLocalName] = useState("")
   const [localOperator, setLocalOperator] = useState("")
-  const [localLanguage, setLocalLanguage] = useState(settings.language ?? "English")
+  const [localLanguage, setLocalLanguage] = useState(settings.language ?? "Japanese")
 
   const TOTAL_STEPS = 4
 
@@ -114,7 +114,7 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
     if (step === 0) {
       setPortalName(localName || null)
       setOperatorName(localOperator || null)
-      setLanguage(localLanguage || "English")
+      setLanguage(localLanguage || "Japanese")
     }
 
     if (step < TOTAL_STEPS - 1) {
@@ -202,21 +202,21 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
                 {"\ud83e\udd16"}
               </div>
               <h2 className="text-[length:var(--text-large-title)] font-[var(--weight-bold)] tracking-[var(--tracking-tight)] text-[var(--text-primary)] mb-[var(--space-2)]">
-                Welcome to {localName || "Jinn"}
+                {localName || "Ryoko"} へようこそ
               </h2>
               <p className="text-[length:var(--text-body)] text-[var(--text-secondary)] leading-[var(--leading-relaxed)] max-w-[400px] mx-auto mb-[var(--space-5)]">
-                Your AI team management portal. Let&apos;s get you set up.
+                あなたのAIチーム管理ポータル。さっそくセットアップしましょう。
               </p>
 
               <div className="flex flex-col gap-[var(--space-3)] text-left">
                 <div>
                   <label className="block text-[length:var(--text-caption1)] text-[var(--text-tertiary)] mb-[var(--space-1)]">
-                    Portal Name
+                    ポータル名
                   </label>
                   <input
                     type="text"
                     className="apple-input w-full bg-[var(--bg-secondary)] border border-[var(--separator)] rounded-[var(--radius-sm)] px-3 py-2 text-[length:var(--text-body)] text-[var(--text-primary)]"
-                    placeholder="Jinn"
+                    placeholder="Ryoko"
                     value={localName}
                     onChange={(e) => setLocalName(e.target.value)}
                     autoFocus
@@ -225,12 +225,12 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
 
                 <div>
                   <label className="block text-[length:var(--text-caption1)] text-[var(--text-tertiary)] mb-[var(--space-1)]">
-                    What should we call you?
+                    あなたの呼び名は？
                   </label>
                   <input
                     type="text"
                     className="apple-input w-full bg-[var(--bg-secondary)] border border-[var(--separator)] rounded-[var(--radius-sm)] px-3 py-2 text-[length:var(--text-body)] text-[var(--text-primary)]"
-                    placeholder="Your Name"
+                    placeholder="お名前"
                     value={localOperator}
                     onChange={(e) => setLocalOperator(e.target.value)}
                   />
@@ -238,7 +238,7 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
 
                 <div>
                   <label className="block text-[length:var(--text-caption1)] text-[var(--text-tertiary)] mb-[var(--space-1)]">
-                    Preferred Language
+                    使用言語
                   </label>
                   <select
                     value={localLanguage}
@@ -269,10 +269,10 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
           {step === 1 && (
             <div key="step-1" className="animate-fade-in">
               <h2 className="text-[length:var(--text-title1)] font-[var(--weight-bold)] tracking-[var(--tracking-tight)] text-[var(--text-primary)] mb-[var(--space-1)]">
-                Choose your theme
+                テーマを選択
               </h2>
               <p className="text-[length:var(--text-subheadline)] text-[var(--text-tertiary)] mb-[var(--space-4)]">
-                Pick the look that suits you. This applies live.
+                お好みの見た目を選んでください。即座に反映されます。
               </p>
 
               <div className="grid grid-cols-[repeat(auto-fill,minmax(130px,1fr))] gap-[var(--space-3)]">
@@ -314,10 +314,10 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
           {step === 2 && (
             <div key="step-2" className="animate-fade-in">
               <h2 className="text-[length:var(--text-title1)] font-[var(--weight-bold)] tracking-[var(--tracking-tight)] text-[var(--text-primary)] mb-[var(--space-1)]">
-                Pick an accent color
+                アクセントカラーを選択
               </h2>
               <p className="text-[length:var(--text-subheadline)] text-[var(--text-tertiary)] mb-[var(--space-4)]">
-                Personalize with your favorite color.
+                お好きな色でパーソナライズしてください。
               </p>
 
               <div className="grid grid-cols-6 gap-[var(--space-3)] justify-items-center">
@@ -352,10 +352,10 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
           {step === 3 && (
             <div key="step-3" className="animate-fade-in">
               <h2 className="text-[length:var(--text-title1)] font-[var(--weight-bold)] tracking-[var(--tracking-tight)] text-[var(--text-primary)] mb-[var(--space-1)]">
-                You&apos;re all set!
+                セットアップ完了！
               </h2>
               <p className="text-[length:var(--text-subheadline)] text-[var(--text-tertiary)] mb-[var(--space-4)]">
-                Here&apos;s what you can do.
+                利用できる機能の一覧です。
               </p>
 
               <div className="flex flex-col gap-[var(--space-2)]">
@@ -396,7 +396,7 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
               className="px-[var(--space-4)] py-[var(--space-2)] rounded-[var(--radius-md)] bg-[var(--fill-tertiary)] text-[var(--text-secondary)] border-none cursor-pointer text-[length:var(--text-subheadline)] font-[var(--weight-medium)] transition-all duration-150 inline-flex items-center gap-1.5"
             >
               <ArrowLeft size={16} />
-              Back
+              戻る
             </button>
           ) : (
             <div />
@@ -406,10 +406,10 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
             className="px-[var(--space-6)] py-[var(--space-2)] rounded-[var(--radius-md)] bg-[var(--accent)] text-[var(--accent-contrast)] border-none cursor-pointer text-[length:var(--text-subheadline)] font-[var(--weight-semibold)] transition-all duration-150 inline-flex items-center gap-1.5"
           >
             {step === 0
-              ? "Next"
+              ? "次へ"
               : step === TOTAL_STEPS - 1
-                ? "Get Started"
-                : "Next"}
+                ? "はじめる"
+                : "次へ"}
             {step === TOTAL_STEPS - 1 ? (
               <Rocket size={16} />
             ) : (

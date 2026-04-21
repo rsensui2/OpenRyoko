@@ -246,7 +246,7 @@ export function ChatSidebar({
   onOrderComputed,
 }: ChatSidebarProps) {
   const { settings } = useSettings()
-  const portalName = settings.portalName ?? "Jinn"
+  const portalName = settings.portalName ?? "Ryoko"
   const portalSlug = portalName.toLowerCase()
 
   const fixTitle = (title: string | undefined, employee: string | undefined) => {

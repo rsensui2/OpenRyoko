@@ -21,7 +21,7 @@ function MobileHeader({ actions }: { actions?: React.ReactNode }) {
   const pathname = usePathname()
   const { settings } = useSettings()
   const emoji = settings.portalEmoji ?? "\u{1F9DE}"
-  const portalName = settings.portalName ?? "Jinn"
+  const portalName = settings.portalName ?? "Ryoko"
 
   return (
     <>

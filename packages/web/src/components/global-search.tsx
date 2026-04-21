@@ -62,7 +62,7 @@ const STATIC_PAGES = [
 
 export function GlobalSearch() {
   const { settings } = useSettings()
-  const portalName = settings.portalName ?? "Jinn"
+  const portalName = settings.portalName ?? "Ryoko"
   const [open, setOpen] = useState(false)
   const [recents, setRecents] = useState<RecentItem[]>([])
   const router = useRouter()

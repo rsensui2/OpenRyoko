@@ -27,9 +27,9 @@ interface Skill {
 }
 
 export default function SkillsPage() {
-  useBreadcrumbs([{ label: 'Skills' }])
+  useBreadcrumbs([{ label: 'スキル' }])
   const { settings } = useSettings();
-  const portalName = settings.portalName ?? "Jinn";
+  const portalName = settings.portalName ?? "Ryoko";
   const [skills, setSkills] = useState<Skill[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -60,7 +60,7 @@ export default function SkillsPage() {
             JSON.stringify(d, null, 2),
         );
       })
-      .catch(() => setSkillContent("Failed to load skill content"))
+      .catch(() => setSkillContent("スキル内容の読み込みに失敗しました"))
       .finally(() => setContentLoading(false));
   }
 
@@ -77,16 +77,16 @@ export default function SkillsPage() {
         <div className="flex items-center justify-between mb-[var(--space-6)]">
           <div>
             <h2 className="text-[length:var(--text-title2)] font-[var(--weight-bold)] text-[var(--text-primary)] mb-[var(--space-1)]">
-              Skills
+              スキル
             </h2>
             <p className="text-[length:var(--text-body)] text-[var(--text-tertiary)]">
-              Capabilities and learned behaviors
+              能力と習得した行動パターン
             </p>
           </div>
           <button
             onClick={() =>
               alert(
-                `To create a new skill, chat with ${portalName} and ask to learn something new.`,
+                `新しいスキルを作成するには、${portalName}とチャットして何か新しいことを学ぶように頼んでください。`,
               )
             }
             className="py-[var(--space-2)] px-[var(--space-4)] rounded-[var(--radius-md,12px)] text-[var(--accent)] border-none cursor-pointer text-[length:var(--text-body)] font-[var(--weight-medium)]"
@@ -95,7 +95,7 @@ export default function SkillsPage() {
                 "color-mix(in srgb, var(--accent) 12%, transparent)",
             }}
           >
-            + Create Skill
+            + スキル作成
           </button>
         </div>
 
@@ -109,7 +109,7 @@ export default function SkillsPage() {
                 "1px solid color-mix(in srgb, var(--system-red) 30%, transparent)",
             }}
           >
-            Failed to load skills: {error}
+            スキルの読み込みに失敗しました: {error}
           </div>
         )}
 
@@ -122,10 +122,10 @@ export default function SkillsPage() {
             <CardContent>
               <div className="text-center p-[var(--space-6)]">
                 <p className="text-[length:var(--text-body)] text-[var(--text-tertiary)]">
-                  No skills yet
+                  スキルがまだありません
                 </p>
                 <p className="text-[length:var(--text-caption1)] text-[var(--text-quaternary)] mt-[var(--space-1)]">
-                  Chat with {portalName} to teach new skills
+                  {portalName}とチャットして新しいスキルを教えましょう
                 </p>
               </div>
             </CardContent>
@@ -153,7 +153,7 @@ export default function SkillsPage() {
                       {skill.name}
                     </p>
                     <p className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)] line-clamp-2">
-                      {skill.description || "No description"}
+                      {skill.description || "説明なし"}
                     </p>
                   </div>
                 </CardContent>
@@ -174,7 +174,7 @@ export default function SkillsPage() {
             <div className="flex-1 overflow-y-auto py-[var(--space-2)]">
               {contentLoading ? (
                 <p className="text-[length:var(--text-body)] text-[var(--text-tertiary)]">
-                  Loading...
+                  読み込み中...
                 </p>
               ) : skillContent ? (
                 <div

@@ -76,7 +76,7 @@ export default function ChatPageWrapper() {
 
 function ChatPage() {
   const { settings } = useSettings()
-  const portalName = settings.portalName ?? 'Jinn'
+  const portalName = settings.portalName ?? 'Ryoko'
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [mobileView, setMobileView] = useState<'sidebar' | 'chat'>('sidebar')
   const [sessionMeta, setSessionMeta] = useState<{ engine?: string; engineSessionId?: string; model?: string; title?: string; employee?: string } | null>(null)

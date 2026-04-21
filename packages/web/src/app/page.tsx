@@ -91,9 +91,9 @@ function getQuickLinks(portalName: string) {
 }
 
 export default function DashboardPage() {
-  useBreadcrumbs([{ label: 'Dashboard' }])
+  useBreadcrumbs([{ label: 'ダッシュボード' }])
   const { settings } = useSettings();
-  const portalName = settings.portalName ?? "Jinn";
+  const portalName = settings.portalName ?? "Ryoko";
   const [status, setStatus] = useState<StatusData | null>(null);
   const [cronCount, setCronCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);

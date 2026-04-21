@@ -70,7 +70,7 @@ export function SessionDetail({
   onNavigate?: (id: string) => void;
 }) {
   const { settings } = useSettings();
-  const portalName = settings.portalName ?? "Jinn";
+  const portalName = settings.portalName ?? "Ryoko";
   const [children, setChildren] = useState<Session[]>([]);
   const resetSession = useResetSession();
   const canReset = ["error", "waiting", "paused"].includes(session.status);
