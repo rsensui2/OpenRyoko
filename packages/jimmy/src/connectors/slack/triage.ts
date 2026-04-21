@@ -34,8 +34,10 @@ const DEFAULT_MODEL = "claude-haiku-4-5";
 const DEFAULT_BIN = "claude";
 
 /**
- * Run a triage decision. Never throws — on error returns a safe fallback
- * decision ("silent") so a failing triage cannot block legitimate work.
+ * Run a triage decision. Never throws — on error returns a fail-open fallback
+ * decision ("reply") so a failing triage cannot silently drop a real message.
+ * Missing a reply is far worse than an unwanted reply; if triage can't decide,
+ * let the full engine through.
  */
 export async function runTriage(
   input: TriagePromptInput,
@@ -56,13 +58,13 @@ export async function runTriage(
     });
     const decision = parseTriageDecision(output);
     if (!decision) {
-      logger.warn(`[triage] unparseable output, defaulting to silent: ${output.slice(0, 200)}`);
-      return { action: "silent", reason: "parse_failed" };
+      logger.warn(`[triage] unparseable output, defaulting to REPLY (fail-open): ${output.slice(0, 200)}`);
+      return { action: "reply", reason: "parse_failed" };
     }
     return decision;
   } catch (err) {
-    logger.warn(`[triage] execution failed, defaulting to silent: ${err}`);
-    return { action: "silent", reason: "triage_error" };
+    logger.warn(`[triage] execution failed, defaulting to REPLY (fail-open): ${err}`);
+    return { action: "reply", reason: "triage_error" };
   }
 }
 
