@@ -55,6 +55,14 @@ interface Config {
       shareSessionInChannel?: boolean
       allowFrom?: string | string[]
       ignoreOldMessagesOnBoot?: boolean
+      triage?: {
+        enabled?: boolean
+        bin?: string
+        model?: string
+        timeoutMs?: number
+        threadContextLimit?: number
+        persona?: string
+      }
     }
     discord?: {
       botToken?: string
@@ -1121,6 +1129,90 @@ export default function SettingsPage() {
                     onChange={(v) =>
                       updateConfig(["connectors", "slack", "ignoreOldMessagesOnBoot"], v)
                     }
+                  />
+                </FieldRow>
+
+                <div
+                  className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--text-tertiary)] mt-[var(--space-3)] mb-[var(--space-2)]"
+                >
+                  Triage (Air-reading)
+                </div>
+                <FieldRow label="Enabled">
+                  <ToggleSwitch
+                    checked={config.connectors?.slack?.triage?.enabled ?? false}
+                    onChange={(v) =>
+                      updateConfig(["connectors", "slack", "triage", "enabled"], v)
+                    }
+                  />
+                </FieldRow>
+                <FieldRow label="Model">
+                  <SettingsInput
+                    value={config.connectors?.slack?.triage?.model ?? ""}
+                    onChange={(v) =>
+                      updateConfig(
+                        ["connectors", "slack", "triage", "model"],
+                        v.trim() || undefined,
+                      )
+                    }
+                    placeholder="claude-haiku-4-5"
+                  />
+                </FieldRow>
+                <FieldRow label="Timeout (ms)">
+                  <SettingsInput
+                    type="number"
+                    value={
+                      config.connectors?.slack?.triage?.timeoutMs !== undefined
+                        ? String(config.connectors.slack.triage.timeoutMs)
+                        : ""
+                    }
+                    onChange={(v) =>
+                      updateConfig(
+                        ["connectors", "slack", "triage", "timeoutMs"],
+                        v.trim() ? Number(v) : undefined,
+                      )
+                    }
+                    placeholder="20000"
+                  />
+                </FieldRow>
+                <FieldRow label="Thread Context Limit">
+                  <SettingsInput
+                    type="number"
+                    value={
+                      config.connectors?.slack?.triage?.threadContextLimit !== undefined
+                        ? String(config.connectors.slack.triage.threadContextLimit)
+                        : ""
+                    }
+                    onChange={(v) =>
+                      updateConfig(
+                        ["connectors", "slack", "triage", "threadContextLimit"],
+                        v.trim() ? Number(v) : undefined,
+                      )
+                    }
+                    placeholder="10"
+                  />
+                </FieldRow>
+                <FieldRow label="Persona (optional)">
+                  <SettingsInput
+                    value={config.connectors?.slack?.triage?.persona ?? ""}
+                    onChange={(v) =>
+                      updateConfig(
+                        ["connectors", "slack", "triage", "persona"],
+                        v.trim() || undefined,
+                      )
+                    }
+                    placeholder="Short description of what this bot is good at"
+                  />
+                </FieldRow>
+                <FieldRow label="Bin override (optional)">
+                  <SettingsInput
+                    value={config.connectors?.slack?.triage?.bin ?? ""}
+                    onChange={(v) =>
+                      updateConfig(
+                        ["connectors", "slack", "triage", "bin"],
+                        v.trim() || undefined,
+                      )
+                    }
+                    placeholder="claude"
                   />
                 </FieldRow>
 
