@@ -235,6 +235,55 @@
   --ease-snappy: cubic-bezier(0.2, 0, 0, 1);
 }
 
+/* RYOKO: OpenRyoko signature theme — warm off-white, gentle rose accent, clean */
+[data-theme="ryoko"] {
+  --bg: #fafaf7;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f4f0ea;
+  --material-regular: #ffffff;
+  --material-thick: rgba(255,255,255,0.97);
+  --material-thin: rgba(0,0,0,0.02);
+  --material-ultra-thin: rgba(0,0,0,0.015);
+  --fill-primary: rgba(180,165,155,0.14);
+  --fill-secondary: rgba(180,165,155,0.10);
+  --fill-tertiary: rgba(180,165,155,0.07);
+  --fill-quaternary: rgba(180,165,155,0.05);
+  --separator: rgba(120,105,95,0.16);
+  --separator-opaque: #e8dfd5;
+  --text-primary: #2a2623;
+  --text-secondary: rgba(60,50,45,0.68);
+  --text-tertiary: rgba(60,50,45,0.50);
+  --text-quaternary: rgba(60,50,45,0.32);
+  --accent: #d97a85;
+  --accent-fill: rgba(217,122,133,0.12);
+  --accent-contrast: #fff;
+  --system-blue: #7aa5c4;
+  --system-green: #8fb8a5;
+  --system-red: #d97a85;
+  --system-orange: #e8a47a;
+  --system-purple: #b09cc4;
+  --system-yellow: #d9b474;
+  --inset-shine: inset 0 1px 0 rgba(255,255,255,0.90);
+  --shadow-subtle: 0 1px 2px rgba(142,100,95,0.05);
+  --shadow-ambient: 0 0 0 0.5px rgba(142,100,95,0.06);
+  --shadow-key: 0 2px 8px rgba(142,100,95,0.08), 0 8px 24px rgba(142,100,95,0.05);
+  --shadow-card: 0 0 0 0.5px rgba(142,100,95,0.05), 0 1px 3px rgba(142,100,95,0.05), 0 4px 12px rgba(142,100,95,0.04), inset 0 1px 0 rgba(255,255,255,0.80);
+  --shadow-overlay: 0 0 0 0.5px rgba(142,100,95,0.08), 0 4px 16px rgba(142,100,95,0.08), 0 16px 48px rgba(142,100,95,0.10), inset 0 1px 0 rgba(255,255,255,0.80);
+  --code-bg: rgba(60,50,45,0.04);
+  --code-border: rgba(60,50,45,0.07);
+  --code-text: #2a2623;
+  --sidebar-bg: rgba(250,248,244,0.88);
+  --sidebar-backdrop: blur(24px) saturate(140%);
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 18px;
+  --radius-xl: 22px;
+  --radius-2xl: 26px;
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-smooth: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-snappy: cubic-bezier(0.2, 0, 0, 1);
+}
+
 /* LIGHT: Apple Light Mode */
 [data-theme="light"] {
   --bg: #f2f2f7;

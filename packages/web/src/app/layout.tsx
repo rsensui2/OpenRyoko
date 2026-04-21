@@ -20,7 +20,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <head>
         <script
           dangerouslySetInnerHTML={{
-            __html: `(function(){try{var t=localStorage.getItem('jinn-theme')||'dark';if(t==='system'){t=window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light'}document.documentElement.setAttribute('data-theme',t)}catch(e){}})()`,
+            __html: `(function(){try{var t=localStorage.getItem('openryoko-theme')||localStorage.getItem('jinn-theme')||'ryoko';if(t==='system'){t=window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'ryoko'}document.documentElement.setAttribute('data-theme',t)}catch(e){}})()`,
           }}
         />
       </head>
