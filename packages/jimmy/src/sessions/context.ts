@@ -56,6 +56,20 @@ export function buildContext(opts: {
   operatorName?: string;
   language?: string;
   channelName?: string;
+  /** Display name of the actual speaker (from Slack users.info, etc.) */
+  speakerName?: string;
+  /** Speaker's real name (profile real_name) */
+  speakerRealName?: string;
+  /** Speaker's self-chosen display name */
+  speakerDisplayName?: string;
+  /** Speaker's legacy handle (users.name) */
+  speakerHandle?: string;
+  /** Raw connector-native user ID (e.g. Slack U12345) */
+  speakerSlackId?: string;
+  /** Whether the speaker is a bot/integration */
+  speakerIsBot?: boolean;
+  /** Speaker's IANA timezone */
+  speakerTz?: string;
   hierarchy?: import("../shared/types.js").OrgHierarchy;
 }): string {
   const maxChars = opts.config?.context?.maxChars ?? DEFAULT_MAX_CONTEXT_CHARS;
@@ -89,7 +103,7 @@ export function buildContext(opts: {
     sections.push({
       tier: Tier.ESSENTIAL,
       marker: "# You are",
-      content: buildIdentity(portalName, operatorName, language),
+      content: buildIdentity(portalName, operatorName, language, opts.speakerName),
       summary: `# You are ${portalName}\nYour working directory is \`~/.jinn\` (${JINN_HOME}).`,
     });
   }
@@ -108,7 +122,7 @@ export function buildContext(opts: {
   sections.push({
     tier: Tier.ESSENTIAL,
     marker: "## Current session",
-    content: buildSessionContext({ ...opts, sessionId: opts.sessionId }),
+    content: buildSessionContext({ ...opts, sessionId: opts.sessionId, operatorName }),
     summary: "", // always included, no trimming
   });
 
@@ -342,9 +356,19 @@ function buildServicesContext(employee: Employee, gatewayUrl: string): string | 
   }
 }
 
-function buildIdentity(portalName: string, operatorName?: string, language?: string): string {
+function buildIdentity(
+  portalName: string,
+  operatorName?: string,
+  language?: string,
+  speakerName?: string,
+): string {
+  const speakerIsOperator =
+    !!speakerName && !!operatorName && speakerName.trim() === operatorName.trim();
+
   const operatorLine = operatorName
-    ? `\nThe user's name is **${operatorName}**. Address them by name when appropriate.`
+    ? speakerIsOperator || !speakerName
+      ? `\nYour operator (the person who runs this Jinn instance) is **${operatorName}**. Address them by name when appropriate.`
+      : `\nYour operator (the person who runs this Jinn instance) is **${operatorName}** — but the current speaker is someone else.\nAlways identify the person you are addressing via \`## Current session → Speaker\`. Never call the current speaker "${operatorName}" unless confirmed — that name belongs to the operator, not to every person you talk to.`
     : "";
 
   const languageInstruction = language && language !== "English"
@@ -385,6 +409,14 @@ function buildSessionContext(opts: {
   user: string;
   sessionId?: string;
   channelName?: string;
+  speakerName?: string;
+  speakerRealName?: string;
+  speakerDisplayName?: string;
+  speakerHandle?: string;
+  speakerSlackId?: string;
+  speakerIsBot?: boolean;
+  speakerTz?: string;
+  operatorName?: string;
 }): string {
   let ctx = `## Current session\n`;
   if (opts.sessionId) ctx += `- Session ID: ${opts.sessionId}\n`;
@@ -397,7 +429,37 @@ function buildSessionContext(opts: {
     ctx += `- Channel: ${opts.channel}\n`;
   }
   if (opts.thread) ctx += `- Thread: ${opts.thread}\n`;
-  ctx += `- User: ${opts.user}\n`;
+
+  if (opts.speakerName) {
+    const aliasParts: string[] = [];
+    if (opts.speakerRealName && opts.speakerRealName !== opts.speakerName) {
+      aliasParts.push(`real name: "${opts.speakerRealName}"`);
+    }
+    if (opts.speakerHandle && opts.speakerHandle !== opts.speakerName) {
+      aliasParts.push(`handle: @${opts.speakerHandle}`);
+    }
+    if (opts.speakerSlackId) {
+      aliasParts.push(`Slack ID: ${opts.speakerSlackId}`);
+    }
+    const aliasSuffix = aliasParts.length > 0 ? ` (${aliasParts.join(", ")})` : "";
+    const botSuffix = opts.speakerIsBot ? " [BOT]" : "";
+    ctx += `- Speaker: **${opts.speakerName}**${aliasSuffix}${botSuffix}\n`;
+    if (opts.speakerTz) ctx += `  - Timezone: ${opts.speakerTz}\n`;
+
+    const operator = opts.operatorName?.trim();
+    const speakerAliases = [opts.speakerName, opts.speakerRealName, opts.speakerDisplayName, opts.speakerHandle]
+      .filter((v): v is string => !!v)
+      .map((v) => v.trim());
+    const isOperator = operator ? speakerAliases.includes(operator) : false;
+    if (operator && !isOperator) {
+      ctx += `  - ⚠ NOT the operator. Address this person as "${opts.speakerName}", not "${operator}".\n`;
+    } else if (operator && isOperator) {
+      ctx += `  - This speaker is the operator.\n`;
+    }
+  } else {
+    ctx += `- User: ${opts.user}\n`;
+  }
+
   ctx += `- Working directory: ${JINN_HOME}`;
   return ctx;
 }

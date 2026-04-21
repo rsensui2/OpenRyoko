@@ -246,6 +246,7 @@ export class SessionManager {
     } catch { /* fallback to filesystem scan in context builder */ }
 
     try {
+      const meta = msg.transportMeta ?? {};
       const systemPrompt = buildContext({
         source: session.source,
         channel: msg.channel,
@@ -255,7 +256,14 @@ export class SessionManager {
         connectors: this.connectorNames,
         config: this.config,
         sessionId: session.id,
-        channelName: (msg.transportMeta?.channelName as string) || undefined,
+        channelName: (meta.channelName as string) || undefined,
+        speakerName: (meta.speakerName as string) || undefined,
+        speakerRealName: (meta.speakerRealName as string) || undefined,
+        speakerDisplayName: (meta.speakerDisplayName as string) || undefined,
+        speakerHandle: (meta.speakerHandle as string) || undefined,
+        speakerSlackId: (meta.speakerSlackId as string) || undefined,
+        speakerIsBot: (meta.speakerIsBot as boolean | null) ?? undefined,
+        speakerTz: (meta.speakerTz as string) || undefined,
         hierarchy,
       });
 

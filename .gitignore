@@ -7,3 +7,6 @@ dist/
 .env.local
 .worktrees/
 .DS_Store
+
+# Jinn runtime dir (safety: never commit tokens)
+.jinn/

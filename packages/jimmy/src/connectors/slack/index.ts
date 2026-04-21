@@ -10,6 +10,7 @@ import type {
 } from "../../shared/types.js";
 import { buildReplyContext, deriveSessionKey, isOldSlackMessage } from "./threads.js";
 import { formatResponse, downloadAttachment } from "./format.js";
+import { normalizeSpeakerInfo, type SpeakerInfo } from "./speaker.js";
 import { TMP_DIR } from "../../shared/paths.js";
 import { logger } from "../../shared/logger.js";
 
@@ -23,8 +24,10 @@ export class SlackConnector implements Connector {
   private started = false;
   private lastError: string | null = null;
   private channelNameCache = new Map<string, { name: string; cachedAt: number }>();
+  private userInfoCache = new Map<string, { info: SpeakerInfo; cachedAt: number }>();
   private botUserId: string | null = null;
   private static CHANNEL_CACHE_TTL_MS = 3600_000; // 1 hour
+  private static USER_CACHE_TTL_MS = 3600_000; // 1 hour
 
   private readonly capabilities: ConnectorCapabilities = {
     threading: true,
@@ -69,6 +72,35 @@ export class SlackConnector implements Connector {
         ? config.allowFrom.split(",").map((value) => value.trim()).filter(Boolean)
         : [];
     this.allowedUsers = allowFrom.length > 0 ? new Set(allowFrom) : null;
+  }
+
+  private async resolveSpeakerInfo(userId: string | undefined): Promise<SpeakerInfo | null> {
+    if (!userId) return null;
+    const cached = this.userInfoCache.get(userId);
+    if (cached && Date.now() - cached.cachedAt < SlackConnector.USER_CACHE_TTL_MS) {
+      return cached.info;
+    }
+    try {
+      const result = await this.app.client.users.info({ user: userId });
+      const info = normalizeSpeakerInfo(result.user as any, userId);
+      this.userInfoCache.set(userId, { info, cachedAt: Date.now() });
+      return info;
+    } catch (err) {
+      logger.debug(`Failed to resolve speaker info for ${userId}: ${err}`);
+      return null;
+    }
+  }
+
+  private speakerTransportFields(speaker: SpeakerInfo | null, userId: string) {
+    return {
+      speakerName: speaker?.name ?? null,
+      speakerRealName: speaker?.realName ?? null,
+      speakerDisplayName: speaker?.displayName ?? null,
+      speakerHandle: speaker?.handle ?? null,
+      speakerSlackId: userId,
+      speakerIsBot: speaker?.isBot ?? null,
+      speakerTz: speaker?.tz ?? null,
+    };
   }
 
   private async resolveChannelName(channelId: string): Promise<string | undefined> {
@@ -160,7 +192,11 @@ export class SlackConnector implements Connector {
         }
       }
 
-      const channelName = await this.resolveChannelName((event as any).channel);
+      const slackUserId = (event as any).user as string;
+      const [channelName, speaker] = await Promise.all([
+        this.resolveChannelName((event as any).channel),
+        this.resolveSpeakerInfo(slackUserId),
+      ]);
 
       const msg: IncomingMessage = {
         connector: this.name,
@@ -179,6 +215,7 @@ export class SlackConnector implements Connector {
           channelType: ((event as any).channel_type as string) || "channel",
           team: ((event as any).team as string) || null,
           channelName: channelName || null,
+          ...this.speakerTransportFields(speaker, slackUserId),
         },
       };
 
@@ -255,8 +292,11 @@ export class SlackConnector implements Connector {
         return;
       }
 
-      // Resolve channel name
-      const channelName = await this.resolveChannelName(channelId);
+      // Resolve channel name and reactor (speaker) in parallel
+      const [channelName, speaker] = await Promise.all([
+        this.resolveChannelName(channelId),
+        this.resolveSpeakerInfo(event.user),
+      ]);
       const channelDisplay = channelName ? `#${channelName}` : channelId;
 
       // Build the prompt with reaction context
@@ -285,6 +325,7 @@ export class SlackConnector implements Connector {
           channelType: "channel",
           team: null,
           channelName: channelName || null,
+          ...this.speakerTransportFields(speaker, event.user),
         },
       };
 
