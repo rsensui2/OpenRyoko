@@ -1554,7 +1554,7 @@ Handle this as a priority request from a colleague.`;
       fs.writeFileSync(CONFIG_PATH, yamlStr);
       logger.info(`Onboarding: portal name="${portalName}", operator="${operatorName}", language="${language}"`);
 
-      const effectiveName = portalName || "Jinn";
+      const effectiveName = portalName || "Ryoko";
       const languageSection = language && language !== "English"
         ? `\n\n## Language\nAlways respond in ${language}. All communication with the user must be in ${language}.`
         : "";
@@ -2238,7 +2238,7 @@ async function runWebSession(
 
           context.emit("session:completed", {
             sessionId: currentSession.id,
-            employee: currentSession.employee || config.portal?.portalName || "Jinn",
+            employee: currentSession.employee || config.portal?.portalName || "Ryoko",
             title: currentSession.title,
             result: fallbackResult.result,
             error: fallbackResult.error || null,
@@ -2385,7 +2385,7 @@ async function runWebSession(
 
           context.emit("session:completed", {
             sessionId: currentSession.id,
-            employee: currentSession.employee || config.portal?.portalName || "Jinn",
+            employee: currentSession.employee || config.portal?.portalName || "Ryoko",
             title: currentSession.title,
             result: retryResult.result,
             error: retryResult.error || null,
@@ -2446,7 +2446,7 @@ async function runWebSession(
 
     context.emit("session:completed", {
       sessionId: currentSession.id,
-      employee: currentSession.employee || config.portal?.portalName || "Jinn",
+      employee: currentSession.employee || config.portal?.portalName || "Ryoko",
       title: currentSession.title,
       result: result.result,
       error: result.error || null,

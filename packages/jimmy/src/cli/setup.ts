@@ -328,11 +328,11 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
   const isFreshSetup = !fs.existsSync(CONFIG_PATH);
   const isInteractive = process.stdin.isTTY && isFreshSetup;
 
-  // Derive default COO name from instance name if set, otherwise "Jinn"
-  const instanceName = process.env.JINN_INSTANCE;
+  // Derive default COO name from instance name if set, otherwise "Ryoko"
+  const instanceName = process.env.RYOKO_INSTANCE || process.env.JINN_INSTANCE;
   const defaultName = instanceName
     ? instanceName.charAt(0).toUpperCase() + instanceName.slice(1)
-    : "Jinn";
+    : "Ryoko";
 
   let chosenName = defaultName;
   let chosenEngine: "claude" | "codex" = "claude";
@@ -374,8 +374,14 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
     source = source.replace(/version:\s*"[^"]*"/, `version: "${getPackageVersion()}"`);
     // Apply interactive choices
     source = source.replace(/default:\s*claude/, `default: ${chosenEngine}`);
-    if (chosenName !== "Jinn") {
-      source = source.replace("portal: {}", `portal:\n  portalName: "${chosenName}"`);
+    if (chosenName !== "Ryoko") {
+      // Template already has `portalName: Ryoko` under portal. Substitute.
+      // Also handle the legacy `portal: {}` form for back-compat.
+      if (source.includes("portalName: Ryoko")) {
+        source = source.replace("portalName: Ryoko", `portalName: "${chosenName}"`);
+      } else {
+        source = source.replace("portal: {}", `portal:\n  portalName: "${chosenName}"`);
+      }
     }
     ensureFile(CONFIG_PATH, source);
     created.push(CONFIG_PATH);
@@ -385,8 +391,8 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
   const portalName = (() => {
     try {
       const cfg = yaml.load(fs.readFileSync(CONFIG_PATH, "utf-8")) as any;
-      return cfg?.portal?.portalName || "Jinn";
-    } catch { return "Jinn"; }
+      return cfg?.portal?.portalName || "Ryoko";
+    } catch { return "Ryoko"; }
   })();
   const portalSlug = portalName.toLowerCase().replace(/\s+/g, "-");
 

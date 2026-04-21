@@ -148,7 +148,7 @@ export class SlackConnector implements Connector {
 
     return runTriage(
       {
-        botName: this.portalName || "Jinn",
+        botName: this.portalName || "Ryoko",
         persona: this.triageConfig?.persona,
         operatorName: this.operatorName,
         channelType: ctx.channelType,

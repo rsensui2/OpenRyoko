@@ -81,7 +81,7 @@ export function buildContext(opts: {
     : "http://127.0.0.1:7777";
 
   // Resolve personalized names from config
-  const portalName = opts.portalName || opts.config?.portal?.portalName || "Jinn";
+  const portalName = opts.portalName || opts.config?.portal?.portalName || "Ryoko";
   const operatorName = opts.operatorName || opts.config?.portal?.operatorName;
   const language = opts.language || opts.config?.portal?.language || "English";
 
@@ -104,7 +104,7 @@ export function buildContext(opts: {
       tier: Tier.ESSENTIAL,
       marker: "# You are",
       content: buildIdentity(portalName, operatorName, language, opts.speakerName),
-      summary: `# You are ${portalName}\nYour working directory is \`~/.jinn\` (${JINN_HOME}).`,
+      summary: `# You are ${portalName}\nYour working directory is \`~/.ryoko\` (${JINN_HOME}).`,
     });
   }
 
