@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.9.4-ryoko.2] - 2026-04-22
+
+### 🐛 Fixes
+- **Slack triage**: shared-channel barge-in fix — triage errors in ambient messages now fail silent (not reply) when `botUserId` is known, and explicit `<@other-user>` mentions are early-skipped regardless of thread activity. Breaks the cascade where one fail-open reply would mark a thread "active" and cause follow-ups to bypass triage for 10 minutes. ([#slack-triage](https://github.com/rsensui2/OpenRyoko/commit/61a010c))
+- **Web chat input (IME)**: Enter during Japanese/Chinese/Korean IME composition no longer submits the message. Fixes split-message bug where confirming an IME conversion sent partial text. (#1, thanks @htpboost)
+
 ## [0.7.0] - 2026-03-19
 
 ### ✨ Features — Project Phoenix
