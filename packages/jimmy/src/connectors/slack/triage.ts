@@ -23,10 +23,21 @@ export interface TriageRunnerOptions {
   bin?: string;
   /** Model to use for the triage call (e.g. "claude-haiku-4-5") */
   model?: string;
-  /** Soft timeout before we fall back to "silent" */
+  /** Soft timeout before we fall back to the fail-open action */
   timeoutMs?: number;
   /** Override the spawner (for tests) */
   spawnImpl?: typeof spawn;
+  /**
+   * Action to fall back to when triage itself fails (timeout / spawn error /
+   * unparseable output). Defaults to "reply" because in the most dangerous
+   * scenario — our bot_user_id didn't load and so @-mentions silently slip
+   * through to triage — missing a real question is worse than a stray reply.
+   *
+   * Callers that *know* the message is ambient (not a DM, not an @-mention,
+   * not addressed to us) should pass "silent" instead: in that path a
+   * fail-open reply is guaranteed to barge into someone else's conversation.
+   */
+  failOpenAction?: "reply" | "silent";
 }
 
 const DEFAULT_TIMEOUT_MS = 8000;
@@ -48,6 +59,7 @@ export async function runTriage(
   const model = options.model || DEFAULT_MODEL;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const spawnFn = options.spawnImpl || spawn;
+  const failOpenAction = options.failOpenAction ?? "reply";
 
   try {
     const output = await invokeClaudeOneShot(prompt, {
@@ -58,13 +70,13 @@ export async function runTriage(
     });
     const decision = parseTriageDecision(output);
     if (!decision) {
-      logger.warn(`[triage] unparseable output, defaulting to REPLY (fail-open): ${output.slice(0, 200)}`);
-      return { action: "reply", reason: "parse_failed" };
+      logger.warn(`[triage] unparseable output, defaulting to ${failOpenAction.toUpperCase()} (fail-open): ${output.slice(0, 200)}`);
+      return { action: failOpenAction, reason: "parse_failed" };
     }
     return decision;
   } catch (err) {
-    logger.warn(`[triage] execution failed, defaulting to REPLY (fail-open): ${err}`);
-    return { action: "reply", reason: "triage_error" };
+    logger.warn(`[triage] execution failed, defaulting to ${failOpenAction.toUpperCase()} (fail-open): ${err}`);
+    return { action: failOpenAction, reason: "triage_error" };
   }
 }
 

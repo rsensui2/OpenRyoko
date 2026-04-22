@@ -169,6 +169,12 @@ export class SlackConnector implements Connector {
         bin: this.triageConfig?.bin,
         model: this.triageConfig?.model,
         timeoutMs: this.triageConfig?.timeoutMs,
+        // Triage only runs for ambient messages (not DM, not @-mention, not
+        // active thread). When we know our own ID, a fail-open *reply* there
+        // is a guaranteed barge-in, so stay silent. Keep the legacy reply
+        // fallback only as a safety net for the startup-race case where
+        // auth.test never resolved our botUserId.
+        failOpenAction: this.botUserId ? "silent" : "reply",
       },
     );
   }
@@ -313,6 +319,25 @@ export class SlackConnector implements Connector {
       const channelType = ((event as any).channel_type as string) || "channel";
       const rawText = ((event as any).text || "") as string;
       const wasMentioned = !!this.botUserId && rawText.includes(`<@${this.botUserId}>`);
+
+      // Early silent for cross-bot / cross-user traffic in shared channels.
+      // If the message @-mentions specific user(s), none of whom are us, and
+      // it isn't a DM, stay silent — regardless of whether the thread was
+      // previously marked "active" by an earlier reply. The activeThread
+      // TTL exists for mid-conversation follow-ups, not for sibling mentions
+      // directed at another bot or human in the same channel.
+      if (!wasMentioned && this.botUserId && channelType !== "im") {
+        const mentionedUsers = Array.from(
+          rawText.matchAll(/<@([UW][A-Z0-9]+)>/g),
+          (m) => m[1],
+        );
+        if (mentionedUsers.length > 0 && !mentionedUsers.includes(this.botUserId)) {
+          logger.info(
+            `[slack] message @-mentions ${mentionedUsers.join(",")} (not us) — staying silent for ts=${(event as any).ts}`,
+          );
+          return;
+        }
+      }
 
       const msg: IncomingMessage = {
         connector: this.name,
