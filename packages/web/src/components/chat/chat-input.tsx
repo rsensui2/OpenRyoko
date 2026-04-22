@@ -263,6 +263,10 @@ export function ChatInput({
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    // Skip all handling while IME composition is in progress (Japanese/Chinese/Korean input).
+    // Without this, pressing Enter to confirm a conversion would submit the message.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return
+
     // Command autocomplete navigation
     if (showCommands && filteredCommands.length > 0) {
       const max = filteredCommands.length
