@@ -119,6 +119,24 @@ describe("ConversationTracker — bot-initiated threads", () => {
   });
 });
 
+describe("ConversationTracker — eviction policy", () => {
+  it("never evicts an engaged conversation when pruning under cap pressure", () => {
+    const t = new ConversationTracker();
+    // Engage one conversation early — this is the entry we must NOT lose.
+    t.recordHumanMessage({ channel: "C-engaged", ts: "T1", userId: "U1" });
+    t.recordBotEngaged({ channel: "C-engaged", ts: "T1", userId: "U1" });
+
+    // Flood with 6000 distinct non-engaged (channel, user) pairs to push
+    // the tracker past the prune threshold.
+    for (let i = 0; i < 6000; i += 1) {
+      t.recordHumanMessage({ channel: `C-noise-${i}`, ts: `T${i}`, userId: `U-noise-${i}` });
+    }
+
+    // The engaged conversation must still be DM-equivalent.
+    expect(t.isDmEquivalent({ channel: "C-engaged", ts: "T-late", userId: "U1" })).toBe(true);
+  });
+});
+
 describe("ConversationTracker — robustness", () => {
   it("tolerates missing fields in keyFor inputs", () => {
     const t = new ConversationTracker();

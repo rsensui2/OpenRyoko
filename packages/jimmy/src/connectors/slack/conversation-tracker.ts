@@ -155,8 +155,27 @@ export class ConversationTracker {
   private touch(key: string, state: ConversationState): void {
     this.entries.set(key, state);
     if (this.entries.size > PRUNE_AT_SIZE) {
-      const oldest = this.entries.keys().next().value;
-      if (oldest && oldest !== key) this.entries.delete(oldest);
+      this.evictOldestNonEngaged(key);
+    }
+  }
+
+  /**
+   * Evict the oldest *non-engaged* entry. Engaged entries are protected
+   * because their state ("bot has replied here") is durable conversational
+   * context that must survive past 5,000-conversation traffic — losing it
+   * would silently re-introduce the silent-drop bug for the evicted user.
+   *
+   * If every entry is engaged, we accept unbounded growth rather than
+   * sacrifice correctness. In practice the engaged set is bounded by the
+   * number of (operator × channel) pairs in the workspace.
+   */
+  private evictOldestNonEngaged(skipKey: string): void {
+    for (const [key, state] of this.entries) {
+      if (key === skipKey) continue;
+      if (!state.botEngaged) {
+        this.entries.delete(key);
+        return;
+      }
     }
   }
 }
