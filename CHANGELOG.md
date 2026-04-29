@@ -5,8 +5,11 @@
 ## [Unreleased]
 
 ### 🐛 Fixes
-- **Slack triage**: private channels with only the bot + one human are now treated as DM-equivalent and skip triage, matching how operators actually use those channels (every message is implicitly addressed to the bot). Membership is resolved via `conversations.info` and cached for 10 minutes. Closes the silent-drop class of bugs where a bot-only private channel was classified as `channel` and a slow Haiku triage caused real user messages to be ignored.
+- **Slack triage**: conversations now skip triage as soon as the bot has engaged AND only one human is speaking — scoped per-thread for threaded replies, and per-`(channel, user)` for non-threaded follow-ups. The decision is permanent until a third human joins (no TTL). Closes the silent-drop class of bugs where a bot+1 private channel was classified as `channel` and slow Haiku triage caused real user messages to be ignored, and also fixes the same problem for users who don't reply in threads. Replaces the old 10-minute `ActiveThreadTracker` window and the channel-membership-based DM-equivalent detector.
 - **Slack triage**: bumped `DEFAULT_TIMEOUT_MS` from 8s to 30s. Real-world Haiku one-shot calls land at 5–9s in normal conditions and spike higher on slow API days; the 8s default was producing routine timeouts. Operators can still override via `connectors.slack.triage.timeoutMs` in `config.yaml`.
+
+### 🗑 Deprecated
+- `connectors.slack.triage.activeThreadTtlMs` — no longer used. Engagement is tracked permanently per-conversation now. The field is still accepted for backwards compatibility but has no effect.
 
 ## [2026.4.28] - 2026-04-28
 

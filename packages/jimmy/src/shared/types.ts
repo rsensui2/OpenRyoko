@@ -318,16 +318,17 @@ export interface SlackTriageConfig {
   bin?: string;
   /** Model to use for triage calls. Default: "claude-haiku-4-5". */
   model?: string;
-  /** Soft timeout before falling back to "silent". Default: 8000ms. */
+  /** Soft timeout before falling back to "silent". Default: 30000ms. */
   timeoutMs?: number;
   /** How many recent thread messages to include as context. Default: 10. */
   threadContextLimit?: number;
   /** Optional persona override for the triage prompt. Defaults to the bot's configured persona. */
   persona?: string;
   /**
-   * If the bot has posted in a thread within this window, skip triage and always reply.
-   * This prevents air-reading from silently dropping follow-up messages in an active
-   * conversation (e.g. mid-skill execution). Default: 600000ms (10 minutes).
+   * @deprecated No longer used. Conversation engagement is now tracked
+   * permanently per-thread / per-(channel, user), invalidated only when a
+   * third human joins. This field is accepted for backwards compatibility
+   * with existing config files but has no effect.
    */
   activeThreadTtlMs?: number;
 }
