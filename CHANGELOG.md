@@ -2,6 +2,12 @@
 
 > **バージョン体系について**: 2026.4.26 から日付ベース (`YYYY.M.D`) のCalVerに移行しました。npm semver の制約上、月・日の leading zero は付けません (例: 4月26日 → `2026.4.26`)。
 
+## [Unreleased]
+
+### 🐛 Fixes
+- **Slack triage**: private channels with only the bot + one human are now treated as DM-equivalent and skip triage, matching how operators actually use those channels (every message is implicitly addressed to the bot). Membership is resolved via `conversations.info` and cached for 10 minutes. Closes the silent-drop class of bugs where a bot-only private channel was classified as `channel` and a slow Haiku triage caused real user messages to be ignored.
+- **Slack triage**: bumped `DEFAULT_TIMEOUT_MS` from 8s to 30s. Real-world Haiku one-shot calls land at 5–9s in normal conditions and spike higher on slow API days; the 8s default was producing routine timeouts. Operators can still override via `connectors.slack.triage.timeoutMs` in `config.yaml`.
+
 ## [2026.4.28] - 2026-04-28
 
 ### ✨ Features

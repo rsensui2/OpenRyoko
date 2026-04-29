@@ -42,7 +42,11 @@ export interface TriageRunnerOptions {
   failOpenAction?: "reply" | "silent";
 }
 
-const DEFAULT_TIMEOUT_MS = 8000;
+// Triage spawns the Claude CLI which has a 3–5s startup overhead before it
+// even hits the API; combined with Haiku latency variance, an 8s budget was
+// causing routine timeouts in production. 30s gives headroom for slow days
+// while still being short enough that the user notices triage isn't free.
+const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_MODEL = "claude-haiku-4-5";
 const DEFAULT_BIN = "claude";
 

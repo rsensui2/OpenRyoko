@@ -13,6 +13,7 @@ import { formatResponse, downloadAttachment } from "./format.js";
 import { normalizeSpeakerInfo, type SpeakerInfo } from "./speaker.js";
 import { runTriage } from "./triage.js";
 import { ActiveThreadTracker } from "./active-threads.js";
+import { DmEquivalentDetector } from "./dm-equivalent.js";
 import type { SlackTriageConfig } from "../../shared/types.js";
 import { TMP_DIR } from "../../shared/paths.js";
 import { logger } from "../../shared/logger.js";
@@ -41,6 +42,7 @@ export class SlackConnector implements Connector {
   private readonly portalName: string | undefined;
   private readonly operatorName: string | undefined;
   private readonly activeThreads: ActiveThreadTracker;
+  private readonly dmEquivalent: DmEquivalentDetector;
   private static CHANNEL_CACHE_TTL_MS = 3600_000; // 1 hour
   private static USER_CACHE_TTL_MS = 3600_000; // 1 hour
   private static ACTIVE_THREAD_TTL_MS_DEFAULT = 600_000; // 10 minutes
@@ -123,6 +125,7 @@ export class SlackConnector implements Connector {
     this.activeThreads = new ActiveThreadTracker(
       config.triage?.activeThreadTtlMs ?? SlackConnector.ACTIVE_THREAD_TTL_MS_DEFAULT,
     );
+    this.dmEquivalent = new DmEquivalentDetector(this.app.client.conversations);
   }
 
   private async resolveSpeakerInfo(userId: string | undefined): Promise<SpeakerInfo | null> {
@@ -394,16 +397,30 @@ export class SlackConnector implements Connector {
       // Air-reading triage gate.
       // Fast paths that bypass the LLM triage entirely:
       //   - DMs: always reply (1:1 context is implicitly addressed to the bot)
+      //   - DM-equivalent: a private channel with only the bot + one human is
+      //     functionally a DM even though Slack classifies it as `channel`.
       //   - Explicit @-mention: always reply
       //   - Active thread: bot recently participated → follow-up is implicitly addressed.
       //     This prevents triage from silently dropping mid-skill / mid-conversation messages.
       const triageEnabled = this.triageConfig?.enabled === true;
       const threadKey = ((event as any).thread_ts || (event as any).ts) as string | undefined;
       const isActiveThread = this.activeThreads.isActive((event as any).channel, threadKey);
-      const skipTriage = !triageEnabled || channelType === "im" || wasMentioned || isActiveThread;
+      const isDmEquivalent =
+        triageEnabled && channelType !== "im" && !wasMentioned && !isActiveThread
+          ? await this.dmEquivalent.isTwoMember((event as any).channel)
+          : false;
+      const skipTriage =
+        !triageEnabled ||
+        channelType === "im" ||
+        wasMentioned ||
+        isActiveThread ||
+        isDmEquivalent === true;
 
       if (triageEnabled && isActiveThread && !wasMentioned && channelType !== "im") {
         logger.info(`[slack] skipping triage — thread ${(event as any).channel}:${threadKey} is active`);
+      }
+      if (triageEnabled && isDmEquivalent === true) {
+        logger.info(`[slack] skipping triage — channel ${(event as any).channel} has only bot + 1 member (DM-equivalent)`);
       }
 
       if (!skipTriage) {
