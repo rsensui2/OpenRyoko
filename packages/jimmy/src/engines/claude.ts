@@ -31,6 +31,38 @@ function isTransientError(stderr: string, code: number | null): boolean {
 const MAX_RETRIES = 2;
 const RETRY_BASE_MS = 1000;
 
+/** POSIX single-quote shell escape — safe for arbitrary content. */
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+/** Quote anything that's not a bare flag/safe token. */
+function quoteIfNeeded(s: string): string {
+  if (/^--?[A-Za-z0-9][A-Za-z0-9_-]*$/.test(s)) return s;
+  return shellQuote(s);
+}
+
+/**
+ * Strip args that don't make sense on the remote side:
+ *  - --chrome (local browser bridge)
+ *  - --mcp-config <path> (path is local-only)
+ *  - --include-partial-messages (optional; harmless to keep, but dropped to
+ *    minimize remote stream-json variance)
+ */
+function filterArgsForRemote(args: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--chrome" || a === "--include-partial-messages") continue;
+    if (a === "--mcp-config") {
+      i++; // skip the value too
+      continue;
+    }
+    out.push(a);
+  }
+  return out;
+}
+
 export class ClaudeEngine implements InterruptibleEngine {
   name = "claude" as const;
   private liveProcesses = new Map<string, LiveProcess>();
@@ -128,17 +160,47 @@ export class ClaudeEngine implements InterruptibleEngine {
     if (opts.cliFlags?.length) args.push(...opts.cliFlags);
 
     const requestedBin = opts.bin || "claude";
-    const bin = resolveBin(requestedBin);
-    logger.info(
-      `Claude engine (one-shot) starting: ${bin} -p --output-format ${streaming ? "stream-json" : "json"} --model ${opts.model || "default"} (resume: ${opts.resumeSessionId || "none"})`,
-    );
 
-    const cleanEnv = buildChildEnv();
+    // SSH branch: run claude on a remote host. We rebuild the argv as a
+    // single shell-escaped command line so the remote shell parses it
+    // correctly. Local-only flags (--chrome, --mcp-config <path>) are
+    // dropped because they would not work on the remote machine.
+    let spawnBin: string;
+    let spawnArgs: string[];
+    let spawnCwd: string | undefined;
+    let spawnEnv: NodeJS.ProcessEnv | undefined;
+
+    if (opts.sshHost) {
+      const remoteArgs = filterArgsForRemote(args);
+      spawnBin = "ssh";
+      spawnArgs = [
+        "-T",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ServerAliveInterval=30",
+        opts.sshHost,
+        ["claude", ...remoteArgs.map(quoteIfNeeded)].join(" "),
+      ];
+      spawnCwd = undefined;
+      spawnEnv = process.env;
+      logger.info(
+        `Claude engine (one-shot) starting via SSH ${opts.sshHost}: claude -p --output-format ${streaming ? "stream-json" : "json"} --model ${opts.model || "default"} (resume: ${opts.resumeSessionId || "none"})`,
+      );
+    } else {
+      spawnBin = resolveBin(requestedBin);
+      spawnArgs = args;
+      spawnCwd = opts.cwd;
+      spawnEnv = buildChildEnv();
+      logger.info(
+        `Claude engine (one-shot) starting: ${spawnBin} -p --output-format ${streaming ? "stream-json" : "json"} --model ${opts.model || "default"} (resume: ${opts.resumeSessionId || "none"})`,
+      );
+    }
 
     return new Promise((resolve, reject) => {
-      const proc = spawn(bin, args, {
-        cwd: opts.cwd,
-        env: cleanEnv,
+      const proc = spawn(spawnBin, spawnArgs, {
+        cwd: spawnCwd,
+        env: spawnEnv,
         stdio: ["ignore", "pipe", "pipe"],
         detached: process.platform !== "win32",
       });

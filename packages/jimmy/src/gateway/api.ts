@@ -2219,6 +2219,7 @@ async function runWebSession(
       model: currentSession.model ?? engineConfig.model,
       effortLevel,
       cliFlags: employee?.cliFlags,
+      sshHost: employee?.sshHost,
       attachments: attachments?.length ? attachments : undefined,
       sessionId: currentSession.id,
       onStream: (delta) => {
@@ -2319,6 +2320,7 @@ async function runWebSession(
             model: currentSession.model ?? fallbackConfig.model,
             effortLevel: fallbackEffort,
             cliFlags: employee?.cliFlags,
+            sshHost: employee?.sshHost,
             sessionId: currentSession.id,
             onStream: (delta) => {
               context.emit("session:delta", {
@@ -2447,6 +2449,7 @@ async function runWebSession(
             model: current.model ?? engineConfig.model,
             effortLevel,
             cliFlags: employee?.cliFlags,
+            sshHost: employee?.sshHost,
             sessionId: currentSession.id,
             onStream: (delta) => {
               context.emit("session:delta", {

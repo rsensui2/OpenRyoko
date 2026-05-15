@@ -41,6 +41,8 @@ export interface EngineRunOpts {
   onStream?: (delta: StreamDelta) => void;
   /** Unique Jinn session ID for tracking the spawned process. */
   sessionId?: string;
+  /** If set, run the engine binary on a remote host via SSH instead of locally. */
+  sshHost?: string;
 }
 
 export interface EngineResult {
@@ -226,6 +228,8 @@ export interface Employee {
   reportsTo?: string | string[];
   /** Services this employee provides to the org */
   provides?: ServiceDeclaration[];
+  /** If set, run this employee's engine on a remote host via SSH. */
+  sshHost?: string;
 }
 
 /** A service that an employee can provide to other employees/departments. */
