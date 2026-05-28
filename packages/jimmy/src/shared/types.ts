@@ -43,6 +43,8 @@ export interface EngineRunOpts {
   sessionId?: string;
   /** If set, run the engine binary on a remote host via SSH instead of locally. */
   sshHost?: string;
+  /** Working directory on the remote host (only used when sshHost is set). */
+  remoteCwd?: string;
 }
 
 export interface EngineResult {
@@ -230,6 +232,8 @@ export interface Employee {
   provides?: ServiceDeclaration[];
   /** If set, run this employee's engine on a remote host via SSH. */
   sshHost?: string;
+  /** Working directory on the remote host (only used together with sshHost). */
+  remoteCwd?: string;
 }
 
 /** A service that an employee can provide to other employees/departments. */

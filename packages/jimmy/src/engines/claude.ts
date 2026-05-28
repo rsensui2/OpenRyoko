@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import type { EngineRateLimitInfo, InterruptibleEngine, EngineRunOpts, EngineResult, StreamDelta } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
 import { isDeadSessionError } from "../shared/rateLimit.js";
@@ -8,7 +8,21 @@ import { buildChildEnv } from "../shared/childEnv.js";
 interface LiveProcess {
   proc: ChildProcess;
   terminationReason: string | null;
+  /** SSH host when the engine runs remotely — used to kill the remote process. */
+  remoteHost?: string;
+  /** Remote process-group id (emitted by the remote supervisor) to signal on kill. */
+  remotePgid?: number;
+  /** Strongest signal requested before the remote pgid was known — flushed once it arrives. */
+  pendingRemoteSignal?: NodeJS.Signals;
+  /** Fallback timer that closes the SSH connection if the pgid marker never arrives. */
+  remoteKillFallback?: ReturnType<typeof setTimeout>;
 }
+
+/** Line matched against each complete stderr line of a remote run (printed by the supervisor). */
+const REMOTE_PGID_MARKER = /^__JINN_REMOTE_PGID__=(\d+)\r?$/;
+
+/** How long to keep the SSH connection open waiting for the pgid marker after a kill is requested. */
+const REMOTE_PGID_WAIT_MS = 3000;
 
 /** Errors that are likely transient and worth retrying */
 const TRANSIENT_PATTERNS = [
@@ -73,10 +87,10 @@ export class ClaudeEngine implements InterruptibleEngine {
 
     live.terminationReason = reason;
     logger.info(`Killing Claude process for session ${sessionId}`);
-    this.signalProcess(live.proc, "SIGTERM");
+    this.signalProcess(live, "SIGTERM");
     setTimeout(() => {
       if (live.proc.exitCode === null) {
-        this.signalProcess(live.proc, "SIGKILL");
+        this.signalProcess(live, "SIGKILL");
       }
     }, 2000);
   }
@@ -143,35 +157,57 @@ export class ClaudeEngine implements InterruptibleEngine {
     // single-JSON path threw away intermediate turns. Delta callbacks fire
     // only when the caller provides `opts.onStream`.
     const streaming = true;
-    const args = ["-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--chrome", "--include-partial-messages"];
-    if (opts.resumeSessionId) args.push("--resume", opts.resumeSessionId);
-    if (opts.model) args.push("--model", opts.model);
-    if (opts.effortLevel && opts.effortLevel !== "default") args.push("--effort", opts.effortLevel);
-    if (opts.systemPrompt) args.push("--append-system-prompt", opts.systemPrompt);
+    const flagArgs = ["-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--chrome", "--include-partial-messages"];
+    if (opts.resumeSessionId) flagArgs.push("--resume", opts.resumeSessionId);
+    if (opts.model) flagArgs.push("--model", opts.model);
+    if (opts.effortLevel && opts.effortLevel !== "default") flagArgs.push("--effort", opts.effortLevel);
+    if (opts.systemPrompt) flagArgs.push("--append-system-prompt", opts.systemPrompt);
+
     let prompt = opts.prompt;
     if (opts.attachments?.length) {
       prompt += "\n\nAttached files:\n" + opts.attachments.map((a) => `- ${a}`).join("\n");
     }
-    // Prompt MUST come before --mcp-config because --mcp-config is variadic
-    // and would consume the prompt as another config path
-    args.push(prompt);
 
-    if (opts.mcpConfigPath) args.push("--mcp-config", opts.mcpConfigPath);
-    if (opts.cliFlags?.length) args.push(...opts.cliFlags);
+    // Flags that must follow the positional prompt locally. --mcp-config is
+    // variadic, so the prompt has to precede it or it would swallow the prompt
+    // as another config path.
+    const trailingArgs: string[] = [];
+    if (opts.mcpConfigPath) trailingArgs.push("--mcp-config", opts.mcpConfigPath);
+    if (opts.cliFlags?.length) trailingArgs.push(...opts.cliFlags);
+
+    // Local argv keeps the historical ordering: flags, prompt, then trailing.
+    const args = [...flagArgs, prompt, ...trailingArgs];
 
     const requestedBin = opts.bin || "claude";
 
-    // SSH branch: run claude on a remote host. We rebuild the argv as a
-    // single shell-escaped command line so the remote shell parses it
-    // correctly. Local-only flags (--chrome, --mcp-config <path>) are
-    // dropped because they would not work on the remote machine.
     let spawnBin: string;
     let spawnArgs: string[];
     let spawnCwd: string | undefined;
     let spawnEnv: NodeJS.ProcessEnv | undefined;
+    // When running remotely the prompt is sent over the SSH connection's stdin
+    // (see below) so it never reaches the remote shell command line — this
+    // removes all shell/flag-injection surface and the ARG_MAX limit. Local
+    // runs keep passing the prompt as a normal argv element.
+    let remoteStdinPrompt: string | undefined;
 
     if (opts.sshHost) {
-      const remoteArgs = filterArgsForRemote(args);
+      // Only flags go on the remote command line (the prompt is piped via stdin).
+      // Local-only flags (--chrome, --mcp-config <path>) are dropped because they
+      // would not work on the remote machine.
+      const remoteArgs = filterArgsForRemote([...flagArgs, ...trailingArgs]);
+      // The remote host resolves its own binary; pass the configured name, not the
+      // locally-resolved absolute path (which is meaningless on the remote box).
+      const remoteBin = requestedBin;
+      // Run under `setsid` so claude leads its own process group, and echo that
+      // group id back (to stderr) so kill() can terminate the whole remote tree
+      // via a second SSH connection — killing the local `ssh` alone does NOT
+      // reliably stop the remote process. Requires `setsid` on the remote (Linux).
+      const inner =
+        `echo __JINN_REMOTE_PGID__=$$ >&2; exec ` +
+        [remoteBin, ...remoteArgs].map(quoteIfNeeded).join(" ");
+      let remoteCmd = `setsid sh -c ${shellQuote(inner)}`;
+      if (opts.remoteCwd) remoteCmd = `cd ${shellQuote(opts.remoteCwd)} && ${remoteCmd}`;
+
       spawnBin = "ssh";
       spawnArgs = [
         "-T",
@@ -179,13 +215,23 @@ export class ClaudeEngine implements InterruptibleEngine {
         "BatchMode=yes",
         "-o",
         "ServerAliveInterval=30",
+        "--",
         opts.sshHost,
-        ["claude", ...remoteArgs.map(quoteIfNeeded)].join(" "),
+        remoteCmd,
       ];
       spawnCwd = undefined;
-      spawnEnv = process.env;
+      spawnEnv = buildChildEnv();
+      remoteStdinPrompt = prompt;
+
+      // Surface the local-only context that does not carry over to the remote host.
+      if (opts.cwd && !opts.remoteCwd) {
+        logger.warn(`SSH employee: local cwd is ignored on remote host ${opts.sshHost}; set 'remoteCwd' to control the remote working directory`);
+      }
+      if (opts.mcpConfigPath) {
+        logger.warn(`SSH employee: --mcp-config is not available on remote host ${opts.sshHost}`);
+      }
       logger.info(
-        `Claude engine (one-shot) starting via SSH ${opts.sshHost}: claude -p --output-format ${streaming ? "stream-json" : "json"} --model ${opts.model || "default"} (resume: ${opts.resumeSessionId || "none"})`,
+        `Claude engine (one-shot) starting via SSH ${opts.sshHost}: ${remoteBin} -p --output-format ${streaming ? "stream-json" : "json"} --model ${opts.model || "default"} (resume: ${opts.resumeSessionId || "none"})`,
       );
     } else {
       spawnBin = resolveBin(requestedBin);
@@ -198,18 +244,32 @@ export class ClaudeEngine implements InterruptibleEngine {
     }
 
     return new Promise((resolve, reject) => {
+      // stdout/stderr are always piped; stdin is piped only for remote runs (to
+      // forward the prompt). The conditional stdin defeats the non-null-streams
+      // overload, so we assert the type — stdout/stderr are guaranteed present
+      // and stdin is only touched in the remote branch below.
       const proc = spawn(spawnBin, spawnArgs, {
         cwd: spawnCwd,
         env: spawnEnv,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: [remoteStdinPrompt !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
         detached: process.platform !== "win32",
-      });
+      }) as ChildProcessWithoutNullStreams;
 
       if (opts.sessionId) {
         this.liveProcesses.set(opts.sessionId, {
           proc,
           terminationReason: null,
+          remoteHost: opts.sshHost,
         });
+      }
+
+      // Remote runs receive the prompt over stdin (forwarded by ssh), then EOF.
+      if (remoteStdinPrompt !== undefined && proc.stdin) {
+        proc.stdin.on("error", () => {
+          // Remote side may close early (auth/connection failure); ignore EPIPE.
+        });
+        proc.stdin.write(remoteStdinPrompt);
+        proc.stdin.end();
       }
 
       let stdout = "";
@@ -281,25 +341,53 @@ export class ClaudeEngine implements InterruptibleEngine {
         });
       }
 
-      proc.stderr.on("data", (d: Buffer) => {
-        const chunk = d.toString();
-        stderr += chunk;
+      const appendStderr = (line: string) => {
+        stderr += line + "\n";
         // Keep only the last 10KB of stderr to bound memory usage
         if (stderr.length > STDERR_MAX) {
           stderr = stderr.slice(stderr.length - STDERR_MAX);
         }
-        for (const line of chunk.trim().split("\n").filter(Boolean)) {
-          logger.debug(`[claude stderr] ${line}`);
-        }
-      });
+        logger.debug(`[claude stderr] ${line}`);
+      };
+
+      if (opts.sshHost) {
+        // Remote runs: parse stderr line-by-line so the pgid marker is matched
+        // even when it is split across multiple `data` chunks. The marker line
+        // is consumed (never stored/logged); everything else is reported.
+        let stderrLineBuf = "";
+        proc.stderr.on("data", (d: Buffer) => {
+          stderrLineBuf += d.toString();
+          const lines = stderrLineBuf.split("\n");
+          stderrLineBuf = lines.pop() ?? "";
+          for (const line of lines) {
+            const m = line.match(REMOTE_PGID_MARKER);
+            if (m) {
+              this.onRemotePgid(opts.sessionId, Number(m[1]));
+              continue;
+            }
+            appendStderr(line);
+          }
+        });
+      } else {
+        proc.stderr.on("data", (d: Buffer) => {
+          const chunk = d.toString();
+          stderr += chunk;
+          if (stderr.length > STDERR_MAX) {
+            stderr = stderr.slice(stderr.length - STDERR_MAX);
+          }
+          for (const line of chunk.trim().split("\n").filter(Boolean)) {
+            logger.debug(`[claude stderr] ${line}`);
+          }
+        });
+      }
 
       proc.on("close", (code) => {
         if (settled) return;
         settled = true;
 
-        const terminationReason = opts.sessionId
-          ? this.liveProcesses.get(opts.sessionId)?.terminationReason ?? null
-          : null;
+        const live = opts.sessionId ? this.liveProcesses.get(opts.sessionId) : undefined;
+        const terminationReason = live?.terminationReason ?? null;
+        if (live?.remoteKillFallback) clearTimeout(live.remoteKillFallback);
         if (opts.sessionId) {
           this.liveProcesses.delete(opts.sessionId);
         }
@@ -698,7 +786,80 @@ export class ClaudeEngine implements InterruptibleEngine {
     };
   }
 
-  private signalProcess(proc: ChildProcess, signal: NodeJS.Signals): void {
+  private signalProcess(live: LiveProcess, signal: NodeJS.Signals): void {
+    const proc = live.proc;
+    if (proc.exitCode !== null) return;
+
+    // Local engine: kill the local process group directly.
+    if (!live.remoteHost) {
+      this.killLocal(proc, signal);
+      return;
+    }
+
+    // Remote engine: we must terminate the remote process group, otherwise the
+    // remote `claude` keeps running after the local ssh dies (without a TTY,
+    // killing the local ssh only closes the channel) and would keep consuming
+    // tokens and mutating the remote workspace.
+    if (live.remotePgid) {
+      this.sendRemoteSignal(live, signal);
+      this.killLocal(proc, signal);
+      return;
+    }
+
+    // The pgid is not known yet (kill raced the startup marker). Remember the
+    // strongest requested signal and keep the SSH connection open so the marker
+    // can still arrive — onRemotePgid() flushes the kill the moment it does.
+    // If it never arrives, the fallback closes the connection as a best effort.
+    if (signal === "SIGKILL" || !live.pendingRemoteSignal) {
+      live.pendingRemoteSignal = signal;
+    }
+    if (!live.remoteKillFallback) {
+      live.remoteKillFallback = setTimeout(() => {
+        live.remoteKillFallback = undefined;
+        if (proc.exitCode !== null || live.remotePgid) return;
+        logger.warn(
+          `SSH employee: never received the remote process-group id from ${live.remoteHost} ` +
+            `(is 'setsid' available on the remote?); closing the SSH connection as a best-effort kill.`,
+        );
+        this.killLocal(proc, live.pendingRemoteSignal ?? "SIGKILL");
+      }, REMOTE_PGID_WAIT_MS);
+    }
+  }
+
+  /** Record the remote pgid and flush any kill that was requested before it was known. */
+  private onRemotePgid(sessionId: string | undefined, pgid: number): void {
+    if (!sessionId) return;
+    const live = this.liveProcesses.get(sessionId);
+    if (!live || live.remotePgid) return;
+    live.remotePgid = pgid;
+    if (live.remoteKillFallback) {
+      clearTimeout(live.remoteKillFallback);
+      live.remoteKillFallback = undefined;
+    }
+    if (live.pendingRemoteSignal) {
+      const signal = live.pendingRemoteSignal;
+      live.pendingRemoteSignal = undefined;
+      this.sendRemoteSignal(live, signal);
+      this.killLocal(live.proc, signal);
+    }
+  }
+
+  /** Signal the remote process group over a fresh SSH connection. */
+  private sendRemoteSignal(live: LiveProcess, signal: NodeJS.Signals): void {
+    if (!live.remoteHost || !live.remotePgid) return;
+    const name = signal.replace(/^SIG/, ""); // SIGTERM -> TERM, SIGKILL -> KILL
+    const killer = spawn(
+      "ssh",
+      ["-T", "-o", "BatchMode=yes", "--", live.remoteHost, `kill -s ${name} -- -${live.remotePgid}`],
+      { stdio: "ignore" },
+    );
+    killer.on("error", (err) => {
+      logger.debug(`Failed to send ${signal} to remote Claude process group: ${err instanceof Error ? err.message : err}`);
+    });
+  }
+
+  /** Signal the local child (process group on POSIX). */
+  private killLocal(proc: ChildProcess, signal: NodeJS.Signals): void {
     if (proc.exitCode !== null) return;
     try {
       if (process.platform !== "win32" && proc.pid) {

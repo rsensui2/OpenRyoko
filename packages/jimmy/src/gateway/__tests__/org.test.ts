@@ -21,7 +21,7 @@ vi.mock("../../shared/logger.js", () => ({
   },
 }));
 
-import { scanOrg } from "../org.js";
+import { scanOrg, isValidSshHost } from "../org.js";
 
 function writeYaml(subdir: string, filename: string, content: string) {
   const dir = path.join(tmpDir, subdir);
@@ -83,5 +83,66 @@ alwaysNotify: "yes"
     const emp = registry.get("bad");
     expect(emp).toBeDefined();
     expect(emp!.alwaysNotify).toBe(true);
+  });
+
+  it("accepts a valid sshHost for a claude employee", () => {
+    writeYaml("platform", "remote.yaml", `
+name: remote
+persona: Runs remotely
+engine: claude
+sshHost: build-box
+remoteCwd: /srv/work
+`);
+    const emp = scanOrg().get("remote");
+    expect(emp!.sshHost).toBe("build-box");
+    expect(emp!.remoteCwd).toBe("/srv/work");
+  });
+
+  it("drops an sshHost that looks like an ssh option (injection guard)", () => {
+    writeYaml("platform", "evil.yaml", `
+name: evil
+persona: Tries to inject
+engine: claude
+sshHost: "-oProxyCommand=touch /tmp/pwned"
+`);
+    const emp = scanOrg().get("evil");
+    expect(emp!.sshHost).toBeUndefined();
+  });
+
+  it("drops sshHost for non-claude engines", () => {
+    writeYaml("platform", "codex-remote.yaml", `
+name: codexremote
+persona: Codex employee
+engine: codex
+sshHost: build-box
+`);
+    const emp = scanOrg().get("codexremote");
+    expect(emp!.sshHost).toBeUndefined();
+  });
+
+  it("ignores remoteCwd when sshHost is absent", () => {
+    writeYaml("platform", "local.yaml", `
+name: localdev
+persona: Local employee
+remoteCwd: /srv/work
+`);
+    const emp = scanOrg().get("localdev");
+    expect(emp!.remoteCwd).toBeUndefined();
+  });
+});
+
+describe("isValidSshHost", () => {
+  it("accepts plain hosts, aliases, user@host and host:port", () => {
+    expect(isValidSshHost("build-box")).toBe(true);
+    expect(isValidSshHost("user@10.0.0.5")).toBe(true);
+    expect(isValidSshHost("host.example.com:2222")).toBe(true);
+  });
+
+  it("rejects leading dashes and shell/option metacharacters", () => {
+    expect(isValidSshHost("-oProxyCommand=x")).toBe(false);
+    expect(isValidSshHost("-F/tmp/cfg")).toBe(false);
+    expect(isValidSshHost("host; rm -rf /")).toBe(false);
+    expect(isValidSshHost("host with space")).toBe(false);
+    expect(isValidSshHost("")).toBe(false);
   });
 });

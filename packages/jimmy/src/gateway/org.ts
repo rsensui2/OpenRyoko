@@ -5,6 +5,15 @@ import { ORG_DIR } from "../shared/paths.js";
 import type { Employee } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
 
+/**
+ * Validate an SSH host/alias before it is handed to the `ssh` command.
+ * Rejects leading dashes (so the value can't be parsed as an ssh option such
+ * as `-oProxyCommand=...`) and anything outside `user@host:port` shape.
+ */
+export function isValidSshHost(value: string): boolean {
+  return /^(?!-)(?:[A-Za-z0-9._~-]+@)?[A-Za-z0-9._~-]+(?::\d{1,5})?$/.test(value);
+}
+
 export function scanOrg(): Map<string, Employee> {
   const registry = new Map<string, Employee>();
 
@@ -25,13 +34,29 @@ export function scanOrg(): Map<string, Employee> {
           const raw = fs.readFileSync(fullPath, "utf-8");
           const data = yaml.load(raw) as any;
           if (data && data.name && data.persona) {
+            const engine = data.engine || "claude";
+
+            // sshHost: validate, and warn when it can't take effect so it never
+            // silently degrades to a local run.
+            let sshHost: string | undefined;
+            if (typeof data.sshHost === "string" && data.sshHost.trim()) {
+              const host = data.sshHost.trim();
+              if (!isValidSshHost(host)) {
+                logger.warn(`Ignoring invalid sshHost "${host}" for employee ${data.name}`);
+              } else if (engine !== "claude") {
+                logger.warn(`Ignoring sshHost for employee ${data.name}: engine "${engine}" does not support remote SSH execution (only "claude" does)`);
+              } else {
+                sshHost = host;
+              }
+            }
+
             const employee: Employee = {
               name: data.name,
               displayName: data.displayName || data.name,
               department:
                 data.department || path.basename(path.dirname(fullPath)),
               rank: data.rank || "employee",
-              engine: data.engine || "claude",
+              engine,
               model: data.model || "sonnet",
               persona: data.persona,
               emoji: typeof data.emoji === "string" ? data.emoji : undefined,
@@ -40,7 +65,8 @@ export function scanOrg(): Map<string, Employee> {
               alwaysNotify: typeof data.alwaysNotify === "boolean" ? data.alwaysNotify : true,
               reportsTo: data.reportsTo ?? undefined,
               mcp: data.mcp ?? undefined,
-              sshHost: typeof data.sshHost === "string" ? data.sshHost : undefined,
+              sshHost,
+              remoteCwd: sshHost && typeof data.remoteCwd === "string" ? data.remoteCwd : undefined,
               provides: Array.isArray(data.provides)
                 ? data.provides.filter((s: unknown) => s && typeof s === "object" && typeof (s as any).name === "string" && typeof (s as any).description === "string")
                   .map((s: any) => ({ name: s.name as string, description: s.description as string }))
