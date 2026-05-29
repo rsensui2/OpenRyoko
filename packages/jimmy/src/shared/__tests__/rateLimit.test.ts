@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { EngineResult } from "../types.js";
-import { isDeadSessionError, detectRateLimit } from "../rateLimit.js";
+import { isDeadSessionError, detectRateLimit, isUnresumableTranscriptError } from "../rateLimit.js";
 
 function makeResult(overrides: Partial<EngineResult> = {}): EngineResult {
   return {
@@ -118,5 +118,65 @@ describe("isDeadSessionError", () => {
     });
     expect(detectRateLimit(rateLimited).limited).toBe(true);
     expect(isDeadSessionError(rateLimited)).toBe(false);
+  });
+});
+
+describe("isUnresumableTranscriptError", () => {
+  // The exact API 400 surfaced when resuming a transcript whose latest assistant
+  // turn carries thinking blocks that no longer round-trip.
+  const THINKING_400 =
+    "API Error: 400 messages.19.content.1: thinking or redacted_thinking blocks in the latest assistant message cannot be modified. These blocks must remain as they were in the original response.";
+
+  it("detects the thinking-block 400 even with a non-zero turn count", () => {
+    // This is the crux: a resumed conversation reports the full prior turn count,
+    // so isDeadSessionError ignores it — but the transcript is still unresumable.
+    const result = makeResult({ error: THINKING_400, cost: 0, numTurns: 19 });
+    expect(isUnresumableTranscriptError(result)).toBe(true);
+    expect(isDeadSessionError(result)).toBe(false);
+  });
+
+  it("detects the error when wrapped in a generic 'exited with code 1' message", () => {
+    const result = makeResult({
+      error: `Claude exited with code 1: ${THINKING_400}`,
+      cost: 0.04,
+      numTurns: 19,
+    });
+    expect(isUnresumableTranscriptError(result)).toBe(true);
+  });
+
+  it("detects redacted_thinking phrasing", () => {
+    const result = makeResult({
+      error: "400 redacted_thinking blocks in the latest assistant message cannot be modified",
+    });
+    expect(isUnresumableTranscriptError(result)).toBe(true);
+  });
+
+  it("returns false when there is no error", () => {
+    expect(isUnresumableTranscriptError(makeResult({ result: "ok" }))).toBe(false);
+  });
+
+  it("returns false for unrelated errors", () => {
+    expect(isUnresumableTranscriptError(makeResult({ error: "Claude exited with code 1" }))).toBe(false);
+    expect(isUnresumableTranscriptError(makeResult({ error: "session not found" }))).toBe(false);
+  });
+
+  it("returns false when an actual rate limit (rejected) is present", () => {
+    const result = makeResult({
+      error: THINKING_400,
+      rateLimit: { status: "rejected" },
+    });
+    expect(isUnresumableTranscriptError(result)).toBe(false);
+  });
+
+  it("still detects when a non-rejected rate_limit_event is attached (CLI streams status 'allowed')", () => {
+    // Regression: the Claude CLI emits a rate_limit_event with status "allowed"
+    // on ordinary requests, so a blanket rateLimit?.status guard would wrongly
+    // swallow the real 400 and skip the fresh-session fallback.
+    const result = makeResult({
+      error: THINKING_400,
+      rateLimit: { status: "allowed" },
+      numTurns: 19,
+    });
+    expect(isUnresumableTranscriptError(result)).toBe(true);
   });
 });

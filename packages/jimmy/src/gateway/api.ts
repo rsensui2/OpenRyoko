@@ -42,7 +42,7 @@ import { logger } from "../shared/logger.js";
 import { getSttStatus, downloadModel, transcribe as sttTranscribe, resolveLanguages, WHISPER_LANGUAGES } from "../stt/stt.js";
 import { JINN_HOME } from "../shared/paths.js";
 import { resolveEffort } from "../shared/effort.js";
-import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit } from "../shared/rateLimit.js";
+import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit, isDeadSessionError, isUnresumableTranscriptError } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt, recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { loadJobs, saveJobs } from "../cron/jobs.js";
 import { reloadScheduler } from "../cron/scheduler.js";
@@ -2210,9 +2210,30 @@ async function runWebSession(
       })()
       : prompt;
 
-    const result = await engine.run({
+    const onStreamDelta = (delta: import("../shared/types.js").StreamDelta) => {
+      const now = Date.now();
+      if (now - lastHeartbeatAt >= 2000) {
+        lastHeartbeatAt = now;
+        updateSession(currentSession.id, {
+          status: "running",
+          lastActivity: new Date(now).toISOString(),
+        });
+      }
+      try {
+        context.emit("session:delta", {
+          sessionId: currentSession.id,
+          type: delta.type,
+          content: delta.content,
+          toolName: delta.toolName,
+        });
+      } catch (err) {
+        logger.warn(`Failed to emit stream delta for session ${currentSession.id}: ${err instanceof Error ? err.message : err}`);
+      }
+    };
+
+    const runOnce = (resumeSessionId: string | undefined) => engine.run({
       prompt: promptToRun,
-      resumeSessionId: currentSession.engineSessionId ?? undefined,
+      resumeSessionId,
       systemPrompt,
       cwd: JINN_HOME,
       bin: engineConfig.bin,
@@ -2223,33 +2244,59 @@ async function runWebSession(
       remoteCwd: employee?.remoteCwd,
       attachments: attachments?.length ? attachments : undefined,
       sessionId: currentSession.id,
-      onStream: (delta) => {
-        const now = Date.now();
-        if (now - lastHeartbeatAt >= 2000) {
-          lastHeartbeatAt = now;
-          updateSession(currentSession.id, {
-            status: "running",
-            lastActivity: new Date(now).toISOString(),
-          });
-        }
-        try {
-          context.emit("session:delta", {
-            sessionId: currentSession.id,
-            type: delta.type,
-            content: delta.content,
-            toolName: delta.toolName,
-          });
-        } catch (err) {
-          logger.warn(`Failed to emit stream delta for session ${currentSession.id}: ${err instanceof Error ? err.message : err}`);
-        }
-      },
-    }).finally(() => {
+      onStream: onStreamDelta,
+    });
+
+    let result = await runOnce(currentSession.engineSessionId ?? undefined).finally(() => {
       clearInterval(runHeartbeat);
     });
 
     if (!getSession(currentSession.id)) {
       logger.info(`Skipping completion for deleted web session ${currentSession.id}`);
       return;
+    }
+
+    // Fresh-session recovery: when the resume target is unusable — a dead/expired
+    // engine session (zero work done) or an unresumable transcript (e.g. thinking
+    // blocks in the latest assistant message cannot be modified) — clear the stale
+    // engine session id and retry once from scratch. Without this, a follow-up that
+    // lands on a poisoned --resume id surfaces the raw engine error to the user
+    // instead of a real answer. The connector path does the same in SessionManager.
+    const interruptedEarly = result.error?.startsWith("Interrupted");
+    if (
+      !interruptedEarly &&
+      currentSession.engineSessionId &&
+      (isDeadSessionError(result) || isUnresumableTranscriptError(result))
+    ) {
+      const reason = isUnresumableTranscriptError(result) ? "unresumable transcript" : "dead session";
+      logger.warn(`${reason} detected for web session ${currentSession.id} — clearing stale engine ID and retrying fresh`);
+
+      const meta = { ...(currentSession.transportMeta || {}) } as Record<string, unknown>;
+      delete meta["engineSessions"];
+      delete meta["engineOverride"];
+      updateSession(currentSession.id, {
+        engineSessionId: null,
+        transportMeta: meta as any,
+        status: "running",
+        lastActivity: new Date().toISOString(),
+      });
+      // Mutate the in-memory reference so any downstream code (rate-limit
+      // fallback, completion persistence) no longer sees the poisoned resume id.
+      currentSession.engineSessionId = null;
+      currentSession.transportMeta = meta as any;
+
+      const retryHeartbeat = setInterval(() => {
+        updateSession(currentSession.id, {
+          status: "running",
+          lastActivity: new Date().toISOString(),
+        });
+      }, 5000);
+      result = await runOnce(undefined).finally(() => clearInterval(retryHeartbeat));
+
+      if (!getSession(currentSession.id)) {
+        logger.info(`Skipping completion for deleted web session ${currentSession.id}`);
+        return;
+      }
     }
 
     const wasInterrupted = result.error?.startsWith("Interrupted");

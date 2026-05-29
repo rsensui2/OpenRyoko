@@ -23,7 +23,7 @@ import { SessionQueue } from "./queue.js";
 import { JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 import { resolveEffort } from "../shared/effort.js";
-import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit, isDeadSessionError } from "../shared/rateLimit.js";
+import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit, isDeadSessionError, isUnresumableTranscriptError } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt, isLikelyNearClaudeUsageLimit, recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { loadJobs } from "../cron/jobs.js";
 import { setCronJobEnabled, triggerCronJob } from "../cron/scheduler.js";
@@ -403,13 +403,20 @@ export class SessionManager {
 
       let wasInterrupted = result.error?.startsWith("Interrupted");
 
-      // Dead session detection: if the engine session ID is stale (expired/invalid),
-      // clear cached engine sessions from transportMeta so the next attempt starts fresh.
-      // Also sets a flag so we skip the rate-limit retry loop below (a dead session
-      // error can contain text like "429" that would otherwise match RATE_LIMIT_ERROR_RE).
-      let isDead = !wasInterrupted && isDeadSessionError(result);
-      if (isDead) {
-        logger.warn(`Dead session detected for ${session.id} — clearing stale engine IDs`);
+      // Fresh-session detection: clear the stale engine session ID and restart from
+      // scratch when the resume target is no longer usable. Two distinct cases:
+      //   - dead session (expired/invalid --resume ID; zero work done), and
+      //   - unresumable transcript (e.g. thinking blocks in the latest assistant
+      //     message cannot be modified — a non-zero-turn 400 the dead-session
+      //     heuristic deliberately ignores).
+      // Either way we clear cached engine sessions from transportMeta so the next
+      // attempt starts fresh, and set a flag so we skip the rate-limit retry loop
+      // below (these errors can contain text like "429" that would otherwise match
+      // RATE_LIMIT_ERROR_RE).
+      let needsFreshSession = !wasInterrupted && (isDeadSessionError(result) || isUnresumableTranscriptError(result));
+      if (needsFreshSession) {
+        const reason = isUnresumableTranscriptError(result) ? "unresumable transcript" : "dead session";
+        logger.warn(`${reason} detected for ${session.id} — clearing stale engine IDs`);
         const meta = { ...(session.transportMeta || {}) } as Record<string, unknown>;
         delete meta["engineSessions"];
         delete meta["engineOverride"];
@@ -441,18 +448,19 @@ export class SessionManager {
         });
 
         // Re-evaluate the flags against the retry result. If the retry also
-        // comes back dead, something deeper is wrong — log and fall through to
-        // normal error handling (which will post the error to the user).
+        // comes back needing a fresh session, something deeper is wrong — log and
+        // fall through to normal error handling (which will post the error to the
+        // user).
         wasInterrupted = result.error?.startsWith("Interrupted");
-        isDead = !wasInterrupted && isDeadSessionError(result);
-        if (isDead) {
-          logger.error(`Retry with fresh session for ${session.id} also reported dead-session; giving up`);
+        needsFreshSession = !wasInterrupted && (isDeadSessionError(result) || isUnresumableTranscriptError(result));
+        if (needsFreshSession) {
+          logger.error(`Retry with fresh session for ${session.id} still unusable; giving up`);
         }
       }
 
       // Detect rate limit / usage limit errors and auto-retry.
-      // Skip entirely for dead sessions — they are not rate limits.
-      const rateLimit = (!wasInterrupted && !isDead) ? detectRateLimit(result) : { limited: false as const };
+      // Skip entirely when a fresh session was needed — those are not rate limits.
+      const rateLimit = (!wasInterrupted && !needsFreshSession) ? detectRateLimit(result) : { limited: false as const };
       if (rateLimit.limited) {
         recordClaudeRateLimit(rateLimit.resetsAt);
 

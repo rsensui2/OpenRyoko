@@ -18,6 +18,20 @@ const DEAD_SESSION_PATTERNS = [
 ];
 
 /**
+ * Patterns indicating the persisted transcript can no longer be replayed via
+ * `--resume`, independent of how much work the original session did. The most
+ * common case is an API 400 when the latest assistant turn contains
+ * thinking/redacted_thinking blocks that no longer round-trip (e.g. the model
+ * or thinking config changed between turns). Unlike a dead session, these come
+ * back WITH a non-zero turn count (the resumed conversation length), so they
+ * must be matched by message text rather than the zero-work heuristic.
+ */
+const UNRESUMABLE_TRANSCRIPT_PATTERNS = [
+  /(thinking|redacted_thinking)[\s\S]{0,80}blocks?[\s\S]{0,80}(cannot be modified|must remain)/i,
+  /blocks in the latest assistant message cannot be modified/i,
+];
+
+/**
  * Detect whether an engine result indicates a dead/expired session rather than
  * a transient or rate-limit error. A dead session is one where the engine exited
  * with an error but did zero work (no cost, no turns) and there is no rate-limit
@@ -41,6 +55,25 @@ export function isDeadSessionError(result: EngineResult): boolean {
   if (zeroCost && DEAD_SESSION_PATTERNS.some((p) => p.test(result.error!))) return true;
 
   return false;
+}
+
+/**
+ * Detect whether the engine failed specifically because the persisted transcript
+ * can no longer be resumed (e.g. thinking/redacted_thinking blocks in the latest
+ * assistant message cannot be modified). The remedy is identical to a dead
+ * session — drop the stale `--resume` ID and start fresh — but unlike
+ * {@link isDeadSessionError} this is NOT gated on zero cost/turns, because a
+ * resumed conversation reports the full prior turn count even when it fails
+ * before doing any new work.
+ */
+export function isUnresumableTranscriptError(result: EngineResult): boolean {
+  if (!result.error) return false;
+  // An actual rate limit is a transient capacity signal, not a poisoned
+  // transcript. Match detectRateLimit's definition (status "rejected") — the CLI
+  // streams a rate_limit_event with status "allowed" on ordinary requests too,
+  // so a broader `result.rateLimit?.status` check would swallow real failures.
+  if (result.rateLimit?.status === "rejected") return false;
+  return UNRESUMABLE_TRANSCRIPT_PATTERNS.some((p) => p.test(result.error!));
 }
 
 export function detectRateLimit(result: EngineResult): RateLimitDetection {
