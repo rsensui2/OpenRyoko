@@ -43,7 +43,7 @@ import { getSttStatus, downloadModel, transcribe as sttTranscribe, resolveLangua
 import { JINN_HOME } from "../shared/paths.js";
 import { handleHookPost, LOOPBACK as HOOK_LOOPBACK } from "./hook-endpoint.js";
 import { resolveEffort } from "../shared/effort.js";
-import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit } from "../shared/rateLimit.js";
+import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit, isDeadSessionError, isPoisonedTranscriptError } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt, recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { loadJobs, saveJobs } from "../cron/jobs.js";
 import { reloadScheduler } from "../cron/scheduler.js";
@@ -2303,9 +2303,32 @@ async function runWebSession(
       })()
       : prompt;
 
-    const result = await engine.run({
+    const onStreamDelta = (delta: import("../shared/types.js").StreamDelta) => {
+      const now = Date.now();
+      if (now - lastHeartbeatAt >= 2000) {
+        lastHeartbeatAt = now;
+        updateSession(currentSession.id, {
+          status: "running",
+          lastActivity: new Date(now).toISOString(),
+        });
+      }
+      try {
+        context.emit("session:delta", {
+          sessionId: currentSession.id,
+          type: delta.type,
+          content: delta.content,
+          toolName: delta.toolName,
+          toolId: delta.toolId,
+          subAgent: delta.subAgent,
+        });
+      } catch (err) {
+        logger.warn(`Failed to emit stream delta for session ${currentSession.id}: ${err instanceof Error ? err.message : err}`);
+      }
+    };
+
+    const runOnce = (resumeSessionId: string | undefined) => engine.run({
       prompt: promptToRun,
-      resumeSessionId: currentSession.engineSessionId ?? undefined,
+      resumeSessionId,
       systemPrompt,
       cwd: JINN_HOME,
       bin: engineConfig.bin,
@@ -2316,35 +2339,76 @@ async function runWebSession(
       remoteCwd: employee?.remoteCwd,
       attachments: attachments?.length ? attachments : undefined,
       sessionId: currentSession.id,
-      onStream: (delta) => {
-        const now = Date.now();
-        if (now - lastHeartbeatAt >= 2000) {
-          lastHeartbeatAt = now;
-          updateSession(currentSession.id, {
-            status: "running",
-            lastActivity: new Date(now).toISOString(),
-          });
-        }
-        try {
-          context.emit("session:delta", {
-            sessionId: currentSession.id,
-            type: delta.type,
-            content: delta.content,
-            toolName: delta.toolName,
-            toolId: delta.toolId,
-            subAgent: delta.subAgent,
-          });
-        } catch (err) {
-          logger.warn(`Failed to emit stream delta for session ${currentSession.id}: ${err instanceof Error ? err.message : err}`);
-        }
-      },
-    }).finally(() => {
+      onStream: onStreamDelta,
+    });
+
+    let result = await runOnce(currentSession.engineSessionId ?? undefined).finally(() => {
       clearInterval(runHeartbeat);
     });
 
     if (!getSession(currentSession.id)) {
       logger.info(`Skipping completion for deleted web session ${currentSession.id}`);
       return;
+    }
+
+    // Fresh-session recovery when the --resume target is unusable. The web path
+    // had no such fallback (only rate-limit handling), so a follow-up that landed
+    // on a stale or poisoned engine session surfaced the raw engine error to the
+    // user instead of a real answer. Mirrors SessionManager.runSession():
+    //   - poisoned transcript (corrupted thinking blocks) → clear the engine
+    //     session id, but DO NOT auto-replay: the failed run may already have
+    //     executed tools with side effects (a resumed run reports cumulative
+    //     cost/turns, so "no work was done" can't be reliably detected here).
+    //     Ask the user to resend instead.
+    //   - dead session (zero work done) → clear the id and retry once fresh.
+    if (!result.error?.startsWith("Interrupted") && currentSession.engineSessionId) {
+      const isPoisoned = isPoisonedTranscriptError(result);
+      const isDead = !isPoisoned && isDeadSessionError(result);
+      if (isPoisoned || isDead) {
+        const reason = isPoisoned ? "poisoned transcript" : "dead session";
+        logger.warn(`${reason} detected for web session ${currentSession.id} — clearing stale engine ID`);
+        const meta = { ...(currentSession.transportMeta || {}) } as Record<string, unknown>;
+        delete meta["engineSessions"];
+        delete meta["engineOverride"];
+        updateSession(currentSession.id, {
+          engineSessionId: null,
+          transportMeta: meta as any,
+          status: "running",
+          lastActivity: new Date().toISOString(),
+        });
+        // Mutate the in-memory reference so downstream code (rate-limit fallback,
+        // completion persistence) no longer re-reads the poisoned resume id.
+        currentSession.engineSessionId = null;
+        currentSession.transportMeta = meta as any;
+
+        if (isPoisoned) {
+          // Blank the returned sessionId so post-run persistence does not re-attach
+          // the poisoned id, drop partial result text / intermediate turns, and
+          // replace the raw 400 with an actionable message for the user.
+          result = {
+            ...result,
+            sessionId: "",
+            result: "",
+            turns: [],
+            error:
+              "⚠️ 直前の会話履歴が壊れていたため（thinking ブロックの破損）、このセッションをリセットしました。お手数ですが同じ内容をもう一度送ってください。次回からは正常に応答できます。",
+          };
+        } else {
+          logger.info(`Retrying web session ${currentSession.id} with fresh engine session after dead-session`);
+          const retryHeartbeat = setInterval(() => {
+            updateSession(currentSession.id, {
+              status: "running",
+              lastActivity: new Date().toISOString(),
+            });
+          }, 5000);
+          result = await runOnce(undefined).finally(() => clearInterval(retryHeartbeat));
+
+          if (!getSession(currentSession.id)) {
+            logger.info(`Skipping completion for deleted web session ${currentSession.id}`);
+            return;
+          }
+        }
+      }
     }
 
     const wasInterrupted = result.error?.startsWith("Interrupted");
