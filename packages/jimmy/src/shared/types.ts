@@ -490,6 +490,11 @@ export interface PortalConfig {
   operatorAliases?: string[];
   language?: string;
   onboarded?: boolean;
+  /**
+   * Platform user IDs (e.g. Slack `U…`) allowed to see internal working context.
+   * Speakers outside this list get a reduced cross-session digest.
+   */
+  trustedSpeakers?: string[];
 }
 
 // --- Model + capability registry ---
@@ -616,6 +621,13 @@ export interface JinnConfig {
   context?: {
     /** Max characters for the built system prompt. Defaults to 100000. */
     maxChars?: number;
+    /**
+     * How far back to look for replies this portal made in other sessions.
+     * Defaults to 6 hours. Set to 0 to disable the cross-session digest.
+     */
+    crossSessionWindowHours?: number;
+    /** Max cross-session replies to inject. Defaults to 15. Set to 0 to disable. */
+    crossSessionLimit?: number;
   };
   stt?: {
     enabled?: boolean;

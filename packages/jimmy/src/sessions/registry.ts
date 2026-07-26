@@ -533,6 +533,64 @@ export function getMessages(sessionId: string): SessionMessage[] {
   return db.prepare('SELECT id, role, content, timestamp FROM messages WHERE session_id = ? ORDER BY timestamp ASC').all(sessionId) as SessionMessage[];
 }
 
+export interface RecentReply {
+  sessionId: string;
+  sourceRef: string;
+  transportMeta: string | null;
+  content: string;
+  timestamp: number;
+}
+
+/**
+ * Replies this portal made in OTHER conversations recently.
+ *
+ * Sessions are keyed per Slack thread (`slack:<channel>:<threadTs>`), so a single
+ * case that spans an origin thread plus an escalation thread runs as several
+ * independent sessions with no shared memory. Without this, a session can report
+ * on — or contradict — work another session already carried out minutes earlier.
+ * Injecting a short digest of recent cross-session replies gives every session a
+ * view of what "it" has already said and done.
+ *
+ * Only connector-backed conversations are returned; cron runs are excluded
+ * because their bookkeeping chatter would crowd out real exchanges.
+ */
+export function getRecentRepliesAcrossSessions(opts: {
+  sinceMs: number;
+  limit: number;
+  excludeSessionId?: string;
+  /**
+   * Drop replies made in direct messages. Set when the current session is
+   * serving someone outside the trusted circle — cross-channel work still needs
+   * to be visible, but one-to-one conversations with the operator do not.
+   */
+  excludeDirectMessages?: boolean;
+}): RecentReply[] {
+  const db = initDb();
+  const rows = db.prepare(`
+    SELECT m.session_id AS sessionId,
+           s.source_ref AS sourceRef,
+           s.transport_meta AS transportMeta,
+           m.content AS content,
+           m.timestamp AS timestamp
+    FROM messages m
+    JOIN sessions s ON s.id = m.session_id
+    WHERE m.role = 'assistant'
+      AND m.timestamp >= ?
+      AND s.source_ref LIKE 'slack:%'
+      AND (? = 0 OR s.source_ref NOT LIKE 'slack:dm:%')
+      AND (? IS NULL OR m.session_id != ?)
+    ORDER BY m.timestamp DESC
+    LIMIT ?
+  `).all(
+    opts.sinceMs,
+    opts.excludeDirectMessages ? 1 : 0,
+    opts.excludeSessionId ?? null,
+    opts.excludeSessionId ?? null,
+    opts.limit,
+  ) as RecentReply[];
+  return rows.reverse();
+}
+
 export interface QueueItem {
   id: string;
   sessionId: string;

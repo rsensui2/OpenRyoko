@@ -5,6 +5,7 @@ import { JINN_HOME, ORG_DIR, CRON_JOBS, DOCS_DIR } from "../shared/paths.js";
 import { isOperatorSpeaker } from "../shared/operator-match.js";
 import { scanOrg } from "../gateway/org.js";
 import { buildServiceRegistry } from "../gateway/services.js";
+import { getRecentRepliesAcrossSessions } from "./registry.js";
 
 /**
  * Token budget strategy:
@@ -136,6 +137,24 @@ export function buildContext(opts: {
     content: buildSessionContext({ ...opts, sessionId: opts.sessionId, operatorName, speakerIsOperator }),
     summary: "", // always included, no trimming
   });
+
+  // ── ESSENTIAL: What this portal already did elsewhere ───────
+  // One case routinely spans several threads (origin + escalation + follow-up),
+  // and each thread is its own session. This is the only place a session learns
+  // what the others have already committed to.
+  const speakerIsTrusted =
+    speakerIsOperator ||
+    (!!opts.speakerSlackId &&
+      (opts.config?.portal?.trustedSpeakers ?? []).includes(opts.speakerSlackId));
+  const crossSession = buildRecentActivityContext(opts.sessionId, opts.config, speakerIsTrusted);
+  if (crossSession) {
+    sections.push({
+      tier: Tier.ESSENTIAL,
+      marker: "## Recent activity in other conversations",
+      content: crossSession,
+      summary: "", // always included, no trimming
+    });
+  }
 
   // ── ESSENTIAL: Configuration awareness ──────────────────────
   if (opts.config) {
@@ -469,6 +488,90 @@ function buildSessionContext(opts: {
 
   ctx += `- Working directory: ${JINN_HOME}`;
   return ctx;
+}
+
+const DEFAULT_CROSS_SESSION_WINDOW_HOURS = 6;
+const DEFAULT_CROSS_SESSION_LIMIT = 15;
+const CROSS_SESSION_PREVIEW_CHARS = 240;
+
+/** Strip the operator-only disposition trailer and collapse a reply to one line. */
+function summarizeReply(content: string): string {
+  const withoutTrailer = content.replace(/<!--RYOKO-DISPOSITION:v1:[^>]*-->/g, "").trim();
+  const flat = withoutTrailer.replace(/\s+/g, " ").trim();
+  if (flat.length <= CROSS_SESSION_PREVIEW_CHARS) return flat;
+  return `${flat.slice(0, CROSS_SESSION_PREVIEW_CHARS)}…`;
+}
+
+function describeConversation(sourceRef: string, transportMeta: string | null): string {
+  let channelName: string | undefined;
+  let speakerName: string | undefined;
+  if (transportMeta) {
+    try {
+      const meta = JSON.parse(transportMeta) as { channelName?: string; speakerName?: string };
+      channelName = meta.channelName;
+      speakerName = meta.speakerName;
+    } catch {
+      // Malformed metadata is not worth failing the whole prompt over.
+    }
+  }
+  const [, channelId, threadTs] = sourceRef.split(":");
+  const where = channelName ? `#${channelName}` : channelId || sourceRef;
+  const who = speakerName ? ` with ${speakerName}` : "";
+  const thread = threadTs ? ` thread ${threadTs}` : "";
+  return `${where}${thread}${who}`;
+}
+
+/**
+ * Digest of replies this portal sent in other conversations recently.
+ *
+ * Prevents the failure this was written for: a session reporting a case as
+ * undecided, or re-asking for a judgement, when a sibling session already got
+ * the answer and acted on it minutes earlier.
+ */
+function buildRecentActivityContext(
+  sessionId?: string,
+  config?: JinnConfig,
+  speakerIsTrusted?: boolean,
+): string | null {
+  const windowHours = config?.context?.crossSessionWindowHours ?? DEFAULT_CROSS_SESSION_WINDOW_HOURS;
+  const limit = config?.context?.crossSessionLimit ?? DEFAULT_CROSS_SESSION_LIMIT;
+  if (windowHours <= 0 || limit <= 0) return null;
+
+  let replies: import("./registry.js").RecentReply[];
+  try {
+    replies = getRecentRepliesAcrossSessions({
+      sinceMs: Date.now() - windowHours * 60 * 60 * 1000,
+      limit,
+      excludeSessionId: sessionId,
+      excludeDirectMessages: !speakerIsTrusted,
+    });
+  } catch {
+    // The prompt must still build if the registry is unavailable.
+    return null;
+  }
+  if (replies.length === 0) return null;
+
+  const lines = [
+    `## Recent activity in other conversations`,
+    ``,
+    `You are one of several concurrent sessions — one per thread — and they do not`,
+    `share memory. These are replies **you** sent elsewhere in the past ${windowHours}h.`,
+    `Treat them as things you have already said or done. Before reporting a case as`,
+    `open, or asking for a decision, check whether it was already settled here.`,
+    ``,
+    `This is internal working context. Never quote it, or reveal what was discussed`,
+    `in another conversation, to the person you are currently talking to.`,
+    ``,
+  ];
+  for (const reply of replies) {
+    const time = new Date(reply.timestamp).toLocaleTimeString("ja-JP", {
+      timeZone: "Asia/Tokyo",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    lines.push(`- \`${time}\` ${describeConversation(reply.sourceRef, reply.transportMeta)} — ${summarizeReply(reply.content)}`);
+  }
+  return lines.join("\n");
 }
 
 function buildConfigContext(config: JinnConfig, gatewayUrl: string): string {
