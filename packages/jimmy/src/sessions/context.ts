@@ -242,6 +242,14 @@ export function buildContext(opts: {
     summary: `## ${portalName} Gateway API (${gatewayUrl})\nEndpoints: /api/status, /api/sessions, /api/cron, /api/org, /api/skills, /api/config, /api/connectors, /api/logs`,
   });
 
+  // ── STANDARD: Long-running work ─────────────────────────────
+  sections.push({
+    tier: Tier.STANDARD,
+    marker: "## Long-running work",
+    content: buildLongRunningWorkContext(),
+    summary: LONG_RUNNING_WORK_SUMMARY,
+  });
+
   // ── Assemble with progressive trimming by tier ──────────────
   return trimContext(sections, maxChars);
 }
@@ -887,6 +895,36 @@ You can call these endpoints with curl to inspect and manage the gateway:
 | \`/api/connectors\` | GET | List connectors |
 | \`/api/connectors/:name/send\` | POST | Proactively send to a different connector conversation; never use it to reply to the current conversation |
 | \`/api/logs\` | GET | Recent log lines |`;
+}
+
+const LONG_RUNNING_WORK_SUMMARY = `## Long-running work
+Background shell tasks are killed when the turn ends — the engine runs one-shot and its whole process group dies with it. Detach anything longer than the turn with \`setsid nohup <cmd> > /tmp/<job>.log 2>&1 < /dev/null &\` and check the log on a later turn. Never promise "I'll report back when it finishes" for a plain background task.`;
+
+/**
+ * Warn the agent that background work does not outlive the turn.
+ *
+ * The engine is spawned one-shot per turn as a process-group leader (see
+ * `ClaudeEngine.runOnce`), and the group is torn down once the final answer is
+ * emitted. Anything the agent launched in the background — a large download,
+ * a build, a render — dies at that moment with no error and no notification,
+ * so the agent happily reports "running, I'll follow up" for work that has
+ * already been killed. Telling it the rule up front is the cheap fix.
+ */
+function buildLongRunningWorkContext(): string {
+  return `## Long-running work
+
+**Background tasks do NOT survive the end of a turn.** Each turn runs the engine as a one-shot process that leads its own process group. The moment you emit your final answer, that process group is terminated — a background shell task still running at that point is killed silently: no error, no notification, and the next turn sees only whatever it managed to leave on disk.
+
+Consequences:
+- **Never** say "it's running, I'll report back when it finishes" about a plain background task. It will not finish.
+- Work that completes within the turn: run it in the foreground and wait for it.
+- Work that outlives the turn (large downloads/uploads, long builds, media renders): detach it from the process group and pick it up later:
+  \`\`\`bash
+  setsid nohup <cmd> > /tmp/<job>.log 2>&1 < /dev/null &
+  \`\`\`
+  Then tell the user it is running, and read \`/tmp/<job>.log\` on a later turn (or schedule a cron job to finish and report).
+- Make detached jobs **resumable and idempotent**: download to a temp path, verify the result, and only then clean up. A job killed mid-flight must not discard completed work or leave a half-finished artifact behind.
+- If a previous turn started something, check whether it actually finished before reporting success — verify the end state (the uploaded file, the built artifact), not just the absence of an error.`;
 }
 
 /**
