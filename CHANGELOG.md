@@ -2,6 +2,23 @@
 
 > **バージョン体系について**: 2026.4.26 から日付ベース (`YYYY.M.D`) のCalVerに移行しました。npm semver の制約上、月・日の leading zero は付けません (例: 4月26日 → `2026.4.26`)。
 
+## [2026.9.3] - 2026-09-01
+
+> 従業員に委譲した親セッションが「二度と起きない」問題の修正。8/18 の gateway 認証強化以降、子セッションの完了通知が自分の gateway に未認証で POST され、401 で無音のまま捨てられていた。
+
+### 修正
+
+- **子セッション完了通知・レート制限通知が 401 で全滅していた**（PR #67, @mrkm86）: `sessions/callbacks.ts` の 2 経路（`POST /api/sessions/:id/message` = 子→親の完了通知、`POST /api/connectors/:name/send` = usage limit 等の通知・呼び出し 8 箇所）が Authorization ヘッダを付けておらず、`fetch()` は 4xx で reject しないため `.catch()` も `res.ok` も無く、ログにも残らなかった。2026.8.20（`jobs/notify.ts` の同種修正）の取りこぼし。`_postToGateway()` に統合し、`readGatewayAuthToken()` でトークンを付与、`res.ok` を確認して拒否は warn に出す。抑止経路（`alwaysNotify: false` / 親不在 / 親が error）もログを残す。レスポンス body は `cancel()` で解放
+  - 影響条件: `gateway.host` が network（`0.0.0.0` 等）または `authRequired: true` で Bearer 必須になっている環境。既定の `127.0.0.1` は無傷
+- **委譲プロトコル（COO の system prompt）を「onComplete 通知が主経路、ただし保証ではない」に改訂**: 旧文面の「通知は必ず来る／NEVER poll」という無条件の約束をやめ、通知が省略される 3 条件（`parentSessionId` 無し / `alwaysNotify: false` / 親が `error`）と「POST 失敗は gateway.log にしか出ない」を明記。即返答してターンを終える運用は維持し（ターン内ポーリング禁止）、保険として `GET /api/sessions/<child-id>?last=5` と `ryoko job run … -- 'sleep <sec>'` の watchdog を案内。`parentSessionId` は必須
+- テストヘルパー `makeSession()` が `overrides` を spread していなかった不備を修正（既存テストが別の理由で通っていた）
+
+### Verification
+
+- 実機（host 0.0.0.0）で修正前の 401 を再現（no-token → 401 / with-token → 404）
+- Backend: **152 test files / 1,751 tests pass**、tsc clean
+- PR: [#67](https://github.com/rsensui2/OpenRyoko/pull/67)
+
 ## [2026.9.2] - 2026-08-31
 
 > macOS で `npm install -g openryoko` した直後に、最初のチャットで gateway が落ちる問題の修正。
