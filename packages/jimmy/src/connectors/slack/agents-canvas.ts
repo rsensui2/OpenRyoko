@@ -376,35 +376,83 @@ export class AgentsCanvasUpdater {
         }
         this.canvasId = canvasId;
       } catch (err) {
-        // If the channel already has a Canvas (created previously by us, by
-        // another instance, or manually), Slack returns `channel_canvas_already_exists`.
-        // Recover by reading the existing canvas id from conversations.info and
-        // editing that one instead of bailing out.
-        if (isChannelCanvasAlreadyExistsError(err)) {
-          const existingId = await this.fetchExistingChannelCanvasId(this.config.channelId);
-          if (!existingId) {
-            throw err;
+        // Recover from two Slack failure modes:
+        //   - `channel_canvas_already_exists`: this channel already has a canvas.
+        //   - `free_team_canvas_tab_already_exists`: free plan has used its one
+        //     allowed canvas (anywhere in the workspace).
+        // For both, find the existing canvas and edit it instead of looping.
+        if (isChannelCanvasAlreadyExistsError(err) || isFreeTeamCanvasAlreadyExistsError(err)) {
+          const existingId =
+            (await this.fetchExistingChannelCanvasId(this.config.channelId))
+            ?? (await this.findExistingStandaloneCanvasId());
+          if (existingId) {
+            logger.info(`[agents-canvas] adopting existing canvas ${existingId}`);
+            this.canvasId = existingId;
+            saveState({ canvasId: existingId, channelId: this.config.channelId });
+            await this.editCanvas(existingId, markdown);
+            return;
           }
-          logger.info(`[agents-canvas] adopting existing channel canvas ${existingId}`);
-          this.canvasId = existingId;
-          await this.editCanvas(existingId, markdown);
-        } else {
-          throw err;
+          logger.error(
+            "[agents-canvas] canvas already exists per Slack but none could be located — disabling updates to stop the retry loop.",
+          );
+          this.stop();
+          return;
         }
+        throw err;
       }
     } else {
-      const res = await this.client.apiCall("canvases.create", {
-        title: this.config.title,
-        document_content: documentContent,
-      });
-      const canvasId = extractCanvasId(res);
-      if (!canvasId) {
-        throw new Error(`canvases.create returned no canvas_id: ${JSON.stringify(res).slice(0, 200)}`);
+      try {
+        const res = await this.client.apiCall("canvases.create", {
+          title: this.config.title,
+          document_content: documentContent,
+        });
+        const canvasId = extractCanvasId(res);
+        if (!canvasId) {
+          throw new Error(`canvases.create returned no canvas_id: ${JSON.stringify(res).slice(0, 200)}`);
+        }
+        this.canvasId = canvasId;
+      } catch (err) {
+        // Free Slack workspaces are limited to a single standalone canvas. If
+        // one already exists (e.g. left over from a previous run), adopt it
+        // instead of looping forever on the create call.
+        if (isFreeTeamCanvasAlreadyExistsError(err)) {
+          const existingId = await this.findExistingStandaloneCanvasId();
+          if (existingId) {
+            logger.info(`[agents-canvas] adopting existing standalone canvas ${existingId}`);
+            this.canvasId = existingId;
+            saveState({ canvasId: existingId, channelId: this.config.channelId });
+            await this.editCanvas(existingId, markdown);
+            return;
+          }
+          logger.error(
+            "[agents-canvas] free workspace standalone canvas limit reached and no existing canvas matched by title — disabling updates. Set agentsCanvas.channelId to host the canvas in a channel instead.",
+          );
+          this.stop();
+          return;
+        }
+        throw err;
       }
-      this.canvasId = canvasId;
     }
     saveState({ canvasId: this.canvasId, channelId: this.config.channelId });
     logger.info(`[agents-canvas] created canvas ${this.canvasId}`);
+  }
+
+  private async findExistingStandaloneCanvasId(): Promise<string | null> {
+    try {
+      const res = await this.client.apiCall("files.list", {
+        types: "canvases",
+        count: 100,
+      });
+      const files = res.files as Array<Record<string, unknown>> | undefined;
+      if (!Array.isArray(files)) return null;
+      const match = files.find((f) => typeof f.title === "string" && f.title === this.config.title)
+        ?? files.find((f) => typeof f.name === "string" && f.name === this.config.title);
+      const id = match?.id;
+      return typeof id === "string" && id ? id : null;
+    } catch (err) {
+      logger.warn(`[agents-canvas] failed to look up existing standalone canvas: ${err}`);
+      return null;
+    }
   }
 
   private async fetchExistingChannelCanvasId(channelId: string): Promise<string | null> {
@@ -457,4 +505,12 @@ function isCanvasNotFoundError(err: unknown): boolean {
   if (code && /(?:not_found|notfound|missing|deleted)/i.test(code)) return true;
   const msg = err instanceof Error ? err.message : String(err);
   return /(?:canvas|file).*(?:not_found|not found|missing|deleted)|(?:not_found|not found|missing|deleted).*(?:canvas|file)/i.test(msg);
+}
+
+function isFreeTeamCanvasAlreadyExistsError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const data = (err as { data?: { error?: string } }).data;
+  if (data?.error === "free_team_canvas_tab_already_exists") return true;
+  const msg = err instanceof Error ? err.message : String(err);
+  return /free_team_canvas_tab_already_exists/.test(msg);
 }
