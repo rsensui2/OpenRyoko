@@ -2,15 +2,24 @@ import type {
   Connector,
   ConnectorCapabilities,
   ConnectorHealth,
+  DiscordRespondToConfig,
   IncomingMessage,
   Target,
 } from "../../shared/types.js";
 import { logger } from "../../shared/logger.js";
+import {
+  evaluateRespondPolicy,
+  parseForwardedAddressing,
+  resolveRespondMode,
+  scopeForChannel,
+} from "./respond-policy.js";
 
 export interface RemoteDiscordConfig {
   /** URL of the primary Jinn instance that holds the Discord WebSocket connection */
   proxyVia: string;
   channelId?: string;
+  /** Deterministic per-scope response gate, applied to proxied messages. */
+  respondTo?: DiscordRespondToConfig;
 }
 
 /**
@@ -22,9 +31,12 @@ export class RemoteDiscordConnector implements Connector {
   name = "discord";
   private handler: ((msg: IncomingMessage) => void) | null = null;
   private baseUrl: string;
+  private readonly respondTo: DiscordRespondToConfig | undefined;
+  private warnedMissingAddressing = false;
 
   constructor(config: RemoteDiscordConfig) {
     this.baseUrl = config.proxyVia.replace(/\/+$/, "");
+    this.respondTo = config.respondTo;
   }
 
   onMessage(handler: (msg: IncomingMessage) => void): void {
@@ -33,6 +45,45 @@ export class RemoteDiscordConnector implements Connector {
 
   /** Called by the /api/connectors/discord/incoming endpoint to deliver proxied messages */
   deliverMessage(msg: IncomingMessage): void {
+    const meta = (msg.transportMeta ?? {}) as Record<string, unknown>;
+    const isDM = meta.isDM === true;
+    // Addressing (ForwardedAddressing) is resolved by the primary instance:
+    // only it sees the Discord gateway, and it also tracks thread engagement
+    // — proxied sends run through its connector. When the flags are absent —
+    // a primary too old to send them — mention scopes fail closed (Slack
+    // precedent for unresolvable identity) and the sibling rule stays off
+    // (never drop an "always" message on missing metadata). Warn once, and
+    // only when a message actually lands in a mention-gated scope, so the
+    // required upgrade order is visible instead of a silent blackhole.
+    const { present, flags } = parseForwardedAddressing(meta);
+    if (
+      !present &&
+      resolveRespondMode(this.respondTo, scopeForChannel(isDM)) === "mention" &&
+      !this.warnedMissingAddressing
+    ) {
+      this.warnedMissingAddressing = true;
+      logger.warn(
+        "[discord-remote] primary instance does not forward addressing metadata (its version predates respondTo) — routed messages in mention scopes are dropped until the primary is upgraded",
+      );
+    }
+    const respondDecision = evaluateRespondPolicy({
+      config: this.respondTo,
+      isDM,
+      wasMentioned: flags.wasBotAddressed,
+      isEngagedThread: flags.isEngagedThread,
+    });
+    if (!respondDecision.allow) {
+      logger.info(
+        `[discord-remote] respondTo gate → silent (${respondDecision.reason}) for message ${msg.messageId}`,
+      );
+      return;
+    }
+    if (!isDM && flags.addressesOnlyOthers) {
+      logger.info(
+        `[discord-remote] message addresses other user(s) — staying silent for message ${msg.messageId}`,
+      );
+      return;
+    }
     if (this.handler) {
       this.handler(msg);
     }

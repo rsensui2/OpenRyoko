@@ -1,6 +1,7 @@
 import {
   Client,
   GatewayIntentBits,
+  MessageType,
   Partials,
   type Message,
   type TextChannel,
@@ -11,6 +12,7 @@ import type {
   Connector,
   ConnectorCapabilities,
   ConnectorHealth,
+  DiscordRespondToConfig,
   IncomingMessage,
   Target,
 } from "../../shared/types.js";
@@ -18,6 +20,14 @@ import { logger } from "../../shared/logger.js";
 import { TMP_DIR } from "../../shared/paths.js";
 import { formatResponse, downloadAttachment } from "./format.js";
 import { deriveSessionKey, buildReplyContext, isOldMessage } from "./threads.js";
+import {
+  evaluateRespondPolicy,
+  resolveRespondMode,
+  wasBotAddressed,
+  addressesOnlyOthers,
+  type ForwardedAddressing,
+} from "./respond-policy.js";
+import { EngagedThreadTracker } from "./engaged-threads.js";
 
 export interface DiscordConnectorConfig {
   /** Unique instance identifier (e.g. "discord-vox") */
@@ -34,6 +44,8 @@ export interface DiscordConnectorConfig {
   channelRouting?: Record<string, string>;
   /** If set, this instance proxies all Discord operations through the primary instance at this URL */
   proxyVia?: string;
+  /** Deterministic per-scope response gate (DM / channel). See DiscordRespondToConfig. */
+  respondTo?: DiscordRespondToConfig;
 }
 
 export class DiscordConnector implements Connector {
@@ -47,6 +59,7 @@ export class DiscordConnector implements Connector {
   private status: "starting" | "running" | "stopped" | "error" = "starting";
   private lastError: string | null = null;
   private typingIntervals = new Map<string, ReturnType<typeof setInterval>>();
+  private engagedThreads = new EngagedThreadTracker();
 
   constructor(config: DiscordConnectorConfig) {
     this.name = config.id || "discord";
@@ -151,6 +164,8 @@ export class DiscordConnector implements Connector {
       for (const chunk of chunks) {
         const sent = await (channel as TextChannel | DMChannel | ThreadChannel).send(chunk);
         lastId = sent.id;
+        // Per chunk, so a partial send still counts as engagement.
+        this.recordEngagement(channel, sent.id);
       }
       return lastId;
     } catch (err) {
@@ -167,6 +182,8 @@ export class DiscordConnector implements Connector {
       for (const chunk of chunks) {
         const sent = await (channel as TextChannel | DMChannel | ThreadChannel).send(chunk);
         lastId = sent.id;
+        // Per chunk, so a partial send still counts as engagement.
+        this.recordEngagement(channel, sent.id);
       }
       return lastId;
     } catch (err) {
@@ -193,6 +210,7 @@ export class DiscordConnector implements Connector {
       if (!channel || !channel.isTextBased()) return;
       const msg = await (channel as TextChannel).messages.fetch(target.messageTs);
       await msg.react(emoji);
+      this.recordEngagement(channel, target.messageTs);
     } catch {
       // non-fatal
     }
@@ -235,8 +253,9 @@ export class DiscordConnector implements Connector {
   }
 
   private async handleMessage(message: Message): Promise<void> {
-    // Ignore bots (including self)
-    if (message.author.bot) return;
+    // Ignore bots (including self), webhooks, and Discord-generated system
+    // messages (joins, pins, thread-created…) — none of these are user turns.
+    if (message.author.bot || message.system || message.webhookId) return;
     logger.debug(`Discord message from ${message.author.username} in channel ${message.channel.id}`);
 
     // Ignore old messages on boot
@@ -248,11 +267,20 @@ export class DiscordConnector implements Connector {
     // Guild restriction
     if (this.config.guildId && message.guild?.id !== this.config.guildId) return;
 
-    // Channel routing — proxy messages to remote instances
+    // Channel routing — proxy messages to remote instances. Addressing and
+    // thread engagement are resolved here and forwarded: only this instance
+    // sees the Discord gateway, and proxied sends run through this
+    // connector, so its tracker is the source of truth for engagement.
     const routeTarget = this.config.channelRouting?.[message.channel.id];
     if (routeTarget) {
       logger.debug(`Routing Discord message from channel ${message.channel.id} to ${routeTarget}`);
-      await this.proxyToRemote(routeTarget, message);
+      // References resolve only outside DMs here: the remote's dm policy is
+      // unknown, and a routed-DM reply matters only under its dm=mention —
+      // too rare to spend a REST fetch on every routed DM reply.
+      const addressing = await this.resolveAddressing(message, {
+        allowFetch: !message.channel.isDMBased(),
+      });
+      await this.proxyToRemote(routeTarget, message, addressing);
       return;
     }
 
@@ -261,6 +289,41 @@ export class DiscordConnector implements Connector {
 
     // User allowlist
     if (this.allowedUserIds.size > 0 && !this.allowedUserIds.has(message.author.id)) return;
+
+    // Deterministic respondTo gate — the Discord port of the Slack gate.
+    // Addressing resolves after the cheap filters above, so filtered
+    // messages never cost a reference fetch; in DMs the fetch only matters
+    // under dm=mention (the sibling rule below never applies to DMs).
+    // botUserId is set once the client is ready (messageCreate never fires
+    // earlier); if it were somehow missing, mention scopes fail closed.
+    const isDM = message.channel.isDMBased();
+    const addressing = await this.resolveAddressing(message, {
+      allowFetch: !isDM || resolveRespondMode(this.config.respondTo, "dm") === "mention",
+    });
+    const respondDecision = evaluateRespondPolicy({
+      config: this.config.respondTo,
+      isDM,
+      wasMentioned: wasBotAddressed(addressing),
+      isEngagedThread:
+        message.channel.isThread() && this.engagedThreads.has(message.channel.id),
+    });
+    if (!respondDecision.allow) {
+      logger.info(
+        `[discord] respondTo gate → silent (${respondDecision.reason}) for message ${message.id}`,
+      );
+      return;
+    }
+
+    // Cross-user traffic in shared channels: a message that @-mentions or
+    // replies to somebody else (and not us) is addressed to them, not the
+    // bot — stay silent regardless of respondTo mode or thread engagement,
+    // mirroring the Slack connector's sibling-mention rule.
+    if (!isDM && addressesOnlyOthers(addressing)) {
+      logger.info(
+        `[discord] message addresses other user(s) — staying silent for message ${message.id}`,
+      );
+      return;
+    }
 
     if (!this.handler) return;
 
@@ -309,8 +372,86 @@ export class DiscordConnector implements Connector {
     this.handler(incomingMessage);
   }
 
+  /**
+   * Track engagement for the `respondTo.engagedThreads` continuation. Only
+   * anchor-eligible IDs whose engagement can actually be consumed are kept:
+   * the thread itself, or — in flat guild channels — the acted-on message,
+   * since a public thread created from a message reuses its ID. DM and
+   * in-thread message IDs can never root a thread and are never recorded,
+   * which keeps the unbounded tracker's real footprint small.
+   */
+  private recordEngagement(
+    channel: { id: string; isThread(): boolean; isDMBased(): boolean },
+    anchorMessageId?: string,
+  ): void {
+    if (channel.isThread()) {
+      if (this.trackingConsumes(channel.id)) this.engagedThreads.record(channel.id);
+      return;
+    }
+    if (anchorMessageId && !channel.isDMBased() && this.trackingConsumes(anchorMessageId)) {
+      this.engagedThreads.record(anchorMessageId);
+    }
+  }
+
+  /**
+   * True when engagement recorded under this id can ever be read back. The
+   * local gate consults the tracker only when the channel scope is
+   * mention-gated with engagedThreads on (DMs have no threads, so dm=mention
+   * alone consumes nothing). The routed path consults it only for messages
+   * whose own channel id is a channelRouting key — thread messages route by
+   * their thread id, which for a public thread equals the message it was
+   * rooted on — so ids outside the routing table are never read there.
+   */
+  private trackingConsumes(id: string): boolean {
+    if (
+      resolveRespondMode(this.config.respondTo, "channel") === "mention" &&
+      this.config.respondTo?.engagedThreads !== false
+    ) {
+      return true;
+    }
+    return this.config.channelRouting?.[id] !== undefined;
+  }
+
+  /**
+   * Resolve who the message addresses. Reply attribution applies only to
+   * actual replies (`MessageType.Reply`) — a crosspost or forward also
+   * carries a `reference` but addresses nobody. `mentions.repliedUser` comes
+   * from the gateway's resolved reference and works whether or not the reply
+   * pinged; when Discord omitted the resolution and `allowFetch` is set,
+   * fall back to one fetch of the referenced message. A deleted reference
+   * stays undefined — no addressee.
+   */
+  private async resolveAddressing(
+    message: Message,
+    opts: { allowFetch: boolean },
+  ): Promise<{
+    botUserId: string | undefined;
+    mentionedUserIds: Set<string>;
+    repliedToUserId: string | undefined;
+  }> {
+    const isReply = message.type === MessageType.Reply;
+    let repliedToUserId = isReply ? message.mentions.repliedUser?.id : undefined;
+    if (isReply && repliedToUserId === undefined && opts.allowFetch && message.reference?.messageId) {
+      try {
+        const referenced = await message.fetchReference();
+        repliedToUserId = referenced.author?.id;
+      } catch {
+        // Referenced message deleted or inaccessible.
+      }
+    }
+    return {
+      botUserId: this.client.user?.id,
+      mentionedUserIds: new Set(message.mentions.users.keys()),
+      repliedToUserId,
+    };
+  }
+
   /** Forward a message to a remote Jinn instance via HTTP */
-  private async proxyToRemote(remoteUrl: string, message: Message): Promise<void> {
+  private async proxyToRemote(
+    remoteUrl: string,
+    message: Message,
+    addressing: Parameters<typeof wasBotAddressed>[0],
+  ): Promise<void> {
     try {
       const attachments = Array.from(message.attachments.values()).map((att) => ({
         name: att.name,
@@ -334,6 +475,16 @@ export class DiscordConnector implements Connector {
             : "dm",
           guildId: message.guild?.id ?? null,
           isDM: message.channel.isDMBased(),
+          // Precomputed here (only this instance knows the bot user,
+          // resolves references, and tracks engagement) so the receiving
+          // instance can apply its own respondTo gate without another
+          // Discord round-trip.
+          ...({
+            wasBotAddressed: wasBotAddressed(addressing),
+            addressesOnlyOthers: addressesOnlyOthers(addressing),
+            isEngagedThread:
+              message.channel.isThread() && this.engagedThreads.has(message.channel.id),
+          } satisfies ForwardedAddressing),
         },
       };
 

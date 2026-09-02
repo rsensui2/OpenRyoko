@@ -93,10 +93,66 @@ Reactions provide visual feedback during processing:
 - `@mention`: messages mentioning a specific employee name route to that employee
 - Thread continuity: replies in a thread continue with the same employee
 
+## Discord Connector
+
+Uses `discord.js` over the Discord gateway (no public URL required).
+
+### Configuration
+
+```yaml
+connectors:
+  discord:
+    botToken: ...         # Discord bot token
+    guildId: ...          # optional: only handle messages from this guild
+    channelId: ...        # optional: only handle messages from this channel
+```
+
+### Response Gating (`respondTo`)
+
+The Discord port of the Slack gate. By default the bot responds to every
+message it can see, with one deliberate exception described below (messages
+addressed to somebody else); `respondTo` adds a deterministic gate so gated
+messages never reach the engine:
+
+```yaml
+connectors:
+  discord:
+    respondTo:
+      dm: always            # 1:1 and group DMs (default: always)
+      channel: mention      # guild channels/threads — reply only when
+                            # @-mentioned or replied to (default: always)
+      engagedThreads: true  # keep replying inside threads the bot already
+                            # engaged, without a re-mention (default: true)
+```
+
+Modes per scope: `always` | `mention` | `never` — same semantics as the Slack
+gate, with Discord-specific mention rules:
+
+- A Discord **reply** to one of the bot's messages counts as a mention,
+  whether or not the reply pinged (if the replied-to message was since
+  deleted, the reply can no longer be attributed and does not count). In flat
+  channels (no thread), reply to the bot or re-mention it to continue a
+  conversation. Thread engagement is tracked in memory and resets whenever
+  the connector is recreated — a gateway restart, a config save, or a
+  connector reload — mention the bot once more afterwards.
+- Role mentions and `@everyone`/`@here` do **not** count as mentions.
+- Messages that @-mention or reply to *somebody else* (and not the bot) are
+  always ignored outside DMs, even in `always` scopes and even with
+  `respondTo` unset — they're addressed to that person, not the bot. This is
+  an intentional behavior change from earlier releases (Slack parity), and
+  the one way an unconfigured connector no longer responds to everything.
+- Channels proxied via `channelRouting` are gated by the *receiving*
+  instance's `respondTo`, not the sender's — the primary forwards the
+  resolved addressing so the remote can decide without a Discord round-trip.
+  Upgrade the primary first: a primary too old to forward addressing leaves
+  the receiver's mention scopes fail-closed (every routed message dropped,
+  with a warning in the receiver's log).
+- Unset scopes default to `always`. There is no triage layer on Discord —
+  this gate is the only response filter.
+
 ## Future Connectors
 
 The connector interface is designed for additional platforms:
-- **Discord**: Bot integration via discord.js
 - **iMessage**: macOS-only via AppleScript bridge
 - **Web UI**: Built-in, served by the HTTP server
 - **CLI**: Direct terminal input/output
