@@ -238,33 +238,39 @@ describe("replyMessage replyStyle", () => {
   });
 });
 
-describe("threads inherit their parent channel's route and restriction", () => {
-  function fakeIncoming(input: { channelId: string; isThread?: boolean; parentId?: string }) {
-    return {
-      id: "M9",
-      type: MessageType.Default,
-      content: "hello",
-      author: { id: "U1", username: "user", bot: false },
-      system: false,
-      webhookId: undefined,
-      createdTimestamp: Date.now() + 60_000,
-      guild: { id: "G1" },
-      channel: {
-        id: input.channelId,
-        name: "general",
-        parentId: input.parentId ?? null,
-        type: input.isThread ? ChannelType.PublicThread : ChannelType.GuildText,
-        isDMBased: () => false,
-        isThread: () => input.isThread ?? false,
-        isTextBased: () => true,
-      },
-      mentions: { users: new Map(), repliedUser: null },
-      reference: undefined,
-      fetchReference: vi.fn().mockRejectedValue(new Error("no reference")),
-      attachments: new Map(),
-    };
-  }
+function fakeIncoming(input: {
+  channelId: string;
+  isThread?: boolean;
+  parentId?: string;
+  permissionsFor?: (user: unknown) => { has(flag: bigint): boolean } | null;
+}) {
+  return {
+    id: "M9",
+    type: MessageType.Default,
+    content: "hello",
+    author: { id: "U1", username: "user", bot: false },
+    system: false,
+    webhookId: undefined,
+    createdTimestamp: Date.now() + 60_000,
+    guild: { id: "G1" },
+    channel: {
+      id: input.channelId,
+      name: "general",
+      parentId: input.parentId ?? null,
+      type: input.isThread ? ChannelType.PublicThread : ChannelType.GuildText,
+      permissionsFor: input.permissionsFor,
+      isDMBased: () => false,
+      isThread: () => input.isThread ?? false,
+      isTextBased: () => true,
+    },
+    mentions: { users: new Map(), repliedUser: null },
+    reference: undefined,
+    fetchReference: vi.fn().mockRejectedValue(new Error("no reference")),
+    attachments: new Map(),
+  };
+}
 
+describe("threads inherit their parent channel's route and restriction", () => {
   it("routes a thread's messages via its parent channel's route", async () => {
     const calls: Array<Record<string, unknown>> = [];
     vi.stubGlobal(
@@ -303,5 +309,90 @@ describe("threads inherit their parent channel's route and restriction", () => {
     await connector.replyMessage({ channel: "C1", thread: "T9" }, "hi");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((connector as any).engagedThreads.has("T9")).toBe(true);
+  });
+});
+
+describe("thread style failure state transitions", () => {
+  async function receivedSessionKeys(
+    connector: DiscordConnector,
+    messages: Array<ReturnType<typeof fakeIncoming>>,
+  ): Promise<string[]> {
+    const keys: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    connector.onMessage((m) => keys.push((m as any).sessionKey));
+    for (const message of messages) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (connector as any).handleMessage(message);
+    }
+    return keys;
+  }
+
+  it("keys the session to the channel from the first turn when thread permissions are missing", async () => {
+    const noThreadPerms = () => ({ has: () => false });
+    const channel = fakeFlatChannel();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (channel as any).permissionsFor = noThreadPerms;
+    const connector = connectorWith({ replyStyle: "thread" }, { C1: channel });
+    const keys = await receivedSessionKeys(connector, [
+      fakeIncoming({ channelId: "C1", permissionsFor: noThreadPerms }),
+    ]);
+    expect(keys).toEqual(["discord:C1"]);
+    await connector.replyMessage({ channel: "C1", messageTs: "M9" }, "hi");
+    expect(channel._starter.startThread).not.toHaveBeenCalled();
+    expect(channel.send).toHaveBeenCalledWith(
+      expect.objectContaining({ reply: { messageReference: "M9", failIfNotExists: false } }),
+    );
+  });
+
+  it("switches from thread keys to channel keys after a channel-level creation failure", async () => {
+    const channel = fakeFlatChannel({ startThreadError: { code: 50013 } });
+    const connector = connectorWith({ replyStyle: "thread" }, { C1: channel });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const keysBefore = await receivedSessionKeys(connector, [fakeIncoming({ channelId: "C1" })]);
+    expect(keysBefore).toEqual(["discord:thread:M9"]);
+    await connector.replyMessage({ channel: "C1", messageTs: "M9" }, "hi");
+    const keysAfter: string[] = [];
+    connector.onMessage((m) => keysAfter.push(m.sessionKey));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (connector as any).handleMessage(fakeIncoming({ channelId: "C1" }));
+    expect(keysAfter).toEqual(["discord:C1"]);
+  });
+
+  it("marks the channel when the created thread rejects sends with a permission error", async () => {
+    const channel = fakeFlatChannel();
+    channel._thread.send.mockRejectedValue({ code: 50013 });
+    const connector = connectorWith({ replyStyle: "thread" }, { C1: channel });
+    const result = await connector.replyMessage({ channel: "C1", messageTs: "M0" }, "hi");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((connector as any).threadStyleFailed.has("C1")).toBe(true);
+    expect(channel.send).toHaveBeenCalledWith(
+      expect.objectContaining({ reply: { messageReference: "M0", failIfNotExists: false } }),
+    );
+    expect(result).toBeDefined();
+  });
+
+  it("falls back to the parent for a locked thread the message arrived in", async () => {
+    const parent = fakeFlatChannel();
+    const thread = fakeThreadChannel("T1", "C1");
+    thread.send.mockRejectedValue(new Error("Thread is locked"));
+    const connector = connectorWith({}, { T1: thread, C1: parent });
+    const result = await connector.replyMessage(
+      { channel: "C1", thread: "T1", messageTs: "M5" },
+      "hi",
+    );
+    expect(parent.send).toHaveBeenCalledWith(
+      expect.objectContaining({ reply: { messageReference: "M5", failIfNotExists: false } }),
+    );
+    expect(result).toBeDefined();
+  });
+
+  it("does not resend a partial delivery to the parent", async () => {
+    const channel = fakeFlatChannel();
+    channel._thread.send.mockResolvedValueOnce({ id: "S1" }).mockRejectedValue(new Error("boom"));
+    const connector = connectorWith({ replyStyle: "thread" }, { C1: channel });
+    const long = "a".repeat(1900) + "\n" + "b".repeat(500);
+    const result = await connector.replyMessage({ channel: "C1", messageTs: "M0" }, long);
+    expect(channel.send).not.toHaveBeenCalled();
+    expect(result).toBe("S1");
   });
 });

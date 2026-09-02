@@ -3,6 +3,7 @@ import {
   GatewayIntentBits,
   MessageType,
   Partials,
+  PermissionFlagsBits,
   type Message,
   type TextChannel,
   type DMChannel,
@@ -127,6 +128,9 @@ export class DiscordConnector implements Connector {
     this.client.on("ready", () => {
       logger.info(`Discord connector ready as ${this.client.user?.tag}`);
       this.status = "running";
+      // Permissions may have changed while disconnected — let thread style
+      // re-attempt channels it had given up on.
+      this.threadStyleFailed.clear();
     });
 
     this.client.on("messageCreate", async (message) => {
@@ -202,24 +206,44 @@ export class DiscordConnector implements Connector {
         target,
       );
       const result = await this.sendChunks(destination, text);
-      // A thread that resolved but accepts nothing (locked archive, missing
+      // A thread that accepts nothing (locked archive, missing
       // SEND_MESSAGES_IN_THREADS, private-thread access) must not swallow
-      // the response: if not a single chunk landed, retry as a reply in the
-      // parent channel. A partial send stays where it is — resending would
-      // duplicate the delivered chunks.
-      if (result.error !== undefined && result.sentCount === 0 && destination.viaThreadStyle) {
+      // the response: if not a single chunk landed in any thread — the one
+      // thread style just opened, or the thread the message arrived in —
+      // retry as a reply in the parent channel. A partial send stays where
+      // it is; resending would duplicate the delivered chunks.
+      if (result.error !== undefined && result.sentCount === 0 && destination.channel.isThread()) {
+        // In the thread-style path `channel` is the flat parent we fetched
+        // to resolve the thread; for a direct thread target the parent
+        // comes from the thread itself.
+        const parent = destination.viaThreadStyle
+          ? (channel as TextChannel)
+          : await this.client.channels
+              .fetch((destination.channel as ThreadChannel).parentId ?? "")
+              .catch(() => null);
+        // A permission-shaped refusal will keep failing — remember it so
+        // thread style stops opening threads nobody can post in. The
+        // pre-flight permission check catches most of these; this covers
+        // API-level denials that slip through.
+        const code = (result.error as { code?: number }).code;
+        if (code === 50013 || code === 50001) {
+          const parentId = destination.viaThreadStyle
+            ? channel.id
+            : (destination.channel as ThreadChannel).parentId;
+          if (parentId) this.threadStyleFailed.add(parentId);
+        }
         logger.warn(
           `[discord] sending into thread ${destination.channel.id} failed (${result.error instanceof Error ? result.error.message : result.error}) — falling back to a reply in the parent channel`,
         );
-        const retry = await this.sendChunks(
-          {
-            channel: channel as TextChannel | DMChannel | ThreadChannel,
-            replyTo: target.messageTs,
-          },
-          text,
-        );
-        if (retry.error !== undefined) throw retry.error;
-        return retry.lastId;
+        if (parent && parent.isTextBased() && !parent.isThread()) {
+          const retry = await this.sendChunks(
+            { channel: parent as TextChannel | DMChannel, replyTo: target.messageTs },
+            text,
+          );
+          if (retry.error !== undefined) throw retry.error;
+          return retry.lastId;
+        }
+        throw result.error;
       }
       if (result.error !== undefined && result.sentCount === 0) throw result.error;
       if (result.error !== undefined) {
@@ -289,7 +313,8 @@ export class DiscordConnector implements Connector {
     if (
       this.replyStyle === "reply" ||
       !supportsMessageThreads(channel) ||
-      this.threadStyleFailed.has(channel.id)
+      this.threadStyleFailed.has(channel.id) ||
+      !this.canOpenThreads(channel)
     ) {
       return { channel, replyTo: target.messageTs };
     }
@@ -521,8 +546,10 @@ export class DiscordConnector implements Connector {
    * thread the reply will open (replyStyle=thread). Mirrors exactly the
    * conditions under which resolveReplyDestination will actually attempt a
    * thread, so the session key and the reply destination never diverge:
-   * channels that can't host message threads and channels where creation
-   * already failed at the channel level stay channel-keyed.
+   * channels that can't host message threads, channels where the bot lacks
+   * the thread permissions right now (checked per turn against the live
+   * permission cache), and channels where creation already failed at the
+   * channel level all stay channel-keyed from the first turn.
    */
   private threadSessionEligible(message: Message): boolean {
     return (
@@ -530,7 +557,27 @@ export class DiscordConnector implements Connector {
       !message.channel.isDMBased() &&
       !message.channel.isThread() &&
       supportsMessageThreads(message.channel) &&
-      !this.threadStyleFailed.has(message.channel.id)
+      !this.threadStyleFailed.has(message.channel.id) &&
+      this.canOpenThreads(message.channel)
+    );
+  }
+
+  /**
+   * Pre-flight permission check for thread style, evaluated against the
+   * cached guild permissions so it costs no request. Optimistic when the
+   * answer is unknowable (no permissionsFor on the channel shape, member
+   * not cached) — the failure path in replyMessage self-heals those.
+   */
+  private canOpenThreads(channel: {
+    permissionsFor?(user: unknown): { has(flag: bigint): boolean } | null;
+  }): boolean {
+    const me = this.client.user;
+    if (!me || typeof channel.permissionsFor !== "function") return true;
+    const perms = channel.permissionsFor(me);
+    if (!perms) return true;
+    return (
+      perms.has(PermissionFlagsBits.CreatePublicThreads) &&
+      perms.has(PermissionFlagsBits.SendMessagesInThreads)
     );
   }
 
