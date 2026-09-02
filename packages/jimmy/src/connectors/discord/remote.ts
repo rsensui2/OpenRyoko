@@ -17,9 +17,24 @@ import {
 export interface RemoteDiscordConfig {
   /** URL of the primary Jinn instance that holds the Discord WebSocket connection */
   proxyVia: string;
+  /** Bearer token for the primary's gateway — required when its /api/* auth is enabled. */
+  proxyViaToken?: string;
   channelId?: string;
   /** Deterministic per-scope response gate, applied to proxied messages. */
   respondTo?: DiscordRespondToConfig;
+}
+
+/**
+ * Strip cross-platform identity fields from a routed Discord payload's
+ * transportMeta at the receiving boundary. This endpoint carries Discord
+ * traffic, so Slack identity has no legitimate reason to appear — and a
+ * forged one must never reach the platform-bound operator check or the
+ * MEMORY.md gate.
+ */
+export function sanitizeIncomingDiscordMeta(meta: unknown): Record<string, unknown> {
+  const raw = (meta && typeof meta === "object" ? meta : {}) as Record<string, unknown>;
+  const { speakerSlackId: _droppedSlackId, ...rest } = raw;
+  return rest;
 }
 
 /**
@@ -31,11 +46,13 @@ export class RemoteDiscordConnector implements Connector {
   name = "discord";
   private handler: ((msg: IncomingMessage) => void) | null = null;
   private baseUrl: string;
+  private readonly proxyToken: string | undefined;
   private readonly respondTo: DiscordRespondToConfig | undefined;
   private warnedMissingAddressing = false;
 
   constructor(config: RemoteDiscordConfig) {
     this.baseUrl = config.proxyVia.replace(/\/+$/, "");
+    this.proxyToken = config.proxyViaToken;
     this.respondTo = config.respondTo;
   }
 
@@ -150,7 +167,11 @@ export class RemoteDiscordConnector implements Connector {
     try {
       const res = await fetch(`${this.baseUrl}/api/connectors/discord/proxy`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          // The primary's gateway authenticates /api/* like any client.
+          ...(this.proxyToken ? { Authorization: `Bearer ${this.proxyToken}` } : {}),
+        },
         body: JSON.stringify({ action, ...params }),
       });
       if (!res.ok) {

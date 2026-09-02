@@ -526,10 +526,14 @@ export interface DiscordConnectorConfig {
   guildId?: string;
   /** Only respond to messages in this channel */
   channelId?: string;
-  /** Route messages from specific channels to remote Jinn instances */
-  channelRouting?: Record<string, string>;
+  /** Route messages from specific channels to remote Jinn instances. A plain
+   *  string value is the remote's URL; the object form adds the bearer token
+   *  the receiving gateway requires on /api/* when its auth is enabled. */
+  channelRouting?: Record<string, string | { url: string; token?: string }>;
   /** URL of the primary Jinn instance to proxy Discord I/O through (secondary/remote mode) */
   proxyVia?: string;
+  /** Bearer token for the primary's gateway (secondary/remote mode). */
+  proxyViaToken?: string;
   /** Deterministic per-scope response gate (DM / channel). */
   respondTo?: DiscordRespondToConfig;
   /** Where responses land in flat guild channels. Default: "channel". */
@@ -593,9 +597,11 @@ export interface PortalConfig {
   operatorSlackId?: string;
   /** The operator's own Discord user ID (snowflake — right-click profile →
    *  Copy User ID). Same strict-equality semantics as operatorSlackId; a
-   *  Discord speaker can only be the operator through this ID. Quote it in
-   *  YAML or not — numeric snowflakes are normalized to strings. */
-  operatorDiscordId?: string | number;
+   *  Discord speaker can only be the operator through this ID. MUST be
+   *  quoted in YAML: snowflakes exceed Number.MAX_SAFE_INTEGER, so an
+   *  unquoted (numeric) value has already lost precision and is ignored
+   *  with a warning — strict mode stays engaged and matches nobody. */
+  operatorDiscordId?: string;
 }
 
 // --- Engine quota/limit snapshots ---

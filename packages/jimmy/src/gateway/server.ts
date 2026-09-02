@@ -408,6 +408,7 @@ export async function startGateway(
       try {
         const discord = new RemoteDiscordConnector({
           proxyVia: cfg.connectors.discord.proxyVia,
+          proxyViaToken: cfg.connectors.discord.proxyViaToken,
           channelId: cfg.connectors.discord.channelId,
           respondTo: cfg.connectors.discord.respondTo,
         });

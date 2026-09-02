@@ -147,6 +147,11 @@ gate, with Discord-specific mention rules:
   Upgrade the primary first: a primary too old to forward addressing leaves
   the receiver's mention scopes fail-closed (every routed message dropped,
   with a warning in the receiver's log).
+- Cross-instance calls authenticate like any API client. Give each route the
+  receiving gateway's bearer token (`channelRouting: { "<channelId>":
+  { url: "http://remote:7777", token: "..." } }`), and give a remote
+  instance the primary's token via `proxyViaToken`. A plain URL string keeps
+  working for gateways that run with auth disabled.
 - Unset scopes default to `always`. There is no triage layer on Discord —
   this gate is the only response filter.
 

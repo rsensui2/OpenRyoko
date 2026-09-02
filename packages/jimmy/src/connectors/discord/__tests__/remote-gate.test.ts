@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { RemoteDiscordConnector } from "../remote.js";
+import { RemoteDiscordConnector, sanitizeIncomingDiscordMeta } from "../remote.js";
 import type { DiscordRespondToConfig, IncomingMessage } from "../../../shared/types.js";
 
 function incoming(
@@ -81,5 +81,23 @@ describe("RemoteDiscordConnector.deliverMessage respondTo gating", () => {
   it("silences a scope entirely under never", () => {
     const respondTo: DiscordRespondToConfig = { channel: "never" };
     expect(deliver(respondTo, incoming({ isDM: false, wasBotAddressed: true }))).toHaveLength(0);
+  });
+});
+
+describe("sanitizeIncomingDiscordMeta", () => {
+  it("drops cross-platform identity fields and keeps Discord ones", () => {
+    expect(
+      sanitizeIncomingDiscordMeta({
+        isDM: true,
+        speakerDiscordId: "42",
+        speakerSlackId: "U0FORGED",
+        wasBotAddressed: true,
+      }),
+    ).toEqual({ isDM: true, speakerDiscordId: "42", wasBotAddressed: true });
+  });
+
+  it("tolerates malformed input", () => {
+    expect(sanitizeIncomingDiscordMeta(undefined)).toEqual({});
+    expect(sanitizeIncomingDiscordMeta("junk")).toEqual({});
   });
 });

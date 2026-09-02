@@ -2034,6 +2034,7 @@ Handle this as a priority request from a colleague.`;
 
       // Download attachments from Discord CDN URLs to local temp
       const { downloadAttachment } = await import("../connectors/discord/format.js");
+      const { sanitizeIncomingDiscordMeta } = await import("../connectors/discord/remote.js");
       const attachments = await Promise.all(
         (body.attachments || []).map(async (att: { name: string; url: string; mimeType: string }) => {
           if (att.url) {
@@ -2060,7 +2061,9 @@ Handle this as a priority request from a colleague.`;
         messageId: body.messageId,
         attachments,
         replyContext: body.replyContext || {},
-        transportMeta: body.transportMeta,
+        // Boundary scrub: this endpoint carries Discord traffic — drop
+        // cross-platform identity fields a forged payload might smuggle in.
+        transportMeta: sanitizeIncomingDiscordMeta(body.transportMeta) as IncomingMessage["transportMeta"],
         raw: body,
       };
 

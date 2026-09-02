@@ -73,8 +73,10 @@ export interface DiscordConnectorConfig {
   guildId?: string;
   /** Only respond to messages in this channel (right-click channel → Copy Channel ID) */
   channelId?: string;
-  /** Route messages from specific channels to remote Jinn instances */
-  channelRouting?: Record<string, string>;
+  /** Route messages from specific channels to remote Jinn instances. A plain
+   *  string value is the remote's URL; the object form adds the bearer token
+   *  the receiving gateway requires on /api/* when its auth is enabled. */
+  channelRouting?: Record<string, string | { url: string; token?: string }>;
   /** If set, this instance proxies all Discord operations through the primary instance at this URL */
   proxyVia?: string;
   /** Deterministic per-scope response gate (DM / channel). See DiscordRespondToConfig. */
@@ -96,6 +98,9 @@ export class DiscordConnector implements Connector {
   private typingIntervals = new Map<string, ReturnType<typeof setInterval>>();
   private engagedThreads = new EngagedThreadTracker();
   private readonly replyStyle: DiscordReplyStyle;
+  /** channelRouting normalized to { url, token } with string keys (YAML may
+   *  parse snowflake keys as numbers and values may be plain URL strings). */
+  private readonly routing: Record<string, { url: string; token?: string }>;
   /**
    * Channels where thread creation failed for a channel-level reason
    * (missing permission / access). Both the session keying and the reply
@@ -117,11 +122,12 @@ export class DiscordConnector implements Connector {
     // Normalize Discord IDs to strings (YAML may parse large snowflake IDs as numbers)
     if (this.config.guildId) this.config.guildId = String(this.config.guildId);
     if (this.config.channelId) this.config.channelId = String(this.config.channelId);
-    if (this.config.channelRouting) {
-      this.config.channelRouting = Object.fromEntries(
-        Object.entries(this.config.channelRouting).map(([k, v]) => [String(k), v])
-      );
-    }
+    this.routing = Object.fromEntries(
+      Object.entries(config.channelRouting ?? {}).map(([k, v]) => [
+        String(k),
+        typeof v === "string" ? { url: v } : { url: String(v.url), token: v.token },
+      ]),
+    );
     this.allowedUserIds = new Set(
       Array.isArray(config.allowFrom)
         ? config.allowFrom
@@ -461,18 +467,18 @@ export class DiscordConnector implements Connector {
     const parentChannelId = message.channel.isThread()
       ? message.channel.parentId ?? undefined
       : undefined;
-    const routeTarget =
-      this.config.channelRouting?.[message.channel.id] ??
-      (parentChannelId !== undefined ? this.config.channelRouting?.[parentChannelId] : undefined);
-    if (routeTarget) {
-      logger.debug(`Routing Discord message from channel ${message.channel.id} to ${routeTarget}`);
+    const route =
+      this.routing[message.channel.id] ??
+      (parentChannelId !== undefined ? this.routing[parentChannelId] : undefined);
+    if (route) {
+      logger.debug(`Routing Discord message from channel ${message.channel.id} to ${route.url}`);
       // References resolve only outside DMs here: the remote's dm policy is
       // unknown, and a routed-DM reply matters only under its dm=mention —
       // too rare to spend a REST fetch on every routed DM reply.
       const addressing = await this.resolveAddressing(message, {
         allowFetch: !message.channel.isDMBased(),
       });
-      await this.proxyToRemote(routeTarget, message, addressing);
+      await this.proxyToRemote(route, message, addressing);
       return;
     }
 
@@ -657,8 +663,8 @@ export class DiscordConnector implements Connector {
     ) {
       return true;
     }
-    if (this.config.channelRouting?.[id] !== undefined) return true;
-    return parentChannelId !== undefined && this.config.channelRouting?.[parentChannelId] !== undefined;
+    if (this.routing[id] !== undefined) return true;
+    return parentChannelId !== undefined && this.routing[parentChannelId] !== undefined;
   }
 
   /**
@@ -697,7 +703,7 @@ export class DiscordConnector implements Connector {
 
   /** Forward a message to a remote Jinn instance via HTTP */
   private async proxyToRemote(
-    remoteUrl: string,
+    route: { url: string; token?: string },
     message: Message,
     addressing: Parameters<typeof wasBotAddressed>[0],
   ): Promise<void> {
@@ -743,17 +749,22 @@ export class DiscordConnector implements Connector {
         },
       };
 
-      const res = await fetch(`${remoteUrl.replace(/\/+$/, "")}/api/connectors/discord/incoming`, {
+      const res = await fetch(`${route.url.replace(/\/+$/, "")}/api/connectors/discord/incoming`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          // The receiving gateway authenticates /api/* like any client —
+          // configure the route's token when its auth is enabled.
+          ...(route.token ? { Authorization: `Bearer ${route.token}` } : {}),
+        },
         body: JSON.stringify(payload),
       });
 
       if (!res.ok) {
-        logger.error(`Failed to proxy Discord message to ${remoteUrl}: ${res.status} ${res.statusText}`);
+        logger.error(`Failed to proxy Discord message to ${route.url}: ${res.status} ${res.statusText}`);
       }
     } catch (err) {
-      logger.error(`Discord proxy error to ${remoteUrl}: ${err instanceof Error ? err.message : err}`);
+      logger.error(`Discord proxy error to ${route.url}: ${err instanceof Error ? err.message : err}`);
     }
   }
 }

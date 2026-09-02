@@ -124,14 +124,16 @@ describe("engagement recording guards", () => {
 describe("routing forwards addressing and engagement to the remote", () => {
   function stubProxyFetch() {
     const calls: Array<Record<string, unknown>> = [];
+    const headers: Array<Record<string, string>> = [];
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (_url: unknown, init?: { body?: string }) => {
+      vi.fn(async (_url: unknown, init?: { body?: string; headers?: Record<string, string> }) => {
         calls.push(JSON.parse(init?.body ?? "{}"));
+        headers.push(init?.headers ?? {});
         return { ok: true, status: 200, statusText: "OK" };
       }),
     );
-    return calls;
+    return { calls, headers };
   }
 
   it("forwards isEngagedThread=true after the bot replied in the routed thread", async () => {
@@ -141,7 +143,7 @@ describe("routing forwards addressing and engagement to the remote", () => {
     );
     await connector.replyMessage({ channel: "C1", thread: "T9" }, "hi");
 
-    const calls = stubProxyFetch();
+    const { calls } = stubProxyFetch();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (connector as any).handleMessage(fakeIncoming({ channelId: "T9", isThread: true }));
     expect(calls).toHaveLength(1);
@@ -157,10 +159,35 @@ describe("routing forwards addressing and engagement to the remote", () => {
       { channelRouting: { T9: "http://remote.test" } },
       fakeChannel({ id: "T9", isThread: true }),
     );
-    const calls = stubProxyFetch();
+    const { calls } = stubProxyFetch();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (connector as any).handleMessage(fakeIncoming({ channelId: "T9", isThread: true }));
     expect(calls).toHaveLength(1);
     expect((calls[0].transportMeta as Record<string, unknown>).isEngagedThread).toBe(false);
+  });
+
+  it("authenticates routed delivery with the route's bearer token and forwards speaker identity", async () => {
+    const connector = connectorWith(
+      { channelRouting: { C1: { url: "http://remote.test", token: "route-secret" } } },
+      fakeChannel({ id: "C1" }),
+    );
+    const { calls, headers } = stubProxyFetch();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (connector as any).handleMessage(fakeIncoming({ channelId: "C1" }));
+    expect(headers[0].Authorization).toBe("Bearer route-secret");
+    const meta = calls[0].transportMeta as Record<string, unknown>;
+    expect(meta.speakerDiscordId).toBe("U1");
+    expect(meta.isGroupDM).toBe(false);
+  });
+
+  it("sends no Authorization header for a plain-URL route (auth-disabled remote)", async () => {
+    const connector = connectorWith(
+      { channelRouting: { C1: "http://remote.test" } },
+      fakeChannel({ id: "C1" }),
+    );
+    const { headers } = stubProxyFetch();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (connector as any).handleMessage(fakeIncoming({ channelId: "C1" }));
+    expect(headers[0].Authorization).toBeUndefined();
   });
 });

@@ -717,6 +717,7 @@ export class SessionManager {
             speakerNames: [prefixName, str(speakerMeta.speakerRealName), str(speakerMeta.speakerDisplayName), str(speakerMeta.speakerHandle)],
             speakerSlackId: str(speakerMeta.speakerSlackId),
             speakerDiscordId: str(speakerMeta.speakerDiscordId),
+            source: session.source,
             operatorName: this.config.portal?.operatorName,
             config: this.config,
           });

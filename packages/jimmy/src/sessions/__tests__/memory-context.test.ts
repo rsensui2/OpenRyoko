@@ -97,13 +97,12 @@ describe("isMemoryEligible", () => {
       ).toBe(true);
     });
 
-    it("normalizes YAML-numeric snowflakes in trustedSpeakers", () => {
+    it("ignores non-string trustedSpeakers entries — an unquoted snowflake has already lost precision", () => {
       const numeric = {
         portal: { trustedSpeakers: [1543864208750542941] },
       } as unknown as JinnConfig;
-      // Note: this snowflake exceeds Number.MAX_SAFE_INTEGER, so YAML-as-number
-      // loses precision — String() still lets the *stored* value round-trip
-      // consistently, and quoting the ID in YAML avoids the issue entirely.
+      // Even the value that WOULD result from stringifying the mangled number
+      // must not open the gate: numbers are rejected outright.
       expect(
         isMemoryEligible({
           source: "discord",
@@ -111,7 +110,7 @@ describe("isMemoryEligible", () => {
           isDM: true,
           config: numeric,
         }),
-      ).toBe(true);
+      ).toBe(false);
     });
 
     it("denies Discord group DMs even for trusted IDs (1:1 only, mirroring Slack im/mpim)", () => {
@@ -220,16 +219,59 @@ describe("resolveOperatorIdentity", () => {
       ).toEqual({ speakerIsOperator: false, operatorIdVerified: false });
     });
 
-    it("normalizes a YAML-numeric operatorDiscordId", () => {
+    it("ignores a YAML-numeric operatorDiscordId but keeps strict mode engaged", () => {
       const numeric = {
         portal: { operatorName: "太郎", operatorDiscordId: 12345678901234 },
       } as unknown as JinnConfig;
+      // The mangled value can never match…
       expect(
         resolveOperatorIdentity({
           speakerNames: [],
           speakerDiscordId: "12345678901234",
           operatorName: "太郎",
           config: numeric,
+        }),
+      ).toEqual({ speakerIsOperator: false, operatorIdVerified: false });
+      // …and the config mistake must NOT degrade to name matching — that
+      // would reopen the spoofing hole strict mode exists to close.
+      expect(
+        resolveOperatorIdentity({
+          speakerNames: ["太郎"],
+          operatorName: "太郎",
+          config: numeric,
+        }),
+      ).toEqual({ speakerIsOperator: false, operatorIdVerified: false });
+    });
+
+    it("binds verification to the platform the message came from", () => {
+      // A Slack operator ID smuggled into a Discord-source payload must not
+      // verify, and vice versa. Without a source, both platforms remain
+      // eligible (backward compatibility for callers that can't know).
+      expect(
+        resolveOperatorIdentity({
+          speakerNames: [],
+          speakerSlackId: "U0OPERATOR",
+          source: "discord",
+          operatorName: "太郎",
+          config: BOTH,
+        }),
+      ).toEqual({ speakerIsOperator: false, operatorIdVerified: false });
+      expect(
+        resolveOperatorIdentity({
+          speakerNames: [],
+          speakerDiscordId: "1543864208750542941",
+          source: "slack",
+          operatorName: "太郎",
+          config: BOTH,
+        }),
+      ).toEqual({ speakerIsOperator: false, operatorIdVerified: false });
+      expect(
+        resolveOperatorIdentity({
+          speakerNames: [],
+          speakerDiscordId: "1543864208750542941",
+          source: "discord",
+          operatorName: "太郎",
+          config: BOTH,
         }),
       ).toEqual({ speakerIsOperator: true, operatorIdVerified: true });
     });

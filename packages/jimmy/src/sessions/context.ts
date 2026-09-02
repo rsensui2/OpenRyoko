@@ -4,6 +4,7 @@ import type { Employee, JinnConfig } from "../shared/types.js";
 import { gatewayUrlFromConfig } from "../shared/gateway-url.js";
 import { JINN_HOME, ORG_DIR, CRON_JOBS, DOCS_DIR } from "../shared/paths.js";
 import { isOperatorSpeaker } from "../shared/operator-match.js";
+import { logger } from "../shared/logger.js";
 import { scanOrg } from "../gateway/org.js";
 import { buildServiceRegistry } from "../gateway/services.js";
 import { findJobsNeedingAttention } from "../jobs/state.js";
@@ -107,6 +108,7 @@ export function buildContext(opts: {
     speakerNames: [opts.speakerName, opts.speakerRealName, opts.speakerDisplayName, opts.speakerHandle],
     speakerSlackId: opts.speakerSlackId,
     speakerDiscordId: opts.speakerDiscordId,
+    source: opts.source,
     operatorName,
     config: opts.config,
   });
@@ -860,11 +862,44 @@ function buildEnvironmentContext(): string | null {
   return lines.join("\n");
 }
 
+/** Warn once per config key, not once per session build. */
+const warnedIdentityConfig = new Set<string>();
+
+/** Read a configured platform user ID, accepting STRINGS ONLY. Discord
+ *  snowflakes exceed Number.MAX_SAFE_INTEGER, so an unquoted YAML value has
+ *  already lost precision by parse time — comparing the mangled value could
+ *  match the WRONG user. A numeric value is ignored (it can never match)
+ *  with a one-time warning telling the operator to quote it. */
+function configuredIdString(value: unknown, label: string): string | undefined {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (typeof value === "number" && !warnedIdentityConfig.has(label)) {
+    warnedIdentityConfig.add(label);
+    logger.warn(
+      `[identity] ${label} is a YAML number — IDs this long lose precision before we ever see them. Quote the value ("...") in config.yaml; until then it is ignored and can never match.`,
+    );
+  }
+  return undefined;
+}
+
+/** trustedSpeakers entries, STRINGS ONLY (same precision hazard as above). */
+function trustedSpeakerIds(config?: JinnConfig): string[] {
+  const raw = config?.portal?.trustedSpeakers ?? [];
+  const strings = raw.filter((v): v is string => typeof v === "string" && v.trim().length > 0);
+  if (strings.length < raw.length && !warnedIdentityConfig.has("portal.trustedSpeakers")) {
+    warnedIdentityConfig.add("portal.trustedSpeakers");
+    logger.warn(
+      `[identity] portal.trustedSpeakers contains non-string entries — unquoted Discord snowflakes lose precision as YAML numbers. Quote each ID; non-string entries are ignored.`,
+    );
+  }
+  return strings;
+}
+
 /** Operator identification. When portal.operatorSlackId and/or
  *  portal.operatorDiscordId is configured, identification is strict ID
- *  equality against the ID of the platform the speaker actually came from —
- *  display names are freely editable and must never establish operator
- *  identity on their own. A speaker from a platform with no configured
+ *  equality, bound to the platform the speaker actually came from (`source`)
+ *  — display names are freely editable and must never establish operator
+ *  identity on their own, and a Slack ID smuggled into a Discord payload
+ *  must not count either. A speaker from a platform with no configured
  *  operator ID is then simply not the operator (fail closed; configure the
  *  missing platform's ID rather than relying on names). Without any
  *  configured ID we fall back to alias/name matching (kept for addressing
@@ -873,18 +908,29 @@ export function resolveOperatorIdentity(opts: {
   speakerNames: Array<string | undefined>;
   speakerSlackId?: string;
   speakerDiscordId?: string;
+  /** Where the message physically arrived ("slack" | "discord" | …). When
+   *  given, only that platform's operator ID can verify the speaker. */
+  source?: string;
   operatorName?: string;
   config?: JinnConfig;
 }): { speakerIsOperator: boolean; operatorIdVerified: boolean } {
-  const operatorSlackId = opts.config?.portal?.operatorSlackId;
-  // YAML parses unquoted snowflakes as numbers — normalize before comparing.
+  const rawSlackId = opts.config?.portal?.operatorSlackId;
   const rawDiscordId = opts.config?.portal?.operatorDiscordId;
-  const operatorDiscordId =
-    rawDiscordId === undefined || rawDiscordId === null ? undefined : String(rawDiscordId);
-  if (operatorSlackId || operatorDiscordId) {
+  const operatorSlackId = configuredIdString(rawSlackId, "portal.operatorSlackId");
+  const operatorDiscordId = configuredIdString(rawDiscordId, "portal.operatorDiscordId");
+  // The PRESENCE of a strict ID engages strict mode, even when the value is
+  // unusable (numeric) — degrading to name matching on a config mistake
+  // would reopen exactly the spoofing hole strict mode exists to close.
+  if (rawSlackId != null || rawDiscordId != null) {
+    const slackApplies = opts.source === undefined || opts.source === "slack";
+    const discordApplies = opts.source === undefined || opts.source === "discord";
     const verified =
-      (!!operatorSlackId && !!opts.speakerSlackId && opts.speakerSlackId === operatorSlackId) ||
-      (!!operatorDiscordId &&
+      (slackApplies &&
+        !!operatorSlackId &&
+        !!opts.speakerSlackId &&
+        opts.speakerSlackId === operatorSlackId) ||
+      (discordApplies &&
+        !!operatorDiscordId &&
         !!opts.speakerDiscordId &&
         opts.speakerDiscordId === operatorDiscordId);
     return { speakerIsOperator: verified, operatorIdVerified: verified };
@@ -924,9 +970,7 @@ export function isMemoryEligible(opts: {
   config?: JinnConfig;
 }): boolean {
   if (opts.source === "web") return true;
-  // trustedSpeakers may hold Discord snowflakes, which YAML parses as
-  // numbers when unquoted — normalize both sides to strings.
-  const trusted = (opts.config?.portal?.trustedSpeakers ?? []).map(String);
+  const trusted = trustedSpeakerIds(opts.config);
   const isSlackDm = opts.source === "slack" && !!opts.channel && opts.channel.startsWith("D");
   if (isSlackDm) return !!opts.speakerSlackId && trusted.includes(opts.speakerSlackId);
   // 1:1 DMs only, mirroring the Slack gate (im yes, mpim no): a group DM has
