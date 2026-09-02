@@ -73,6 +73,8 @@ export function buildContext(opts: {
   speakerDiscordId?: string;
   /** Transport-reported DM flag (Discord has no channel-ID prefix convention) */
   isDM?: boolean;
+  /** Transport-reported group-DM flag (Discord GroupDM channels) */
+  isGroupDM?: boolean;
   /** Whether the speaker is a bot/integration */
   speakerIsBot?: boolean;
   /** Speaker's IANA timezone */
@@ -143,6 +145,7 @@ export function buildContext(opts: {
       speakerSlackId: opts.speakerSlackId,
       speakerDiscordId: opts.speakerDiscordId,
       isDM: opts.isDM,
+      isGroupDM: opts.isGroupDM,
       config: opts.config,
     });
     if (memoryCtx) {
@@ -916,6 +919,8 @@ export function isMemoryEligible(opts: {
   speakerDiscordId?: string;
   /** Transport-reported DM flag (Discord has no channel-ID prefix convention). */
   isDM?: boolean;
+  /** Transport-reported group-DM flag. */
+  isGroupDM?: boolean;
   config?: JinnConfig;
 }): boolean {
   if (opts.source === "web") return true;
@@ -924,7 +929,10 @@ export function isMemoryEligible(opts: {
   const trusted = (opts.config?.portal?.trustedSpeakers ?? []).map(String);
   const isSlackDm = opts.source === "slack" && !!opts.channel && opts.channel.startsWith("D");
   if (isSlackDm) return !!opts.speakerSlackId && trusted.includes(opts.speakerSlackId);
-  const isDiscordDm = opts.source === "discord" && opts.isDM === true;
+  // 1:1 DMs only, mirroring the Slack gate (im yes, mpim no): a group DM has
+  // other participants who would see memory-flavored replies. Discord bots
+  // effectively can't join group DMs today, but fail closed regardless.
+  const isDiscordDm = opts.source === "discord" && opts.isDM === true && opts.isGroupDM !== true;
   if (isDiscordDm) return !!opts.speakerDiscordId && trusted.includes(opts.speakerDiscordId);
   return false;
 }
@@ -940,6 +948,7 @@ export function buildMemoryContext(opts: {
   speakerSlackId?: string;
   speakerDiscordId?: string;
   isDM?: boolean;
+  isGroupDM?: boolean;
   config?: JinnConfig;
 }): string | null {
   if (!isMemoryEligible(opts)) return null;

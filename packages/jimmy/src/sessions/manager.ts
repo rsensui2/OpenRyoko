@@ -637,6 +637,7 @@ export class SessionManager {
         speakerSlackId: (meta.speakerSlackId as string) || undefined,
         speakerDiscordId: (meta.speakerDiscordId as string) || undefined,
         isDM: meta.isDM === true,
+        isGroupDM: meta.isGroupDM === true,
         speakerIsBot: (meta.speakerIsBot as boolean | null) ?? undefined,
         speakerTz: (meta.speakerTz as string) || undefined,
         // Interactive PTY survives across turns; everything else (headless

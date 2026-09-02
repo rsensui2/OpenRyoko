@@ -1,4 +1,5 @@
 import {
+  ChannelType,
   Client,
   GatewayIntentBits,
   MessageType,
@@ -565,6 +566,7 @@ export class DiscordConnector implements Connector {
           : "dm",
         guildId: message.guild?.id ?? null,
         isDM: message.channel.isDMBased(),
+        isGroupDM: message.channel.type === ChannelType.GroupDM,
         ...speakerMeta(message),
       },
     };
@@ -726,6 +728,7 @@ export class DiscordConnector implements Connector {
             : "dm",
           guildId: message.guild?.id ?? null,
           isDM: message.channel.isDMBased(),
+          isGroupDM: message.channel.type === ChannelType.GroupDM,
           ...speakerMeta(message),
           // Precomputed here (only this instance knows the bot user,
           // resolves references, and tracks engagement) so the receiving

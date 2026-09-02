@@ -114,6 +114,18 @@ describe("isMemoryEligible", () => {
       ).toBe(true);
     });
 
+    it("denies Discord group DMs even for trusted IDs (1:1 only, mirroring Slack im/mpim)", () => {
+      expect(
+        isMemoryEligible({
+          source: "discord",
+          speakerDiscordId: "1543864208750542941",
+          isDM: true,
+          isGroupDM: true,
+          config: DISCORD_CONFIG,
+        }),
+      ).toBe(false);
+    });
+
     it("denies Discord guild channels, untrusted IDs, and missing isDM", () => {
       expect(
         isMemoryEligible({
