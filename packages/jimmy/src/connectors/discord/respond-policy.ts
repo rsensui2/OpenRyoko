@@ -91,6 +91,23 @@ export function wasBotAddressed(input: {
 }
 
 /**
+ * Addressing the primary Discord instance forwards with a routed message
+ * (inside `transportMeta`), so the receiving instance can gate without its
+ * own Discord connection. transportMeta is untyped JSON on the wire, so the
+ * receiving side re-validates each flag with `=== true`. An older primary
+ * sends none of these; mention scopes then fail closed on the receiver —
+ * upgrade the primary before enabling a mention scope on a routed instance.
+ */
+export interface ForwardedAddressing {
+  /** The message @-mentions the bot or replies to one of its messages. */
+  wasBotAddressed: boolean;
+  /** The message @-mentions or replies to somebody else, and not the bot. */
+  addressesOnlyOthers: boolean;
+  /** The message sits in a thread the bot has engaged (primary's tracker). */
+  isEngagedThread: boolean;
+}
+
+/**
  * True when the message explicitly addresses somebody else and not the bot:
  * it @-mentions specific user(s), or replies to another user's message, and
  * none of those users is the bot. Such messages stay silent even in "always"

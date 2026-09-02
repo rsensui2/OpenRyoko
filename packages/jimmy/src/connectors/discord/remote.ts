@@ -7,8 +7,7 @@ import type {
   Target,
 } from "../../shared/types.js";
 import { logger } from "../../shared/logger.js";
-import { evaluateRespondPolicy } from "./respond-policy.js";
-import { EngagedThreadTracker } from "./engaged-threads.js";
+import { evaluateRespondPolicy, hasMentionScope } from "./respond-policy.js";
 
 export interface RemoteDiscordConfig {
   /** URL of the primary Jinn instance that holds the Discord WebSocket connection */
@@ -28,7 +27,7 @@ export class RemoteDiscordConnector implements Connector {
   private handler: ((msg: IncomingMessage) => void) | null = null;
   private baseUrl: string;
   private readonly respondTo: DiscordRespondToConfig | undefined;
-  private engagedThreads = new EngagedThreadTracker();
+  private warnedMissingAddressing = false;
 
   constructor(config: RemoteDiscordConfig) {
     this.baseUrl = config.proxyVia.replace(/\/+$/, "");
@@ -43,15 +42,29 @@ export class RemoteDiscordConnector implements Connector {
   deliverMessage(msg: IncomingMessage): void {
     const meta = (msg.transportMeta ?? {}) as Record<string, unknown>;
     const isDM = meta.isDM === true;
-    // Addressing flags are resolved by the primary instance — only it can see
-    // the Discord gateway. When a flag is absent (older primary), fall to the
-    // conservative side: no mention (mention scopes fail closed) and no other
-    // addressee (never drop an "always" message on missing metadata).
+    // Addressing (ForwardedAddressing) is resolved by the primary instance:
+    // only it sees the Discord gateway, and it also tracks thread engagement
+    // — proxied sends run through its connector. transportMeta is untyped
+    // JSON, so each flag is re-validated with `=== true`. When the flags are
+    // absent — an older primary — mention scopes fail closed (Slack
+    // precedent for unresolvable identity) and the sibling rule stays off
+    // (never drop an "always" message on missing metadata); warn once so
+    // the required upgrade order is visible instead of a silent blackhole.
+    if (
+      !("wasBotAddressed" in meta) &&
+      hasMentionScope(this.respondTo) &&
+      !this.warnedMissingAddressing
+    ) {
+      this.warnedMissingAddressing = true;
+      logger.warn(
+        "[discord-remote] primary instance does not forward addressing metadata (its version predates respondTo) — mention scopes will drop every routed message until the primary is upgraded",
+      );
+    }
     const respondDecision = evaluateRespondPolicy({
       config: this.respondTo,
       isDM,
       wasMentioned: meta.wasBotAddressed === true,
-      isEngagedThread: !!msg.thread && this.engagedThreads.has(msg.thread),
+      isEngagedThread: meta.isEngagedThread === true,
     });
     if (!respondDecision.allow) {
       logger.info(
@@ -104,15 +117,11 @@ export class RemoteDiscordConnector implements Connector {
   }
 
   async sendMessage(target: Target, text: string): Promise<string | undefined> {
-    const messageId = await this.proxyAction("sendMessage", { target, text });
-    this.recordEngagement(target, messageId);
-    return messageId;
+    return this.proxyAction("sendMessage", { target, text });
   }
 
   async replyMessage(target: Target, text: string): Promise<string | undefined> {
-    const messageId = await this.proxyAction("replyMessage", { target, text });
-    this.recordEngagement(target, messageId);
-    return messageId;
+    return this.proxyAction("replyMessage", { target, text });
   }
 
   async editMessage(target: Target, text: string): Promise<void> {
@@ -121,7 +130,6 @@ export class RemoteDiscordConnector implements Connector {
 
   async addReaction(target: Target, emoji: string): Promise<void> {
     await this.proxyAction("addReaction", { target, emoji });
-    this.recordEngagement(target, target.messageTs);
   }
 
   async removeReaction(target: Target, emoji: string): Promise<void> {
@@ -130,16 +138,6 @@ export class RemoteDiscordConnector implements Connector {
 
   async setTypingStatus(channelId: string, threadTs: string | undefined, status: string): Promise<void> {
     await this.proxyAction("setTypingStatus", { channelId, threadTs, status });
-  }
-
-  /**
-   * Record engagement for the `respondTo.engagedThreads` continuation: the
-   * thread the bot acted in, and the message ID that anchors it — a future
-   * public thread created from that message reuses its ID.
-   */
-  private recordEngagement(target: Target, anchorMessageId: string | undefined): void {
-    if (target.thread) this.engagedThreads.record(target.thread);
-    if (anchorMessageId) this.engagedThreads.record(anchorMessageId);
   }
 
   private async proxyAction(action: string, params: Record<string, unknown>): Promise<string | undefined> {

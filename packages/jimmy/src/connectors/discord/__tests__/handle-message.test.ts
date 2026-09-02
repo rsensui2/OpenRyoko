@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { MessageType } from "discord.js";
 import { DiscordConnector } from "../index.js";
 import type { IncomingMessage } from "../../../shared/types.js";
 
@@ -6,6 +7,7 @@ const BOT = "999000999";
 
 interface FakeMessageInput {
   content?: string;
+  type?: MessageType;
   channelId?: string;
   isDM?: boolean;
   isThread?: boolean;
@@ -21,6 +23,7 @@ interface FakeMessageInput {
 function fakeMessage(input: FakeMessageInput = {}) {
   return {
     id: "M1",
+    type: input.type ?? MessageType.Default,
     content: input.content ?? "hello",
     author: { id: "U1", username: "user", bot: input.authorBot ?? false },
     system: input.system ?? false,
@@ -76,12 +79,12 @@ describe("DiscordConnector.handleMessage respondTo gating", () => {
   });
 
   it("stays silent when the message replies to somebody else without a ping", async () => {
-    const received = await deliver({}, fakeMessage({ repliedToUserId: "12345" }));
+    const received = await deliver({}, fakeMessage({ type: MessageType.Reply, repliedToUserId: "12345" }));
     expect(received).toHaveLength(0);
   });
 
   it("does not apply the sibling rule in DMs", async () => {
-    const received = await deliver({}, fakeMessage({ isDM: true, repliedToUserId: "12345" }));
+    const received = await deliver({}, fakeMessage({ type: MessageType.Reply, isDM: true, repliedToUserId: "12345" }));
     expect(received).toHaveLength(1);
   });
 
@@ -101,7 +104,7 @@ describe("DiscordConnector.handleMessage respondTo gating", () => {
   it("responds to replies to the bot under channel=mention", async () => {
     const received = await deliver(
       { respondTo: { channel: "mention" } },
-      fakeMessage({ repliedToUserId: BOT }),
+      fakeMessage({ type: MessageType.Reply, repliedToUserId: BOT }),
     );
     expect(received).toHaveLength(1);
   });
@@ -110,6 +113,7 @@ describe("DiscordConnector.handleMessage respondTo gating", () => {
     const received = await deliver(
       { respondTo: { channel: "mention" } },
       fakeMessage({
+        type: MessageType.Reply,
         reference: { messageId: "M0" },
         fetchReference: async () => ({ author: { id: BOT } }),
       }),
@@ -118,7 +122,7 @@ describe("DiscordConnector.handleMessage respondTo gating", () => {
   });
 
   it("treats a deleted reply reference as no addressee (drops under mention, responds under always)", async () => {
-    const deleted = { reference: { messageId: "M0" } };
+    const deleted = { type: MessageType.Reply, reference: { messageId: "M0" } } as const;
     expect(await deliver({ respondTo: { channel: "mention" } }, fakeMessage(deleted))).toHaveLength(0);
     expect(await deliver({}, fakeMessage(deleted))).toHaveLength(1);
   });
@@ -140,5 +144,30 @@ describe("DiscordConnector.handleMessage respondTo gating", () => {
   it("ignores system messages and webhook messages", async () => {
     expect(await deliver({}, fakeMessage({ system: true }))).toHaveLength(0);
     expect(await deliver({}, fakeMessage({ webhookId: "W1" }))).toHaveLength(0);
+  });
+
+  it("does not treat a non-reply reference (crosspost) as addressing anybody", async () => {
+    const fetchReference = vi.fn().mockResolvedValue({ author: { id: "12345" } });
+    const message = fakeMessage({
+      reference: { messageId: "M0" },
+      fetchReference,
+    });
+    expect(await deliver({}, message)).toHaveLength(1);
+    expect(fetchReference).not.toHaveBeenCalled();
+  });
+
+  it("skips the reference fetch in DMs unless dm=mention", async () => {
+    const fetchReference = vi.fn().mockResolvedValue({ author: { id: BOT } });
+    const dmReply = () =>
+      fakeMessage({
+        type: MessageType.Reply,
+        isDM: true,
+        reference: { messageId: "M0" },
+        fetchReference,
+      });
+    expect(await deliver({}, dmReply())).toHaveLength(1);
+    expect(fetchReference).not.toHaveBeenCalled();
+    expect(await deliver({ respondTo: { dm: "mention" } }, dmReply())).toHaveLength(1);
+    expect(fetchReference).toHaveBeenCalledTimes(1);
   });
 });

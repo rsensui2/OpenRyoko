@@ -25,13 +25,8 @@ function incoming(
 function deliver(
   respondTo: DiscordRespondToConfig | undefined,
   msg: IncomingMessage,
-  opts: { engagedThreadIds?: string[] } = {},
 ): IncomingMessage[] {
   const connector = new RemoteDiscordConnector({ proxyVia: "http://127.0.0.1:1", respondTo });
-  for (const id of opts.engagedThreadIds ?? []) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (connector as any).engagedThreads.record(id);
-  }
   const received: IncomingMessage[] = [];
   connector.onMessage((m) => received.push(m));
   connector.deliverMessage(msg);
@@ -63,11 +58,24 @@ describe("RemoteDiscordConnector.deliverMessage respondTo gating", () => {
     expect(deliver(respondTo, incoming({ isDM: false, wasBotAddressed: true }))).toHaveLength(1);
   });
 
-  it("keeps delivering inside engaged threads without a re-mention", () => {
+  it("trusts the primary's engaged-thread flag for the mention continuation", () => {
     const respondTo: DiscordRespondToConfig = { channel: "mention" };
-    const msg = incoming({ isDM: false, wasBotAddressed: false }, "T1");
-    expect(deliver(respondTo, msg, { engagedThreadIds: ["T1"] })).toHaveLength(1);
-    expect(deliver(respondTo, msg)).toHaveLength(0);
+    const engaged = incoming(
+      { isDM: false, wasBotAddressed: false, isEngagedThread: true },
+      "T1",
+    );
+    const notEngaged = incoming({ isDM: false, wasBotAddressed: false }, "T1");
+    expect(deliver(respondTo, engaged)).toHaveLength(1);
+    expect(deliver(respondTo, notEngaged)).toHaveLength(0);
+  });
+
+  it("ignores the engaged-thread flag when engagedThreads=false", () => {
+    const respondTo: DiscordRespondToConfig = { channel: "mention", engagedThreads: false };
+    const engaged = incoming(
+      { isDM: false, wasBotAddressed: false, isEngagedThread: true },
+      "T1",
+    );
+    expect(deliver(respondTo, engaged)).toHaveLength(0);
   });
 
   it("silences a scope entirely under never", () => {

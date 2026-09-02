@@ -110,8 +110,9 @@ connectors:
 ### Response Gating (`respondTo`)
 
 The Discord port of the Slack gate. By default the bot responds to every
-message it can see; `respondTo` adds a deterministic gate so gated messages
-never reach the engine:
+message it can see, with one deliberate exception described below (messages
+addressed to somebody else); `respondTo` adds a deterministic gate so gated
+messages never reach the engine:
 
 ```yaml
 connectors:
@@ -131,7 +132,8 @@ gate, with Discord-specific mention rules:
   whether or not the reply pinged (if the replied-to message was since
   deleted, the reply can no longer be attributed and does not count). In flat
   channels (no thread), reply to the bot or re-mention it to continue a
-  conversation.
+  conversation. Thread engagement is tracked in memory and resets when the
+  gateway restarts — mention the bot once more after a restart.
 - Role mentions and `@everyone`/`@here` do **not** count as mentions.
 - Messages that @-mention or reply to *somebody else* (and not the bot) are
   always ignored outside DMs, even in `always` scopes and even with
@@ -141,6 +143,9 @@ gate, with Discord-specific mention rules:
 - Channels proxied via `channelRouting` are gated by the *receiving*
   instance's `respondTo`, not the sender's — the primary forwards the
   resolved addressing so the remote can decide without a Discord round-trip.
+  Upgrade the primary first: a primary too old to forward addressing leaves
+  the receiver's mention scopes fail-closed (every routed message dropped,
+  with a warning in the receiver's log).
 - Unset scopes default to `always`. There is no triage layer on Discord —
   this gate is the only response filter.
 
