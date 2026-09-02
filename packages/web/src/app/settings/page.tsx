@@ -190,6 +190,11 @@ interface Config {
       allowFrom?: string | string[]
       guildId?: string
       channelId?: string
+      respondTo?: {
+        dm?: "always" | "mention" | "never"
+        channel?: "always" | "mention" | "never"
+        engagedThreads?: boolean
+      }
     }
     telegram?: {
       botToken?: string
@@ -1934,6 +1939,41 @@ export default function SettingsPage() {
                       updateConfig(["connectors", "discord", "channelId"], v.trim() || undefined)
                     }
                     placeholder="このチャンネルに限定（右クリック → Copy Channel ID）"
+                  />
+                </FieldRow>
+
+                <div
+                  className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--text-tertiary)] mt-[var(--space-3)] mb-[var(--space-2)]"
+                >
+                  応答ゲート（respondTo）
+                </div>
+                {(["dm", "channel"] as const).map((scope) => (
+                  <FieldRow
+                    key={scope}
+                    label={scope === "dm" ? "DM（1対1・グループ）" : "チャンネル/スレッド"}
+                  >
+                    <SettingsSelect
+                      value={config.connectors?.discord?.respondTo?.[scope] ?? "always"}
+                      onChange={(v) =>
+                        updateConfig(
+                          ["connectors", "discord", "respondTo", scope],
+                          v as "always" | "mention" | "never",
+                        )
+                      }
+                      options={[
+                        { value: "always", label: "常に応答" },
+                        { value: "mention", label: "@メンション/リプライ時のみ" },
+                        { value: "never", label: "応答しない" },
+                      ]}
+                    />
+                  </FieldRow>
+                ))}
+                <FieldRow label="参加済みスレッドは再メンション不要">
+                  <ToggleSwitch
+                    checked={config.connectors?.discord?.respondTo?.engagedThreads ?? true}
+                    onChange={(v) =>
+                      updateConfig(["connectors", "discord", "respondTo", "engagedThreads"], v)
+                    }
                   />
                 </FieldRow>
 
