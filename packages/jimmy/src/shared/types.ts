@@ -505,6 +505,16 @@ export interface DiscordRespondToConfig {
   engagedThreads?: boolean;
 }
 
+/**
+ * Where the Discord connector puts its responses in flat guild channels
+ * (threads and DMs are already precise destinations and ignore this).
+ * "channel" (default) sends plain messages; "reply" attaches each response
+ * to the triggering message with a Discord reply; "thread" opens (or
+ * reuses) a thread rooted on the triggering message and responds there,
+ * Slack-style — flat-channel messages then map to one session per thread.
+ */
+export type DiscordReplyStyle = "channel" | "reply" | "thread";
+
 export interface DiscordConnectorConfig {
   /** Unique instance identifier (e.g. "discord-vox") */
   id?: string;
@@ -522,6 +532,8 @@ export interface DiscordConnectorConfig {
   proxyVia?: string;
   /** Deterministic per-scope response gate (DM / channel). */
   respondTo?: DiscordRespondToConfig;
+  /** Where responses land in flat guild channels. Default: "channel". */
+  replyStyle?: DiscordReplyStyle;
 }
 
 export interface TelegramConnectorConfig {
