@@ -132,8 +132,9 @@ gate, with Discord-specific mention rules:
   whether or not the reply pinged (if the replied-to message was since
   deleted, the reply can no longer be attributed and does not count). In flat
   channels (no thread), reply to the bot or re-mention it to continue a
-  conversation. Thread engagement is tracked in memory and resets when the
-  gateway restarts — mention the bot once more after a restart.
+  conversation. Thread engagement is tracked in memory and resets whenever
+  the connector is recreated — a gateway restart, a config save, or a
+  connector reload — mention the bot once more afterwards.
 - Role mentions and `@everyone`/`@here` do **not** count as mentions.
 - Messages that @-mention or reply to *somebody else* (and not the bot) are
   always ignored outside DMs, even in `always` scopes and even with

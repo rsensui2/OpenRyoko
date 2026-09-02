@@ -23,8 +23,10 @@ import { deriveSessionKey, buildReplyContext, isOldMessage } from "./threads.js"
 import {
   evaluateRespondPolicy,
   resolveRespondMode,
+  respondPolicyNeedsTracking,
   wasBotAddressed,
   addressesOnlyOthers,
+  type ForwardedAddressing,
 } from "./respond-policy.js";
 import { EngagedThreadTracker } from "./engaged-threads.js";
 
@@ -163,11 +165,8 @@ export class DiscordConnector implements Connector {
       for (const chunk of chunks) {
         const sent = await (channel as TextChannel | DMChannel | ThreadChannel).send(chunk);
         lastId = sent.id;
-        // Record per chunk, so a partial send still counts as engagement.
-        // The sent message ID is an anchor too: a future public thread
-        // created from it reuses that ID.
-        if (channel.isThread()) this.engagedThreads.record(channel.id);
-        this.engagedThreads.record(sent.id);
+        // Per chunk, so a partial send still counts as engagement.
+        this.recordEngagement(channel, sent.id);
       }
       return lastId;
     } catch (err) {
@@ -184,11 +183,8 @@ export class DiscordConnector implements Connector {
       for (const chunk of chunks) {
         const sent = await (channel as TextChannel | DMChannel | ThreadChannel).send(chunk);
         lastId = sent.id;
-        // Record per chunk, so a partial send still counts as engagement.
-        // The sent message ID is an anchor too: a future public thread
-        // created from it reuses that ID.
-        if (channel.isThread()) this.engagedThreads.record(channel.id);
-        this.engagedThreads.record(sent.id);
+        // Per chunk, so a partial send still counts as engagement.
+        this.recordEngagement(channel, sent.id);
       }
       return lastId;
     } catch (err) {
@@ -215,10 +211,7 @@ export class DiscordConnector implements Connector {
       if (!channel || !channel.isTextBased()) return;
       const msg = await (channel as TextChannel).messages.fetch(target.messageTs);
       await msg.react(emoji);
-      // A reaction engages the surrounding thread, and marks the reacted
-      // message as an anchor — a future thread created from it shares its ID.
-      if (channel.isThread()) this.engagedThreads.record(channel.id);
-      this.engagedThreads.record(target.messageTs);
+      this.recordEngagement(channel, target.messageTs);
     } catch {
       // non-fatal
     }
@@ -282,7 +275,12 @@ export class DiscordConnector implements Connector {
     const routeTarget = this.config.channelRouting?.[message.channel.id];
     if (routeTarget) {
       logger.debug(`Routing Discord message from channel ${message.channel.id} to ${routeTarget}`);
-      const addressing = await this.resolveAddressing(message, { allowFetch: true });
+      // References resolve only outside DMs here: the remote's dm policy is
+      // unknown, and a routed-DM reply matters only under its dm=mention —
+      // too rare to spend a REST fetch on every routed DM reply.
+      const addressing = await this.resolveAddressing(message, {
+        allowFetch: !message.channel.isDMBased(),
+      });
       await this.proxyToRemote(routeTarget, message, addressing);
       return;
     }
@@ -376,6 +374,37 @@ export class DiscordConnector implements Connector {
   }
 
   /**
+   * Track engagement for the `respondTo.engagedThreads` continuation.
+   * Recording is skipped entirely unless something can consume it (a mention
+   * scope with engagedThreads on, or channelRouting — the receiving instance
+   * may be mention-gated), and only anchor-eligible IDs are kept: the thread
+   * itself, or — in flat guild channels — the acted-on message, since a
+   * public thread created from a message reuses its ID. DM and in-thread
+   * message IDs can never root a thread and are never recorded, which keeps
+   * the unbounded tracker's real footprint small.
+   */
+  private recordEngagement(
+    channel: { id: string; isThread(): boolean; isDMBased(): boolean },
+    anchorMessageId?: string,
+  ): void {
+    if (!this.trackingEnabled()) return;
+    if (channel.isThread()) {
+      this.engagedThreads.record(channel.id);
+      return;
+    }
+    if (anchorMessageId && !channel.isDMBased()) {
+      this.engagedThreads.record(anchorMessageId);
+    }
+  }
+
+  private trackingEnabled(): boolean {
+    return (
+      respondPolicyNeedsTracking(this.config.respondTo) ||
+      Object.keys(this.config.channelRouting ?? {}).length > 0
+    );
+  }
+
+  /**
    * Resolve who the message addresses. Reply attribution applies only to
    * actual replies (`MessageType.Reply`) — a crosspost or forward also
    * carries a `reference` but addresses nobody. `mentions.repliedUser` comes
@@ -438,14 +467,16 @@ export class DiscordConnector implements Connector {
             : "dm",
           guildId: message.guild?.id ?? null,
           isDM: message.channel.isDMBased(),
-          // ForwardedAddressing — precomputed here (only this instance knows
-          // the bot user, resolves references, and tracks engagement) so the
-          // receiving instance can apply its own respondTo gate without
-          // another Discord round-trip.
-          wasBotAddressed: wasBotAddressed(addressing),
-          addressesOnlyOthers: addressesOnlyOthers(addressing),
-          isEngagedThread:
-            message.channel.isThread() && this.engagedThreads.has(message.channel.id),
+          // Precomputed here (only this instance knows the bot user,
+          // resolves references, and tracks engagement) so the receiving
+          // instance can apply its own respondTo gate without another
+          // Discord round-trip.
+          ...({
+            wasBotAddressed: wasBotAddressed(addressing),
+            addressesOnlyOthers: addressesOnlyOthers(addressing),
+            isEngagedThread:
+              message.channel.isThread() && this.engagedThreads.has(message.channel.id),
+          } satisfies ForwardedAddressing),
         },
       };
 

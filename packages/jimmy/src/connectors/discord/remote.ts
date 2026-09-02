@@ -7,7 +7,12 @@ import type {
   Target,
 } from "../../shared/types.js";
 import { logger } from "../../shared/logger.js";
-import { evaluateRespondPolicy, hasMentionScope } from "./respond-policy.js";
+import {
+  evaluateRespondPolicy,
+  parseForwardedAddressing,
+  resolveRespondMode,
+  scopeForChannel,
+} from "./respond-policy.js";
 
 export interface RemoteDiscordConfig {
   /** URL of the primary Jinn instance that holds the Discord WebSocket connection */
@@ -44,27 +49,28 @@ export class RemoteDiscordConnector implements Connector {
     const isDM = meta.isDM === true;
     // Addressing (ForwardedAddressing) is resolved by the primary instance:
     // only it sees the Discord gateway, and it also tracks thread engagement
-    // — proxied sends run through its connector. transportMeta is untyped
-    // JSON, so each flag is re-validated with `=== true`. When the flags are
-    // absent — an older primary — mention scopes fail closed (Slack
+    // — proxied sends run through its connector. When the flags are absent —
+    // a primary too old to send them — mention scopes fail closed (Slack
     // precedent for unresolvable identity) and the sibling rule stays off
-    // (never drop an "always" message on missing metadata); warn once so
-    // the required upgrade order is visible instead of a silent blackhole.
+    // (never drop an "always" message on missing metadata). Warn once, and
+    // only when a message actually lands in a mention-gated scope, so the
+    // required upgrade order is visible instead of a silent blackhole.
+    const { present, flags } = parseForwardedAddressing(meta);
     if (
-      !("wasBotAddressed" in meta) &&
-      hasMentionScope(this.respondTo) &&
+      !present &&
+      resolveRespondMode(this.respondTo, scopeForChannel(isDM)) === "mention" &&
       !this.warnedMissingAddressing
     ) {
       this.warnedMissingAddressing = true;
       logger.warn(
-        "[discord-remote] primary instance does not forward addressing metadata (its version predates respondTo) — mention scopes will drop every routed message until the primary is upgraded",
+        "[discord-remote] primary instance does not forward addressing metadata (its version predates respondTo) — routed messages in mention scopes are dropped until the primary is upgraded",
       );
     }
     const respondDecision = evaluateRespondPolicy({
       config: this.respondTo,
       isDM,
-      wasMentioned: meta.wasBotAddressed === true,
-      isEngagedThread: meta.isEngagedThread === true,
+      wasMentioned: flags.wasBotAddressed,
+      isEngagedThread: flags.isEngagedThread,
     });
     if (!respondDecision.allow) {
       logger.info(
@@ -72,7 +78,7 @@ export class RemoteDiscordConnector implements Connector {
       );
       return;
     }
-    if (!isDM && meta.addressesOnlyOthers === true) {
+    if (!isDM && flags.addressesOnlyOthers) {
       logger.info(
         `[discord-remote] message addresses other user(s) — staying silent for message ${msg.messageId}`,
       );

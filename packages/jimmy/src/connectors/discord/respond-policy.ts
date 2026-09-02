@@ -108,6 +108,26 @@ export interface ForwardedAddressing {
 }
 
 /**
+ * Parse ForwardedAddressing back out of a routed message's transportMeta.
+ * `present` is false when the primary predates the contract (flags missing
+ * from the wire) — the caller decides how loudly to surface that. Flags are
+ * re-validated with `=== true`: the wire is untyped JSON.
+ */
+export function parseForwardedAddressing(meta: Record<string, unknown>): {
+  present: boolean;
+  flags: ForwardedAddressing;
+} {
+  return {
+    present: "wasBotAddressed" in meta && "isEngagedThread" in meta,
+    flags: {
+      wasBotAddressed: meta.wasBotAddressed === true,
+      addressesOnlyOthers: meta.addressesOnlyOthers === true,
+      isEngagedThread: meta.isEngagedThread === true,
+    },
+  };
+}
+
+/**
  * True when the message explicitly addresses somebody else and not the bot:
  * it @-mentions specific user(s), or replies to another user's message, and
  * none of those users is the bot. Such messages stay silent even in "always"
