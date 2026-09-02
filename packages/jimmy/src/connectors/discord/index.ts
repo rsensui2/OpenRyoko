@@ -37,6 +37,30 @@ import {
 } from "./respond-policy.js";
 import { EngagedThreadTracker } from "./engaged-threads.js";
 
+/**
+ * Speaker identity forwarded to the session layer, mirroring the Slack
+ * connector's transportMeta fields. `speakerDiscordId` is the immutable
+ * snowflake that operator identification (portal.operatorDiscordId) and the
+ * MEMORY.md privacy gate (portal.trustedSpeakers) key on — names are display
+ * only and freely editable.
+ */
+function speakerMeta(message: Message): {
+  speakerName: string;
+  speakerDisplayName: string | null;
+  speakerHandle: string;
+  speakerDiscordId: string;
+  speakerIsBot: boolean;
+} {
+  return {
+    speakerName:
+      message.member?.displayName ?? message.author.globalName ?? message.author.username,
+    speakerDisplayName: message.author.globalName ?? null,
+    speakerHandle: message.author.username,
+    speakerDiscordId: message.author.id,
+    speakerIsBot: message.author.bot,
+  };
+}
+
 export interface DiscordConnectorConfig {
   /** Unique instance identifier (e.g. "discord-vox") */
   id?: string;
@@ -541,6 +565,7 @@ export class DiscordConnector implements Connector {
           : "dm",
         guildId: message.guild?.id ?? null,
         isDM: message.channel.isDMBased(),
+        ...speakerMeta(message),
       },
     };
 
@@ -701,6 +726,7 @@ export class DiscordConnector implements Connector {
             : "dm",
           guildId: message.guild?.id ?? null,
           isDM: message.channel.isDMBased(),
+          ...speakerMeta(message),
           // Precomputed here (only this instance knows the bot user,
           // resolves references, and tracks engagement) so the receiving
           // instance can apply its own respondTo gate without another

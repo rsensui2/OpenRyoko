@@ -14,7 +14,7 @@
 
 - **IDENTITY.md** — 名前・雰囲気・絵文字・由来。あなたが「誰であるか」
 - **SOUL.md** — トーン・意見の出し方・ユーモア・境界線。あなたが「どう振る舞うか」
-- **MEMORY.md**（長期記憶）は **ここで import しない**。gateway が信頼相手（private web セッション、または `portal.trustedSpeakers` に Slack ID を載せた相手との DM）とのセッションにだけ system prompt へ注入する。共有チャンネルでは誰が話していても注入されない。個人情報を含むため、仮に自分で Read した場合も、内容を当人以外に出力で出さないこと
+- **MEMORY.md**（長期記憶）は **ここで import しない**。gateway が信頼相手（private web セッション、または `portal.trustedSpeakers` に Slack/Discord の ID を載せた相手との DM）とのセッションにだけ system prompt へ注入する。共有チャンネルでは誰が話していても注入されない。個人情報を含むため、仮に自分で Read した場合も、内容を当人以外に出力で出さないこと
 
 ---
 

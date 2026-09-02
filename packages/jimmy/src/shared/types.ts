@@ -579,16 +579,23 @@ export interface PortalConfig {
   operatorAliases?: string[];
   language?: string;
   onboarded?: boolean;
-  /** Slack user IDs whose DIRECT MESSAGES may receive MEMORY.md in the
-   *  system prompt (list the operator's own ID here too). This is a privacy
-   *  gate keyed on immutable IDs only — display names are spoofable. Web
-   *  sessions are always eligible; shared channels never are. */
+  /** Platform user IDs (Slack "U…" IDs and Discord snowflakes) whose DIRECT
+   *  MESSAGES may receive MEMORY.md in the system prompt (list the
+   *  operator's own IDs here too). This is a privacy gate keyed on immutable
+   *  IDs only — display names are spoofable. Web sessions are always
+   *  eligible; shared channels never are. */
   trustedSpeakers?: string[];
-  /** The operator's own Slack user ID. When set, operator identification is
-   *  strict ID equality and display-name matching is disabled — a speaker
-   *  merely named like the operator is never asserted to BE the operator.
-   *  Strongly recommended wherever the workspace has untrusted members. */
+  /** The operator's own Slack user ID. When set (alone or with
+   *  operatorDiscordId), operator identification is strict ID equality and
+   *  display-name matching is disabled — a speaker merely named like the
+   *  operator is never asserted to BE the operator. Strongly recommended
+   *  wherever the workspace has untrusted members. */
   operatorSlackId?: string;
+  /** The operator's own Discord user ID (snowflake — right-click profile →
+   *  Copy User ID). Same strict-equality semantics as operatorSlackId; a
+   *  Discord speaker can only be the operator through this ID. Quote it in
+   *  YAML or not — numeric snowflakes are normalized to strings. */
+  operatorDiscordId?: string | number;
 }
 
 // --- Engine quota/limit snapshots ---
