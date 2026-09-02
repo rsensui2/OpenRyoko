@@ -247,7 +247,8 @@ connectors:
       threadContextLimit: 10
   discord:
     botToken: ...
-    # Slack と同じ決定的な応答ゲート（省略時は全メッセージに応答）
+    # Slack と同じ決定的な応答ゲート。
+    # 省略時も他ユーザー宛のメンション/リプライには応答しない（Slack と同じ既定挙動）
     respondTo:
       dm: always            # DM（1:1・グループ）: メンション不要で常に応答
       channel: mention      # チャンネル/スレッド: @メンション or botへのリプライ時のみ

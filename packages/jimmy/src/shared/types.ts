@@ -484,10 +484,13 @@ export type DiscordRespondMode = "always" | "mention" | "never";
 
 /**
  * Deterministic response gate for the Discord connector — the Discord port of
- * `SlackRespondToConfig`. Absent (or "always" in every scope) preserves the
- * legacy respond-to-everything behavior. "mention" scopes drop messages that
- * neither @-mention the bot nor reply to one of its messages, except inside
- * threads the bot has already engaged (see `engagedThreads`).
+ * `SlackRespondToConfig`. "mention" scopes drop messages that neither
+ * @-mention the bot nor reply to one of its messages, except inside threads
+ * the bot has already engaged (see `engagedThreads`). Absent (or "always" in
+ * every scope) keeps responding to every message, with one deliberate
+ * exception that applies regardless of this config (Slack parity): channel
+ * messages that @-mention or reply to somebody else — and not the bot — are
+ * always ignored.
  */
 export interface DiscordRespondToConfig {
   /** 1:1 and group DMs. Default: "always". */

@@ -1,6 +1,7 @@
 import {
   Client,
   GatewayIntentBits,
+  MessageReferenceType,
   Partials,
   type Message,
   type TextChannel,
@@ -157,8 +158,12 @@ export class DiscordConnector implements Connector {
       for (const chunk of chunks) {
         const sent = await (channel as TextChannel | DMChannel | ThreadChannel).send(chunk);
         lastId = sent.id;
+        // Record per chunk, so a partial send still counts as engagement.
+        // The sent message ID is an anchor too: a future public thread
+        // created from it reuses that ID.
+        if (channel.isThread()) this.engagedThreads.record(channel.id);
+        this.engagedThreads.record(sent.id);
       }
-      if (channel.isThread()) this.engagedThreads.record(channel.id);
       return lastId;
     } catch (err) {
       logger.error(`Discord sendMessage error: ${err instanceof Error ? err.message : err}`);
@@ -174,8 +179,12 @@ export class DiscordConnector implements Connector {
       for (const chunk of chunks) {
         const sent = await (channel as TextChannel | DMChannel | ThreadChannel).send(chunk);
         lastId = sent.id;
+        // Record per chunk, so a partial send still counts as engagement.
+        // The sent message ID is an anchor too: a future public thread
+        // created from it reuses that ID.
+        if (channel.isThread()) this.engagedThreads.record(channel.id);
+        this.engagedThreads.record(sent.id);
       }
-      if (channel.isThread()) this.engagedThreads.record(channel.id);
       return lastId;
     } catch (err) {
       logger.error(`Discord replyMessage error: ${err instanceof Error ? err.message : err}`);
@@ -201,7 +210,10 @@ export class DiscordConnector implements Connector {
       if (!channel || !channel.isTextBased()) return;
       const msg = await (channel as TextChannel).messages.fetch(target.messageTs);
       await msg.react(emoji);
+      // A reaction engages the surrounding thread, and marks the reacted
+      // message as an anchor — a future thread created from it shares its ID.
       if (channel.isThread()) this.engagedThreads.record(channel.id);
+      this.engagedThreads.record(target.messageTs);
     } catch {
       // non-fatal
     }
@@ -244,8 +256,9 @@ export class DiscordConnector implements Connector {
   }
 
   private async handleMessage(message: Message): Promise<void> {
-    // Ignore bots (including self)
-    if (message.author.bot) return;
+    // Ignore bots (including self), webhooks, and Discord-generated system
+    // messages (joins, pins, thread-created…) — none of these are user turns.
+    if (message.author.bot || message.system || message.webhookId) return;
     logger.debug(`Discord message from ${message.author.username} in channel ${message.channel.id}`);
 
     // Ignore old messages on boot
@@ -257,11 +270,15 @@ export class DiscordConnector implements Connector {
     // Guild restriction
     if (this.config.guildId && message.guild?.id !== this.config.guildId) return;
 
+    // Who does the message address? Resolved once, ahead of routing, so the
+    // receiving instance of a routed channel can apply its own respondTo gate.
+    const addressing = await this.resolveAddressing(message);
+
     // Channel routing — proxy messages to remote instances
     const routeTarget = this.config.channelRouting?.[message.channel.id];
     if (routeTarget) {
       logger.debug(`Routing Discord message from channel ${message.channel.id} to ${routeTarget}`);
-      await this.proxyToRemote(routeTarget, message);
+      await this.proxyToRemote(routeTarget, message, addressing);
       return;
     }
 
@@ -272,16 +289,9 @@ export class DiscordConnector implements Connector {
     if (this.allowedUserIds.size > 0 && !this.allowedUserIds.has(message.author.id)) return;
 
     // Deterministic respondTo gate — the Discord port of the Slack gate.
-    // Applies only to locally handled messages: channelRouting proxies above
-    // this point, so routed channels are gated by the receiving instance.
     // botUserId is set once the client is ready (messageCreate never fires
     // earlier); if it were somehow missing, mention scopes fail closed.
     const isDM = message.channel.isDMBased();
-    const addressing = {
-      botUserId: this.client.user?.id,
-      mentionedUserIds: new Set(message.mentions.users.keys()),
-      repliedToUserId: message.mentions.repliedUser?.id,
-    };
     const respondDecision = evaluateRespondPolicy({
       config: this.config.respondTo,
       isDM,
@@ -354,8 +364,43 @@ export class DiscordConnector implements Connector {
     this.handler(incomingMessage);
   }
 
+  /**
+   * Resolve who the message addresses. `mentions.repliedUser` comes from the
+   * gateway's resolved reference and works whether or not the reply pinged;
+   * when Discord omitted the resolution, fall back to one fetch of the
+   * referenced message. Forwards are not replies and never resolve; a deleted
+   * reference stays undefined — no addressee.
+   */
+  private async resolveAddressing(message: Message): Promise<{
+    botUserId: string | undefined;
+    mentionedUserIds: Set<string>;
+    repliedToUserId: string | undefined;
+  }> {
+    let repliedToUserId = message.mentions.repliedUser?.id;
+    const isReply =
+      message.reference?.messageId !== undefined &&
+      (message.reference.type ?? MessageReferenceType.Default) === MessageReferenceType.Default;
+    if (repliedToUserId === undefined && isReply) {
+      try {
+        const referenced = await message.fetchReference();
+        repliedToUserId = referenced.author?.id;
+      } catch {
+        // Referenced message deleted or inaccessible.
+      }
+    }
+    return {
+      botUserId: this.client.user?.id,
+      mentionedUserIds: new Set(message.mentions.users.keys()),
+      repliedToUserId,
+    };
+  }
+
   /** Forward a message to a remote Jinn instance via HTTP */
-  private async proxyToRemote(remoteUrl: string, message: Message): Promise<void> {
+  private async proxyToRemote(
+    remoteUrl: string,
+    message: Message,
+    addressing: Parameters<typeof wasBotAddressed>[0],
+  ): Promise<void> {
     try {
       const attachments = Array.from(message.attachments.values()).map((att) => ({
         name: att.name,
@@ -379,6 +424,11 @@ export class DiscordConnector implements Connector {
             : "dm",
           guildId: message.guild?.id ?? null,
           isDM: message.channel.isDMBased(),
+          // Precomputed here (only this instance knows the bot user and can
+          // resolve references) so the receiving instance can apply its own
+          // respondTo gate without another Discord round-trip.
+          wasBotAddressed: wasBotAddressed(addressing),
+          addressesOnlyOthers: addressesOnlyOthers(addressing),
         },
       };
 

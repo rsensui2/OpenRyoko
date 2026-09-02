@@ -128,17 +128,21 @@ Modes per scope: `always` | `mention` | `never` — same semantics as the Slack
 gate, with Discord-specific mention rules:
 
 - A Discord **reply** to one of the bot's messages counts as a mention,
-  whether or not the reply pinged. In flat channels (no thread), reply to the
-  bot or re-mention it to continue a conversation.
+  whether or not the reply pinged (if the replied-to message was since
+  deleted, the reply can no longer be attributed and does not count). In flat
+  channels (no thread), reply to the bot or re-mention it to continue a
+  conversation.
 - Role mentions and `@everyone`/`@here` do **not** count as mentions.
 - Messages that @-mention or reply to *somebody else* (and not the bot) are
-  always ignored outside DMs, even in `always` scopes — they're addressed to
-  that person, not the bot.
-- Channels proxied via `channelRouting` are gated by the receiving instance's
-  policy, not the sender's.
-- Unset scopes default to `always`, so existing configs keep the legacy
-  respond-to-everything behavior. There is no triage layer on Discord — this
-  gate is the only response filter.
+  always ignored outside DMs, even in `always` scopes and even with
+  `respondTo` unset — they're addressed to that person, not the bot. This is
+  an intentional behavior change from earlier releases (Slack parity), and
+  the one way an unconfigured connector no longer responds to everything.
+- Channels proxied via `channelRouting` are gated by the *receiving*
+  instance's `respondTo`, not the sender's — the primary forwards the
+  resolved addressing so the remote can decide without a Discord round-trip.
+- Unset scopes default to `always`. There is no triage layer on Discord —
+  this gate is the only response filter.
 
 ## Future Connectors
 
