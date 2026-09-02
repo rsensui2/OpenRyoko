@@ -171,8 +171,13 @@ connectors:
   message then maps to its own session (a public thread reuses its root
   message's ID), so follow-ups inside the thread continue that
   conversation — and count as engaged for `respondTo.engagedThreads`.
-  Falls back to `reply` when the thread can't be created (missing Create
-  Public Threads permission, unsupported channel type).
+  Channels that can't host message threads (voice/stage text chat) use
+  `reply` instead, session mapping included; a channel-level refusal
+  (missing Create Public Threads permission) is remembered and the channel
+  settles into `reply` behavior from the next turn. Note the migration
+  effect: switching an existing deployment to `thread` re-keys flat-channel
+  conversations, so ongoing channel sessions start fresh from the first
+  message after the switch.
 - With `channelRouting`, the *primary* instance's `replyStyle` applies —
   it renders every proxied send.
 
