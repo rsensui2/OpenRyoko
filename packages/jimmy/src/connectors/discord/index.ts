@@ -67,11 +67,14 @@ function normalizeRouteEntry(value: unknown): { url: string; token?: string } | 
   if (typeof value === "string" && value.trim()) return { url: value.trim() };
   if (value && typeof value === "object" && !Array.isArray(value)) {
     const { url, token } = value as { url?: unknown; token?: unknown };
-    if (typeof url === "string" && url.trim()) {
-      return {
-        url: url.trim(),
-        token: typeof token === "string" && token ? token : undefined,
-      };
+    // A malformed token disables the whole entry — silently dropping it
+    // would send authenticated traffic unauthenticated.
+    if (
+      typeof url === "string" &&
+      url.trim() &&
+      (token === undefined || typeof token === "string")
+    ) {
+      return { url: url.trim(), token: token || undefined };
     }
   }
   return undefined;
