@@ -862,22 +862,30 @@ function buildEnvironmentContext(): string | null {
   return lines.join("\n");
 }
 
-/** Warn once per config key, not once per session build. */
+/** Warn once per (config key, offending value) — a corrected-then-broken
+ *  value re-warns even across config hot-reloads. */
 const warnedIdentityConfig = new Set<string>();
 
-/** Read a configured platform user ID, accepting STRINGS ONLY. Discord
- *  snowflakes exceed Number.MAX_SAFE_INTEGER, so an unquoted YAML value has
- *  already lost precision by parse time — comparing the mangled value could
- *  match the WRONG user. A numeric value is ignored (it can never match)
- *  with a one-time warning telling the operator to quote it. */
+function warnIdentityConfigOnce(label: string, value: unknown, message: string): void {
+  const key = `${label}:${String(value).slice(0, 40)}`;
+  if (warnedIdentityConfig.has(key)) return;
+  warnedIdentityConfig.add(key);
+  logger.warn(message);
+}
+
+/** Read a configured platform user ID, accepting NON-EMPTY STRINGS ONLY.
+ *  Discord snowflakes exceed Number.MAX_SAFE_INTEGER, so an unquoted YAML
+ *  value has already lost precision by parse time — comparing the mangled
+ *  value could match the WRONG user. Any present non-string value (number,
+ *  null, empty) is ignored with a warning; strict mode stays engaged. */
 function configuredIdString(value: unknown, label: string): string | undefined {
+  if (value === undefined) return undefined;
   if (typeof value === "string" && value.trim()) return value.trim();
-  if (typeof value === "number" && !warnedIdentityConfig.has(label)) {
-    warnedIdentityConfig.add(label);
-    logger.warn(
-      `[identity] ${label} is a YAML number — IDs this long lose precision before we ever see them. Quote the value ("...") in config.yaml; until then it is ignored and can never match.`,
-    );
-  }
+  warnIdentityConfigOnce(
+    label,
+    value,
+    `[identity] ${label} must be a non-empty QUOTED string (unquoted IDs this long lose precision as YAML numbers). The configured value is ignored — strict mode stays engaged and matches nobody until it is fixed.`,
+  );
   return undefined;
 }
 
@@ -885,9 +893,10 @@ function configuredIdString(value: unknown, label: string): string | undefined {
 function trustedSpeakerIds(config?: JinnConfig): string[] {
   const raw = config?.portal?.trustedSpeakers ?? [];
   const strings = raw.filter((v): v is string => typeof v === "string" && v.trim().length > 0);
-  if (strings.length < raw.length && !warnedIdentityConfig.has("portal.trustedSpeakers")) {
-    warnedIdentityConfig.add("portal.trustedSpeakers");
-    logger.warn(
+  if (strings.length < raw.length) {
+    warnIdentityConfigOnce(
+      "portal.trustedSpeakers",
+      raw.length - strings.length,
       `[identity] portal.trustedSpeakers contains non-string entries — unquoted Discord snowflakes lose precision as YAML numbers. Quote each ID; non-string entries are ignored.`,
     );
   }
@@ -908,28 +917,34 @@ export function resolveOperatorIdentity(opts: {
   speakerNames: Array<string | undefined>;
   speakerSlackId?: string;
   speakerDiscordId?: string;
-  /** Where the message physically arrived ("slack" | "discord" | …). When
-   *  given, only that platform's operator ID can verify the speaker. */
-  source?: string;
+  /** Where the message physically arrived ("slack" | "discord" | …).
+   *  Required: only the arrival platform's operator ID can verify the
+   *  speaker, so a cross-platform ID smuggled into the metadata never
+   *  counts. */
+  source: string;
   operatorName?: string;
   config?: JinnConfig;
 }): { speakerIsOperator: boolean; operatorIdVerified: boolean } {
-  const rawSlackId = opts.config?.portal?.operatorSlackId;
-  const rawDiscordId = opts.config?.portal?.operatorDiscordId;
-  const operatorSlackId = configuredIdString(rawSlackId, "portal.operatorSlackId");
-  const operatorDiscordId = configuredIdString(rawDiscordId, "portal.operatorDiscordId");
-  // The PRESENCE of a strict ID engages strict mode, even when the value is
-  // unusable (numeric) — degrading to name matching on a config mistake
-  // would reopen exactly the spoofing hole strict mode exists to close.
-  if (rawSlackId != null || rawDiscordId != null) {
-    const slackApplies = opts.source === undefined || opts.source === "slack";
-    const discordApplies = opts.source === undefined || opts.source === "discord";
+  const portal = opts.config?.portal;
+  const operatorSlackId = configuredIdString(portal?.operatorSlackId, "portal.operatorSlackId");
+  const operatorDiscordId = configuredIdString(
+    portal?.operatorDiscordId,
+    "portal.operatorDiscordId",
+  );
+  // The PRESENCE of a strict-ID key engages strict mode, even when its value
+  // is unusable (numeric, null, empty) — degrading to name matching on a
+  // config mistake would reopen exactly the spoofing hole strict mode exists
+  // to close.
+  const strictConfigured =
+    !!portal &&
+    (Object.hasOwn(portal, "operatorSlackId") || Object.hasOwn(portal, "operatorDiscordId"));
+  if (strictConfigured) {
     const verified =
-      (slackApplies &&
+      (opts.source === "slack" &&
         !!operatorSlackId &&
         !!opts.speakerSlackId &&
         opts.speakerSlackId === operatorSlackId) ||
-      (discordApplies &&
+      (opts.source === "discord" &&
         !!operatorDiscordId &&
         !!opts.speakerDiscordId &&
         opts.speakerDiscordId === operatorDiscordId);

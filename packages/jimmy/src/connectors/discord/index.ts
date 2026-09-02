@@ -62,6 +62,21 @@ function speakerMeta(message: Message): {
   };
 }
 
+/** Runtime validation for one channelRouting entry (config is untyped YAML/JSON). */
+function normalizeRouteEntry(value: unknown): { url: string; token?: string } | undefined {
+  if (typeof value === "string" && value.trim()) return { url: value.trim() };
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const { url, token } = value as { url?: unknown; token?: unknown };
+    if (typeof url === "string" && url.trim()) {
+      return {
+        url: url.trim(),
+        token: typeof token === "string" && token ? token : undefined,
+      };
+    }
+  }
+  return undefined;
+}
+
 export interface DiscordConnectorConfig {
   /** Unique instance identifier (e.g. "discord-vox") */
   id?: string;
@@ -122,11 +137,19 @@ export class DiscordConnector implements Connector {
     // Normalize Discord IDs to strings (YAML may parse large snowflake IDs as numbers)
     if (this.config.guildId) this.config.guildId = String(this.config.guildId);
     if (this.config.channelId) this.config.channelId = String(this.config.channelId);
+    // YAML/API config is untyped at runtime: validate each route and disable
+    // (with a warning) anything that isn't a URL string or { url, token }.
     this.routing = Object.fromEntries(
-      Object.entries(config.channelRouting ?? {}).map(([k, v]) => [
-        String(k),
-        typeof v === "string" ? { url: v } : { url: String(v.url), token: v.token },
-      ]),
+      Object.entries(config.channelRouting ?? {}).flatMap(([k, v]) => {
+        const route = normalizeRouteEntry(v);
+        if (!route) {
+          logger.warn(
+            `[discord] channelRouting["${k}"] is invalid (expected a URL string or { url, token }) — entry disabled`,
+          );
+          return [];
+        }
+        return [[String(k), route] as const];
+      }),
     );
     this.allowedUserIds = new Set(
       Array.isArray(config.allowFrom)

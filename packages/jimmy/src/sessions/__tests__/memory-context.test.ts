@@ -151,15 +151,15 @@ describe("resolveOperatorIdentity", () => {
 
   it("with operatorSlackId configured, only the exact ID is the operator — name spoofing gains nothing", () => {
     expect(
-      resolveOperatorIdentity({ speakerNames: ["太郎"], speakerSlackId: "U0EVIL0000", operatorName: "太郎", config: STRICT }),
+      resolveOperatorIdentity({ speakerNames: ["太郎"], speakerSlackId: "U0EVIL0000", source: "slack", operatorName: "太郎", config: STRICT }),
     ).toEqual({ speakerIsOperator: false, operatorIdVerified: false });
     expect(
-      resolveOperatorIdentity({ speakerNames: ["別名"], speakerSlackId: "U0OPERATOR", operatorName: "太郎", config: STRICT }),
+      resolveOperatorIdentity({ speakerNames: ["別名"], speakerSlackId: "U0OPERATOR", source: "slack", operatorName: "太郎", config: STRICT }),
     ).toEqual({ speakerIsOperator: true, operatorIdVerified: true });
   });
 
   it("without operatorSlackId, name matching still works but is reported as unverified", () => {
-    const r = resolveOperatorIdentity({ speakerNames: ["太郎"], operatorName: "太郎", config: CONFIG });
+    const r = resolveOperatorIdentity({ speakerNames: ["太郎"], source: "slack", operatorName: "太郎", config: CONFIG });
     expect(r.speakerIsOperator).toBe(true);
     expect(r.operatorIdVerified).toBe(false);
   });
@@ -178,6 +178,7 @@ describe("resolveOperatorIdentity", () => {
         resolveOperatorIdentity({
           speakerNames: ["rsensui_18737"],
           speakerDiscordId: "1543864208750542941",
+          source: "discord",
           operatorName: "太郎",
           config: BOTH,
         }),
@@ -186,6 +187,7 @@ describe("resolveOperatorIdentity", () => {
         resolveOperatorIdentity({
           speakerNames: ["太郎"],
           speakerDiscordId: "42",
+          source: "discord",
           operatorName: "太郎",
           config: BOTH,
         }),
@@ -202,6 +204,7 @@ describe("resolveOperatorIdentity", () => {
         resolveOperatorIdentity({
           speakerNames: ["太郎"],
           speakerDiscordId: "1543864208750542941",
+          source: "discord",
           operatorName: "太郎",
           config: slackOnly,
         }),
@@ -213,6 +216,7 @@ describe("resolveOperatorIdentity", () => {
         resolveOperatorIdentity({
           speakerNames: ["太郎"],
           speakerSlackId: "U0OPERATOR",
+          source: "slack",
           operatorName: "太郎",
           config: discordOnly,
         }),
@@ -228,6 +232,7 @@ describe("resolveOperatorIdentity", () => {
         resolveOperatorIdentity({
           speakerNames: [],
           speakerDiscordId: "12345678901234",
+          source: "discord",
           operatorName: "太郎",
           config: numeric,
         }),
@@ -237,6 +242,7 @@ describe("resolveOperatorIdentity", () => {
       expect(
         resolveOperatorIdentity({
           speakerNames: ["太郎"],
+          source: "discord",
           operatorName: "太郎",
           config: numeric,
         }),
@@ -245,8 +251,8 @@ describe("resolveOperatorIdentity", () => {
 
     it("binds verification to the platform the message came from", () => {
       // A Slack operator ID smuggled into a Discord-source payload must not
-      // verify, and vice versa. Without a source, both platforms remain
-      // eligible (backward compatibility for callers that can't know).
+      // verify, and vice versa — `source` is required precisely so no future
+      // caller can forget the platform binding.
       expect(
         resolveOperatorIdentity({
           speakerNames: [],
@@ -281,10 +287,25 @@ describe("resolveOperatorIdentity", () => {
         resolveOperatorIdentity({
           speakerNames: [],
           speakerSlackId: "U0OPERATOR",
+          source: "slack",
           operatorName: "太郎",
           config: BOTH,
         }),
       ).toEqual({ speakerIsOperator: true, operatorIdVerified: true });
+    });
+
+    it("stays strict (matching nobody) for an explicit YAML null", () => {
+      const nullValue = {
+        portal: { operatorName: "太郎", operatorDiscordId: null },
+      } as unknown as JinnConfig;
+      expect(
+        resolveOperatorIdentity({
+          speakerNames: ["太郎"],
+          source: "discord",
+          operatorName: "太郎",
+          config: nullValue,
+        }),
+      ).toEqual({ speakerIsOperator: false, operatorIdVerified: false });
     });
   });
 });

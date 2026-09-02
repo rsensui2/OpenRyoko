@@ -24,17 +24,36 @@ export interface RemoteDiscordConfig {
   respondTo?: DiscordRespondToConfig;
 }
 
+/** The transportMeta fields a Discord primary legitimately sends — everything
+ *  else (cross-platform identity like speakerSlackId, Slack-only fields,
+ *  internal session metadata) is dropped at the boundary. */
+const INCOMING_DISCORD_META_ALLOWLIST = [
+  "channelName",
+  "guildId",
+  "isDM",
+  "isGroupDM",
+  "speakerName",
+  "speakerDisplayName",
+  "speakerHandle",
+  "speakerDiscordId",
+  "speakerIsBot",
+  "wasBotAddressed",
+  "addressesOnlyOthers",
+  "isEngagedThread",
+] as const;
+
 /**
- * Strip cross-platform identity fields from a routed Discord payload's
- * transportMeta at the receiving boundary. This endpoint carries Discord
- * traffic, so Slack identity has no legitimate reason to appear — and a
- * forged one must never reach the platform-bound operator check or the
- * MEMORY.md gate.
+ * Allowlist a routed Discord payload's transportMeta at the receiving
+ * boundary. This endpoint carries Discord traffic, so only the fields the
+ * Discord primary actually produces pass through — a forged Slack identity
+ * (or any future field we haven't reasoned about) must never reach the
+ * platform-bound operator check or the MEMORY.md gate.
  */
 export function sanitizeIncomingDiscordMeta(meta: unknown): Record<string, unknown> {
   const raw = (meta && typeof meta === "object" ? meta : {}) as Record<string, unknown>;
-  const { speakerSlackId: _droppedSlackId, ...rest } = raw;
-  return rest;
+  return Object.fromEntries(
+    INCOMING_DISCORD_META_ALLOWLIST.flatMap((key) => (key in raw ? [[key, raw[key]] as const] : [])),
+  );
 }
 
 /**
