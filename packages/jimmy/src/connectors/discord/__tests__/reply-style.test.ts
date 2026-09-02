@@ -380,8 +380,11 @@ describe("thread style failure state transitions", () => {
       { channel: "C1", thread: "T1", messageTs: "M5" },
       "hi",
     );
+    // The reference points at the thread's ID (= its starter message in the
+    // parent channel), not the in-thread messageTs, which the parent can't
+    // resolve.
     expect(parent.send).toHaveBeenCalledWith(
-      expect.objectContaining({ reply: { messageReference: "M5", failIfNotExists: false } }),
+      expect.objectContaining({ reply: { messageReference: "T1", failIfNotExists: false } }),
     );
     expect(result).toBeDefined();
   });

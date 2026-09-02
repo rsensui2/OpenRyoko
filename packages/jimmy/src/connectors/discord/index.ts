@@ -237,7 +237,13 @@ export class DiscordConnector implements Connector {
         );
         if (parent && parent.isTextBased() && !parent.isThread()) {
           const retry = await this.sendChunks(
-            { channel: parent as TextChannel | DMChannel, replyTo: target.messageTs },
+            // A reply reference must live in the parent channel — in-thread
+            // message IDs are invisible there. A message-rooted thread
+            // shares its starter message's ID, so referencing the thread ID
+            // attaches the fallback to the conversation's root (and merely
+            // degrades to a plain post for channel-rooted threads, thanks
+            // to failIfNotExists: false).
+            { channel: parent as TextChannel | DMChannel, replyTo: destination.channel.id },
             text,
           );
           if (retry.error !== undefined) throw retry.error;
