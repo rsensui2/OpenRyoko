@@ -195,6 +195,7 @@ interface Config {
         channel?: "always" | "mention" | "never"
         engagedThreads?: boolean
       }
+      replyStyle?: "channel" | "reply" | "thread"
     }
     telegram?: {
       botToken?: string
@@ -1974,6 +1975,22 @@ export default function SettingsPage() {
                     onChange={(v) =>
                       updateConfig(["connectors", "discord", "respondTo", "engagedThreads"], v)
                     }
+                  />
+                </FieldRow>
+                <FieldRow label="返信スタイル（平場チャンネル）">
+                  <SettingsSelect
+                    value={config.connectors?.discord?.replyStyle ?? "channel"}
+                    onChange={(v) =>
+                      updateConfig(
+                        ["connectors", "discord", "replyStyle"],
+                        v as "channel" | "reply" | "thread",
+                      )
+                    }
+                    options={[
+                      { value: "channel", label: "そのままチャンネルへ" },
+                      { value: "reply", label: "元メッセージにリプライ" },
+                      { value: "thread", label: "スレッドを作成して返信" },
+                    ]}
                   />
                 </FieldRow>
 

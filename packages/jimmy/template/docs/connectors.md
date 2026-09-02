@@ -150,6 +150,32 @@ gate, with Discord-specific mention rules:
 - Unset scopes default to `always`. There is no triage layer on Discord —
   this gate is the only response filter.
 
+### Reply Targeting (`replyStyle`)
+
+Where the bot's responses land in flat guild channels (threads and DMs are
+already precise destinations and ignore this setting):
+
+```yaml
+connectors:
+  discord:
+    replyStyle: reply    # channel | reply | thread (default: channel)
+```
+
+- `channel` (default): plain channel messages — the legacy behavior.
+- `reply`: each response is a Discord reply attached to the message that
+  triggered it, so conversations stay legible in busy channels. Pairs well
+  with `respondTo.channel: mention` — people replying back to the bot count
+  as mentions.
+- `thread`: the response opens (or reuses) a thread rooted on the
+  triggering message and lands there, Slack-style. Each flat-channel
+  message then maps to its own session (a public thread reuses its root
+  message's ID), so follow-ups inside the thread continue that
+  conversation — and count as engaged for `respondTo.engagedThreads`.
+  Falls back to `reply` when the thread can't be created (missing Create
+  Public Threads permission, unsupported channel type).
+- With `channelRouting`, the *primary* instance's `replyStyle` applies —
+  it renders every proxied send.
+
 ## Future Connectors
 
 The connector interface is designed for additional platforms:

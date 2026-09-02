@@ -12,6 +12,7 @@ import type {
   Connector,
   ConnectorCapabilities,
   ConnectorHealth,
+  DiscordReplyStyle,
   DiscordRespondToConfig,
   IncomingMessage,
   Target,
@@ -19,7 +20,7 @@ import type {
 import { logger } from "../../shared/logger.js";
 import { TMP_DIR } from "../../shared/paths.js";
 import { formatResponse, downloadAttachment } from "./format.js";
-import { deriveSessionKey, buildReplyContext, isOldMessage } from "./threads.js";
+import { deriveSessionKey, buildReplyContext, isOldMessage, threadNameFor } from "./threads.js";
 import {
   evaluateRespondPolicy,
   resolveRespondMode,
@@ -46,6 +47,8 @@ export interface DiscordConnectorConfig {
   proxyVia?: string;
   /** Deterministic per-scope response gate (DM / channel). See DiscordRespondToConfig. */
   respondTo?: DiscordRespondToConfig;
+  /** Where responses land in flat guild channels. Default: "channel". */
+  replyStyle?: DiscordReplyStyle;
 }
 
 export class DiscordConnector implements Connector {
@@ -60,11 +63,17 @@ export class DiscordConnector implements Connector {
   private lastError: string | null = null;
   private typingIntervals = new Map<string, ReturnType<typeof setInterval>>();
   private engagedThreads = new EngagedThreadTracker();
+  private readonly replyStyle: DiscordReplyStyle;
 
   constructor(config: DiscordConnectorConfig) {
     this.name = config.id || "discord";
     this.instanceId = config.id || "discord";
     this.config = config;
+    // Hand-edited YAML: an invalid value degrades to the legacy behavior.
+    this.replyStyle =
+      config.replyStyle === "reply" || config.replyStyle === "thread"
+        ? config.replyStyle
+        : "channel";
     // Normalize Discord IDs to strings (YAML may parse large snowflake IDs as numbers)
     if (this.config.guildId) this.config.guildId = String(this.config.guildId);
     if (this.config.channelId) this.config.channelId = String(this.config.channelId);
@@ -177,17 +186,59 @@ export class DiscordConnector implements Connector {
     try {
       const channel = await this.client.channels.fetch(target.thread ?? target.channel);
       if (!channel || !channel.isTextBased()) return;
+      const destination = await this.resolveReplyDestination(
+        channel as TextChannel | DMChannel | ThreadChannel,
+        target,
+      );
       const chunks = formatResponse(text);
       let lastId: string | undefined;
-      for (const chunk of chunks) {
-        const sent = await (channel as TextChannel | DMChannel | ThreadChannel).send(chunk);
+      for (const [index, chunk] of chunks.entries()) {
+        // Only the first chunk carries the reply reference — one visual
+        // attachment per response, the rest reads as its continuation.
+        const sent =
+          destination.replyTo !== undefined && index === 0
+            ? await destination.channel.send({
+                content: chunk,
+                reply: { messageReference: destination.replyTo, failIfNotExists: false },
+              })
+            : await destination.channel.send(chunk);
         lastId = sent.id;
         // Per chunk, so a partial send still counts as engagement.
-        this.recordEngagement(channel, sent.id);
+        this.recordEngagement(destination.channel, sent.id);
       }
       return lastId;
     } catch (err) {
       logger.error(`Discord replyMessage error: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  /**
+   * Where a response physically lands. Threads and DMs are already precise
+   * destinations and ignore replyStyle. In flat guild channels: "reply"
+   * attaches the response to the triggering message, "thread" opens (or
+   * reuses) the thread rooted on it — falling back to "reply" when Discord
+   * refuses (missing Create Public Threads permission, unsupported channel
+   * type) — and "channel" keeps the legacy plain send.
+   */
+  private async resolveReplyDestination(
+    channel: TextChannel | DMChannel | ThreadChannel,
+    target: Target,
+  ): Promise<{ channel: TextChannel | DMChannel | ThreadChannel; replyTo?: string }> {
+    if (channel.isThread() || channel.isDMBased()) return { channel };
+    if (!target.messageTs || this.replyStyle === "channel") return { channel };
+    if (this.replyStyle === "reply") return { channel, replyTo: target.messageTs };
+    try {
+      const starter = await channel.messages.fetch(target.messageTs);
+      const thread =
+        starter.hasThread && starter.thread
+          ? starter.thread
+          : await starter.startThread({ name: threadNameFor(starter.content) });
+      return { channel: thread as ThreadChannel };
+    } catch (err) {
+      logger.warn(
+        `[discord] could not open a thread on message ${target.messageTs} (${err instanceof Error ? err.message : err}) — falling back to a reply`,
+      );
+      return { channel, replyTo: target.messageTs };
     }
   }
 
@@ -327,7 +378,9 @@ export class DiscordConnector implements Connector {
 
     if (!this.handler) return;
 
-    const sessionKey = deriveSessionKey(message, this.instanceId);
+    const sessionKey = deriveSessionKey(message, this.instanceId, {
+      threadPerMessage: this.replyStyle === "thread",
+    });
     const replyContext = buildReplyContext(message);
 
     // Download attachments
@@ -460,7 +513,11 @@ export class DiscordConnector implements Connector {
       }));
 
       const payload = {
-        sessionKey: deriveSessionKey(message),
+        // The primary's replyStyle renders every proxied send, so its
+        // thread-per-message session mapping applies to routed channels too.
+        sessionKey: deriveSessionKey(message, undefined, {
+          threadPerMessage: this.replyStyle === "thread",
+        }),
         channel: message.channel.id,
         thread: message.channel.isThread() ? message.channel.id : undefined,
         user: message.author.username,

@@ -247,6 +247,9 @@ connectors:
       threadContextLimit: 10
   discord:
     botToken: ...
+    # 平場チャンネルでの返信先: channel（そのまま投稿・既定）/ reply（元メッセージにリプライ）
+    # / thread（元メッセージからスレッドを作って返信。Slack 風にスレッド単位のセッションになる）
+    replyStyle: reply
     # Slack と同じ決定的な応答ゲート。
     # 省略時も他ユーザー宛のメンション/リプライには応答しない（Slack と同じ既定挙動）
     respondTo:
