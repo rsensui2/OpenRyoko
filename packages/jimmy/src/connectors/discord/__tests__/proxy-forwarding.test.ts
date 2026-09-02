@@ -94,6 +94,31 @@ describe("engagement recording guards", () => {
     expect(tracker(connector).has("S1")).toBe(false);
     expect(tracker(connector).has("D1")).toBe(false);
   });
+
+  it("records nothing under dm=mention alone — DMs have no threads to consume it", async () => {
+    const connector = connectorWith(
+      { respondTo: { dm: "mention" } },
+      fakeChannel({ id: "C1" }),
+    );
+    await connector.sendMessage({ channel: "C1" }, "hi");
+    expect(tracker(connector).has("S1")).toBe(false);
+  });
+
+  it("records for channelRouting only when the id itself is a routing key", async () => {
+    const unrouted = connectorWith(
+      { channelRouting: { OTHER: "http://remote.test" } },
+      fakeChannel({ id: "T9", isThread: true }),
+    );
+    await unrouted.replyMessage({ channel: "C1", thread: "T9" }, "hi");
+    expect(tracker(unrouted).has("T9")).toBe(false);
+
+    const routed = connectorWith(
+      { channelRouting: { T9: "http://remote.test" } },
+      fakeChannel({ id: "T9", isThread: true }),
+    );
+    await routed.replyMessage({ channel: "C1", thread: "T9" }, "hi");
+    expect(tracker(routed).has("T9")).toBe(true);
+  });
 });
 
 describe("routing forwards addressing and engagement to the remote", () => {

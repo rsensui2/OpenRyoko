@@ -23,7 +23,6 @@ import { deriveSessionKey, buildReplyContext, isOldMessage } from "./threads.js"
 import {
   evaluateRespondPolicy,
   resolveRespondMode,
-  respondPolicyNeedsTracking,
   wasBotAddressed,
   addressesOnlyOthers,
   type ForwardedAddressing,
@@ -374,34 +373,43 @@ export class DiscordConnector implements Connector {
   }
 
   /**
-   * Track engagement for the `respondTo.engagedThreads` continuation.
-   * Recording is skipped entirely unless something can consume it (a mention
-   * scope with engagedThreads on, or channelRouting — the receiving instance
-   * may be mention-gated), and only anchor-eligible IDs are kept: the thread
-   * itself, or — in flat guild channels — the acted-on message, since a
-   * public thread created from a message reuses its ID. DM and in-thread
-   * message IDs can never root a thread and are never recorded, which keeps
-   * the unbounded tracker's real footprint small.
+   * Track engagement for the `respondTo.engagedThreads` continuation. Only
+   * anchor-eligible IDs whose engagement can actually be consumed are kept:
+   * the thread itself, or — in flat guild channels — the acted-on message,
+   * since a public thread created from a message reuses its ID. DM and
+   * in-thread message IDs can never root a thread and are never recorded,
+   * which keeps the unbounded tracker's real footprint small.
    */
   private recordEngagement(
     channel: { id: string; isThread(): boolean; isDMBased(): boolean },
     anchorMessageId?: string,
   ): void {
-    if (!this.trackingEnabled()) return;
     if (channel.isThread()) {
-      this.engagedThreads.record(channel.id);
+      if (this.trackingConsumes(channel.id)) this.engagedThreads.record(channel.id);
       return;
     }
-    if (anchorMessageId && !channel.isDMBased()) {
+    if (anchorMessageId && !channel.isDMBased() && this.trackingConsumes(anchorMessageId)) {
       this.engagedThreads.record(anchorMessageId);
     }
   }
 
-  private trackingEnabled(): boolean {
-    return (
-      respondPolicyNeedsTracking(this.config.respondTo) ||
-      Object.keys(this.config.channelRouting ?? {}).length > 0
-    );
+  /**
+   * True when engagement recorded under this id can ever be read back. The
+   * local gate consults the tracker only when the channel scope is
+   * mention-gated with engagedThreads on (DMs have no threads, so dm=mention
+   * alone consumes nothing). The routed path consults it only for messages
+   * whose own channel id is a channelRouting key — thread messages route by
+   * their thread id, which for a public thread equals the message it was
+   * rooted on — so ids outside the routing table are never read there.
+   */
+  private trackingConsumes(id: string): boolean {
+    if (
+      resolveRespondMode(this.config.respondTo, "channel") === "mention" &&
+      this.config.respondTo?.engagedThreads !== false
+    ) {
+      return true;
+    }
+    return this.config.channelRouting?.[id] !== undefined;
   }
 
   /**
