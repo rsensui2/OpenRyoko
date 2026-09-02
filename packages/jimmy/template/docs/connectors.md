@@ -93,10 +93,56 @@ Reactions provide visual feedback during processing:
 - `@mention`: messages mentioning a specific employee name route to that employee
 - Thread continuity: replies in a thread continue with the same employee
 
+## Discord Connector
+
+Uses `discord.js` over the Discord gateway (no public URL required).
+
+### Configuration
+
+```yaml
+connectors:
+  discord:
+    botToken: ...         # Discord bot token
+    guildId: ...          # optional: only handle messages from this guild
+    channelId: ...        # optional: only handle messages from this channel
+```
+
+### Response Gating (`respondTo`)
+
+The Discord port of the Slack gate. By default the bot responds to every
+message it can see; `respondTo` adds a deterministic gate so gated messages
+never reach the engine:
+
+```yaml
+connectors:
+  discord:
+    respondTo:
+      dm: always            # 1:1 and group DMs (default: always)
+      channel: mention      # guild channels/threads — reply only when
+                            # @-mentioned or replied to (default: always)
+      engagedThreads: true  # keep replying inside threads the bot already
+                            # engaged, without a re-mention (default: true)
+```
+
+Modes per scope: `always` | `mention` | `never` — same semantics as the Slack
+gate, with Discord-specific mention rules:
+
+- A Discord **reply** to one of the bot's messages counts as a mention,
+  whether or not the reply pinged. In flat channels (no thread), reply to the
+  bot or re-mention it to continue a conversation.
+- Role mentions and `@everyone`/`@here` do **not** count as mentions.
+- Messages that @-mention or reply to *somebody else* (and not the bot) are
+  always ignored outside DMs, even in `always` scopes — they're addressed to
+  that person, not the bot.
+- Channels proxied via `channelRouting` are gated by the receiving instance's
+  policy, not the sender's.
+- Unset scopes default to `always`, so existing configs keep the legacy
+  respond-to-everything behavior. There is no triage layer on Discord — this
+  gate is the only response filter.
+
 ## Future Connectors
 
 The connector interface is designed for additional platforms:
-- **Discord**: Bot integration via discord.js
 - **iMessage**: macOS-only via AppleScript bridge
 - **Web UI**: Built-in, served by the HTTP server
 - **CLI**: Direct terminal input/output

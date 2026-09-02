@@ -479,6 +479,29 @@ export interface SlackConnectorConfig {
   };
 }
 
+/** Response mode for one Discord conversation scope. */
+export type DiscordRespondMode = "always" | "mention" | "never";
+
+/**
+ * Deterministic response gate for the Discord connector — the Discord port of
+ * `SlackRespondToConfig`. Absent (or "always" in every scope) preserves the
+ * legacy respond-to-everything behavior. "mention" scopes drop messages that
+ * neither @-mention the bot nor reply to one of its messages, except inside
+ * threads the bot has already engaged (see `engagedThreads`).
+ */
+export interface DiscordRespondToConfig {
+  /** 1:1 and group DMs. Default: "always". */
+  dm?: DiscordRespondMode;
+  /** Guild text channels and threads. Default: "always". */
+  channel?: DiscordRespondMode;
+  /**
+   * In "mention" scopes, keep replying inside threads the bot has already
+   * engaged (replied or reacted in) without requiring a re-mention on every
+   * message. Default: true.
+   */
+  engagedThreads?: boolean;
+}
+
 export interface DiscordConnectorConfig {
   /** Unique instance identifier (e.g. "discord-vox") */
   id?: string;
@@ -494,6 +517,8 @@ export interface DiscordConnectorConfig {
   channelRouting?: Record<string, string>;
   /** URL of the primary Jinn instance to proxy Discord I/O through (secondary/remote mode) */
   proxyVia?: string;
+  /** Deterministic per-scope response gate (DM / channel). */
+  respondTo?: DiscordRespondToConfig;
 }
 
 export interface TelegramConnectorConfig {

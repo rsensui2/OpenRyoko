@@ -11,6 +11,7 @@ import type {
   Connector,
   ConnectorCapabilities,
   ConnectorHealth,
+  DiscordRespondToConfig,
   IncomingMessage,
   Target,
 } from "../../shared/types.js";
@@ -18,6 +19,8 @@ import { logger } from "../../shared/logger.js";
 import { TMP_DIR } from "../../shared/paths.js";
 import { formatResponse, downloadAttachment } from "./format.js";
 import { deriveSessionKey, buildReplyContext, isOldMessage } from "./threads.js";
+import { evaluateRespondPolicy, wasBotAddressed, addressesOnlyOthers } from "./respond-policy.js";
+import { EngagedThreadTracker } from "./engaged-threads.js";
 
 export interface DiscordConnectorConfig {
   /** Unique instance identifier (e.g. "discord-vox") */
@@ -34,6 +37,8 @@ export interface DiscordConnectorConfig {
   channelRouting?: Record<string, string>;
   /** If set, this instance proxies all Discord operations through the primary instance at this URL */
   proxyVia?: string;
+  /** Deterministic per-scope response gate (DM / channel). See DiscordRespondToConfig. */
+  respondTo?: DiscordRespondToConfig;
 }
 
 export class DiscordConnector implements Connector {
@@ -47,6 +52,7 @@ export class DiscordConnector implements Connector {
   private status: "starting" | "running" | "stopped" | "error" = "starting";
   private lastError: string | null = null;
   private typingIntervals = new Map<string, ReturnType<typeof setInterval>>();
+  private engagedThreads = new EngagedThreadTracker();
 
   constructor(config: DiscordConnectorConfig) {
     this.name = config.id || "discord";
@@ -152,6 +158,7 @@ export class DiscordConnector implements Connector {
         const sent = await (channel as TextChannel | DMChannel | ThreadChannel).send(chunk);
         lastId = sent.id;
       }
+      if (channel.isThread()) this.engagedThreads.record(channel.id);
       return lastId;
     } catch (err) {
       logger.error(`Discord sendMessage error: ${err instanceof Error ? err.message : err}`);
@@ -168,6 +175,7 @@ export class DiscordConnector implements Connector {
         const sent = await (channel as TextChannel | DMChannel | ThreadChannel).send(chunk);
         lastId = sent.id;
       }
+      if (channel.isThread()) this.engagedThreads.record(channel.id);
       return lastId;
     } catch (err) {
       logger.error(`Discord replyMessage error: ${err instanceof Error ? err.message : err}`);
@@ -193,6 +201,7 @@ export class DiscordConnector implements Connector {
       if (!channel || !channel.isTextBased()) return;
       const msg = await (channel as TextChannel).messages.fetch(target.messageTs);
       await msg.react(emoji);
+      if (channel.isThread()) this.engagedThreads.record(channel.id);
     } catch {
       // non-fatal
     }
@@ -261,6 +270,42 @@ export class DiscordConnector implements Connector {
 
     // User allowlist
     if (this.allowedUserIds.size > 0 && !this.allowedUserIds.has(message.author.id)) return;
+
+    // Deterministic respondTo gate — the Discord port of the Slack gate.
+    // Applies only to locally handled messages: channelRouting proxies above
+    // this point, so routed channels are gated by the receiving instance.
+    // botUserId is set once the client is ready (messageCreate never fires
+    // earlier); if it were somehow missing, mention scopes fail closed.
+    const isDM = message.channel.isDMBased();
+    const addressing = {
+      botUserId: this.client.user?.id,
+      mentionedUserIds: new Set(message.mentions.users.keys()),
+      repliedToUserId: message.mentions.repliedUser?.id,
+    };
+    const respondDecision = evaluateRespondPolicy({
+      config: this.config.respondTo,
+      isDM,
+      wasMentioned: wasBotAddressed(addressing),
+      isEngagedThread:
+        message.channel.isThread() && this.engagedThreads.has(message.channel.id),
+    });
+    if (!respondDecision.allow) {
+      logger.info(
+        `[discord] respondTo gate → silent (${respondDecision.reason}) for message ${message.id}`,
+      );
+      return;
+    }
+
+    // Cross-user traffic in shared channels: a message that @-mentions or
+    // replies to somebody else (and not us) is addressed to them, not the
+    // bot — stay silent regardless of respondTo mode or thread engagement,
+    // mirroring the Slack connector's sibling-mention rule.
+    if (!isDM && addressesOnlyOthers(addressing)) {
+      logger.info(
+        `[discord] message addresses other user(s) — staying silent for message ${message.id}`,
+      );
+      return;
+    }
 
     if (!this.handler) return;
 
