@@ -35,7 +35,7 @@ import { continueWorkflowAttemptSession } from "./attempt-continuation.js";
 import { workflowAttemptInterruptionCause } from "./workflow-interruptions.js";
 import { recordTurnAccounting } from "./accounting.js";
 import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "./callbacks.js";
-import { buildContext } from "./context.js";
+import { buildContext, resolveOperatorIdentity } from "./context.js";
 import { normalizeDelivery, normalizeTurns, deliverPublic, type DeliveryContext } from "./reply-disposition.js";
 import { deliverToOriginConnector, isUndeliveredToOrigin, recordFailedOriginDelivery } from "./origin-delivery.js";
 import { SessionQueue } from "./queue.js";
@@ -45,7 +45,6 @@ import { resolveEffort } from "../shared/effort.js";
 import { effortLevelsForModel } from "../shared/models.js";
 import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit, isDeadSessionError, isPoisonedTranscriptError, isTransientServerError } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt, isLikelyNearClaudeUsageLimit, recordClaudeRateLimit } from "../shared/usageAwareness.js";
-import { isOperatorSpeaker } from "../shared/operator-match.js";
 import { loadJobs } from "../cron/jobs.js";
 import { setCronJobEnabled, triggerCronJob } from "../cron/scheduler.js";
 import { checkBudget } from "../gateway/budgets.js";
@@ -636,6 +635,9 @@ export class SessionManager {
         speakerDisplayName: (meta.speakerDisplayName as string) || undefined,
         speakerHandle: (meta.speakerHandle as string) || undefined,
         speakerSlackId: (meta.speakerSlackId as string) || undefined,
+        speakerDiscordId: (meta.speakerDiscordId as string) || undefined,
+        isDM: meta.isDM === true,
+        isGroupDM: meta.isGroupDM === true,
         speakerIsBot: (meta.speakerIsBot as boolean | null) ?? undefined,
         speakerTz: (meta.speakerTz as string) || undefined,
         // Interactive PTY survives across turns; everything else (headless
@@ -703,13 +705,22 @@ export class SessionManager {
           decorateMessages &&
           prefixName &&
           speakerMeta.channelType !== "im" &&
+          speakerMeta.isDM !== true &&
           !promptToRun.trimStart().startsWith("/")
         ) {
-          const isOp = isOperatorSpeaker(
-            [prefixName, str(speakerMeta.speakerRealName), str(speakerMeta.speakerDisplayName), str(speakerMeta.speakerHandle)],
-            this.config.portal?.operatorName,
-            this.config.portal?.operatorAliases,
-          );
+          // Same identity decision as the system prompt: strict platform-ID
+          // equality when an operator ID is configured, name matching only
+          // as the no-ID fallback. Using bare name matching here while the
+          // system prompt used IDs would tag the ID-verified operator as
+          // "NOT the operator" on every turn.
+          const { speakerIsOperator: isOp } = resolveOperatorIdentity({
+            speakerNames: [prefixName, str(speakerMeta.speakerRealName), str(speakerMeta.speakerDisplayName), str(speakerMeta.speakerHandle)],
+            speakerSlackId: str(speakerMeta.speakerSlackId),
+            speakerDiscordId: str(speakerMeta.speakerDiscordId),
+            source: session.source,
+            operatorName: this.config.portal?.operatorName,
+            config: this.config,
+          });
           const safeName = prefixName.replace(/[\[\]\r\n]/g, "").slice(0, 60);
           const operator = this.config.portal?.operatorName?.trim();
           const tag = operator

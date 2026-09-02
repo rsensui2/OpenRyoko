@@ -17,9 +17,43 @@ import {
 export interface RemoteDiscordConfig {
   /** URL of the primary Jinn instance that holds the Discord WebSocket connection */
   proxyVia: string;
+  /** Bearer token for the primary's gateway — required when its /api/* auth is enabled. */
+  proxyViaToken?: string;
   channelId?: string;
   /** Deterministic per-scope response gate, applied to proxied messages. */
   respondTo?: DiscordRespondToConfig;
+}
+
+/** The transportMeta fields a Discord primary legitimately sends — everything
+ *  else (cross-platform identity like speakerSlackId, Slack-only fields,
+ *  internal session metadata) is dropped at the boundary. */
+const INCOMING_DISCORD_META_ALLOWLIST = [
+  "channelName",
+  "guildId",
+  "isDM",
+  "isGroupDM",
+  "speakerName",
+  "speakerDisplayName",
+  "speakerHandle",
+  "speakerDiscordId",
+  "speakerIsBot",
+  "wasBotAddressed",
+  "addressesOnlyOthers",
+  "isEngagedThread",
+] as const;
+
+/**
+ * Allowlist a routed Discord payload's transportMeta at the receiving
+ * boundary. This endpoint carries Discord traffic, so only the fields the
+ * Discord primary actually produces pass through — a forged Slack identity
+ * (or any future field we haven't reasoned about) must never reach the
+ * platform-bound operator check or the MEMORY.md gate.
+ */
+export function sanitizeIncomingDiscordMeta(meta: unknown): Record<string, unknown> {
+  const raw = (meta && typeof meta === "object" ? meta : {}) as Record<string, unknown>;
+  return Object.fromEntries(
+    INCOMING_DISCORD_META_ALLOWLIST.flatMap((key) => (key in raw ? [[key, raw[key]] as const] : [])),
+  );
 }
 
 /**
@@ -31,11 +65,13 @@ export class RemoteDiscordConnector implements Connector {
   name = "discord";
   private handler: ((msg: IncomingMessage) => void) | null = null;
   private baseUrl: string;
+  private readonly proxyToken: string | undefined;
   private readonly respondTo: DiscordRespondToConfig | undefined;
   private warnedMissingAddressing = false;
 
   constructor(config: RemoteDiscordConfig) {
     this.baseUrl = config.proxyVia.replace(/\/+$/, "");
+    this.proxyToken = config.proxyViaToken;
     this.respondTo = config.respondTo;
   }
 
@@ -150,7 +186,11 @@ export class RemoteDiscordConnector implements Connector {
     try {
       const res = await fetch(`${this.baseUrl}/api/connectors/discord/proxy`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          // The primary's gateway authenticates /api/* like any client.
+          ...(this.proxyToken ? { Authorization: `Bearer ${this.proxyToken}` } : {}),
+        },
         body: JSON.stringify({ action, ...params }),
       });
       if (!res.ok) {

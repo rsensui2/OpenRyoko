@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { deepMerge } from "../api.js";
+import { deepMerge, sanitizeChannelRouting } from "../api.js";
 
 /**
  * PUT /api/config deep-merges the incoming partial config into the on-disk one
@@ -62,5 +62,41 @@ describe("deepMerge (PUT /api/config)", () => {
     }) as typeof withTriageModel;
 
     expect(merged.connectors.slack.triage).toEqual({ enabled: true, engine: "codex" });
+  });
+});
+
+describe("cross-instance token redaction", () => {
+  it("masks channelRouting tokens and proxyViaToken for GET /api/config", () => {
+    expect(
+      sanitizeChannelRouting({
+        C1: { url: "http://remote:7777", token: "sekret" },
+        C2: "http://other:7777",
+      }),
+    ).toEqual({
+      C1: { url: "http://remote:7777", token: "***" },
+      C2: "http://other:7777",
+    });
+  });
+
+  it("round-trips '***' placeholders through PUT /api/config without losing the stored token", () => {
+    const stored = {
+      connectors: {
+        discord: {
+          proxyViaToken: "primary-secret",
+          channelRouting: { C1: { url: "http://remote:7777", token: "sekret" } },
+        },
+      },
+    };
+    const put = {
+      connectors: {
+        discord: {
+          proxyViaToken: "***",
+          channelRouting: { C1: { url: "http://remote:7777", token: "***" } },
+        },
+      },
+    };
+    const merged = deepMerge(stored, put) as typeof stored;
+    expect(merged.connectors.discord.proxyViaToken).toBe("primary-secret");
+    expect(merged.connectors.discord.channelRouting.C1.token).toBe("sekret");
   });
 });

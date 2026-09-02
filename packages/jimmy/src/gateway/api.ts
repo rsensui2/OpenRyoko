@@ -395,7 +395,25 @@ function serverError(res: ServerResponse, message: string): void {
   json(res, { error: message }, 500);
 }
 
-const SANITIZED_KEYS = new Set(["token", "botToken", "signingSecret", "appToken"]);
+const SANITIZED_KEYS = new Set(["token", "botToken", "signingSecret", "appToken", "proxyViaToken"]);
+
+/** Mask the per-route bearer tokens inside connectors.*.channelRouting for
+ *  GET /api/config. deepMerge already restores "***" placeholders on PUT —
+ *  "token" is in SANITIZED_KEYS and the merge is recursive. */
+export function sanitizeChannelRouting(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([channel, route]) => [
+      channel,
+      route && typeof route === "object" && !Array.isArray(route)
+        ? {
+            ...(route as Record<string, unknown>),
+            token: (route as Record<string, unknown>).token ? "***" : undefined,
+          }
+        : route,
+    ]),
+  );
+}
 
 export function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): Record<string, unknown> {
   const result = { ...target };
@@ -1824,6 +1842,8 @@ Handle this as a priority request from a colleague.`;
             signingSecret: inst?.signingSecret ? "***" : undefined,
             botToken: inst?.botToken ? "***" : undefined,
             appToken: inst?.appToken ? "***" : undefined,
+            proxyViaToken: inst?.proxyViaToken ? "***" : undefined,
+            channelRouting: sanitizeChannelRouting(inst?.channelRouting),
           }));
         } else if (v && typeof v === "object") {
           sanitizedConnectors[k] = {
@@ -1832,6 +1852,8 @@ Handle this as a priority request from a colleague.`;
             signingSecret: (v as any)?.signingSecret ? "***" : undefined,
             botToken: (v as any)?.botToken ? "***" : undefined,
             appToken: (v as any)?.appToken ? "***" : undefined,
+            proxyViaToken: (v as any)?.proxyViaToken ? "***" : undefined,
+            channelRouting: sanitizeChannelRouting((v as any)?.channelRouting),
           };
         } else {
           sanitizedConnectors[k] = v;
@@ -2034,6 +2056,7 @@ Handle this as a priority request from a colleague.`;
 
       // Download attachments from Discord CDN URLs to local temp
       const { downloadAttachment } = await import("../connectors/discord/format.js");
+      const { sanitizeIncomingDiscordMeta } = await import("../connectors/discord/remote.js");
       const attachments = await Promise.all(
         (body.attachments || []).map(async (att: { name: string; url: string; mimeType: string }) => {
           if (att.url) {
@@ -2060,7 +2083,9 @@ Handle this as a priority request from a colleague.`;
         messageId: body.messageId,
         attachments,
         replyContext: body.replyContext || {},
-        transportMeta: body.transportMeta,
+        // Boundary scrub: this endpoint carries Discord traffic — drop
+        // cross-platform identity fields a forged payload might smuggle in.
+        transportMeta: sanitizeIncomingDiscordMeta(body.transportMeta) as IncomingMessage["transportMeta"],
         raw: body,
       };
 

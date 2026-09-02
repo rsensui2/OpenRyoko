@@ -526,10 +526,14 @@ export interface DiscordConnectorConfig {
   guildId?: string;
   /** Only respond to messages in this channel */
   channelId?: string;
-  /** Route messages from specific channels to remote Jinn instances */
-  channelRouting?: Record<string, string>;
+  /** Route messages from specific channels to remote Jinn instances. A plain
+   *  string value is the remote's URL; the object form adds the bearer token
+   *  the receiving gateway requires on /api/* when its auth is enabled. */
+  channelRouting?: Record<string, string | { url: string; token?: string }>;
   /** URL of the primary Jinn instance to proxy Discord I/O through (secondary/remote mode) */
   proxyVia?: string;
+  /** Bearer token for the primary's gateway (secondary/remote mode). */
+  proxyViaToken?: string;
   /** Deterministic per-scope response gate (DM / channel). */
   respondTo?: DiscordRespondToConfig;
   /** Where responses land in flat guild channels. Default: "channel". */
@@ -579,16 +583,25 @@ export interface PortalConfig {
   operatorAliases?: string[];
   language?: string;
   onboarded?: boolean;
-  /** Slack user IDs whose DIRECT MESSAGES may receive MEMORY.md in the
-   *  system prompt (list the operator's own ID here too). This is a privacy
-   *  gate keyed on immutable IDs only — display names are spoofable. Web
-   *  sessions are always eligible; shared channels never are. */
+  /** Platform user IDs (Slack "U…" IDs and Discord snowflakes) whose DIRECT
+   *  MESSAGES may receive MEMORY.md in the system prompt (list the
+   *  operator's own IDs here too). This is a privacy gate keyed on immutable
+   *  IDs only — display names are spoofable. Web sessions are always
+   *  eligible; shared channels never are. */
   trustedSpeakers?: string[];
-  /** The operator's own Slack user ID. When set, operator identification is
-   *  strict ID equality and display-name matching is disabled — a speaker
-   *  merely named like the operator is never asserted to BE the operator.
-   *  Strongly recommended wherever the workspace has untrusted members. */
+  /** The operator's own Slack user ID. When set (alone or with
+   *  operatorDiscordId), operator identification is strict ID equality and
+   *  display-name matching is disabled — a speaker merely named like the
+   *  operator is never asserted to BE the operator. Strongly recommended
+   *  wherever the workspace has untrusted members. */
   operatorSlackId?: string;
+  /** The operator's own Discord user ID (snowflake — right-click profile →
+   *  Copy User ID). Same strict-equality semantics as operatorSlackId; a
+   *  Discord speaker can only be the operator through this ID. MUST be
+   *  quoted in YAML: snowflakes exceed Number.MAX_SAFE_INTEGER, so an
+   *  unquoted (numeric) value has already lost precision and is ignored
+   *  with a warning — strict mode stays engaged and matches nobody. */
+  operatorDiscordId?: string;
 }
 
 // --- Engine quota/limit snapshots ---

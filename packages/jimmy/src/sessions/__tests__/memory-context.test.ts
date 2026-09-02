@@ -79,6 +79,69 @@ describe("isMemoryEligible", () => {
     ).toBe(false);
     expect(isMemoryEligible({ source: "cron", channel: "cron:daily", config: CONFIG })).toBe(false);
   });
+
+  describe("Discord DMs", () => {
+    const DISCORD_CONFIG = {
+      portal: { trustedSpeakers: ["U0AAAAAAA", "1543864208750542941"], operatorName: "太郎" },
+    } as unknown as JinnConfig;
+
+    it("allows trusted-ID Discord DMs (isDM flag, not channel prefix)", () => {
+      expect(
+        isMemoryEligible({
+          source: "discord",
+          channel: "9990001112223334445",
+          speakerDiscordId: "1543864208750542941",
+          isDM: true,
+          config: DISCORD_CONFIG,
+        }),
+      ).toBe(true);
+    });
+
+    it("ignores non-string trustedSpeakers entries — an unquoted snowflake has already lost precision", () => {
+      const numeric = {
+        portal: { trustedSpeakers: [1543864208750542941] },
+      } as unknown as JinnConfig;
+      // Even the value that WOULD result from stringifying the mangled number
+      // must not open the gate: numbers are rejected outright.
+      expect(
+        isMemoryEligible({
+          source: "discord",
+          speakerDiscordId: String(1543864208750542941),
+          isDM: true,
+          config: numeric,
+        }),
+      ).toBe(false);
+    });
+
+    it("denies Discord group DMs even for trusted IDs (1:1 only, mirroring Slack im/mpim)", () => {
+      expect(
+        isMemoryEligible({
+          source: "discord",
+          speakerDiscordId: "1543864208750542941",
+          isDM: true,
+          isGroupDM: true,
+          config: DISCORD_CONFIG,
+        }),
+      ).toBe(false);
+    });
+
+    it("denies Discord guild channels, untrusted IDs, and missing isDM", () => {
+      expect(
+        isMemoryEligible({
+          source: "discord",
+          speakerDiscordId: "1543864208750542941",
+          isDM: false,
+          config: DISCORD_CONFIG,
+        }),
+      ).toBe(false);
+      expect(
+        isMemoryEligible({ source: "discord", speakerDiscordId: "42", isDM: true, config: DISCORD_CONFIG }),
+      ).toBe(false);
+      expect(
+        isMemoryEligible({ source: "discord", speakerDiscordId: "1543864208750542941", config: DISCORD_CONFIG }),
+      ).toBe(false);
+    });
+  });
 });
 
 describe("resolveOperatorIdentity", () => {
@@ -88,17 +151,162 @@ describe("resolveOperatorIdentity", () => {
 
   it("with operatorSlackId configured, only the exact ID is the operator — name spoofing gains nothing", () => {
     expect(
-      resolveOperatorIdentity({ speakerNames: ["太郎"], speakerSlackId: "U0EVIL0000", operatorName: "太郎", config: STRICT }),
+      resolveOperatorIdentity({ speakerNames: ["太郎"], speakerSlackId: "U0EVIL0000", source: "slack", operatorName: "太郎", config: STRICT }),
     ).toEqual({ speakerIsOperator: false, operatorIdVerified: false });
     expect(
-      resolveOperatorIdentity({ speakerNames: ["別名"], speakerSlackId: "U0OPERATOR", operatorName: "太郎", config: STRICT }),
+      resolveOperatorIdentity({ speakerNames: ["別名"], speakerSlackId: "U0OPERATOR", source: "slack", operatorName: "太郎", config: STRICT }),
     ).toEqual({ speakerIsOperator: true, operatorIdVerified: true });
   });
 
   it("without operatorSlackId, name matching still works but is reported as unverified", () => {
-    const r = resolveOperatorIdentity({ speakerNames: ["太郎"], operatorName: "太郎", config: CONFIG });
+    const r = resolveOperatorIdentity({ speakerNames: ["太郎"], source: "slack", operatorName: "太郎", config: CONFIG });
     expect(r.speakerIsOperator).toBe(true);
     expect(r.operatorIdVerified).toBe(false);
+  });
+
+  describe("operatorDiscordId", () => {
+    const BOTH = {
+      portal: {
+        operatorName: "太郎",
+        operatorSlackId: "U0OPERATOR",
+        operatorDiscordId: "1543864208750542941",
+      },
+    } as unknown as JinnConfig;
+
+    it("verifies a Discord speaker by exact snowflake equality", () => {
+      expect(
+        resolveOperatorIdentity({
+          speakerNames: ["rsensui_18737"],
+          speakerDiscordId: "1543864208750542941",
+          source: "discord",
+          operatorName: "太郎",
+          config: BOTH,
+        }),
+      ).toEqual({ speakerIsOperator: true, operatorIdVerified: true });
+      expect(
+        resolveOperatorIdentity({
+          speakerNames: ["太郎"],
+          speakerDiscordId: "42",
+          source: "discord",
+          operatorName: "太郎",
+          config: BOTH,
+        }),
+      ).toEqual({ speakerIsOperator: false, operatorIdVerified: false });
+    });
+
+    it("fails closed for a platform with no configured operator ID", () => {
+      const slackOnly = {
+        portal: { operatorName: "太郎", operatorSlackId: "U0OPERATOR" },
+      } as unknown as JinnConfig;
+      // Discord speaker named exactly like the operator, but Slack-only strict
+      // config: never the operator (configure operatorDiscordId instead).
+      expect(
+        resolveOperatorIdentity({
+          speakerNames: ["太郎"],
+          speakerDiscordId: "1543864208750542941",
+          source: "discord",
+          operatorName: "太郎",
+          config: slackOnly,
+        }),
+      ).toEqual({ speakerIsOperator: false, operatorIdVerified: false });
+      const discordOnly = {
+        portal: { operatorName: "太郎", operatorDiscordId: "1543864208750542941" },
+      } as unknown as JinnConfig;
+      expect(
+        resolveOperatorIdentity({
+          speakerNames: ["太郎"],
+          speakerSlackId: "U0OPERATOR",
+          source: "slack",
+          operatorName: "太郎",
+          config: discordOnly,
+        }),
+      ).toEqual({ speakerIsOperator: false, operatorIdVerified: false });
+    });
+
+    it("ignores a YAML-numeric operatorDiscordId but keeps strict mode engaged", () => {
+      const numeric = {
+        portal: { operatorName: "太郎", operatorDiscordId: 12345678901234 },
+      } as unknown as JinnConfig;
+      // The mangled value can never match…
+      expect(
+        resolveOperatorIdentity({
+          speakerNames: [],
+          speakerDiscordId: "12345678901234",
+          source: "discord",
+          operatorName: "太郎",
+          config: numeric,
+        }),
+      ).toEqual({ speakerIsOperator: false, operatorIdVerified: false });
+      // …and the config mistake must NOT degrade to name matching — that
+      // would reopen the spoofing hole strict mode exists to close.
+      expect(
+        resolveOperatorIdentity({
+          speakerNames: ["太郎"],
+          source: "discord",
+          operatorName: "太郎",
+          config: numeric,
+        }),
+      ).toEqual({ speakerIsOperator: false, operatorIdVerified: false });
+    });
+
+    it("binds verification to the platform the message came from", () => {
+      // A Slack operator ID smuggled into a Discord-source payload must not
+      // verify, and vice versa — `source` is required precisely so no future
+      // caller can forget the platform binding.
+      expect(
+        resolveOperatorIdentity({
+          speakerNames: [],
+          speakerSlackId: "U0OPERATOR",
+          source: "discord",
+          operatorName: "太郎",
+          config: BOTH,
+        }),
+      ).toEqual({ speakerIsOperator: false, operatorIdVerified: false });
+      expect(
+        resolveOperatorIdentity({
+          speakerNames: [],
+          speakerDiscordId: "1543864208750542941",
+          source: "slack",
+          operatorName: "太郎",
+          config: BOTH,
+        }),
+      ).toEqual({ speakerIsOperator: false, operatorIdVerified: false });
+      expect(
+        resolveOperatorIdentity({
+          speakerNames: [],
+          speakerDiscordId: "1543864208750542941",
+          source: "discord",
+          operatorName: "太郎",
+          config: BOTH,
+        }),
+      ).toEqual({ speakerIsOperator: true, operatorIdVerified: true });
+    });
+
+    it("either configured platform ID verifies its own platform's speaker", () => {
+      expect(
+        resolveOperatorIdentity({
+          speakerNames: [],
+          speakerSlackId: "U0OPERATOR",
+          source: "slack",
+          operatorName: "太郎",
+          config: BOTH,
+        }),
+      ).toEqual({ speakerIsOperator: true, operatorIdVerified: true });
+    });
+
+    it("stays strict (matching nobody) for an explicit YAML null", () => {
+      const nullValue = {
+        portal: { operatorName: "太郎", operatorDiscordId: null },
+      } as unknown as JinnConfig;
+      expect(
+        resolveOperatorIdentity({
+          speakerNames: ["太郎"],
+          source: "discord",
+          operatorName: "太郎",
+          config: nullValue,
+        }),
+      ).toEqual({ speakerIsOperator: false, operatorIdVerified: false });
+    });
   });
 });
 

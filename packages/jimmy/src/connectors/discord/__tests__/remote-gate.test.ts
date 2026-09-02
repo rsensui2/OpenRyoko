@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { RemoteDiscordConnector } from "../remote.js";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { RemoteDiscordConnector, sanitizeIncomingDiscordMeta } from "../remote.js";
 import type { DiscordRespondToConfig, IncomingMessage } from "../../../shared/types.js";
 
 function incoming(
@@ -81,5 +81,62 @@ describe("RemoteDiscordConnector.deliverMessage respondTo gating", () => {
   it("silences a scope entirely under never", () => {
     const respondTo: DiscordRespondToConfig = { channel: "never" };
     expect(deliver(respondTo, incoming({ isDM: false, wasBotAddressed: true }))).toHaveLength(0);
+  });
+});
+
+describe("sanitizeIncomingDiscordMeta", () => {
+  it("allowlists Discord fields — forged cross-platform identity and unknown keys are dropped", () => {
+    expect(
+      sanitizeIncomingDiscordMeta({
+        isDM: true,
+        speakerDiscordId: "42",
+        speakerSlackId: "U0FORGED",
+        speakerRealName: "偽の実名",
+        sessionKey: "internal-junk",
+        wasBotAddressed: true,
+      }),
+    ).toEqual({ isDM: true, speakerDiscordId: "42", wasBotAddressed: true });
+  });
+
+  it("tolerates malformed input", () => {
+    expect(sanitizeIncomingDiscordMeta(undefined)).toEqual({});
+    expect(sanitizeIncomingDiscordMeta("junk")).toEqual({});
+  });
+});
+
+describe("proxyAction authentication", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("sends the primary's bearer token when proxyViaToken is configured", async () => {
+    const headers: Array<Record<string, string>> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: unknown, init?: { headers?: Record<string, string> }) => {
+        headers.push(init?.headers ?? {});
+        return { ok: true, json: async () => ({ messageId: "S1" }) };
+      }),
+    );
+    const connector = new RemoteDiscordConnector({
+      proxyVia: "http://primary.test",
+      proxyViaToken: "primary-secret",
+    });
+    await connector.sendMessage({ channel: "C1" }, "hi");
+    expect(headers[0].Authorization).toBe("Bearer primary-secret");
+  });
+
+  it("sends no Authorization header without proxyViaToken", async () => {
+    const headers: Array<Record<string, string>> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: unknown, init?: { headers?: Record<string, string> }) => {
+        headers.push(init?.headers ?? {});
+        return { ok: true, json: async () => ({ messageId: "S1" }) };
+      }),
+    );
+    const connector = new RemoteDiscordConnector({ proxyVia: "http://primary.test" });
+    await connector.sendMessage({ channel: "C1" }, "hi");
+    expect(headers[0].Authorization).toBeUndefined();
   });
 });

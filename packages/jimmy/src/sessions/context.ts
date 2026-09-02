@@ -4,6 +4,7 @@ import type { Employee, JinnConfig } from "../shared/types.js";
 import { gatewayUrlFromConfig } from "../shared/gateway-url.js";
 import { JINN_HOME, ORG_DIR, CRON_JOBS, DOCS_DIR } from "../shared/paths.js";
 import { isOperatorSpeaker } from "../shared/operator-match.js";
+import { logger } from "../shared/logger.js";
 import { scanOrg } from "../gateway/org.js";
 import { buildServiceRegistry } from "../gateway/services.js";
 import { findJobsNeedingAttention } from "../jobs/state.js";
@@ -69,6 +70,12 @@ export function buildContext(opts: {
   speakerHandle?: string;
   /** Raw connector-native user ID (e.g. Slack U12345) */
   speakerSlackId?: string;
+  /** Speaker's Discord user ID (snowflake) */
+  speakerDiscordId?: string;
+  /** Transport-reported DM flag (Discord has no channel-ID prefix convention) */
+  isDM?: boolean;
+  /** Transport-reported group-DM flag (Discord GroupDM channels) */
+  isGroupDM?: boolean;
   /** Whether the speaker is a bot/integration */
   speakerIsBot?: boolean;
   /** Speaker's IANA timezone */
@@ -100,6 +107,8 @@ export function buildContext(opts: {
   const { speakerIsOperator, operatorIdVerified } = resolveOperatorIdentity({
     speakerNames: [opts.speakerName, opts.speakerRealName, opts.speakerDisplayName, opts.speakerHandle],
     speakerSlackId: opts.speakerSlackId,
+    speakerDiscordId: opts.speakerDiscordId,
+    source: opts.source,
     operatorName,
     config: opts.config,
   });
@@ -136,6 +145,9 @@ export function buildContext(opts: {
       source: opts.source,
       channel: opts.channel,
       speakerSlackId: opts.speakerSlackId,
+      speakerDiscordId: opts.speakerDiscordId,
+      isDM: opts.isDM,
+      isGroupDM: opts.isGroupDM,
       config: opts.config,
     });
     if (memoryCtx) {
@@ -477,6 +489,7 @@ function buildSessionContext(opts: {
   speakerDisplayName?: string;
   speakerHandle?: string;
   speakerSlackId?: string;
+  speakerDiscordId?: string;
   speakerIsBot?: boolean;
   speakerTz?: string;
   operatorName?: string;
@@ -505,6 +518,9 @@ function buildSessionContext(opts: {
     }
     if (opts.speakerSlackId) {
       aliasParts.push(`Slack ID: ${opts.speakerSlackId}`);
+    }
+    if (opts.speakerDiscordId) {
+      aliasParts.push(`Discord ID: ${opts.speakerDiscordId}`);
     }
     const aliasSuffix = aliasParts.length > 0 ? ` (${aliasParts.join(", ")})` : "";
     const botSuffix = opts.speakerIsBot ? " [BOT]" : "";
@@ -846,20 +862,92 @@ function buildEnvironmentContext(): string | null {
   return lines.join("\n");
 }
 
-/** Operator identification. When portal.operatorSlackId is configured,
- *  identification is strict ID equality — display names are freely editable
- *  and must never establish operator identity on their own. Without a
+/** Warn once per (config key, offending value) — a corrected-then-broken
+ *  value re-warns even across config hot-reloads. */
+const warnedIdentityConfig = new Set<string>();
+
+function warnIdentityConfigOnce(label: string, value: unknown, message: string): void {
+  const key = `${label}:${String(value).slice(0, 40)}`;
+  if (warnedIdentityConfig.has(key)) return;
+  warnedIdentityConfig.add(key);
+  logger.warn(message);
+}
+
+/** Read a configured platform user ID, accepting NON-EMPTY STRINGS ONLY.
+ *  Discord snowflakes exceed Number.MAX_SAFE_INTEGER, so an unquoted YAML
+ *  value has already lost precision by parse time — comparing the mangled
+ *  value could match the WRONG user. Any present non-string value (number,
+ *  null, empty) is ignored with a warning; strict mode stays engaged. */
+function configuredIdString(value: unknown, label: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "string" && value.trim()) return value.trim();
+  warnIdentityConfigOnce(
+    label,
+    value,
+    `[identity] ${label} must be a non-empty QUOTED string (unquoted IDs this long lose precision as YAML numbers). The configured value is ignored — strict mode stays engaged and matches nobody until it is fixed.`,
+  );
+  return undefined;
+}
+
+/** trustedSpeakers entries, STRINGS ONLY (same precision hazard as above). */
+function trustedSpeakerIds(config?: JinnConfig): string[] {
+  const raw = config?.portal?.trustedSpeakers ?? [];
+  const strings = raw.filter((v): v is string => typeof v === "string" && v.trim().length > 0);
+  if (strings.length < raw.length) {
+    warnIdentityConfigOnce(
+      "portal.trustedSpeakers",
+      raw.length - strings.length,
+      `[identity] portal.trustedSpeakers contains non-string entries — unquoted Discord snowflakes lose precision as YAML numbers. Quote each ID; non-string entries are ignored.`,
+    );
+  }
+  return strings;
+}
+
+/** Operator identification. When portal.operatorSlackId and/or
+ *  portal.operatorDiscordId is configured, identification is strict ID
+ *  equality, bound to the platform the speaker actually came from (`source`)
+ *  — display names are freely editable and must never establish operator
+ *  identity on their own, and a Slack ID smuggled into a Discord payload
+ *  must not count either. A speaker from a platform with no configured
+ *  operator ID is then simply not the operator (fail closed; configure the
+ *  missing platform's ID rather than relying on names). Without any
  *  configured ID we fall back to alias/name matching (kept for addressing
  *  UX), and the session block phrases that as an UNVERIFIED name match. */
 export function resolveOperatorIdentity(opts: {
   speakerNames: Array<string | undefined>;
   speakerSlackId?: string;
+  speakerDiscordId?: string;
+  /** Where the message physically arrived ("slack" | "discord" | …).
+   *  Required: only the arrival platform's operator ID can verify the
+   *  speaker, so a cross-platform ID smuggled into the metadata never
+   *  counts. */
+  source: string;
   operatorName?: string;
   config?: JinnConfig;
 }): { speakerIsOperator: boolean; operatorIdVerified: boolean } {
-  const operatorSlackId = opts.config?.portal?.operatorSlackId;
-  if (operatorSlackId) {
-    const verified = opts.speakerSlackId === operatorSlackId;
+  const portal = opts.config?.portal;
+  const operatorSlackId = configuredIdString(portal?.operatorSlackId, "portal.operatorSlackId");
+  const operatorDiscordId = configuredIdString(
+    portal?.operatorDiscordId,
+    "portal.operatorDiscordId",
+  );
+  // The PRESENCE of a strict-ID key engages strict mode, even when its value
+  // is unusable (numeric, null, empty) — degrading to name matching on a
+  // config mistake would reopen exactly the spoofing hole strict mode exists
+  // to close.
+  const strictConfigured =
+    !!portal &&
+    (Object.hasOwn(portal, "operatorSlackId") || Object.hasOwn(portal, "operatorDiscordId"));
+  if (strictConfigured) {
+    const verified =
+      (opts.source === "slack" &&
+        !!operatorSlackId &&
+        !!opts.speakerSlackId &&
+        opts.speakerSlackId === operatorSlackId) ||
+      (opts.source === "discord" &&
+        !!operatorDiscordId &&
+        !!opts.speakerDiscordId &&
+        opts.speakerDiscordId === operatorDiscordId);
     return { speakerIsOperator: verified, operatorIdVerified: verified };
   }
   return {
@@ -874,27 +962,38 @@ export function resolveOperatorIdentity(opts: {
 
 /** Privacy gate for MEMORY.md injection.
  *
- *  Eligible: authenticated web-UI sessions, and Slack DIRECT MESSAGES whose
- *  speaker's Slack ID is listed in portal.trustedSpeakers (the operator lists
- *  their own ID there too).
+ *  Eligible: authenticated web-UI sessions, and Slack / Discord DIRECT
+ *  MESSAGES whose speaker's platform ID is listed in portal.trustedSpeakers
+ *  (the operator lists their own IDs there too).
  *
  *  Deliberately NOT eligible:
  *  - Shared channels, even for trusted speakers — the engine session is
  *    reused per thread, so injected memory would linger in history that later
  *    untrusted participants build on.
  *  - Display-name/handle operator matching — names are freely editable, so
- *    they must never open a privacy gate. Only immutable Slack IDs count.
+ *    they must never open a privacy gate. Only immutable platform IDs count.
  *  - Employee and cron sessions (no trusted human speaker present). */
 export function isMemoryEligible(opts: {
   source: string;
   channel?: string;
   speakerSlackId?: string;
+  speakerDiscordId?: string;
+  /** Transport-reported DM flag (Discord has no channel-ID prefix convention). */
+  isDM?: boolean;
+  /** Transport-reported group-DM flag. */
+  isGroupDM?: boolean;
   config?: JinnConfig;
 }): boolean {
   if (opts.source === "web") return true;
-  const trusted = opts.config?.portal?.trustedSpeakers ?? [];
+  const trusted = trustedSpeakerIds(opts.config);
   const isSlackDm = opts.source === "slack" && !!opts.channel && opts.channel.startsWith("D");
-  return isSlackDm && !!opts.speakerSlackId && trusted.includes(opts.speakerSlackId);
+  if (isSlackDm) return !!opts.speakerSlackId && trusted.includes(opts.speakerSlackId);
+  // 1:1 DMs only, mirroring the Slack gate (im yes, mpim no): a group DM has
+  // other participants who would see memory-flavored replies. Discord bots
+  // effectively can't join group DMs today, but fail closed regardless.
+  const isDiscordDm = opts.source === "discord" && opts.isDM === true && opts.isGroupDM !== true;
+  if (isDiscordDm) return !!opts.speakerDiscordId && trusted.includes(opts.speakerDiscordId);
+  return false;
 }
 
 /** Byte cap (matches the documented 24,000B hard cap for the file itself) —
@@ -906,6 +1005,9 @@ export function buildMemoryContext(opts: {
   source: string;
   channel?: string;
   speakerSlackId?: string;
+  speakerDiscordId?: string;
+  isDM?: boolean;
+  isGroupDM?: boolean;
   config?: JinnConfig;
 }): string | null {
   if (!isMemoryEligible(opts)) return null;

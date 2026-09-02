@@ -73,6 +73,16 @@ describe("DiscordConnector.handleMessage respondTo gating", () => {
     expect(received[0].text).toBe("hello");
   });
 
+  it("forwards the speaker's immutable Discord ID and names in transportMeta", async () => {
+    const received = await deliver({}, fakeMessage());
+    expect(received[0].transportMeta).toMatchObject({
+      speakerDiscordId: "U1",
+      speakerName: "user",
+      speakerHandle: "user",
+      speakerIsBot: false,
+    });
+  });
+
   it("stays silent when the message @-mentions somebody else, even with respondTo unset", async () => {
     const received = await deliver({}, fakeMessage({ mentionedUserIds: ["12345"] }));
     expect(received).toHaveLength(0);
