@@ -2,6 +2,25 @@
 
 > **バージョン体系について**: 2026.4.26 から日付ベース (`YYYY.M.D`) のCalVerに移行しました。npm semver の制約上、月・日の leading zero は付けません (例: 4月26日 → `2026.4.26`)。
 
+## [2026.9.7] - 2026-09-05
+
+### 追加・改善
+
+- **Claude Fable 5.1 を選択可能に**: Anthropic（Claude）のモデル候補とモデル情報に正式ID `claude-fable-5-1` を追加。推論強度 `low / medium / high / xhigh / max`、100万トークンのコンテキスト表示に対応しました。既存の既定モデルや独自の `models:` 設定は維持します。
+- **Fableの推論強度を実行ごとに反映**: `max` はClaude Codeへ `--effort` で渡します。設定画面で別モデルへ切り替えた際は、非対応の `max` が残らないよう既定値へ戻します。
+- **料金推計と利用条件**: Fableの標準API料金（入力 $10 / 出力 $50、100万トークンあたり）を推計表示に反映。モデル選択時に必要なClaude Code最低版（2.1.255）を案内します。サブスクリプションの利用枠とは異なります。
+
+### モデル情報
+
+- [Anthropic公式仕様](https://platform.claude.com/docs/en/models/fable-5-1/overview): コンテキスト100万、最大出力128,000トークン。
+- [Claude CodeのFable対応](https://code.claude.com/docs/en/model-config#work-with-fable): Claude Code 2.1.255以降と接続アカウントのアクセス権が必要です。
+
+### 検証
+
+- Backend: 161ファイル・1,896テスト成功。Web: 13ファイル・91テスト成功。
+- 実機のClaude Code 2.1.261と既存認証で、Fable 5.1の `low` / `max` 応答を確認。
+- Fableの新規・再開実行へ正式モデルIDと `max` が渡ること、モデル情報・選択画面・コンテキスト表示を検証。
+
 ## [2026.9.6] - 2026-09-05
 
 ### 追加
