@@ -21,7 +21,7 @@ function shellQuote(s: string): string {
 // billing_error, server_error, …) — confirmed by the Phase 0 spike. It is the
 // structured rate-limit signal, so it must be registered alongside Stop.
 export interface ClaudeSettings {
-  hooks: Record<"SessionStart" | "Stop" | "StopFailure" | "PreToolUse" | "PostToolUse", HookMatcher[]>;
+  hooks: Record<"SessionStart" | "UserPromptSubmit" | "Stop" | "StopFailure" | "PreToolUse" | "PostToolUse", HookMatcher[]>;
   appendSystemPrompt?: string;
 }
 
@@ -35,6 +35,7 @@ export function buildSessionSettings(opts: SessionSettingsOpts): ClaudeSettings 
   return {
     hooks: {
       SessionStart: [cmd()],
+      UserPromptSubmit: [cmd()],
       Stop: [cmd()],
       StopFailure: [cmd()],
       PreToolUse: [cmd()],

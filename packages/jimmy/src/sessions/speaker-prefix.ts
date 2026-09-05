@@ -13,7 +13,8 @@
  * the exact identity path that caused the misattribution incident can be
  * unit-tested directly.
  */
-import { isOperatorSpeaker } from "../shared/operator-match.js";
+import { resolveOperatorIdentity } from "./context.js";
+import type { JinnConfig } from "../shared/types.js";
 
 /** Speaker identity fields carried on a message's transportMeta. */
 export interface SpeakerPrefixMeta {
@@ -22,6 +23,9 @@ export interface SpeakerPrefixMeta {
   speakerDisplayName?: unknown;
   speakerHandle?: unknown;
   channelType?: unknown;
+  isDM?: unknown;
+  speakerSlackId?: unknown;
+  speakerDiscordId?: unknown;
 }
 
 /** Coerce to a trimmed non-empty string, or undefined. */
@@ -43,11 +47,10 @@ function str(v: unknown): string | undefined {
  */
 export function buildSpeakerPrefix(
   meta: SpeakerPrefixMeta,
-  operatorName?: string,
-  operatorAliases?: string[],
+  context: { source: string; operatorName?: string; config?: JinnConfig },
 ): string | null {
   // 1:1 DMs are unambiguous — never attribute.
-  if (meta.channelType === "im") return null;
+  if (meta.channelType === "im" || meta.isDM === true) return null;
 
   const aliases = [
     str(meta.speakerName),
@@ -59,9 +62,17 @@ export function buildSpeakerPrefix(
   const name = aliases.find((v): v is string => !!v);
   if (!name) return null;
 
-  const isOp = isOperatorSpeaker(aliases, operatorName, operatorAliases);
+  // Keep per-turn attribution aligned with the system prompt: configured
+  // platform IDs take precedence over display names, and IDs from another
+  // transport must never verify the speaker.
+  const { speakerIsOperator: isOp } = resolveOperatorIdentity({
+    speakerNames: aliases,
+    speakerSlackId: str(meta.speakerSlackId),
+    speakerDiscordId: str(meta.speakerDiscordId),
+    ...context,
+  });
   const safeName = name.replace(/[\[\]\r\n]/g, "").slice(0, 60);
-  const operator = operatorName?.trim();
+  const operator = context.operatorName?.trim();
   const tag = operator
     ? isOp
       ? " (the operator)"

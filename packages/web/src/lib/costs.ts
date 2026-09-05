@@ -85,9 +85,12 @@ export interface CostSummary {
 // ── Pricing table (per 1M tokens) ────────────────────────────
 
 const PRICING: Record<string, ModelPricing> = {
-  'claude-opus-4-8':     { inputPer1M: 15, outputPer1M: 75 },
-  'claude-opus-4-7':     { inputPer1M: 15, outputPer1M: 75 },
-  'claude-opus-4-6':     { inputPer1M: 15, outputPer1M: 75 },
+  // Opus 5 / 4.8 / 4.7 / 4.6 はいずれも $5/$25 per MTok（Anthropic 公式 docs、
+  // 2026-07-25 確認。旧値 $15/$75 は Opus 4.1 世代の価格で誤りだった）。
+  'claude-opus-5':       { inputPer1M: 5, outputPer1M: 25 },
+  'claude-opus-4-8':     { inputPer1M: 5, outputPer1M: 25 },
+  'claude-opus-4-7':     { inputPer1M: 5, outputPer1M: 25 },
+  'claude-opus-4-6':     { inputPer1M: 5, outputPer1M: 25 },
   'claude-sonnet-5':     { inputPer1M: 3, outputPer1M: 15 },
   'claude-sonnet-4-6':   { inputPer1M: 3, outputPer1M: 15 },
   'claude-sonnet-4-5':   { inputPer1M: 3, outputPer1M: 15 },

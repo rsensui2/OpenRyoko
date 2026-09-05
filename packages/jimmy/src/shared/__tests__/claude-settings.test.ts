@@ -5,9 +5,9 @@ import path from "node:path";
 import { buildSessionSettings, seedTrust } from "../claude-settings.js";
 
 describe("buildSessionSettings", () => {
-  it("registers SessionStart/Stop/StopFailure/PreToolUse/PostToolUse hooks", () => {
+  it("registers lifecycle, submit acknowledgement, and tool hooks", () => {
     const s = buildSessionSettings({ sessionId: "abc", relayScript: "/home/.ryoko/hook-relay.mjs" });
-    for (const ev of ["SessionStart", "Stop", "StopFailure", "PreToolUse", "PostToolUse"] as const) {
+    for (const ev of ["SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "PreToolUse", "PostToolUse"] as const) {
       expect(s.hooks[ev]).toHaveLength(1);
       expect(s.hooks[ev][0].hooks[0].type).toBe("command");
     }

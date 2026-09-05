@@ -4,9 +4,20 @@ import { mkdirSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import { SESSIONS_DB } from '../shared/paths.js';
-import type { JsonObject, ReplyContext, Session } from '../shared/types.js';
+import { logger } from '../shared/logger.js';
+import { assertDiskSpaceForWrite } from '../shared/storage-health.js';
+import type {
+  JsonObject,
+  ReplyContext,
+  Session,
+  SessionAttemptOutcome,
+  WorkflowAttemptInterruptionCause,
+  WorkflowSessionProvenance,
+} from '../shared/types.js';
 
 let db: Database.Database;
+let ftsAvailable = true;
+const FTS_BACKFILL_CHUNK = 500;
 
 const CREATE_TABLE = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -47,6 +58,14 @@ const CREATE_SESSION_KEY_INDEX = `
 CREATE INDEX IF NOT EXISTS idx_sessions_session_key ON sessions (session_key, last_activity)
 `;
 
+const CREATE_SESSION_ACTIVITY_INDEX = `
+CREATE INDEX IF NOT EXISTS idx_sessions_activity_id ON sessions (last_activity DESC, id DESC)
+`;
+
+const CREATE_SESSION_PARENT_INDEX = `
+CREATE INDEX IF NOT EXISTS idx_sessions_parent_session_id ON sessions (parent_session_id, last_activity DESC)
+`;
+
 const CREATE_FILES_TABLE = `
 CREATE TABLE IF NOT EXISTS files (
   id TEXT PRIMARY KEY,
@@ -57,6 +76,106 @@ CREATE TABLE IF NOT EXISTS files (
   created_at TEXT NOT NULL
 )
 `;
+
+function getMeta(database: Database.Database, key: string): string | undefined {
+  return (database.prepare('SELECT value FROM meta WHERE key = ?').get(key) as { value: string } | undefined)?.value;
+}
+
+function setMeta(database: Database.Database, key: string, value: string): void {
+  database.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value);
+}
+
+function initializeFts(database: Database.Database): void {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(content);
+      CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages
+      WHEN new.role IN ('user', 'assistant') BEGIN
+        INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, new.content);
+      END;
+      CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages
+      WHEN old.role IN ('user', 'assistant') BEGIN
+        DELETE FROM messages_fts WHERE rowid = old.rowid;
+      END;
+      CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE ON messages BEGIN
+        DELETE FROM messages_fts WHERE rowid = old.rowid;
+        INSERT INTO messages_fts(rowid, content)
+          SELECT new.rowid, new.content WHERE new.role IN ('user', 'assistant');
+      END;
+    `);
+    if (getMeta(database, 'fts_backfill_max') === undefined) {
+      const max = database.prepare('SELECT COALESCE(MAX(rowid), 0) AS max FROM messages').get() as { max: number };
+      setMeta(database, 'fts_backfill_max', String(max.max));
+      setMeta(database, 'fts_backfill_rowid', '0');
+      if (max.max === 0) setMeta(database, 'fts_backfill_done', '1');
+    }
+  } catch (err) {
+    ftsAvailable = false;
+    logger.warn(`FTS5 unavailable; message search disabled: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+function ftsBackfillStep(database: Database.Database, chunkSize = FTS_BACKFILL_CHUNK): boolean {
+  if (!ftsAvailable || getMeta(database, 'fts_backfill_done') === '1') return true;
+  const max = Number(getMeta(database, 'fts_backfill_max') ?? '0');
+  const progress = Number(getMeta(database, 'fts_backfill_rowid') ?? '0');
+  const rows = database.prepare(`
+    SELECT rowid, content FROM messages
+    WHERE role IN ('user', 'assistant') AND rowid > ? AND rowid <= ?
+    ORDER BY rowid ASC LIMIT ?
+  `).all(progress, max, Math.max(1, chunkSize)) as Array<{ rowid: number; content: string }>;
+  if (rows.length === 0) {
+    setMeta(database, 'fts_backfill_done', '1');
+    return true;
+  }
+  const insert = database.prepare('INSERT OR REPLACE INTO messages_fts(rowid, content) VALUES (?, ?)');
+  database.transaction((items: typeof rows) => {
+    for (const row of items) insert.run(row.rowid, row.content);
+    setMeta(database, 'fts_backfill_rowid', String(items.at(-1)!.rowid));
+  })(rows);
+  if (rows.at(-1)!.rowid >= max) {
+    setMeta(database, 'fts_backfill_done', '1');
+    return true;
+  }
+  return false;
+}
+
+export function backfillFtsSync(database: Database.Database = initDb(), chunkSize = FTS_BACKFILL_CHUNK): void {
+  while (!ftsBackfillStep(database, chunkSize)) { /* drain */ }
+}
+
+const ftsBackfills = new WeakMap<Database.Database, Promise<void>>();
+
+export function scheduleFtsBackfill(database: Database.Database = initDb(), chunkSize = FTS_BACKFILL_CHUNK): Promise<void> {
+  if (!ftsAvailable || getMeta(database, 'fts_backfill_done') === '1') return Promise.resolve();
+  const current = ftsBackfills.get(database);
+  if (current) return current;
+  const promise = new Promise<void>((resolve) => {
+    const pump = () => {
+      try {
+        if (ftsBackfillStep(database, chunkSize)) {
+          ftsBackfills.delete(database);
+          resolve();
+        } else {
+          setImmediate(pump);
+        }
+      } catch (err) {
+        ftsAvailable = false;
+        ftsBackfills.delete(database);
+        logger.warn(`FTS5 backfill failed; message search disabled until restart: ${err instanceof Error ? err.message : String(err)}`);
+        resolve();
+      }
+    };
+    setImmediate(pump);
+  });
+  ftsBackfills.set(database, promise);
+  return promise;
+}
+
+export function isFtsBackfillPending(database: Database.Database = initDb()): boolean {
+  return ftsAvailable && getMeta(database, 'fts_backfill_done') !== '1';
+}
 
 function parseJsonObject(value: unknown): JsonObject | null {
   if (typeof value !== 'string' || !value.trim()) return null;
@@ -88,8 +207,16 @@ function rowToSession(row: Record<string, unknown>): Session {
     model: (row.model as string) ?? null,
     title: (row.title as string) ?? null,
     parentSessionId: (row.parent_session_id as string) ?? null,
+    workflowProvenance: row.workflow_provenance
+      ? (parseJsonObject(row.workflow_provenance) as unknown as WorkflowSessionProvenance | null)
+      : null,
     effortLevel: (row.effort_level as string) ?? null,
     status: row.status as Session['status'],
+    attemptOutcome: (row.attempt_outcome as SessionAttemptOutcome) ?? null,
+    attemptTerminalVersion: (row.attempt_terminal_version as number) ?? 0,
+    attemptTurn: (row.attempt_turn as number) ?? 0,
+    attemptInterruptionCause: (row.attempt_interruption_cause as WorkflowAttemptInterruptionCause) ?? null,
+    attemptInterruptionTurn: (row.attempt_interruption_turn as number) ?? null,
     totalCost: (row.total_cost as number) ?? 0,
     totalTurns: (row.total_turns as number) ?? 0,
     lastContextTokens: (row.last_context_tokens as number) ?? null,
@@ -107,8 +234,11 @@ export function initDb(): Database.Database {
   db.exec(CREATE_TABLE);
   db.exec(CREATE_MESSAGES_TABLE);
   db.exec(CREATE_MESSAGES_INDEX);
+  initializeFts(db);
   migrateSessionsSchema(db);
   db.exec(CREATE_SESSION_KEY_INDEX);
+  db.exec(CREATE_SESSION_ACTIVITY_INDEX);
+  db.exec(CREATE_SESSION_PARENT_INDEX);
   db.exec(`
     CREATE TABLE IF NOT EXISTS queue_items (
       id TEXT PRIMARY KEY,
@@ -119,7 +249,8 @@ export function initDb(): Database.Database {
       position INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       started_at TEXT,
-      completed_at TEXT
+      completed_at TEXT,
+      internal INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_queue_session
       ON queue_items (session_key, status, position);
@@ -172,12 +303,30 @@ export function migrateSessionsSchema(database: Database.Database): void {
     ['total_turns', 'INTEGER', '0'],
     ['effort_level', 'TEXT'],
     ['last_context_tokens', 'INTEGER'],
+    // Workflow attempt attribution + terminal receipts (upstream port)
+    ['workflow_provenance', 'TEXT'],
+    ['workflow_kind', 'TEXT'],
+    ['workflow_id', 'TEXT'],
+    ['workflow_run_id', 'TEXT'],
+    ['workflow_phase_node_id', 'TEXT'],
+    ['workflow_phase_attempt', 'INTEGER'],
+    ['attempt_outcome', 'TEXT'],
+    ['attempt_terminal_version', 'INTEGER', '0'],
+    ['attempt_turn', 'INTEGER', '0'],
+    ['attempt_interruption_cause', 'TEXT'],
+    ['attempt_interruption_turn', 'INTEGER'],
   ];
 
   for (const [name, type, defaultVal] of missingColumns) {
     if (!colNames.has(name)) {
       const defaultClause = defaultVal !== undefined ? ` DEFAULT ${defaultVal}` : '';
-      database.exec(`ALTER TABLE sessions ADD COLUMN ${name} ${type}${defaultClause}`);
+      try {
+        database.exec(`ALTER TABLE sessions ADD COLUMN ${name} ${type}${defaultClause}`);
+      } catch (error) {
+        // Two processes racing the same migration both observe "column missing";
+        // the loser's ALTER must not abort startup once the column exists.
+        if (!String(error).includes('duplicate column name')) throw error;
+      }
     }
   }
 
@@ -188,6 +337,18 @@ export function migrateSessionsSchema(database: Database.Database): void {
   }
   if (refreshedNames.has('connector')) {
     database.exec(`UPDATE sessions SET connector = COALESCE(connector, source) WHERE connector IS NULL OR connector = ''`);
+  }
+
+  // queue_items is created after this migration runs on a fresh database (its
+  // CREATE TABLE already carries `internal`); only an existing table needs the
+  // column added.
+  const queueCols = database.prepare('PRAGMA table_info(queue_items)').all() as Array<{ name: string }>;
+  if (queueCols.length > 0 && !queueCols.some((c) => c.name === 'internal')) {
+    try {
+      database.exec('ALTER TABLE queue_items ADD COLUMN internal INTEGER NOT NULL DEFAULT 0');
+    } catch (error) {
+      if (!String(error).includes('duplicate column name')) throw error;
+    }
   }
 }
 
@@ -205,6 +366,8 @@ export interface CreateSessionOpts {
   title?: string;
   parentSessionId?: string;
   effortLevel?: string;
+  /** Durable workflow/run/phase attribution (upstream port). */
+  workflowProvenance?: WorkflowSessionProvenance;
 }
 
 function getNextSessionNumber(): number {
@@ -223,6 +386,7 @@ function generateTitle(prompt?: string): string {
 }
 
 export function createSession(opts: CreateSessionOpts & { prompt?: string; portalName?: string }): Session {
+  assertDiskSpaceForWrite();
   const db = initDb();
   const now = new Date().toISOString();
   const id = uuidv4();
@@ -232,12 +396,14 @@ export function createSession(opts: CreateSessionOpts & { prompt?: string; porta
   const replyContext = opts.replyContext ? JSON.stringify(opts.replyContext) : null;
   const transportMeta = opts.transportMeta ? JSON.stringify(opts.transportMeta) : null;
 
+  const workflow = opts.workflowProvenance ?? null;
   const stmt = db.prepare(`
     INSERT INTO sessions (
       id, engine, source, source_ref, connector, session_key, reply_context, message_id, transport_meta,
-      employee, model, title, parent_session_id, effort_level, status, created_at, last_activity
+      employee, model, title, parent_session_id, effort_level, status, created_at, last_activity,
+      workflow_provenance, workflow_kind, workflow_id, workflow_run_id, workflow_phase_node_id, workflow_phase_attempt
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     id,
@@ -256,6 +422,12 @@ export function createSession(opts: CreateSessionOpts & { prompt?: string; porta
     opts.effortLevel ?? null,
     now,
     now,
+    workflow ? JSON.stringify(workflow) : null,
+    workflow?.kind ?? null,
+    workflow?.workflowId ?? null,
+    workflow?.runId ?? null,
+    workflow?.phase?.nodeId ?? null,
+    workflow?.phase?.attempt ?? null,
   );
 
   return {
@@ -273,8 +445,14 @@ export function createSession(opts: CreateSessionOpts & { prompt?: string; porta
     model: opts.model ?? null,
     title,
     parentSessionId: opts.parentSessionId ?? null,
+    workflowProvenance: workflow,
     effortLevel: opts.effortLevel ?? null,
     status: 'idle',
+    attemptOutcome: null,
+    attemptTerminalVersion: 0,
+    attemptTurn: 0,
+    attemptInterruptionCause: null,
+    attemptInterruptionTurn: null,
     totalCost: 0,
     totalTurns: 0,
     lastContextTokens: null,
@@ -312,6 +490,11 @@ export interface UpdateSessionFields {
   lastError?: string | null;
   title?: string;
   lastContextTokens?: number | null;
+  attemptOutcome?: SessionAttemptOutcome | null;
+  attemptTerminalVersion?: number;
+  attemptTurn?: number;
+  attemptInterruptionCause?: WorkflowAttemptInterruptionCause | null;
+  attemptInterruptionTurn?: number | null;
 }
 
 export function updateSession(id: string, updates: UpdateSessionFields): Session | undefined {
@@ -326,6 +509,26 @@ export function updateSession(id: string, updates: UpdateSessionFields): Session
   if (updates.engineSessionId !== undefined) {
     sets.push('engine_session_id = ?');
     values.push(updates.engineSessionId);
+  }
+  if (updates.attemptOutcome !== undefined) {
+    sets.push('attempt_outcome = ?');
+    values.push(updates.attemptOutcome);
+  }
+  if (updates.attemptTerminalVersion !== undefined) {
+    sets.push('attempt_terminal_version = ?');
+    values.push(updates.attemptTerminalVersion);
+  }
+  if (updates.attemptTurn !== undefined) {
+    sets.push('attempt_turn = ?');
+    values.push(updates.attemptTurn);
+  }
+  if (updates.attemptInterruptionCause !== undefined) {
+    sets.push('attempt_interruption_cause = ?');
+    values.push(updates.attemptInterruptionCause);
+  }
+  if (updates.attemptInterruptionTurn !== undefined) {
+    sets.push('attempt_interruption_turn = ?');
+    values.push(updates.attemptInterruptionTurn);
   }
   if (updates.status !== undefined) {
     sets.push('status = ?');
@@ -377,6 +580,36 @@ export interface ListSessionsFilter {
   engine?: string;
 }
 
+export interface SessionPageCursor {
+  lastActivity: string;
+  id: string;
+}
+
+export interface SessionPage {
+  sessions: Session[];
+  nextCursor: SessionPageCursor | null;
+}
+
+export function listSessionPage(limit = 100, cursor?: SessionPageCursor): SessionPage {
+  const database = initDb();
+  const cap = Math.max(1, Math.min(Math.floor(limit) || 100, 200));
+  const rows = cursor
+    ? database.prepare(`
+        SELECT * FROM sessions
+        WHERE last_activity < ? OR (last_activity = ? AND id < ?)
+        ORDER BY last_activity DESC, id DESC LIMIT ?
+      `).all(cursor.lastActivity, cursor.lastActivity, cursor.id, cap + 1)
+    : database.prepare('SELECT * FROM sessions ORDER BY last_activity DESC, id DESC LIMIT ?').all(cap + 1) as Record<string, unknown>[];
+  const typedRows = rows as Record<string, unknown>[];
+  const hasMore = typedRows.length > cap;
+  const pageRows = hasMore ? typedRows.slice(0, cap) : typedRows;
+  const last = pageRows.at(-1);
+  return {
+    sessions: pageRows.map(rowToSession),
+    nextCursor: hasMore && last ? { lastActivity: String(last.last_activity), id: String(last.id) } : null,
+  };
+}
+
 export function listSessions(filter?: ListSessionsFilter): Session[] {
   const db = initDb();
   const conditions: string[] = [];
@@ -409,7 +642,7 @@ export function recoverStaleSessions(): number {
   const db = initDb();
   const now = new Date().toISOString();
   const result = db.prepare(
-    "UPDATE sessions SET status = 'interrupted', last_activity = ?, last_error = 'Interrupted: gateway restarted while session was running' WHERE status = 'running'",
+    "UPDATE sessions SET status = 'interrupted', last_activity = ?, last_error = 'Interrupted: gateway restarted while session was running' WHERE status = 'running' AND workflow_kind IS NULL",
   ).run(now);
   return result.changes;
 }
@@ -522,7 +755,18 @@ export interface SessionMessage {
   timestamp: number;
 }
 
+export interface MessagePage {
+  messages: SessionMessage[];
+  hasOlder: boolean;
+}
+
+export interface MessageWindow extends MessagePage {
+  hasNewer: boolean;
+  anchorFound: boolean;
+}
+
 export function insertMessage(sessionId: string, role: string, content: string): void {
+  assertDiskSpaceForWrite();
   const db = initDb();
   const id = uuidv4();
   db.prepare('INSERT INTO messages (id, session_id, role, content, timestamp) VALUES (?, ?, ?, ?, ?)').run(id, sessionId, role, content, Date.now());
@@ -531,6 +775,116 @@ export function insertMessage(sessionId: string, role: string, content: string):
 export function getMessages(sessionId: string): SessionMessage[] {
   const db = initDb();
   return db.prepare('SELECT id, role, content, timestamp FROM messages WHERE session_id = ? ORDER BY timestamp ASC').all(sessionId) as SessionMessage[];
+}
+
+export function getMessagePage(sessionId: string, options: { before?: string; limit?: number } = {}): MessagePage {
+  const database = initDb();
+  const cap = Math.max(1, Math.min(Math.floor(options.limit ?? 100) || 100, 200));
+  let rows: Array<SessionMessage & { rowid: number }>;
+  if (options.before) {
+    const cursor = database.prepare('SELECT rowid, timestamp FROM messages WHERE session_id = ? AND id = ?')
+      .get(sessionId, options.before) as { rowid: number; timestamp: number } | undefined;
+    if (!cursor) return { messages: [], hasOlder: false };
+    rows = database.prepare(`
+      SELECT rowid, id, role, content, timestamp FROM messages
+      WHERE session_id = ? AND (timestamp < ? OR (timestamp = ? AND rowid < ?))
+      ORDER BY timestamp DESC, rowid DESC LIMIT ?
+    `).all(sessionId, cursor.timestamp, cursor.timestamp, cursor.rowid, cap + 1) as typeof rows;
+  } else {
+    rows = database.prepare(`
+      SELECT rowid, id, role, content, timestamp FROM messages
+      WHERE session_id = ? ORDER BY timestamp DESC, rowid DESC LIMIT ?
+    `).all(sessionId, cap + 1) as typeof rows;
+  }
+  const hasOlder = rows.length > cap;
+  const pageRows = (hasOlder ? rows.slice(0, cap) : rows).reverse();
+  return { messages: pageRows.map(({ rowid: _rowid, ...message }) => message), hasOlder };
+}
+
+export function getMessageWindow(sessionId: string, anchorId: string, radius = 50): MessageWindow {
+  const database = initDb();
+  const cap = Math.max(1, Math.min(Math.floor(radius) || 50, 100));
+  const anchor = database.prepare('SELECT rowid, timestamp FROM messages WHERE session_id = ? AND id = ?')
+    .get(sessionId, anchorId) as { rowid: number; timestamp: number } | undefined;
+  if (!anchor) return { messages: [], hasOlder: false, hasNewer: false, anchorFound: false };
+
+  const olderAndAnchor = database.prepare(`
+    SELECT rowid, id, role, content, timestamp FROM messages
+    WHERE session_id = ? AND (timestamp < ? OR (timestamp = ? AND rowid <= ?))
+    ORDER BY timestamp DESC, rowid DESC LIMIT ?
+  `).all(sessionId, anchor.timestamp, anchor.timestamp, anchor.rowid, cap + 2) as Array<SessionMessage & { rowid: number }>;
+  const newer = database.prepare(`
+    SELECT rowid, id, role, content, timestamp FROM messages
+    WHERE session_id = ? AND (timestamp > ? OR (timestamp = ? AND rowid > ?))
+    ORDER BY timestamp ASC, rowid ASC LIMIT ?
+  `).all(sessionId, anchor.timestamp, anchor.timestamp, anchor.rowid, cap + 1) as Array<SessionMessage & { rowid: number }>;
+
+  const hasOlder = olderAndAnchor.length > cap + 1;
+  const hasNewer = newer.length > cap;
+  const before = (hasOlder ? olderAndAnchor.slice(0, cap + 1) : olderAndAnchor).reverse();
+  const after = hasNewer ? newer.slice(0, cap) : newer;
+  return {
+    messages: [...before, ...after].map(({ rowid: _rowid, ...message }) => message),
+    hasOlder,
+    hasNewer,
+    anchorFound: true,
+  };
+}
+
+export interface MessageSearchResult {
+  messageId: string;
+  sessionId: string;
+  snippet: string;
+  role: string;
+  timestamp: number;
+  employee: string | null;
+  engine: string | null;
+}
+
+function sanitizeFtsQuery(query: string): string {
+  return query
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .split(/\s+/)
+    .map((token) => token.replace(/"/g, ''))
+    .filter(Boolean)
+    .map((token) => `"${token}"`)
+    .join(' ');
+}
+
+export function searchMessages(
+  query: string,
+  limit = 20,
+  filter: { sessionId?: string; employee?: string; engine?: string; role?: 'user' | 'assistant' } = {},
+): MessageSearchResult[] {
+  const database = initDb();
+  if (!ftsAvailable) return [];
+  void scheduleFtsBackfill(database);
+  const match = sanitizeFtsQuery(query);
+  if (!match) return [];
+  const cap = Math.max(1, Math.min(Math.floor(limit) || 20, 200));
+  const conditions: string[] = [];
+  const values: unknown[] = [];
+  if (filter.sessionId) { conditions.push('m.session_id = ?'); values.push(filter.sessionId); }
+  if (filter.employee) { conditions.push('LOWER(s.employee) = ?'); values.push(filter.employee.toLowerCase()); }
+  if (filter.engine) { conditions.push('LOWER(s.engine) = ?'); values.push(filter.engine.toLowerCase()); }
+  if (filter.role) { conditions.push('m.role = ?'); values.push(filter.role); }
+  const extra = conditions.length ? ` AND ${conditions.join(' AND ')}` : '';
+  try {
+    return database.prepare(`
+      SELECT m.id AS messageId, m.session_id AS sessionId,
+             snippet(messages_fts, 0, '«', '»', '…', 12) AS snippet,
+             m.role AS role, m.timestamp AS timestamp,
+             s.employee AS employee, s.engine AS engine
+      FROM messages_fts
+      JOIN messages m ON m.rowid = messages_fts.rowid
+      LEFT JOIN sessions s ON s.id = m.session_id
+      WHERE messages_fts MATCH ?${extra}
+      ORDER BY messages_fts.rank, m.timestamp DESC, m.rowid DESC LIMIT ?
+    `).all(match, ...values, cap) as MessageSearchResult[];
+  } catch (err) {
+    if (String(err).includes('no such table')) return [];
+    throw err;
+  }
 }
 
 export interface QueueItem {
@@ -545,22 +899,45 @@ export interface QueueItem {
   completedAt: string | null;
 }
 
-export function enqueueQueueItem(sessionId: string, sessionKey: string, prompt: string): string {
+export function enqueueQueueItem(sessionId: string, sessionKey: string, prompt: string, opts: { internal?: boolean } = {}): string {
   const db = initDb();
   const id = randomUUID();
   const position = (db.prepare(
     "SELECT COALESCE(MAX(position), 0) + 1 as pos FROM queue_items WHERE session_key = ? AND status = 'pending'"
   ).get(sessionKey) as { pos: number }).pos;
   db.prepare(
-    "INSERT INTO queue_items (id, session_id, session_key, prompt, status, position, created_at) VALUES (?, ?, ?, ?, 'pending', ?, ?)"
-  ).run(id, sessionId, sessionKey, prompt, position, new Date().toISOString());
+    "INSERT INTO queue_items (id, session_id, session_key, prompt, status, position, created_at, internal) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)"
+  ).run(id, sessionId, sessionKey, prompt, position, new Date().toISOString(), opts.internal ? 1 : 0);
   return id;
 }
 
-export function markQueueItemRunning(itemId: string): void {
+/**
+ * Persist a notification message AND its queue item in one transaction.
+ * Deduped wake-ups (detached job monitors) rely on "message exists ⇒ its
+ * turn is queued or already ran": a crash between the two writes would make
+ * every retry a false duplicate and strand the wake-up forever.
+ */
+export function insertNotificationWithQueueItem(sessionId: string, sessionKey: string, content: string): string {
   const db = initDb();
-  db.prepare("UPDATE queue_items SET status = 'running', started_at = ? WHERE id = ?")
-    .run(new Date().toISOString(), itemId);
+  const tx = db.transaction(() => {
+    insertMessage(sessionId, "notification", content);
+    return enqueueQueueItem(sessionId, sessionKey, content);
+  });
+  return tx();
+}
+
+/** pending→running の CAS。勝者のみ true — 敗者はそのプロンプトを実行してはならない。 */
+export function markQueueItemRunning(itemId: string): boolean {
+  const db = initDb();
+  return db.prepare("UPDATE queue_items SET status = 'running', started_at = ? WHERE id = ? AND status = 'pending'")
+    .run(new Date().toISOString(), itemId).changes === 1;
+}
+
+export function getQueueItem(itemId: string): QueueItem | undefined {
+  const db = initDb();
+  return db.prepare(
+    "SELECT id, session_id as sessionId, session_key as sessionKey, prompt, status, position, created_at as createdAt, started_at as startedAt, completed_at as completedAt FROM queue_items WHERE id = ?"
+  ).get(itemId) as QueueItem | undefined;
 }
 
 export function markQueueItemCompleted(itemId: string): void {
@@ -656,4 +1033,182 @@ export function deleteFile(id: string): boolean {
   const db = initDb();
   const result = db.prepare('DELETE FROM files WHERE id = ?').run(id);
   return result.changes > 0;
+}
+
+// --- Workflow attempt sessions (upstream port, adapted to the jimmy schema) ---
+
+const QUEUE_ITEM_WIRE_SELECT =
+  "SELECT id, session_id as sessionId, session_key as sessionKey, prompt, status, position, created_at as createdAt, started_at as startedAt, completed_at as completedAt FROM queue_items";
+
+type WorkflowAttemptSessionOpts = CreateSessionOpts & { prompt?: string; workflowProvenance: WorkflowSessionProvenance };
+
+function assertWorkflowAttemptSession(session: Session, opts: WorkflowAttemptSessionOpts, key: string): void {
+  const expected = opts.workflowProvenance;
+  const actual = session.workflowProvenance;
+  const sameOwner = expected.kind === 'phase' && expected.phase && actual?.kind === 'phase' && actual.phase
+    && actual.workflowId === expected.workflowId && actual.runId === expected.runId
+    && actual.phase.nodeId === expected.phase.nodeId && actual.phase.attempt === expected.phase.attempt;
+  if (!sameOwner) throw new Error(`Workflow attempt session key collision for ${key}.`);
+  if (session.sessionKey !== key || session.sourceRef !== key) throw new Error(`Workflow attempt session key mismatch for ${key}.`);
+  const expectedConfig = [opts.engine, opts.employee ?? null, opts.model ?? null, opts.effortLevel ?? null];
+  if ([session.engine, session.employee, session.model, session.effortLevel].some((value, index) => value !== expectedConfig[index])) {
+    throw new Error(`Workflow attempt session configuration mismatch for ${key}.`);
+  }
+}
+
+/** One session row per workflow attempt, found again after a crash by its
+ *  provenance rather than created twice. */
+export function getOrCreateWorkflowAttemptSession(opts: WorkflowAttemptSessionOpts): Session {
+  const database = initDb();
+  const workflow = opts.workflowProvenance;
+  const phase = workflow.kind === 'phase' ? workflow.phase : undefined;
+  if (!phase) throw new Error('Workflow attempt sessions require phase provenance.');
+  const key = opts.sessionKey ?? opts.sourceRef;
+  const getOrCreate = database.transaction(() => {
+    const rows = database.prepare(
+      `SELECT * FROM sessions WHERE session_key = ? OR (workflow_kind = 'phase' AND workflow_id = ? AND workflow_run_id = ? AND workflow_phase_node_id = ? AND workflow_phase_attempt = ?)`
+    ).all(key, workflow.workflowId, workflow.runId, phase.nodeId, phase.attempt) as Record<string, unknown>[];
+    if (rows.length > 1) throw new Error(`Workflow attempt session key collision for ${key}.`);
+    const existing = rows[0] ? rowToSession(rows[0]) : undefined;
+    if (!existing) return createSession(opts);
+    assertWorkflowAttemptSession(existing, opts, key);
+    return existing;
+  });
+  return getOrCreate.immediate();
+}
+
+/** Terminal interruption receipt. Only a live, unsettled attempt row takes it,
+ *  so a stop that raced a completion never rewrites what already settled. */
+export function interruptSessionAttempt(id: string, reason: string, completedAt: string): Session | undefined {
+  const result = initDb().prepare(`UPDATE sessions SET status = 'interrupted', attempt_outcome = 'interrupted',
+    attempt_terminal_version = 1, attempt_turn = attempt_turn + 1, last_activity = ?, last_error = ?,
+    attempt_interruption_cause = NULL, attempt_interruption_turn = NULL
+    WHERE id = ? AND workflow_kind = 'phase' AND attempt_outcome IS NULL AND attempt_terminal_version = 0`)
+    .run(completedAt, reason, id);
+  return result.changes === 1 ? getSession(id) : undefined;
+}
+
+export function listChildSessions(parentSessionId: string): Session[] {
+  const rows = initDb().prepare('SELECT * FROM sessions WHERE parent_session_id = ?')
+    .all(parentSessionId) as Record<string, unknown>[];
+  return rows.map(rowToSession);
+}
+
+/** Claim the one internal dispatch slot of an idle workflow attempt session.
+ *  Returns the queue item id to run under, or null when the slot is taken. */
+export function claimWorkflowAttemptDispatch(sessionId: string, sessionKey: string, prompt: string): string | null {
+  const db = initDb();
+  return db.transaction(() => {
+    const session = db.prepare(`SELECT id FROM sessions WHERE id = ? AND session_key = ?
+      AND workflow_kind = 'phase' AND status = 'idle'
+      AND (attempt_outcome IS NULL OR attempt_outcome = 'succeeded')`).get(sessionId, sessionKey);
+    if (!session) return null;
+    const existing = db.prepare(
+      `${QUEUE_ITEM_WIRE_SELECT} WHERE session_id = ? AND internal = 1 AND status IN ('pending', 'running') ORDER BY created_at, position LIMIT 1`
+    ).get(sessionId) as (QueueItem & { sessionKey: string }) | undefined;
+    if (existing && (existing.sessionKey !== sessionKey || existing.prompt !== prompt)) {
+      throw new Error(`Workflow session ${sessionId} dispatch claim does not match its immutable command.`);
+    }
+    if (existing?.status === 'running') return null;
+    const itemId = existing?.id ?? enqueueQueueItem(sessionId, sessionKey, prompt, { internal: true });
+    // 新しい dispatch generation の開始を claim と同じ transaction で durable に:
+    // 前ターンの terminal receipt をここでクリアするので、pending row が存在する間は
+    // 「outcome が刻まれていれば settle 済み」という不変式が成り立つ。
+    db.prepare("UPDATE sessions SET attempt_outcome = NULL, attempt_terminal_version = 0 WHERE id = ?").run(sessionId);
+    return itemId;
+  }).immediate();
+}
+
+export function cancelWorkflowAttemptDispatch(sessionId: string): number {
+  return initDb().prepare(
+    `UPDATE queue_items SET status = 'cancelled' WHERE session_id = ? AND internal = 1 AND status IN ('pending', 'running')`
+  ).run(sessionId).changes;
+}
+
+/** Pending internal dispatches whose attempt session can still run them —
+ *  what a restarting gateway replays. */
+export function listPendingWorkflowAttemptDispatches(): QueueItem[] {
+  return initDb().prepare(`${QUEUE_ITEM_WIRE_SELECT} WHERE status = 'pending' AND internal = 1
+    AND EXISTS (SELECT 1 FROM sessions WHERE sessions.id = queue_items.session_id
+      AND sessions.workflow_kind = 'phase' AND sessions.status = 'idle'
+      AND (sessions.attempt_outcome IS NULL OR sessions.attempt_outcome = 'succeeded'))
+    ORDER BY created_at, position`).all() as QueueItem[];
+}
+
+/** Record the engine-native session id an attempt should resume from. The
+ *  fork tracks one engineSessionId per session, so the record only lands when
+ *  the engine matches the session's own. */
+export function recordEngineSessionId(sessionId: string, engine: string, nativeId: string): Session | undefined {
+  const session = getSession(sessionId);
+  if (!session) return undefined;
+  if (session.engine !== engine) return session;
+  return updateSession(sessionId, { engineSessionId: nativeId }) ?? session;
+}
+
+/** Settle workflow attempts whose engine process was lost with the old gateway.
+ *  The `gateway-restart` cause is what lets the runtime replace the attempt
+ *  rather than spend its retry budget (see workflows/restart-redispatch.ts). */
+export function recoverStaleWorkflowAttemptSessions(): number {
+  const database = initDb();
+  const now = new Date().toISOString();
+  return database.transaction(() => {
+    database.prepare(`
+      UPDATE queue_items
+      SET status = 'cancelled'
+      WHERE internal = 1
+        AND status IN ('pending', 'running')
+        AND EXISTS (
+          SELECT 1
+          FROM sessions
+          WHERE sessions.id = queue_items.session_id
+            AND sessions.status = 'running'
+            AND sessions.workflow_kind = 'phase'
+            AND sessions.attempt_outcome IS NULL
+            AND sessions.attempt_terminal_version = 0
+        )
+    `).run();
+    return database.prepare(`
+      UPDATE sessions
+      SET status = 'interrupted',
+        attempt_outcome = 'interrupted',
+        attempt_terminal_version = 1,
+        attempt_turn = MAX(attempt_turn, 1),
+        attempt_interruption_cause = 'gateway-restart',
+        attempt_interruption_turn = MAX(attempt_turn, 1),
+        last_activity = ?,
+        last_error = 'Interrupted: gateway restarted while workflow attempt was running'
+      WHERE status = 'running'
+        AND workflow_kind = 'phase'
+        AND attempt_outcome IS NULL
+        AND attempt_terminal_version = 0
+    `).run(now).changes;
+  }).immediate();
+}
+
+/** Terminal receipt for the turn a workflow dispatch just ran, written in the
+ *  same transaction that closes the internal queue row — so a crash can never
+ *  leave "receipt says succeeded, queue row still pending" for a restart to
+ *  re-execute. A stop that already stamped `interrupted` keeps its receipt
+ *  (only a null outcome is filled), but the queue row is closed either way. */
+export function settleWorkflowAttemptDispatch(
+  sessionId: string,
+  outcome: SessionAttemptOutcome | null,
+  opts: { error?: string } = {},
+): Session | undefined {
+  const database = initDb();
+  return database.transaction(() => {
+    const current = getSession(sessionId);
+    if (!current || current.workflowProvenance?.kind !== 'phase') return current ?? undefined;
+    database.prepare(
+      "UPDATE queue_items SET status = 'completed', completed_at = ? WHERE session_id = ? AND internal = 1 AND status IN ('pending', 'running')"
+    ).run(new Date().toISOString(), sessionId);
+    if (current.attemptOutcome) return current;
+    if (outcome === null) return current;
+    return updateSession(sessionId, {
+      attemptOutcome: outcome,
+      attemptTerminalVersion: 1,
+      attemptTurn: (current.attemptTurn ?? 0) + 1,
+      ...(opts.error !== undefined ? { status: 'error' as const, lastError: opts.error, lastActivity: new Date().toISOString() } : {}),
+    }) ?? current;
+  }).immediate();
 }

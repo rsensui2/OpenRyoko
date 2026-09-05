@@ -11,7 +11,7 @@ This skill activates when the user wants to create, edit, delete, enable, disabl
 
 ## Data File
 
-All cron jobs are stored in `~/.jinn/cron/jobs.json` as a JSON array of job objects. If the file does not exist, create it with an empty array `[]`.
+All cron jobs are stored in `cron/jobs.json` (relative to the {{portalName}} home directory, which is always your working directory) as a JSON array of job objects. If the file does not exist, create it with an empty array `[]`.
 
 ## CronJob Schema
 
@@ -51,7 +51,7 @@ Field details:
 
 ### Creating a Job
 
-1. Read the current `~/.jinn/cron/jobs.json` (or initialize as `[]` if missing).
+1. Read the current `cron/jobs.json` (or initialize as `[]` if missing).
 2. Ask the user for the required fields: name, schedule, engine, model, and prompt.
 3. Ask about the timezone. Default to `UTC` if not specified.
 4. Ask about the employee persona to use. This is optional.
@@ -60,12 +60,12 @@ Field details:
 7. Generate a UUID for the `id` field.
 8. Set `enabled` to `true` by default.
 9. Append the new job object to the array.
-10. Write the updated array back to `~/.jinn/cron/jobs.json`.
+10. Write the updated array back to `cron/jobs.json`.
 11. Confirm the creation and summarize the schedule in plain English.
 
 ### Editing a Job
 
-1. Read `~/.jinn/cron/jobs.json`.
+1. Read `cron/jobs.json`.
 2. Find the job by name or id.
 3. Show the current values to the user.
 4. Apply the requested changes.
@@ -74,7 +74,7 @@ Field details:
 
 ### Deleting a Job
 
-1. Read `~/.jinn/cron/jobs.json`.
+1. Read `cron/jobs.json`.
 2. Find the job by name or id.
 3. Confirm deletion with the user (show job details).
 4. Remove the job from the array.
@@ -83,7 +83,7 @@ Field details:
 
 ### Enabling / Disabling a Job
 
-1. Read `~/.jinn/cron/jobs.json`.
+1. Read `cron/jobs.json`.
 2. Find the job by name or id.
 3. Set `enabled` to `true` (enable) or `false` (disable).
 4. Write the updated array back.
@@ -91,7 +91,7 @@ Field details:
 
 ### Listing Jobs
 
-1. Read `~/.jinn/cron/jobs.json`.
+1. Read `cron/jobs.json`.
 2. Display jobs in a readable format, grouped by enabled/disabled.
 3. Include name, schedule (with plain-English interpretation), timezone, engine, and delivery info.
 

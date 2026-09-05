@@ -1,0 +1,3 @@
+[
+  { "path": "engines.claude.model", "from": "opus", "to": "claude-opus-5" }
+]

@@ -19,6 +19,8 @@ const capabilities: ConnectorCapabilities = {
 export class CronConnector implements Connector {
   name = "cron";
   private handler: ((msg: IncomingMessage) => void) | null = null;
+  private deliveredMessages = 0;
+  private deliveredTexts: string[] = [];
 
   constructor(
     private readonly connectors: Map<string, Connector>,
@@ -72,6 +74,15 @@ export class CronConnector implements Connector {
     this.handler = handler;
   }
 
+  /** Number of messages the underlying connector accepted during this run. */
+  getDeliveredMessageCount(): number {
+    return this.deliveredMessages;
+  }
+
+  hasDeliveredTextContaining(fragment: string): boolean {
+    return this.deliveredTexts.some((text) => text.includes(fragment));
+  }
+
   private async forward(target: Target, text: string, asReply: boolean): Promise<string | void> {
     if (!this.delivery) return undefined;
 
@@ -99,8 +110,14 @@ export class CronConnector implements Connector {
     };
 
     if (asReply) {
-      return connector.replyMessage(resolvedTarget, text);
+      const result = await connector.replyMessage(resolvedTarget, text);
+      this.deliveredMessages++;
+      this.deliveredTexts.push(text);
+      return result;
     }
-    return connector.sendMessage(resolvedTarget, text);
+    const result = await connector.sendMessage(resolvedTarget, text);
+    this.deliveredMessages++;
+    this.deliveredTexts.push(text);
+    return result;
   }
 }

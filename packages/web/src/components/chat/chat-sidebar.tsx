@@ -257,7 +257,13 @@ export function ChatSidebar({
     return title
   }
 
-  const { data: rawSessions, isLoading: loading } = useSessions()
+  const {
+    data: rawSessions,
+    isLoading: loading,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useSessions()
   const updateSessionMutation = useUpdateSession()
   const deleteSessionMutation = useDeleteSession()
   const bulkDeleteMutation = useBulkDeleteSessions()
@@ -897,6 +903,20 @@ export function ChatSidebar({
                   <ChevronDown className={cn("size-3.5 text-muted-foreground transition-transform", cronCollapsed && "-rotate-90")} />
                 </button>
                 {!cronCollapsed ? sortedCron.map((session) => renderSessionRow(session)) : null}
+              </div>
+            ) : null}
+            {hasNextPage ? (
+              <div className="px-4 py-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="w-full"
+                  disabled={isFetchingNextPage}
+                  onClick={() => void fetchNextPage()}
+                >
+                  {isFetchingNextPage ? "Loading older chats..." : "Load older chats"}
+                </Button>
               </div>
             ) : null}
           </>

@@ -16,8 +16,12 @@ import type {
  */
 
 /** Engines registered in this build (mirrors server.ts engine map). */
-const ENGINE_NAMES = ["claude", "codex", "gemini"] as const;
-type EngineName = (typeof ENGINE_NAMES)[number];
+export const ENGINE_NAMES = ["claude", "codex", "gemini"] as const;
+export type EngineName = (typeof ENGINE_NAMES)[number];
+
+export function isKnownEngine(engine: string): engine is EngineName {
+  return (ENGINE_NAMES as readonly string[]).includes(engine);
+}
 
 const EFFORT_MECHANISM: Record<EngineName, EffortMechanism> = {
   claude: "claude-flag",
@@ -27,8 +31,8 @@ const EFFORT_MECHANISM: Record<EngineName, EffortMechanism> = {
 
 /** Conservative per-engine defaults used when synthesizing (no `models:` block). */
 const SYNTH_DEFAULTS: Record<EngineName, { supportsEffort: boolean; effortLevels: string[]; fallbackModel: string }> = {
-  claude: { supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh"], fallbackModel: "opus" },
-  codex: { supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh"], fallbackModel: "gpt-5.3-codex" },
+  claude: { supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh"], fallbackModel: "claude-opus-5" },
+  codex: { supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh"], fallbackModel: "gpt-5.6-sol" },
   gemini: { supportsEffort: false, effortLevels: [], fallbackModel: "gemini-2.5-pro" },
 };
 

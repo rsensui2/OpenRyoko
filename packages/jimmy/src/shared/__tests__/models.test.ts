@@ -46,6 +46,7 @@ describe("synthesizeFromEngineConfig (backward-compat fallback)", () => {
     expect(levelsFor("opus")).toContain("xhigh");
     expect(levelsFor("sonnet")).toContain("xhigh");
     // explicit capable ids
+    expect(levelsFor("claude-opus-5")).toContain("xhigh");
     expect(levelsFor("claude-opus-4-8")).toContain("xhigh");
     expect(levelsFor("claude-opus-4-7")).toContain("xhigh");
     expect(levelsFor("claude-sonnet-5")).toContain("xhigh");

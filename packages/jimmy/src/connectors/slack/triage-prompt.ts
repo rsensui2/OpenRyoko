@@ -26,7 +26,7 @@ export interface TriagePromptInput {
   /** Whether the bot was explicitly @-mentioned in the message */
   wasMentioned: boolean;
   /** Recent messages in the thread for context — oldest first */
-  recentThread: Array<{ speaker: string; text: string }>;
+  recentThread: Array<{ speaker: string; text: string; isBot?: boolean }>;
   /** The message being triaged */
   messageText: string;
   /** True when this is an established 1:1 conversation with the bot (DM-equivalent):
@@ -48,14 +48,88 @@ const MAX_THREAD_ITEMS = 10;
 /** Upper bound (code points) for a message to qualify as a short-ack candidate. */
 export const SHORT_ACK_MAX_CHARS = 30;
 
+// Keep the react-only fast path deliberately narrow. Assents such as "はい",
+// "OK", and "了解" are not safe here: when the bot has asked for approval,
+// they are task-continuation messages and must reach the session engine.
+const SAFE_SHORT_ACK_RE = /^(?:ありがと(?:う(?:ございます|ございました)?)?|どうもありがとう(?:ございます|ございました)?|助かりました|助かります|感謝(?:です|します)?|なるほど|たしかに|確かに|thanks?|thank\s+you|thx|ty|got\s+it|understood|noted|makes\s+sense)$/iu;
+const EMOJI_ONLY_ACK_RE = /^(?::[a-z0-9_+\-]+:|[\p{Extended_Pictographic}\p{Emoji_Modifier}\u{1F1E6}-\u{1F1FF}\uFE0F\u200D\s]+)$/iu;
+
+// These emoji commonly mean "approved / proceed", so treating them as a
+// terminal acknowledgment can strand a task after the bot asks permission.
+const TASK_CONTINUATION_EMOJI_RE = /^(?:(?::(?:ok_hand|white_check_mark|heavy_check_mark|ballot_box_with_check|thumbsup|raised_hands|raising_hand|o2):)|[ \t]|👌|✅|☑️?|✔️?|🆗|🙆(?:‍[♀♂]️?)?|🙋(?:‍[♀♂]️?)?|🙌|👍[\p{Emoji_Modifier}]?)+$/iu;
+
+const TASK_CONTINUATION_TEXT_RE = /^(?:go|go\s+ahead|continue|proceed|do\s+it|ship\s+it|run\s+it|resume|start|yes|yep|yeah|ok(?:ay)?|sure|please|はい|うん|了解(?:です)?|承知(?:しました)?|お願い(?:します)?|続けて|進めて|やって|実行して|再開して|対応して|修正して|作って|調べて|確認して|送って|公開して|投稿して|コミットして|プッシュして|リリースして|デプロイして)$/iu;
+
+function normalizeShortAck(text: string): string {
+  return text
+    .normalize("NFKC")
+    .trim()
+    .toLowerCase()
+    // Decoration around an otherwise unambiguous thank-you must not turn it
+    // into an instruction candidate. Emoji-only messages are checked first.
+    .replace(/[!！。.,、〜~\s\p{Extended_Pictographic}\p{Emoji_Modifier}\u{1F1E6}-\u{1F1FF}\uFE0F\u200D]+$/gu, "")
+    .trim();
+}
+
+function normalizeTaskContinuation(text: string): string {
+  return text
+    .normalize("NFKC")
+    .trim()
+    .toLowerCase()
+    .replace(/[!！。.,、〜~\s]+$/gu, "")
+    .trim();
+}
+
+/** True when a short message can authorize or continue pending work. */
+export function isTaskContinuationCandidate(text: string): boolean {
+  const t = (text ?? "").trim();
+  if (!t || [...t].length > SHORT_ACK_MAX_CHARS) return false;
+  if (TASK_CONTINUATION_EMOJI_RE.test(t)) return true;
+
+  const normalized = normalizeTaskContinuation(t);
+  if (TASK_CONTINUATION_TEXT_RE.test(normalized)) return true;
+
+  // Allow a trailing celebratory emoji without hiding the actionable text.
+  const withoutEmojiDecoration = normalized
+    .replace(/[\s\p{Extended_Pictographic}\p{Emoji_Modifier}\u{1F1E6}-\u{1F1FF}\uFE0F\u200D]+$/gu, "")
+    .trim();
+  return TASK_CONTINUATION_TEXT_RE.test(withoutEmojiDecoration);
+}
+
+/** Pure routing rule used by the connector before invoking react-only triage. */
+export function shouldRunReactOnlyTriage(input: {
+  channelType: string;
+  isDmEquivalent: boolean;
+  wasMentioned: boolean;
+  attachmentCount: number;
+  text: string;
+}): boolean {
+  return (
+    (input.channelType === "im" || input.isDmEquivalent) &&
+    !input.wasMentioned &&
+    input.attachmentCount === 0 &&
+    isShortAckCandidate(input.text)
+  );
+}
+
+/** Safety net for stale conversation tracking or an over-eager LLM decision. */
+export function shouldForceTaskContinuationReply(input: {
+  text: string;
+  dmEquivalent: boolean;
+  previousWasBot?: boolean;
+}): boolean {
+  return (
+    isTaskContinuationCandidate(input.text) &&
+    (input.dmEquivalent || input.previousWasBot === true)
+  );
+}
+
 /**
- * Cheap lexical pre-filter for the DM-equivalent short-ack exception: does this
- * message LOOK like it could be a bare acknowledgment ("ありがとう", "了解",
- * "OK") rather than a request? Candidates are sent through LLM triage (which
- * may still answer "reply"); non-candidates skip triage and get a full reply,
- * exactly as before. Deliberately conservative — a question mark, link,
- * mention, or slash command disqualifies, because those always deserve a real
- * response and shouldn't even risk a react-only outcome.
+ * Cheap lexical pre-filter for the DM-equivalent short-ack exception. Only
+ * messages that unambiguously close the exchange (thanks, appreciation, or an
+ * emoji by itself) may enter react-only triage. Assents and go-aheads are
+ * intentionally excluded: "はい" / "OK" / "了解" can answer a question the
+ * bot asked and must reach the session so the task can continue.
  */
 export function isShortAckCandidate(text: string): boolean {
   const t = (text ?? "").trim();
@@ -65,7 +139,9 @@ export function isShortAckCandidate(text: string): boolean {
   if (/https?:\/\//.test(t)) return false;
   if (/<[@#!]/.test(t)) return false; // user/channel/special mentions
   if (t.startsWith("/")) return false; // control slash commands
-  return true;
+  if (isTaskContinuationCandidate(t)) return false;
+  if (EMOJI_ONLY_ACK_RE.test(t)) return true;
+  return SAFE_SHORT_ACK_RE.test(normalizeShortAck(t));
 }
 
 export function buildTriagePrompt(input: TriagePromptInput): string {
@@ -143,8 +219,8 @@ ${truncatedMessage}
 """
 
 ${dmEquivalent ? `# Decision rules (1:1 conversation — the message IS addressed to ${botName}; NEVER choose "silent")
-1. If the message is ONLY a short acknowledgment, thanks, or affirmation that CLOSES the exchange
-   (e.g. "ありがとう", "thanks", "了解です", "OK", "なるほど", "助かりました", "👍") → "react" with a fitting emoji.
+1. If the message is ONLY appreciation that CLOSES the exchange and cannot authorize work
+   (e.g. "ありがとう", "thanks", "なるほど", "助かりました", "🙏") → "react" with a fitting emoji.
 2. ANYTHING else → "reply". This includes questions, instructions, go-aheads and continuations
    ("GO", "続けて", "お願いします", "やって"), a "はい"/"OK" that answers a question ${botName} asked
    (check the recent thread — if ${botName}'s last message asked something or offered to proceed,
@@ -153,13 +229,15 @@ ${dmEquivalent ? `# Decision rules (1:1 conversation — the message IS addresse
 # Principles (these override the rules when in tension)
 - A missed request is far worse than a redundant reply here. When unsure → "reply".
 - Choose "react" only when a single emoji FULLY satisfies the message and no action is expected.` : `# Decision rules (apply in order, stop at first match)
-1. If the message is a short acknowledgment, thanks, or affirmation directed at ${botName}'s prior reply
-   (e.g. "ありがとう", "thanks", "了解", "OK", "なるほど", "👍") → "react" with a fitting emoji.
-2. If the message is clearly addressed to ${botName} (called by name, imperative aimed at the bot,
+1. If the message approves, authorizes, or continues work ${botName} proposed
+   (e.g. "GO", "はい", "OK", "了解", "続けて", "お願いします", "👌", "✅") → "reply".
+2. If the message is pure appreciation directed at ${botName}'s prior reply and expects no action
+   (e.g. "ありがとう", "thanks", "なるほど", "助かりました", "🙏") → "react" with a fitting emoji.
+3. If the message is clearly addressed to ${botName} (called by name, imperative aimed at the bot,
    continuation of a 1:1 exchange) → "reply".
-3. If the topic clearly matches ${botName}'s expertise AND ${botName} can contribute concrete,
+4. If the topic clearly matches ${botName}'s expertise AND ${botName} can contribute concrete,
    wanted value (not just chitchat) → "reply".
-4. Otherwise → "silent".
+5. Otherwise → "silent".
 
 # Principles (these override the rules when in tension)
 - Err on the side of SILENCE. Annoying intrusion is far worse than missing a chance to reply.

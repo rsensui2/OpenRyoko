@@ -9,6 +9,8 @@ import { writeSessionSettings } from "../shared/claude-settings.js";
 import { awaitFreshClaudeCredentials } from "../shared/claude-oauth-gate.js";
 import { PtyLifecycleManager, type PtyHandle } from "./pty-lifecycle.js";
 import type { PtyControlEvent, PtyViewEngine, PtyIdleSpawnOpts } from "./pty-view-engine.js";
+import { ptySnapshotStore } from "./pty-snapshot.js";
+import { chooseApproval, keystrokesToSelect, parsePermissionPrompt, terminalTextLines } from "./claude-permission-prompt.js";
 import type { HookRegistry, HookPayload } from "../gateway/hook-registry.js";
 import { SsePtyProxy, type SseDataEvent, type StreamCtx } from "./sse-pty-proxy.js";
 import { neutralizeForPaste } from "../shared/skill-commands.js";
@@ -53,7 +55,7 @@ const MODEL_PRICES: Record<string, { in: number; out: number }> = {
 };
 const DEFAULT_PRICE = { in: 15, out: 75 };
 
-function sumTranscriptUsage(content: string): TranscriptUsage {
+export function sumTranscriptUsage(content: string, afterMs?: number): TranscriptUsage {
   const u: TranscriptUsage = { inputTokens: 0, outputTokens: 0, cacheTokens: 0, assistantTurns: 0 };
   const seen = new Set<string>();
   for (const line of content.split("\n")) {
@@ -62,6 +64,12 @@ function sumTranscriptUsage(content: string): TranscriptUsage {
     let msg: any;
     try { msg = JSON.parse(t); } catch { continue; }
     if (msg.type !== "assistant") continue;
+    if (afterMs !== undefined) {
+      const ts = transcriptLineTimestampMs(msg);
+      // A cumulative transcript may contain every prior turn. Untimestamped
+      // lines cannot safely be attributed to the current turn.
+      if (ts === undefined || ts < afterMs) continue;
+    }
     const usage = msg?.message?.usage;
     if (!usage) continue;
     // Phase 0 finding: --effort high emits two assistant lines per response
@@ -104,10 +112,10 @@ function lastTurnContextTokens(transcriptPath: string): number | undefined {
   return last && last > 0 ? last : undefined;
 }
 
-function computeInteractiveCost(transcriptPath: string, model?: string): { cost: number; turns: number } | null {
+export function computeInteractiveCost(transcriptPath: string, model?: string, afterMs?: number): { cost: number; turns: number } | null {
   let content: string;
   try { content = fs.readFileSync(transcriptPath, "utf-8"); } catch { return null; }
-  const u = sumTranscriptUsage(content);
+  const u = sumTranscriptUsage(content, afterMs);
   if (u.assistantTurns === 0) return null;
   // Prefer the concrete id from the transcript; fall back to resolving the
   // config alias (opus/sonnet/haiku) so Sonnet/Haiku aren't priced as Opus.
@@ -184,6 +192,21 @@ export function stripReasoningBlocks(text: string): string {
     .trim();
 }
 
+/** Suggested next-user turns are model metadata, not operator instructions.
+ * Strip them before storage or relay while preserving any genuine answer that
+ * appears before or after the block. */
+export function stripSuggestionBlocks(text: string): string {
+  return text
+    .replace(/<\s*suggestion\b[^>]*>[\s\S]*?<\s*\/\s*suggestion\s*>/gi, "")
+    .replace(/<\s*suggestion\b[^>]*>[\s\S]*$/i, "")
+    .replace(/<\s*s(?:u(?:g(?:g(?:e(?:s(?:t(?:i(?:o(?:n)?)?)?)?)?)?)?)?)?$/i, "")
+    .trim();
+}
+
+export function sanitizeAssistantText(text: string): string {
+  return stripSuggestionBlocks(stripReasoningBlocks(text));
+}
+
 /**
  * Map a StopFailure hook payload to an EngineRateLimitInfo.
  * Returns null unless the turn failed specifically with error === "rate_limit".
@@ -204,7 +227,7 @@ function buildInteractiveArgs(o: InteractiveArgsOpts): string[] {
 
   let prompt = o.prompt;
   if (o.attachments?.length) {
-    prompt += "\n\nAttached files:\n" + o.attachments.map((a) => `- ${a}`).join("\n");
+    prompt += buildAttachmentSuffix(o.attachments);
   }
   args.push(prompt); // positional — MUST precede variadic --mcp-config
 
@@ -356,7 +379,7 @@ export class TurnResolver {
     // Native local commands (/usage, /limits, …) produce no new assistant
     // message; the Stop hook's last_assistant_message is the prior turn's stale
     // text. Settling with it would persist a duplicate chat echo — settle empty.
-    const text = this.opts.native ? "" : stripReasoningBlocks(String(this.stopPayload.last_assistant_message ?? ""));
+    const text = this.opts.native ? "" : sanitizeAssistantText(String(this.stopPayload.last_assistant_message ?? ""));
     this.settle({ sessionId: sid, result: text, error: undefined, numTurns: 1 });
   }
 
@@ -380,7 +403,7 @@ export class TurnResolver {
   /** Settle with text recovered from the transcript (the Stop hook was lost). */
   completeRecovered(text: string, sessionId?: string): void {
     if (sessionId && !this.claudeSessionId) this.claudeSessionId = sessionId;
-    this.settle({ sessionId: this.claudeSessionId ?? this.opts.fallbackSessionId ?? "", result: stripReasoningBlocks(text), numTurns: 1 });
+    this.settle({ sessionId: this.claudeSessionId ?? this.opts.fallbackSessionId ?? "", result: sanitizeAssistantText(text), numTurns: 1 });
   }
 
   /** Proof of life (SSE delta / tool hook) while a StopFailure is pending —
@@ -431,6 +454,30 @@ const NATIVE_COMMAND_MIN_MS = 3000;
 const NATIVE_COMMAND_MAX_MS = 90_000;
 const LOST_STOP_RECOVERY_QUIET_MS = 60_000;
 const LOST_STOP_RECOVERY_MIN_MS = 5 * 60_000;
+const TURN_STALL_TIMEOUT_MS = 15 * 60_000;
+const TURN_STALL_QUIET_MS = 5 * 60_000;
+
+export function shouldSettleStalledTurn(elapsedMs: number, quietMs: number): boolean {
+  return elapsedMs >= TURN_STALL_TIMEOUT_MS && quietMs >= TURN_STALL_QUIET_MS;
+}
+
+export function isPermissionPromptNotification(hook: HookPayload): boolean {
+  return hook.hook_event_name === "Notification" && hook.notification_type === "permission_prompt";
+}
+
+export function recoveryBlockedByWork(activeTools: number, permissionPending: boolean, upstreamInflight: boolean): boolean {
+  return upstreamInflight || (activeTools > 0 && !permissionPending);
+}
+
+/** Success recovery is stricter than eventual stall release: an unanswered
+ * permission prompt must never turn preceding narration into a completed turn. */
+export function canRecoverLostStop(activeTools: number, permissionPending: boolean, upstreamInflight: boolean): boolean {
+  return activeTools === 0 && !permissionPending && !upstreamInflight;
+}
+
+const SUBMIT_CONFIRM_INTERVAL_MS = 1500;
+const SUBMIT_CONFIRM_ATTEMPTS = 12;
+export const SUBMIT_ACK_HOOKS = new Set(["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "StopFailure"]);
 
 /** Claude Code built-in slash commands that run locally and never produce a new
  *  assistant API turn. Two behaviours, both handled by the native-command path:
@@ -466,12 +513,81 @@ const SCROLLBACK_CAP_BYTES = 262144;
  *  bash-mode, and jinn-skill slash commands, while letting engine-native commands
  *  (/compact, /clear, /model, …) pass through raw so the TUI actually runs them.
  *  Shared by injectPrompt() (warm-PTY first turn) and writeStdin() (raw WS input). */
-function pasteAndSubmit(proc: pty.IPty, text: string): void {
+export function buildAttachmentSuffix(attachments: readonly string[]): string {
+  return "\n\nAttached files:\n" + attachments.map((attachment) => {
+    // Use a code-span delimiter longer than every backtick run in the path.
+    // Escaping with a backslash would change the filesystem path seen by the
+    // model; a longer delimiter preserves it byte-for-byte.
+    const longestRun = Math.max(0, ...(attachment.match(/`+/g) ?? []).map((run) => run.length));
+    const delimiter = "`".repeat(longestRun + 1);
+    return `- ${delimiter}${attachment}${delimiter}`;
+  }).join("\n");
+}
+
+export interface SubmitConfirmation {
+  submitted: () => boolean;
+  busy?: () => boolean;
+  intervalMs?: number;
+  attempts?: number;
+  onRetry?: (attempt: number) => void;
+  onUnconfirmed?: (attempts: number) => void;
+}
+
+export function pasteAndSubmit(proc: Pick<pty.IPty, "write">, text: string, confirm?: SubmitConfirmation): () => void {
   const payload = neutralizeForPaste(text);
   proc.write(`\x1b[200~${payload}\x1b[201~`);
   // 150ms beat (upstream finding): 50ms occasionally raced the TUI's paste
   // handling and the CR landed before the paste was consumed.
-  setTimeout(() => proc.write("\r"), 150);
+  let retryTimer: NodeJS.Timeout | undefined;
+  const submitTimer = setTimeout(() => {
+    proc.write("\r");
+    if (!confirm) return;
+    let attempt = 0;
+    const maxAttempts = confirm.attempts ?? SUBMIT_CONFIRM_ATTEMPTS;
+    retryTimer = setInterval(() => {
+      if (confirm.submitted()) {
+        if (retryTimer) clearInterval(retryTimer);
+        retryTimer = undefined;
+        return;
+      }
+      if (confirm.busy?.()) return;
+      if (attempt >= maxAttempts) {
+        if (retryTimer) clearInterval(retryTimer);
+        retryTimer = undefined;
+        confirm.onUnconfirmed?.(attempt);
+        return;
+      }
+      attempt += 1;
+      confirm.onRetry?.(attempt);
+      proc.write("\r");
+    }, confirm.intervalMs ?? SUBMIT_CONFIRM_INTERVAL_MS);
+    retryTimer.unref?.();
+  }, 150);
+  return () => {
+    clearTimeout(submitTimer);
+    if (retryTimer) clearInterval(retryTimer);
+    retryTimer = undefined;
+  };
+}
+
+export function buildClaudePtyEnv(
+  proxyPort?: number,
+  sourceEnv: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(sourceEnv)) {
+    if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_")) continue;
+    if (k === "ANTHROPIC_API_KEY" || k === "ANTHROPIC_AUTH_TOKEN" || k === "ANTHROPIC_BASE_URL") continue;
+    if (v !== undefined) env[k] = v;
+  }
+  env.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN = "1";
+  env.CLAUDE_CODE_RESUME_TOKEN_THRESHOLD = "999999999";
+  env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = sourceEnv.CLAUDE_CODE_AUTO_COMPACT_WINDOW || "1000000";
+  if (proxyPort) {
+    env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${proxyPort}`;
+    env._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL = "1";
+  }
+  return env;
 }
 
 export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngine {
@@ -482,7 +598,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
    *  released by a kill->respawn race can't poison the freshly-started turn.
    *  `onStream` is the current turn's delta callback; the per-PTY SSE proxy routes
    *  parsed events here (a PTY outlives its turn, so the proxy looks this up live). */
-  private active = new Map<string, { resolver: TurnResolver; onStream?: (d: StreamDelta) => void; boundProc?: pty.IPty; activeTools: number }>();
+  private active = new Map<string, { resolver: TurnResolver; onStream?: (d: StreamDelta) => void; boundProc?: pty.IPty; activeTools: number; permissionPromptPending: boolean; permissionTimer?: NodeJS.Timeout; submitConfirmationArmed: boolean; submitAcknowledged: boolean; cancelSubmitConfirm?: () => void }>();
   /** Epoch ms of the most recent PTY output per session — the quiet-window
    *  signal for native-command settle and lost-Stop recovery. */
   private lastOutputAt = new Map<string, number>();
@@ -531,6 +647,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
      *  completion/recovery path. Default 90 min — long enough for heavy autonomous
      *  batch runs (e.g. the seminar-demo generator) to complete in a single turn. */
     private turnTimeoutMs = 90 * 60 * 1000,
+    private autoApproveSafetyPrompts = false,
   ) {}
 
   async run(opts: EngineRunOpts): Promise<EngineResult> {
@@ -581,21 +698,74 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
       shouldDeferStopFailure: () => this.hasInflightUpstream(jinnSessionId),
       native: nativeCommand,
     });
-    const entry: { resolver: TurnResolver; onStream?: (d: StreamDelta) => void; boundProc?: pty.IPty; activeTools: number } = { resolver, onStream: opts.onStream, activeTools: 0 };
+    const entry = { resolver, onStream: opts.onStream, activeTools: 0, permissionPromptPending: false, submitConfirmationArmed: false, submitAcknowledged: false } as {
+      resolver: TurnResolver;
+      onStream?: (d: StreamDelta) => void;
+      boundProc?: pty.IPty;
+      activeTools: number;
+      permissionPromptPending: boolean;
+      permissionTimer?: NodeJS.Timeout;
+      submitConfirmationArmed: boolean;
+      submitAcknowledged: boolean;
+      cancelSubmitConfirm?: () => void;
+    };
     this.active.set(jinnSessionId, entry);
 
     // Register BEFORE spawning so a fast SessionStart is buffered+drained, not lost.
-    this.hookRegistry.register(jinnSessionId, (h) => {
+    this.hookRegistry.register(jinnSessionId, (h, delivery) => {
       resolver.onHook(h);
+      const buffered = delivery?.buffered === true;
+      // register() synchronously drains hooks buffered after the previous turn.
+      // They must not acknowledge a prompt that has not been pasted yet.
+      if (entry.submitConfirmationArmed && SUBMIT_ACK_HOOKS.has(h.hook_event_name)) {
+        entry.submitAcknowledged = true;
+      }
       // Track local tool executions: lost-Stop recovery must never fire while a
       // tool is mid-run (transcript text exists but the turn isn't done).
-      if (h.hook_event_name === "PreToolUse") entry.activeTools += 1;
-      if (h.hook_event_name === "PostToolUse") entry.activeTools = Math.max(0, entry.activeTools - 1);
+      if (!buffered && h.hook_event_name === "PreToolUse") entry.activeTools += 1;
+      if (!buffered && h.hook_event_name === "PostToolUse") entry.activeTools = Math.max(0, entry.activeTools - 1);
+      if (!buffered && h.hook_event_name === "PostToolUse" && entry.permissionPromptPending && entry.activeTools === 0) {
+        // Permission Notification follows the gated tool's PreToolUse. Only
+        // clear after every then-in-flight tool has posted completion; clearing
+        // on an unrelated parallel tool's PostToolUse can hide a still-blocked
+        // prompt and fabricate lost-Stop success.
+        entry.permissionPromptPending = false;
+        if (entry.permissionTimer) {
+          clearTimeout(entry.permissionTimer);
+          entry.permissionTimer = undefined;
+        }
+      }
+      if (!buffered && isPermissionPromptNotification(h)) {
+        entry.permissionPromptPending = true;
+        opts.onStream?.({ type: "permission", content: "Claude is waiting for approval in the CLI safety prompt." });
+        if (this.autoApproveSafetyPrompts) {
+          if (entry.permissionTimer) clearTimeout(entry.permissionTimer);
+          // The hook may arrive before the PTY has finished drawing the prompt (or
+          // during the narrow spawn→boundProc handoff). Give the terminal one frame
+          // to settle, then re-check identity and parse the completed screen once.
+          entry.permissionTimer = setTimeout(() => {
+            entry.permissionTimer = undefined;
+            if (this.active.get(jinnSessionId) !== entry || !entry.permissionPromptPending) return;
+            const proc = entry.boundProc;
+            const prompt = proc ? parsePermissionPrompt(terminalTextLines(this.getScrollback(jinnSessionId))) : null;
+            const approval = prompt ? chooseApproval(prompt) : null;
+            if (proc && prompt && approval) {
+              for (const key of keystrokesToSelect(prompt.selectedPosition, approval.position)) proc.write(key);
+              // Key delivery is not proof of approval. Keep pending until the
+              // gated tool (and any parallel tools) posts completion.
+              logger.warn(`InteractiveClaudeEngine: auto-approved a strict safety prompt for ${jinnSessionId}: ${prompt.reason ?? "reason unavailable"}`);
+            } else {
+              logger.warn(`InteractiveClaudeEngine: permission prompt for ${jinnSessionId} was not recognized unambiguously; no keys sent`);
+            }
+          }, 500);
+          entry.permissionTimer.unref?.();
+        }
+      }
       // tool_use markers + intermediate text now stream from the per-PTY SSE proxy
       // (content_block_start / content_block_delta) in true order. The hook only
       // supplies tool_result — the assistant SSE stream has no tool_result event
       // (tools execute locally between assistant messages).
-      if (h.hook_event_name === "PostToolUse" && opts.onStream) {
+      if (!buffered && h.hook_event_name === "PostToolUse" && opts.onStream) {
         opts.onStream({
           type: "tool_result",
           content: String(h.tool_name ?? ""),
@@ -693,23 +863,37 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
         // grace timer's call (Stop supersedes / expiry fails). Recovering
         // intermediate transcript text here would fabricate a wrong success.
         if (resolver.stopFailure) return;
-        if (entry.activeTools > 0 || this.hasInflightUpstream(jinnSessionId)) return;
+        const upstreamInflight = this.hasInflightUpstream(jinnSessionId);
         const now = Date.now();
         const elapsed = now - turnStartedAtMs;
         const quietFor = now - (this.lastOutputAt.get(jinnSessionId) ?? turnStartedAtMs);
-        if (elapsed < LOST_STOP_RECOVERY_MIN_MS || quietFor < LOST_STOP_RECOVERY_QUIET_MS) return;
-        const sid = resolver.sessionId ?? opts.resumeSessionId;
-        const transcript = sid ? findTranscriptForSession(sid) : undefined;
-        if (!transcript) return;
-        try {
-          if (fs.statSync(transcript).mtimeMs < turnStartedAtMs - 1000) return;
-        } catch {
-          return;
+        if (
+          canRecoverLostStop(entry.activeTools, entry.permissionPromptPending, upstreamInflight)
+          && elapsed >= LOST_STOP_RECOVERY_MIN_MS
+          && quietFor >= LOST_STOP_RECOVERY_QUIET_MS
+        ) {
+          const sid = resolver.sessionId ?? opts.resumeSessionId;
+          const transcript = sid ? findTranscriptForSession(sid) : undefined;
+          let fresh = false;
+          if (transcript) {
+            try { fresh = fs.statSync(transcript).mtimeMs >= turnStartedAtMs - 1000; } catch { /* unreadable */ }
+          }
+          const recovered = transcript && fresh ? lastAssistantTextFromTranscript(transcript, turnStartedAtMs) : undefined;
+          if (recovered?.trim()) {
+            logger.warn(`InteractiveClaudeEngine: recovered completed turn for ${jinnSessionId} after missing Stop hook`);
+            resolver.completeRecovered(recovered, sid);
+            return;
+          }
         }
-        const recovered = lastAssistantTextFromTranscript(transcript, turnStartedAtMs);
-        if (recovered?.trim()) {
-          logger.warn(`InteractiveClaudeEngine: recovered completed turn for ${jinnSessionId} after missing Stop hook`);
-          resolver.completeRecovered(recovered, sid);
+        // An abandoned permission dialog may eventually be failed as stalled,
+        // but active work without one and live upstream requests may not.
+        if (recoveryBlockedByWork(entry.activeTools, entry.permissionPromptPending, upstreamInflight)) return;
+        if (shouldSettleStalledTurn(elapsed, quietFor)) {
+          logger.warn(`InteractiveClaudeEngine: turn for ${jinnSessionId} stalled after ${Math.round(elapsed / 60_000)}m (${Math.round(quietFor / 60_000)}m quiet) — settling so the session queue can continue`);
+          resolver.interrupt("Turn stalled: the engine produced no completion signal and no recoverable transcript");
+          // A PTY quiet enough to meet the stall predicate is not safe to reuse:
+          // an eventual late completion could mix with the next prompt/transcript.
+          this.lifecycle.releaseSession(jinnSessionId);
         }
       }, 2000);
       lostStopRecoveryTimer.unref?.();
@@ -722,6 +906,8 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
       clearInterval(watchdog);
       if (nativeCommandTimer) clearInterval(nativeCommandTimer);
       if (lostStopRecoveryTimer) clearInterval(lostStopRecoveryTimer);
+      if (entry.permissionTimer) clearTimeout(entry.permissionTimer);
+      entry.cancelSubmitConfirm?.();
       this.hookRegistry.unregister(jinnSessionId);
       this.active.delete(jinnSessionId);
       this.lifecycle.turnEnded(jinnSessionId); // manager decides kill vs keep-warm
@@ -738,14 +924,14 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
       const recovered = recoveryPath ? lastAssistantTextFromTranscript(recoveryPath, turnStartedAtMs) : undefined;
       if (recovered) {
         logger.info(`Recovered ${recovered.length} chars of lost turn text for session ${jinnSessionId} from transcript (Stop hook missing)`);
-        result.result = stripReasoningBlocks(recovered);
+        result.result = sanitizeAssistantText(recovered);
       }
     }
 
     // Reconstruct cost from the transcript (the Stop hook carries no cost).
     const transcriptPath = resolver.transcriptPath;
     if (transcriptPath && !result.error) {
-      const cost = computeInteractiveCost(transcriptPath, opts.model);
+      const cost = computeInteractiveCost(transcriptPath, opts.model, turnStartedAtMs);
       if (cost) { result.cost = cost.cost; result.numTurns = cost.turns; }
       // Context-meter: most recent turn's input context (input + cache), mirroring
       // headless claude.ts so interactive/CLI-view turns also populate the meter.
@@ -766,23 +952,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
    *  forward proxy on 127.0.0.1 — subscription OAuth token is passed separately
    *  by claude, so this stays cc_entrypoint=cli / subsidy-safe (verified Item A). */
   private buildPtyEnv(proxyPort?: number): Record<string, string> {
-    const env: Record<string, string> = {};
-    for (const [k, v] of Object.entries(process.env)) {
-      if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_")) continue;
-      // Belt-and-suspenders: a stray API key/token would flip the child to metered
-      // API billing instead of the Max subscription. Strip both so the PTY session
-      // always resolves to subscription auth (cc_entrypoint=cli).
-      if (k === "ANTHROPIC_API_KEY" || k === "ANTHROPIC_AUTH_TOKEN") continue;
-      if (v !== undefined) env[k] = v;
-    }
-    // Use claude's main-screen renderer (NOT the alt-screen fullscreen one).
-    // xterm.js's `scrollback` ring only applies to the main buffer — the alt
-    // screen has no scrollback at all, so wheel-scroll in our CLI view is
-    // impossible while NO_FLICKER is on. Trading mild flicker for usable scroll.
-    env.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN = "1";
-    env.CLAUDE_CODE_RESUME_TOKEN_THRESHOLD = "999999999"; // suppress "resume from summary?" picker — always full-resume
-    if (proxyPort) env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${proxyPort}`;
-    return env;
+    return buildClaudePtyEnv(proxyPort);
   }
 
   /** Translate parsed SSE events from a PTY's proxy into StreamDeltas and route
@@ -872,12 +1042,19 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
     // subscriber count — CliTerminal opens its WS on mount (before the user
     // sends the first message that triggers spawn), so subscriber-count gating
     // would spuriously reset on the very first PTY for the session.
-    // On respawn, only emit if there are subscribers (no one listens otherwise).
+    // On respawn, clear the prior terminal state even if nobody is subscribed.
     if (!stream.hasSeenPty) {
       stream.hasSeenPty = true;
-    } else if (stream.subscribers.size > 0) {
-      for (const sub of stream.subscribers) {
-        try { sub.control?.({ type: "reset" }); } catch { /* ignore */ }
+    } else {
+      // A restored snapshot (or the previous PTY incarnation) is a complete old
+      // terminal state. Never append a new TUI byte stream to it.
+      stream.chunks = [];
+      stream.totalBytes = 0;
+      ptySnapshotStore.deleteSync(jinnSessionId);
+      if (stream.subscribers.size > 0) {
+        for (const sub of stream.subscribers) {
+          try { sub.control?.({ type: "reset" }); } catch { /* ignore */ }
+        }
       }
     }
     // node-pty's internal socket error handler (unixTerminal.js) throws synchronously when
@@ -914,6 +1091,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
         stream.chunks[0] = sliced;
         stream.totalBytes = sliced.length;
       }
+      ptySnapshotStore.schedule(jinnSessionId, () => this.getScrollback(jinnSessionId));
       for (const sub of stream.subscribers) {
         try { sub.data(chunk); } catch { /* ignore subscriber errors */ }
       }
@@ -1028,9 +1206,21 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
     if (!proc) return;
     let text = opts.prompt;
     if (opts.attachments?.length) {
-      text += "\n\nAttached files:\n" + opts.attachments.map((a) => `- ${a}`).join("\n");
+      text += buildAttachmentSuffix(opts.attachments);
     }
-    pasteAndSubmit(proc, text);
+    const entry = opts.sessionId ? this.active.get(opts.sessionId) : undefined;
+    entry?.cancelSubmitConfirm?.();
+    if (entry) {
+      entry.submitAcknowledged = false;
+      entry.submitConfirmationArmed = true;
+    }
+    const cancel = pasteAndSubmit(proc, text, entry ? {
+      submitted: () => entry.submitAcknowledged,
+      busy: () => opts.sessionId ? this.hasInflightUpstream(opts.sessionId) : false,
+      onRetry: (attempt) => logger.warn(`InteractiveClaudeEngine: submit for ${opts.sessionId} unconfirmed — retrying Enter (${attempt}/${SUBMIT_CONFIRM_ATTEMPTS})`),
+      onUnconfirmed: () => logger.warn(`InteractiveClaudeEngine: submit for ${opts.sessionId} remained unconfirmed; stall recovery remains armed`),
+    } : undefined);
+    if (entry) entry.cancelSubmitConfirm = cancel;
   }
 
   /** Lazily create (or fetch) the output stream entry for a Jinn session id. */
@@ -1042,7 +1232,15 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
   } {
     let stream = this.streams.get(sessionId);
     if (!stream) {
-      stream = { chunks: [], totalBytes: 0, subscribers: new Set(), hasSeenPty: false };
+      const restored = ptySnapshotStore.loadSync(sessionId);
+      stream = {
+        chunks: restored ? [restored] : [],
+        totalBytes: restored?.length ?? 0,
+        subscribers: new Set(),
+        // Restored bytes came from an earlier PTY incarnation. The next spawn
+        // must reset rather than append a fresh TUI stream to this screen.
+        hasSeenPty: restored !== undefined,
+      };
       this.streams.set(sessionId, stream);
     }
     return stream;
@@ -1106,6 +1304,12 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
   }
 
   killAll(): void {
+    // Graceful gateway shutdown must be as recoverable as a crash. Flush the
+    // debounced tail before SIGTERM so the next process can replay the latest
+    // complete screen, including output produced in the last 250ms.
+    for (const id of this.streams.keys()) {
+      ptySnapshotStore.flushSync(id, () => this.getScrollback(id));
+    }
     for (const id of [...this.active.keys()]) this.kill(id, "Interrupted: gateway shutting down");
     this.lifecycle.killAll();
     this.remoteFallback?.killAll();

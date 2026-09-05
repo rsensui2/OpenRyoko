@@ -105,6 +105,17 @@ export class ConversationTracker {
     return state.botEngaged && state.humanSpeakers.size === 1;
   }
 
+  /**
+   * True when the bot has engaged (replied, reacted, or posted the root)
+   * in the given thread. Used by the deterministic respondTo gate to keep
+   * replying inside threads the bot is already part of without requiring a
+   * re-mention on every message.
+   */
+  isBotEngagedThread(channel: string, threadTs: string): boolean {
+    if (!channel || !threadTs) return false;
+    return this.entries.get(`${channel}:thread:${threadTs}`)?.botEngaged === true;
+  }
+
   /** For tests / debugging. */
   size(): number {
     return this.entries.size;

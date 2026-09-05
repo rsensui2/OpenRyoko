@@ -1,5 +1,10 @@
-import { describe, it, expect } from "vitest";
-import { markdownToSlackMrkdwn, formatResponse } from "../format.js";
+import { describe, it, expect, vi } from "vitest";
+import {
+  formatAttachmentFailureNotice,
+  formatResponse,
+  markdownToSlackMrkdwn,
+  resolveSlackFileAttachment,
+} from "../format.js";
 
 describe("markdownToSlackMrkdwn", () => {
   describe("headings", () => {
@@ -140,5 +145,84 @@ describe("formatResponse", () => {
     const result = formatResponse(longText);
     expect(result.length).toBeGreaterThan(1);
     expect(result[0].startsWith("*Title*")).toBe(true);
+  });
+});
+
+describe("resolveSlackFileAttachment", () => {
+  it("uses complete file metadata from the event without an API call", async () => {
+    const filesInfo = vi.fn();
+
+    const attachment = await resolveSlackFileAttachment(
+      {
+        id: "F123",
+        name: "brief.md",
+        mimetype: "text/plain",
+        url_private: "https://files.slack.com/files-pri/T123-F123/brief.md",
+      },
+      filesInfo,
+    );
+
+    expect(attachment).toEqual({
+      id: "F123",
+      name: "brief.md",
+      mimeType: "text/plain",
+      url: "https://files.slack.com/files-pri/T123-F123/brief.md",
+    });
+    expect(filesInfo).not.toHaveBeenCalled();
+  });
+
+  it("hydrates ID-only Slack event files through files.info", async () => {
+    const filesInfo = vi.fn().mockResolvedValue({
+      ok: true,
+      file: {
+        id: "F123",
+        name: "brief.md",
+        mimetype: "text/plain",
+        url_private_download: "https://files.slack.com/files-pri/T123-F123/download/brief.md",
+      },
+    });
+
+    const attachment = await resolveSlackFileAttachment(
+      { id: "F123", file_access: "check_file_info" },
+      filesInfo,
+    );
+
+    expect(filesInfo).toHaveBeenCalledWith({ file: "F123" });
+    expect(attachment).toEqual({
+      id: "F123",
+      name: "brief.md",
+      mimeType: "text/plain",
+      url: "https://files.slack.com/files-pri/T123-F123/download/brief.md",
+    });
+  });
+
+  it("rejects incomplete event metadata without a file ID", async () => {
+    await expect(resolveSlackFileAttachment({}, vi.fn())).rejects.toThrow(
+      "Slack attachment has neither a download URL nor a file ID",
+    );
+  });
+
+  it("rejects files.info responses that still have no download URL", async () => {
+    const filesInfo = vi.fn().mockResolvedValue({
+      ok: true,
+      file: { id: "F123", name: "brief.md" },
+    });
+
+    await expect(
+      resolveSlackFileAttachment({ id: "F123", file_access: "check_file_info" }, filesInfo),
+    ).rejects.toThrow("Slack file F123 has no private download URL after files.info");
+  });
+});
+
+describe("formatAttachmentFailureNotice", () => {
+  it("returns no notice when all attachments were retrieved", () => {
+    expect(formatAttachmentFailureNotice([])).toBe("");
+  });
+
+  it("tells the engine not to infer the contents of unavailable attachments", () => {
+    const notice = formatAttachmentFailureNotice(["Slack file F123"]);
+
+    expect(notice).toContain("Slack file F123");
+    expect(notice).toContain("Do not infer or substitute their contents");
   });
 });

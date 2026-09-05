@@ -40,7 +40,7 @@ export function Sidebar() {
   const { theme, setTheme } = useTheme()
   const { settings } = useSettings()
   const [hovered, setHovered] = useState(false)
-  const [instances, setInstances] = useState<Array<{ name: string; port: number; running: boolean; current: boolean }>>([])
+  const [instances, setInstances] = useState<Array<{ name: string; displayName?: string; port: number; running: boolean; current: boolean; switchUrl?: string }>>([])
   const [showSwitcher, setShowSwitcher] = useState(false)
 
   const emoji = settings.portalEmoji ?? "\u{1F9DE}"
@@ -124,7 +124,7 @@ export function Sidebar() {
                   key={inst.port}
                   onClick={() => {
                     if (!inst.current && inst.running) {
-                      window.location.href = `http://localhost:${inst.port}/chat`
+                      window.location.href = inst.switchUrl || `http://localhost:${inst.port}/chat`
                     }
                     setShowSwitcher(false)
                   }}
@@ -137,7 +137,7 @@ export function Sidebar() {
                         : "cursor-default text-[var(--text-quaternary)]"
                   )}
                 >
-                  <span>{inst.name}</span>
+                  <span>{inst.displayName || inst.name}</span>
                   <span
                     className="size-2 shrink-0 rounded-full"
                     style={{ background: inst.running ? "var(--system-green)" : "var(--text-quaternary)" }}

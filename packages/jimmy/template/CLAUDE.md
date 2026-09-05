@@ -11,11 +11,10 @@
 
 @IDENTITY.md
 @SOUL.md
-@MEMORY.md
 
 - **IDENTITY.md** — 名前・雰囲気・絵文字・由来。あなたが「誰であるか」
 - **SOUL.md** — トーン・意見の出し方・ユーモア・境界線。あなたが「どう振る舞うか」
-- **MEMORY.md** — 長期記憶（事実・好み・決定）。短く保つこと
+- **MEMORY.md**（長期記憶）は **ここで import しない**。gateway が信頼相手（private web セッション、または `portal.trustedSpeakers` に Slack/Discord の ID を載せた相手との DM）とのセッションにだけ system prompt へ注入する。共有チャンネルでは誰が話していても注入されない。個人情報を含むため、仮に自分で Read した場合も、内容を当人以外に出力で出さないこと
 
 ---
 
@@ -45,7 +44,7 @@
 | `AGENTS.md` | Codexセッション向けの指示書 |
 | `IDENTITY.md` | あなたの自己定義（名前・雰囲気・絵文字） |
 | `SOUL.md` | 人格・トーン・境界線 |
-| `MEMORY.md` | 長期記憶（短い・必ず読まれる） |
+| `MEMORY.md` | 長期記憶（短く保つ。信頼話者とのセッションに gateway が注入） |
 | `TOOLS.md` | ツール覚書（運用ノウハウ） |
 | `BOOTSTRAP.md` | 初回起動の儀式（完了後に自分で削除） |
 | `memory/` | 日次ノート（`YYYY-MM-DD.md`） |
@@ -65,9 +64,9 @@
 
 記憶は**2層**に分離します。混ぜないでください。
 
-### 1. 長期記憶 — `MEMORY.md`（毎セッション読まれる）
+### 1. 長期記憶 — `MEMORY.md`（信頼話者とのセッションに毎回注入される）
 
-短く重要な「事実・好み・決定」を1ファイルに集約。冒頭の `@MEMORY.md` で常時注入されるので、ここに長文を書くと毎ターン トークンを浪費します。
+短く重要な「事実・好み・決定」を1ファイルに集約。gateway が信頼話者とのセッションで常時注入するので、ここに長文を書くと毎ターン トークンを浪費します。
 
 書く対象:
 - 変わりにくいユーザー事実（所属、役割、主要言語）
@@ -268,9 +267,10 @@ provides:                    # オプション — この従業員が組織に�
   "name": "人間向けの名前",
   "enabled": true,
   "schedule": "0 9 * * 1-5",
+  "kind": "prompt",
   "timezone": "Asia/Tokyo",
   "engine": "claude",
-  "model": "opus",
+  "model": "claude-opus-5",
   "employee": "従業員名 or null",
   "prompt": "実行する指示",
   "delivery": {
@@ -281,6 +281,7 @@ provides:                    # オプション — この従業員が組織に�
 ```
 
 - `schedule` は標準cron式（分 時 日 月 曜日）
+- `kind: "update-notification"` はOpenRyokoの更新をAIなしで確認し、新しい未通知バージョンがある時だけAIで通知文を作成する
 - `delivery` はオプション。指定時は指定コネクタ経由で出力を送信
 - 実行ログは `~/.ryoko/cron/runs/` に保存される
 

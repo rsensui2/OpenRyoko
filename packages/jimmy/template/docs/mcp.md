@@ -6,7 +6,7 @@
 
 1. MCP servers are defined in `config.yaml` under the `mcp:` section
 2. When a session starts, {{portalName}} resolves which MCP servers the employee needs
-3. A temporary MCP config JSON file is written to `~/.jinn/tmp/mcp/`
+3. A temporary MCP config JSON file is written to `~/.ryoko/tmp/mcp/`
 4. The file is passed to Claude Code via `--mcp-config <path>`
 5. The file is cleaned up after the session completes
 

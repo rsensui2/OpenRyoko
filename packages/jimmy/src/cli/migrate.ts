@@ -25,6 +25,7 @@ import {
   buildTemplateReplacements,
 } from "../shared/templateReplacements.js";
 import { parseConfigPatch, applyPatchOps, type PatchOutcome } from "../shared/configPatch.js";
+import { auditGatewayReferences } from "./gateway-audit.js";
 
 const GREEN = "\x1b[32m";
 const YELLOW = "\x1b[33m";
@@ -150,11 +151,29 @@ function buildMigrateArgs(engine: string, prompt: string): string[] {
   }
 }
 
-export async function runMigrate(opts: { check?: boolean; auto?: boolean }): Promise<void> {
+export async function runMigrate(opts: { check?: boolean; auto?: boolean; fix?: boolean }): Promise<void> {
   // Ensure instance exists
   if (!fs.existsSync(JINN_HOME)) {
     console.error(`${RED}エラー:${RESET} ${JINN_HOME} が存在しません。"ryoko setup" を実行してください。`);
     process.exit(1);
+  }
+
+  const shouldFixGatewayUrls = opts.fix === true || opts.auto === true;
+  const gatewayAudit = auditGatewayReferences(JINN_HOME, { fix: shouldFixGatewayUrls });
+  if (gatewayAudit.legacyOccurrences > 0) {
+    if (shouldFixGatewayUrls) {
+      console.log(`${GREEN}[gateway URL]${RESET} ${gatewayAudit.legacyOccurrences}箇所 / ${gatewayAudit.fixedFiles.length}ファイルをloopback URLへ修正しました。`);
+      if (gatewayAudit.backupDir) console.log(`${DIM}バックアップ: ${gatewayAudit.backupDir}${RESET}`);
+    } else {
+      console.log(`${YELLOW}[gateway URL warning]${RESET} ${gatewayAudit.legacyOccurrences}箇所 / ${gatewayAudit.legacyFiles.length}ファイルに http://0.0.0.0 または http://[::] が残っています。`);
+      console.log(`${YELLOW}ryoko migrate --fix${RESET} でバックアップ後にloopback URLへ置換できます。`);
+    }
+  }
+  if (gatewayAudit.unauthenticatedCurlCandidates.length > 0) {
+    console.log(`${YELLOW}[gateway auth warning]${RESET} 認証なしで保護APIを呼ぶ可能性があるcurlを ${gatewayAudit.unauthenticatedCurlCandidates.length}ファイルで検出しました。`);
+    for (const file of gatewayAudit.unauthenticatedCurlCandidates.slice(0, 10)) console.log(`  - ${file}`);
+    if (gatewayAudit.unauthenticatedCurlCandidates.length > 10) console.log(`  ...ほか ${gatewayAudit.unauthenticatedCurlCandidates.length - 10}ファイル`);
+    console.log(`${YELLOW}直接curlする代わりに ryoko api METHOD /api/... を使用してください。${RESET}`);
   }
 
   const packageVersion = getPackageVersion();

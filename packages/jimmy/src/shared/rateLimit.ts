@@ -1,4 +1,14 @@
 import type { EngineResult } from "./types.js";
+import { classifyEngineFailureText, hasEngineFailureClass } from "./engine-failure.js";
+
+/** Whether error text reads as a quota window rather than a fault. Engine
+ *  results are one caller; a settled attempt's stored error is the other, and
+ *  both have to reach the same verdict or the same outage reads two ways.
+ *
+ *  Throttling and allowance are one verdict here: the caller waits either way. */
+export function isRateLimitMessage(text: string | null | undefined): boolean {
+  return hasEngineFailureClass(classifyEngineFailureText(text), "rate-limit", "quota");
+}
 
 const RATE_LIMIT_ERROR_RE =
   /rate.?limit|too many requests|429|overloaded|usage.*limit|exceeded.*limit|out of extra usage/i;

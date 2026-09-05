@@ -1,0 +1,142 @@
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { RemoteDiscordConnector, sanitizeIncomingDiscordMeta } from "../remote.js";
+import type { DiscordRespondToConfig, IncomingMessage } from "../../../shared/types.js";
+
+function incoming(
+  transportMeta: Record<string, unknown> | undefined,
+  thread?: string,
+): IncomingMessage {
+  return {
+    connector: "discord",
+    source: "discord",
+    sessionKey: "discord:C1",
+    channel: "C1",
+    thread,
+    user: "user",
+    userId: "U1",
+    text: "hello",
+    messageId: "M1",
+    attachments: [],
+    replyContext: {},
+    transportMeta,
+  } as unknown as IncomingMessage;
+}
+
+function deliver(
+  respondTo: DiscordRespondToConfig | undefined,
+  msg: IncomingMessage,
+): IncomingMessage[] {
+  const connector = new RemoteDiscordConnector({ proxyVia: "http://127.0.0.1:1", respondTo });
+  const received: IncomingMessage[] = [];
+  connector.onMessage((m) => received.push(m));
+  connector.deliverMessage(msg);
+  return received;
+}
+
+describe("RemoteDiscordConnector.deliverMessage respondTo gating", () => {
+  it("delivers everything with respondTo unset and no addressing metadata (older primary)", () => {
+    expect(deliver(undefined, incoming(undefined))).toHaveLength(1);
+    expect(deliver(undefined, incoming({ isDM: false }))).toHaveLength(1);
+  });
+
+  it("drops channel messages addressed to somebody else, even with respondTo unset", () => {
+    expect(deliver(undefined, incoming({ isDM: false, addressesOnlyOthers: true }))).toHaveLength(0);
+  });
+
+  it("does not apply the sibling rule in DMs", () => {
+    expect(deliver(undefined, incoming({ isDM: true, addressesOnlyOthers: true }))).toHaveLength(1);
+  });
+
+  it("drops un-addressed channel messages under channel=mention (fail closed on missing metadata)", () => {
+    const respondTo: DiscordRespondToConfig = { channel: "mention" };
+    expect(deliver(respondTo, incoming({ isDM: false, wasBotAddressed: false }))).toHaveLength(0);
+    expect(deliver(respondTo, incoming(undefined))).toHaveLength(0);
+  });
+
+  it("delivers addressed channel messages under channel=mention", () => {
+    const respondTo: DiscordRespondToConfig = { channel: "mention" };
+    expect(deliver(respondTo, incoming({ isDM: false, wasBotAddressed: true }))).toHaveLength(1);
+  });
+
+  it("trusts the primary's engaged-thread flag for the mention continuation", () => {
+    const respondTo: DiscordRespondToConfig = { channel: "mention" };
+    const engaged = incoming(
+      { isDM: false, wasBotAddressed: false, isEngagedThread: true },
+      "T1",
+    );
+    const notEngaged = incoming({ isDM: false, wasBotAddressed: false }, "T1");
+    expect(deliver(respondTo, engaged)).toHaveLength(1);
+    expect(deliver(respondTo, notEngaged)).toHaveLength(0);
+  });
+
+  it("ignores the engaged-thread flag when engagedThreads=false", () => {
+    const respondTo: DiscordRespondToConfig = { channel: "mention", engagedThreads: false };
+    const engaged = incoming(
+      { isDM: false, wasBotAddressed: false, isEngagedThread: true },
+      "T1",
+    );
+    expect(deliver(respondTo, engaged)).toHaveLength(0);
+  });
+
+  it("silences a scope entirely under never", () => {
+    const respondTo: DiscordRespondToConfig = { channel: "never" };
+    expect(deliver(respondTo, incoming({ isDM: false, wasBotAddressed: true }))).toHaveLength(0);
+  });
+});
+
+describe("sanitizeIncomingDiscordMeta", () => {
+  it("allowlists Discord fields — forged cross-platform identity and unknown keys are dropped", () => {
+    expect(
+      sanitizeIncomingDiscordMeta({
+        isDM: true,
+        speakerDiscordId: "42",
+        speakerSlackId: "U0FORGED",
+        speakerRealName: "偽の実名",
+        sessionKey: "internal-junk",
+        wasBotAddressed: true,
+      }),
+    ).toEqual({ isDM: true, speakerDiscordId: "42", wasBotAddressed: true });
+  });
+
+  it("tolerates malformed input", () => {
+    expect(sanitizeIncomingDiscordMeta(undefined)).toEqual({});
+    expect(sanitizeIncomingDiscordMeta("junk")).toEqual({});
+  });
+});
+
+describe("proxyAction authentication", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("sends the primary's bearer token when proxyViaToken is configured", async () => {
+    const headers: Array<Record<string, string>> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: unknown, init?: { headers?: Record<string, string> }) => {
+        headers.push(init?.headers ?? {});
+        return { ok: true, json: async () => ({ messageId: "S1" }) };
+      }),
+    );
+    const connector = new RemoteDiscordConnector({
+      proxyVia: "http://primary.test",
+      proxyViaToken: "primary-secret",
+    });
+    await connector.sendMessage({ channel: "C1" }, "hi");
+    expect(headers[0].Authorization).toBe("Bearer primary-secret");
+  });
+
+  it("sends no Authorization header without proxyViaToken", async () => {
+    const headers: Array<Record<string, string>> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: unknown, init?: { headers?: Record<string, string> }) => {
+        headers.push(init?.headers ?? {});
+        return { ok: true, json: async () => ({ messageId: "S1" }) };
+      }),
+    );
+    const connector = new RemoteDiscordConnector({ proxyVia: "http://primary.test" });
+    await connector.sendMessage({ channel: "C1" }, "hi");
+    expect(headers[0].Authorization).toBeUndefined();
+  });
+});
