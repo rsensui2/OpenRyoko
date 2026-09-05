@@ -74,7 +74,7 @@ WebUI の onboarding wizard が `/goal` / Canvas / triage を案内するので�
 
 ### セキュリティ / 運用系（全て OpenRyoko 独自）
 
-- 🔒 **Loopback Host header guard + 限定 CORS** — DNS rebinding 対策。`gateway.host = 127.0.0.1` デフォルトで安全
+- 🔒 **端末認証 + Host/Origin guard** — ネットワーク公開時は自動的に認証を要求。単回ペアリング、端末解除、DNS rebinding対策付き
 - 🌐 **会話型オンボーディング** — Ryoko 自身が新規ユーザーに名前・役割・好みを聞いて `~/.ryoko/knowledge/` に保存
 - ✨ **Onboarding ウィザード** — Web UI 初回起動時に Slack 機能（`/goal` / Canvas / triage）を視覚的に紹介
 - 💡 **Inline discovery hint** — Slack tokens 設定済みで Canvas 未有効なら設定画面で気づかせる
@@ -95,6 +95,24 @@ WebUI の onboarding wizard が `/goal` / Canvas / triage を案内するので�
 - 🔗 **MCP 対応** — 任意の MCP サーバーに接続
 
 ---
+
+## 📦 「中身」もほしい人へ（OpenRyoko パッケージ）
+
+OpenRyoko 本体（この基盤）は **MIT ライセンスで無料**です。ここは今後も変わりません。
+
+ただ、セットアップ直後のアシスタントは「まっさら」で、実務で使えるようになるまでには
+指示書・人格ファイル・記憶の運用・cron の設計・検証ゲートを自分で育てる必要があります。
+この「育てた中身」を、本家 Ryoko が実際に使っているものから固有情報を除いて配布しています。
+
+| | 内容 |
+|---|---|
+| **基本パッケージ** ¥29,800 | 計26ファイル: 運用指示書 完全版（AGENTS.md / CLAUDE.md）・人格ファイル5枚・記憶の2層運用設計・cron 設計パターン集と雛形4本・独立検証ゲート4本・スキル3本・配線スクリプト |
+| **拡張パッケージ** ¥98,000 | さらに計55ファイル: 時間軸つき知識グラフ（スキーマ・取込アダプタ・質問スクリプト・3D可視化）・自律ループ3層キット（設計書テンプレ4本＋ランタイム部品）・read-only rootfs の Docker 常駐環境 |
+
+各ルールには「なぜ」（多くは実際に起きた障害）が添えてあり、そのまま使っても、
+自分の環境に合わせて書き換えても構いません。買い切り・GitHub リポジトリ招待で即納です。
+
+→ **[パッケージの詳細と購入 (tekion.jp/openryoko/packages)](https://tekion.jp/openryoko/packages)**
 
 ## 💎 設計哲学
 
@@ -198,6 +216,7 @@ OpenRyokoは `~/.ryoko/config.yaml` から設定を読み込みます（`~/.jinn
 ```yaml
 gateway:
   port: 7777
+  host: "127.0.0.1"
 
 engines:
   default: claude
@@ -226,6 +245,18 @@ connectors:
       model: claude-haiku-4-5
       timeoutMs: 20000
       threadContextLimit: 10
+  discord:
+    botToken: ...
+    # 平場チャンネルでの返信先: channel（そのまま投稿・既定）/ reply（元メッセージにリプライ）
+    # / thread（元メッセージからスレッドを作って返信。Slack 風にスレッド単位のセッションになる。
+    #   既存デプロイで thread に切り替えると平場チャンネルの進行中セッションは新規に切り直される）
+    replyStyle: reply
+    # Slack と同じ決定的な応答ゲート。
+    # 省略時も他ユーザー宛のメンション/リプライには応答しない（Slack と同じ既定挙動）
+    respondTo:
+      dm: always            # DM（1:1・グループ）: メンション不要で常に応答
+      channel: mention      # チャンネル/スレッド: @メンション or botへのリプライ時のみ
+      engagedThreads: true  # botが参加済みのスレッド内は再メンション不要（デフォルト true）
 
 cron:
   jobs:
@@ -382,9 +413,20 @@ Claude Code v2.1.139+ で追加された `/goal` コマンドを、Slackの自�
 OpenRyoko は **個人マシン or 信頼境界内の VPS で 1 人 / 1 チームが使う前提**で
 設計されています。本番運用する場合は以下を必ず守ってください：
 
-- **`gateway.host` はデフォルト `127.0.0.1` のままにする**。外部公開する場合は必ず
-  前段に **認証付きリバースプロキシ**（Tailscale Funnel + nginx basic auth、Cloudflare
-  Access、Caddy with mTLS 等）を置く。daemon 自体は API 認証を持たない。
+- **`gateway.host` はデフォルト `127.0.0.1` のままにする**。ネットワーク公開時は
+  OpenRyokoの端末認証が自動的に有効になるが、通信を暗号化する機能は内蔵しない。
+  **Tailscale/VPN内で利用するか、HTTPSリバースプロキシ**（Cloudflare Access、Caddy、
+  nginx等）を前段に置くこと。平文HTTPのままインターネットへ公開しない。
+- `gateway.host` は待受アドレスであり接続先URLではない。`0.0.0.0` / `::` で待ち受ける
+  場合もローカルAPIは `ryoko api GET /api/status` のように呼ぶ。`ryoko api` は安全な
+  loopback URLを選び、Bearer認証を自動付与する。直接HTTPを使う必要がある子プロセスには
+  接続可能なURLが `$RYOKO_GATEWAY_URL` で渡される。
+- リバースプロキシの公開名は `gateway.allowedHosts` に列挙する。プロキシが設定する
+  `X-Forwarded-Proto`をCookieの`Secure`判定に使う場合だけ
+  `gateway.trustProxyHeaders: true`を設定し、プロキシの接続元IPを
+  `gateway.trustedProxyAddresses`に列挙する。一覧にない接続元の転送ヘッダーは無視される。
+- `ryoko pair`が発行するコードは5分・1回限り。認証端末はDashboardから解除でき、
+  サーバー側でも30日で失効する。
 - **`connectors.slack.allowFrom` を必ず設定する**。空欄だとワークスペース全員が
   Ryoko を駆動でき、`/goal` の自然言語起動と組み合わさると秘密情報の流出経路に
   なり得る。trusted user の Slack ID をホワイトリストで明示すること。

@@ -2,8 +2,10 @@ import type { IncomingMessage as HttpRequest, ServerResponse } from "node:http";
 import http from "node:http";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import yaml from "js-yaml";
+import cron from "node-cron";
 import type { CronJob, Engine, IncomingMessage, JinnConfig, Session, Target } from "../shared/types.js";
 import { isInterruptibleEngine } from "../shared/types.js";
 import type { SessionManager } from "../sessions/manager.js";
@@ -21,13 +23,20 @@ import {
   insertMessage,
   getMessages,
   enqueueQueueItem,
+  insertNotificationWithQueueItem,
   cancelQueueItem,
   getQueueItems,
   cancelAllPendingQueueItems,
   listAllPendingQueueItems,
   getFile,
+  getMessagePage,
+  getMessageWindow,
+  isFtsBackfillPending,
+  listSessionPage,
+  searchMessages,
 } from "../sessions/registry.js";
 import { forkEngineSession } from "../sessions/fork.js";
+import { deliverToOriginConnector, isUndeliveredToOrigin, recordFailedOriginDelivery } from "../sessions/origin-delivery.js";
 import {
   CONFIG_PATH,
   CRON_JOBS,
@@ -43,20 +52,51 @@ import { getSttStatus, downloadModel, transcribe as sttTranscribe, resolveLangua
 import { JINN_HOME } from "../shared/paths.js";
 import { handleHookPost, LOOPBACK as HOOK_LOOPBACK } from "./hook-endpoint.js";
 import { resolveEffort } from "../shared/effort.js";
+import { explicitThread } from "../shared/threading.js";
 import { effortLevelsForModel, invalidateModelRegistry } from "../shared/models.js";
 import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt, recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { loadJobs, saveJobs } from "../cron/jobs.js";
 import { reloadScheduler } from "../cron/scheduler.js";
 import { runCronJob } from "../cron/runner.js";
+import { checkForUpdates } from "../updates/checker.js";
 import QRCode from "qrcode";
 import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
 import { handleFilesRequest, ensureFilesDir } from "./files.js";
 import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "../sessions/callbacks.js";
 import { loadInstances } from "../cli/instances.js";
+import { recordTurnAccounting } from "../sessions/accounting.js";
+import { messageText } from "./message-body.js";
+import { decodeSessionCursor, encodeSessionCursor } from "./pagination.js";
+import {
+  authCookieHeaders,
+  clearAuthCookieHeaders,
+  consumePairingCode,
+  createAuthSession,
+  currentDeviceId,
+  issuePairingCode,
+  listAuthSessions,
+  requestIsSecure,
+  revokeAuthSession,
+  shouldRequireGatewayAuth,
+  verifyGatewayAuth,
+} from "./auth.js";
+import { handleWorkflowApi } from "./workflow-api.js";
+import type { WorkflowService } from "../workflows/service.js";
+import { shouldRequireGatewayAuth as workflowAuthRequired, verifyGatewayAuth as workflowVerifyAuth } from "./auth.js";
+import { getDiskSpaceStatus } from "../shared/storage-health.js";
+import { ptySnapshotStore } from "../engines/pty-snapshot.js";
+import { collectClaudeUsage } from "../shared/claude-usage.js";
+import { PairingAttemptLimiter, pairingAttemptKey } from "./pairing-rate-limit.js";
+import { personalizeInstructionMd, personalizeIdentityMd, resolveEffectiveName } from "./onboarding-personalize.js";
+import { patchPortalSection, writeFileAtomic } from "./portal-config.js";
 
 /** Max bytes accepted on /api/internal/hook (loopback-only relay payloads are tiny). */
 const HOOK_BODY_MAX_BYTES = 64 * 1024;
+const PAIR_BODY_MAX_BYTES = 1024;
+const PAIR_ATTEMPT_WINDOW_MS = 5 * 60_000;
+const pairingAttempts = new PairingAttemptLimiter(10, PAIR_ATTEMPT_WINDOW_MS);
+const pairingGlobalAttempts = new PairingAttemptLimiter(1_000, PAIR_ATTEMPT_WINDOW_MS, 1);
 
 export interface ApiContext {
   config: JinnConfig;
@@ -94,6 +134,16 @@ export interface ApiContext {
    */
   hookRegistry?: import("./hook-registry.js").HookRegistry;
   hookSecret?: string;
+  authToken?: string;
+  authHome?: string;
+  /** Present only when config.workflows.enabled — carries the Workflow engine. */
+  workflowService?: WorkflowService;
+  /** The workflow store's own connection — atomic create wraps the repository
+   *  writes in one transaction on it. Present alongside workflowService. */
+  workflowDatabase?: import("better-sqlite3").Database;
+  /** The workflow repository on that connection (atomic create writes through
+   *  it so no service-side notifications fire mid-transaction). */
+  workflowRepository?: import("../workflows/repository.js").WorkflowRepository;
 }
 
 export function resumePendingWebQueueItems(context: ApiContext): void {
@@ -107,7 +157,19 @@ export function resumePendingWebQueueItems(context: ApiContext): void {
       cancelQueueItem(item.id);
       continue;
     }
-    if (session.source !== "web") continue;
+    // Connector-origin sessions normally get their runs from the connector
+    // route, EXCEPT notification wake-ups (detached jobs, child callbacks):
+    // the job monitor already got its 200 and will never re-send, so a
+    // restart here would strand the wake-up forever. Detect those by the
+    // persisted notification message matching the queued prompt and resume
+    // them with origin-connector delivery.
+    let deliverToConnector = false;
+    if (session.source !== "web") {
+      const messages = getMessages(session.id);
+      const match = [...messages].reverse().find((m) => m.content === item.prompt);
+      if (match?.role !== "notification") continue;
+      deliverToConnector = true;
+    }
     session = maybeRevertEngineOverride(session);
 
     const config = context.getConfig();
@@ -121,7 +183,7 @@ export function resumePendingWebQueueItems(context: ApiContext): void {
     // Ensure the session is in a runnable state
     updateSession(session.id, { status: "running", lastActivity: new Date().toISOString(), lastError: null });
 
-    dispatchWebSessionRun(session, item.prompt, engine, config, context, { queueItemId: item.id });
+    dispatchWebSessionRun(session, item.prompt, engine, config, context, { queueItemId: item.id, deliverToConnector });
     resumed++;
   }
 
@@ -173,18 +235,32 @@ function maybeRevertEngineOverride(session: Session): Session {
   }) ?? session;
 }
 
+// In-memory idempotency keys for notification wake-ups. The persisted-message
+// comparison in the /message handler covers gateway restarts; this map covers
+// the common case cheaply and caps unbounded growth by TTL pruning on write.
+const seenDedupeKeys = new Map<string, number>();
+const DEDUPE_TTL_MS = 60 * 60 * 1000;
+
+function rememberDedupeKey(key: string): void {
+  const now = Date.now();
+  for (const [k, t] of seenDedupeKeys) {
+    if (now - t > DEDUPE_TTL_MS) seenDedupeKeys.delete(k);
+  }
+  seenDedupeKeys.set(key, now);
+}
+
 function dispatchWebSessionRun(
   session: Session,
   prompt: string,
   engine: Engine,
   config: JinnConfig,
   context: ApiContext,
-  opts?: { delayMs?: number; queueItemId?: string; attachments?: string[] },
+  opts?: { delayMs?: number; queueItemId?: string; attachments?: string[]; deliverToConnector?: boolean },
 ): void {
   const run = async () => {
     await context.sessionManager.getQueue().enqueue(session.sessionKey || session.sourceRef, async () => {
       context.emit("session:started", { sessionId: session.id });
-      await runWebSession(session, prompt, engine, config, context, opts?.attachments);
+      await runWebSession(session, prompt, engine, config, context, opts?.attachments, opts?.deliverToConnector);
     }, opts?.queueItemId);
   };
 
@@ -212,10 +288,9 @@ function dispatchWebSessionRun(
   }
 }
 
-/** Read a request body but abort once it exceeds `maxBytes` — guards loopback-only
- *  endpoints (e.g. /api/internal/hook) against unbounded buffering when no (or a
- *  lying) Content-Length is sent. Resolves `{ ok:false }` after destroying the
- *  socket; the caller must already have sent no response. */
+/** Read a request body but stop buffering once it exceeds `maxBytes`. The stream
+ *  is drained without retaining further chunks so the caller can still return a
+ *  deterministic 413 response on the existing HTTP connection. */
 function readBodyBounded(req: HttpRequest, maxBytes: number): Promise<{ ok: true; raw: string } | { ok: false }> {
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];
@@ -227,9 +302,10 @@ function readBodyBounded(req: HttpRequest, maxBytes: number): Promise<{ ok: true
       resolve(r);
     };
     req.on("data", (chunk: Buffer) => {
+      if (done) return;
       total += chunk.length;
       if (total > maxBytes) {
-        try { req.destroy(); } catch { /* already gone */ }
+        chunks.length = 0;
         finish({ ok: false });
         return;
       }
@@ -258,8 +334,19 @@ function readBodyRaw(req: HttpRequest): Promise<Buffer> {
   });
 }
 
-async function readJsonBody(req: HttpRequest, res: ServerResponse): Promise<{ ok: true; body: unknown } | { ok: false }> {
-  const raw = await readBody(req);
+async function readJsonBody(req: HttpRequest, res: ServerResponse, maxBytes?: number): Promise<{ ok: true; body: unknown } | { ok: false }> {
+  const contentLength = Number(req.headers["content-length"] ?? NaN);
+  if (maxBytes !== undefined && Number.isFinite(contentLength) && contentLength > maxBytes) {
+    req.resume();
+    json(res, { error: "Payload too large" }, 413);
+    return { ok: false };
+  }
+  const bounded = maxBytes === undefined ? undefined : await readBodyBounded(req, maxBytes);
+  if (bounded && !bounded.ok) {
+    json(res, { error: "Payload too large" }, 413);
+    return { ok: false };
+  }
+  const raw = bounded?.ok ? bounded.raw : await readBody(req);
   try {
     return { ok: true, body: JSON.parse(raw) };
   } catch {
@@ -308,7 +395,25 @@ function serverError(res: ServerResponse, message: string): void {
   json(res, { error: message }, 500);
 }
 
-const SANITIZED_KEYS = new Set(["token", "botToken", "signingSecret", "appToken"]);
+const SANITIZED_KEYS = new Set(["token", "botToken", "signingSecret", "appToken", "proxyViaToken"]);
+
+/** Mask the per-route bearer tokens inside connectors.*.channelRouting for
+ *  GET /api/config. deepMerge already restores "***" placeholders on PUT —
+ *  "token" is in SANITIZED_KEYS and the merge is recursive. */
+export function sanitizeChannelRouting(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([channel, route]) => [
+      channel,
+      route && typeof route === "object" && !Array.isArray(route)
+        ? {
+            ...(route as Record<string, unknown>),
+            token: (route as Record<string, unknown>).token ? "***" : undefined,
+          }
+        : route,
+    ]),
+  );
+}
 
 export function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): Record<string, unknown> {
   const result = { ...target };
@@ -317,6 +422,12 @@ export function deepMerge(target: Record<string, unknown>, source: Record<string
     const tv = target[key];
     // Skip sanitized secret placeholders — keep original value
     if (SANITIZED_KEYS.has(key) && sv === "***") continue;
+    // JSON cannot carry `undefined`. An explicit null removes an optional
+    // override, allowing clients to restore inherited/default behavior.
+    if (sv === null) {
+      delete result[key];
+      continue;
+    }
     if (Array.isArray(sv)) {
       // For arrays (e.g. instances), preserve secrets from matching items
       if (Array.isArray(tv)) {
@@ -375,7 +486,7 @@ function serializeSession(session: Session, context: ApiContext): Session {
 
 function checkInstanceHealth(port: number): Promise<boolean> {
   return new Promise((resolve) => {
-    const req = http.request({ hostname: "localhost", port, path: "/api/status", timeout: 2000 }, (res) => {
+    const req = http.request({ hostname: "localhost", port, path: "/api/health", timeout: 2000 }, (res) => {
       resolve(res.statusCode === 200);
       res.resume();
     });
@@ -395,6 +506,172 @@ export async function handleApiRequest(
   const method = req.method || "GET";
 
   try {
+    // /api/workflows/** — the Workflow engine (upstream port). Routed before the
+    // flat routes below; handleWorkflowApi returns false for everything else.
+    if (context.workflowService && pathname.startsWith("/api/workflows")) {
+      const authenticated = !workflowAuthRequired(context.getConfig())
+        || Boolean(context.authToken && context.authHome
+          && workflowVerifyAuth(req.headers, context.authToken, context.authHome));
+      if (await handleWorkflowApi(req, res, { method, pathname, url },
+        { service: context.workflowService, authenticated })) return;
+    }
+
+    // GET /api/onboarding/engines — is each configured engine INSTALLED and
+    // STARTABLE, and what login state can be observed locally? This is an
+    // install check with the best available auth signal — the wizard words it
+    // that way. It never spends tokens or reaches the network. One probe runs
+    // at a time (shared in-flight promise) and the result is cached briefly,
+    // so a burst of requests spawns one set of child processes, not many.
+    if (method === "GET" && pathname === "/api/onboarding/engines") {
+      const config = context.getConfig();
+      res.setHeader("Cache-Control", "no-store");
+      return json(res, await probeOnboardingEngines(config));
+    }
+
+    // POST /api/onboarding/slack/connect — the whole Slack hookup as ONE
+    // server-side operation: verify both tokens, save, reload, and if the
+    // connector still fails to start, put the previous Slack config back and
+    // reload again. The wizard calls only this, so "a wrong token never
+    // overwrites a working connection" holds across the verify→save gap too.
+    if (method === "POST" && pathname === "/api/onboarding/slack/connect") {
+      const { readJsonBody } = await import("./http-helpers.js");
+      const read = await readJsonBody(req, res, { maxBytes: 16 * 1024 });
+      if (!read.ok) return;
+      const body = read.body as { botToken?: unknown; appToken?: unknown } | null;
+      const botToken = typeof body?.botToken === "string" ? body.botToken.trim() : "";
+      const appToken = typeof body?.appToken === "string" ? body.appToken.trim() : "";
+      if (!botToken.startsWith("xoxb-") || !appToken.startsWith("xapp-")) {
+        return badRequest(res, "botToken must start with xoxb- and appToken with xapp-");
+      }
+      res.setHeader("Cache-Control", "no-store");
+      return json(res, await connectSlack(context, botToken, appToken));
+    }
+
+    // POST /api/onboarding/slack/verify — prove BOTH Slack tokens before
+    // anything is saved: auth.test for the bot token, apps.connections.open
+    // for the app token (Socket Mode). Nothing is written here; the wizard
+    // saves only after both answer ok, so a wrong token can never overwrite a
+    // working connection.
+    if (method === "POST" && pathname === "/api/onboarding/slack/verify") {
+      const { readJsonBody } = await import("./http-helpers.js");
+      const read = await readJsonBody(req, res, { maxBytes: 16 * 1024 });
+      if (!read.ok) return;
+      const body = read.body as { botToken?: unknown; appToken?: unknown } | null;
+      const botToken = typeof body?.botToken === "string" ? body.botToken.trim() : "";
+      const appToken = typeof body?.appToken === "string" ? body.appToken.trim() : "";
+      if (!botToken.startsWith("xoxb-") || !appToken.startsWith("xapp-")) {
+        return badRequest(res, "botToken must start with xoxb- and appToken with xapp-");
+      }
+      res.setHeader("Cache-Control", "no-store");
+      return json(res, await verifySlackTokens(botToken, appToken));
+    }
+
+    // GET /api/automation/templates — the fill-in-the-blanks workflow shapes.    // GET /api/automation/templates — the fill-in-the-blanks workflow shapes.
+    // Lives outside /api/workflows so a definition id can never shadow it.
+    if (method === "GET" && pathname === "/api/automation/templates") {
+      const { AUTOMATION_TEMPLATES } = await import("../workflows/templates.js");
+      return json(res, { templates: AUTOMATION_TEMPLATES, workflowsEnabled: Boolean(context.workflowService) });
+    }
+
+    // POST /api/automation/templates/:id  — build from a template
+    // POST /api/automation/definitions    — raw nodes/edges (agents, --file)
+    // Both validate the FULL definition (schema + executability) up front and
+    // then create+save+enable in ONE transaction (atomic-create.ts), so no
+    // failure can leave a skeleton definition behind.
+    {
+      const templateParams = matchRoute("/api/automation/templates/:id", pathname);
+      const isRawCreate = pathname === "/api/automation/definitions";
+      if (method === "POST" && (templateParams || isRawCreate)) {
+        if (!context.workflowService || !context.workflowDatabase || !context.workflowRepository) {
+          return json(res, { error: "Workflow エンジンが無効です。config.workflows.enabled: true にして再起動してください。" }, 404);
+        }
+        const { isJsonMediaType } = await import("./media-type.js");
+        if (!isJsonMediaType(req.headers["content-type"])) {
+          return json(res, { error: "Content-Type must be application/json" }, 415);
+        }
+        const { readJsonBody } = await import("./http-helpers.js");
+        const read = await readJsonBody(req, res, { maxBytes: 256 * 1024, rejectDuplicateTopLevelKeys: true });
+        if (!read.ok) return; // readJsonBody already responded (bad JSON / dup keys / too large)
+        const parsed = read.body;
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+          return badRequest(res, "Request body must be a JSON object");
+        }
+        const known = new Set(isRawCreate
+          ? ["name", "title", "description", "nodes", "edges", "enable"]
+          : ["name", "title", "vars", "enable"]);
+        const unknown = Object.keys(parsed).filter((key) => !known.has(key));
+        if (unknown.length > 0) return badRequest(res, `Unknown field(s): ${unknown.join(", ")}`);
+        const { name, title, vars, enable, description, nodes, edges } = parsed as {
+          name?: unknown; title?: unknown; vars?: unknown; enable?: unknown;
+          description?: unknown; nodes?: unknown; edges?: unknown;
+        };
+        if (typeof name !== "string" || !name.trim()) {
+          return badRequest(res, "name is required (workflow id, alphanumeric + hyphen)");
+        }
+        if (title !== undefined && typeof title !== "string") return badRequest(res, "title must be a string");
+        if (enable !== undefined && typeof enable !== "boolean") return badRequest(res, "enable must be a boolean");
+
+        const { TemplateError } = await import("../workflows/templates.js");
+        const { workflowDefinitionSchema } = await import("../workflows/model.js");
+        const { validateExecutableWorkflow } = await import("../workflows/validation.js");
+        const { WorkflowRepositoryError } = await import("../workflows/repository-support.js");
+        const { createWorkflowAtomically } = await import("./workflow-atomic-create.js");
+        try {
+          let builtDescription: string | undefined;
+          let builtNodes: unknown;
+          let builtEdges: unknown;
+          if (templateParams) {
+            if (vars !== undefined && (typeof vars !== "object" || vars === null || Array.isArray(vars)
+              || Object.values(vars).some((value) => typeof value !== "string"))) {
+              return badRequest(res, "vars must be an object of string values");
+            }
+            const { buildTemplateBody } = await import("../workflows/templates.js");
+            const built = buildTemplateBody(templateParams.id, (vars ?? {}) as Record<string, string>);
+            builtDescription = built.description;
+            builtNodes = built.nodes;
+            builtEdges = built.edges;
+          } else {
+            if (description !== undefined && typeof description !== "string") return badRequest(res, "description must be a string");
+            if (!Array.isArray(nodes) || !Array.isArray(edges)) return badRequest(res, "nodes and edges are required arrays");
+            builtDescription = description as string | undefined;
+            builtNodes = nodes;
+            builtEdges = edges;
+          }
+          // Pre-validate the complete definition the save would produce.
+          const now = new Date().toISOString();
+          const candidate = workflowDefinitionSchema.safeParse({
+            schemaVersion: 1, id: name, title: title ?? name,
+            ...(builtDescription ? { description: builtDescription } : {}),
+            revision: 1, enabled: false, createdAt: now, updatedAt: now,
+            nodes: builtNodes, edges: builtEdges,
+          });
+          if (!candidate.success) {
+            return json(res, { error: "Workflow definition is invalid.", issues: candidate.error.issues }, 422);
+          }
+          const executable = validateExecutableWorkflow(candidate.data);
+          if (!executable.ok) {
+            return json(res, { error: "Workflow definition is not executable.", issues: executable.issues }, 422);
+          }
+          const result = createWorkflowAtomically(context.workflowDatabase, context.workflowRepository, context.workflowService, {
+            id: name, title: (title as string | undefined) ?? name,
+            ...(builtDescription ? { description: builtDescription } : {}),
+            nodes: candidate.data.nodes, edges: candidate.data.edges,
+            enable: enable === true,
+          });
+          return json(res, result, 201);
+        } catch (error) {
+          if (error instanceof TemplateError) return json(res, { error: error.message }, 422);
+          if (error instanceof WorkflowRepositoryError) {
+            const status = error.code === "id-conflict" || error.code === "revision-conflict" ? 409
+              : error.code === "not-found" ? 404 : 422;
+            return json(res, { error: error.message, code: error.code }, status);
+          }
+          console.error(`[automation] create failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
+          return serverError(res, "Workflow create failed");
+        }
+      }
+    }
+
     // POST /api/internal/hook — receive Claude Code turn hooks from hook-relay.mjs
     // (interactive PTY engine). Loopback-only + shared-secret authenticated.
     if (method === "POST" && pathname === "/api/internal/hook") {
@@ -445,6 +722,12 @@ export async function handleApiRequest(
       return json(res, { ok: result.status === 200 }, result.status);
     }
 
+    // Minimal unauthenticated liveness probe. Do not add runtime metadata here.
+    if (method === "GET" && pathname === "/api/health") {
+      res.setHeader("Cache-Control", "no-store");
+      return json(res, { ok: true });
+    }
+
     // GET /api/status
     if (method === "GET" && pathname === "/api/status") {
       const config = context.getConfig();
@@ -453,6 +736,7 @@ export async function handleApiRequest(
       const connectors = Object.fromEntries(
         Array.from(context.connectors.values()).map((connector) => [connector.name, connector.getHealth()]),
       );
+      res.setHeader("Cache-Control", "no-store");
       return json(res, {
         status: "ok",
         uptime: Math.floor((Date.now() - context.startTime) / 1000),
@@ -468,19 +752,114 @@ export async function handleApiRequest(
         },
         sessions: { total: sessions.length, running, active: running },
         connectors,
+        storage: getDiskSpaceStatus(),
       });
+    }
+
+    // GET /api/update — fixed-origin npm registry check with a shared cache.
+    // `refresh=1` is used only by an explicit user action; normal dashboard
+    // loads reuse the six-hour cache to avoid unnecessary external traffic.
+    if (method === "GET" && pathname === "/api/update") {
+      res.setHeader("Cache-Control", "no-store");
+      return json(res, await checkForUpdates({ force: url.searchParams.get("refresh") === "1" }));
+    }
+
+    // Live Claude subscription buckets, including model-scoped weekly limits.
+    // The collector returns only a fixed projection; OAuth credentials and raw
+    // provider failures never cross the gateway boundary.
+    if (method === "GET" && pathname === "/api/usage/claude") {
+      return json(res, await collectClaudeUsage());
+    }
+
+    // Browser/device authentication. The state and redemption routes are the
+    // only public auth endpoints; code creation and device management pass
+    // through the gateway auth middleware (or Bearer token) in server.ts.
+    if (method === "GET" && pathname === "/api/auth/state") {
+      const authRequired = shouldRequireGatewayAuth(context.getConfig());
+      const authenticated = Boolean(
+        context.authToken && context.authHome && verifyGatewayAuth(req.headers, context.authToken, context.authHome),
+      );
+      res.setHeader("Cache-Control", "no-store");
+      return json(res, {
+        authRequired,
+        authenticated,
+        networkExposed: context.getConfig().gateway.host !== "127.0.0.1" && context.getConfig().gateway.host !== "localhost",
+      });
+    }
+
+    if (method === "POST" && pathname === "/api/auth/pairing-codes") {
+      if (!context.authHome) return json(res, { error: "Auth is not configured" }, 503);
+      return json(res, { ...issuePairingCode(context.authHome), ttlSeconds: 300 });
+    }
+
+    if (method === "POST" && pathname === "/api/auth/pair") {
+      if (!context.authHome) return json(res, { error: "Auth is not configured" }, 503);
+      const parsed = await readJsonBody(req, res, PAIR_BODY_MAX_BYTES);
+      if (!parsed.ok) return;
+      const gateway = context.getConfig().gateway;
+      const trustProxyHeaders = gateway.trustProxyHeaders === true;
+      const trustedProxyAddresses = gateway.trustedProxyAddresses ?? [];
+      const attemptKey = pairingAttemptKey(req, trustProxyHeaders, trustedProxyAddresses);
+      if (!pairingAttempts.claim(attemptKey) || !pairingGlobalAttempts.claim("global")) {
+        res.setHeader("Retry-After", String(Math.ceil(PAIR_ATTEMPT_WINDOW_MS / 1_000)));
+        return json(res, { error: "Too many pairing attempts" }, 429);
+      }
+      const code = (parsed.body as { code?: unknown }).code;
+      if (typeof code !== "string" || !consumePairingCode(context.authHome, code)) {
+        return json(res, { error: "Invalid or expired pairing code" }, 401);
+      }
+      const session = createAuthSession(context.authHome, req);
+      pairingAttempts.clear(attemptKey);
+      const secure = requestIsSecure(req, trustProxyHeaders, trustedProxyAddresses);
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("Set-Cookie", authCookieHeaders(session.secret, session.id, context.authHome, secure));
+      return json(res, { status: "ok" });
+    }
+
+    if (method === "POST" && pathname === "/api/auth/logout") {
+      if (context.authHome) {
+        const id = currentDeviceId(req.headers, context.authHome);
+        if (id) revokeAuthSession(context.authHome, id);
+      }
+      res.setHeader("Set-Cookie", clearAuthCookieHeaders(context.authHome ?? JINN_HOME));
+      return json(res, { status: "ok" });
+    }
+
+    if (method === "GET" && pathname === "/api/auth/devices") {
+      if (!context.authHome) return json(res, { devices: [] });
+      return json(res, { devices: listAuthSessions(context.authHome, currentDeviceId(req.headers, context.authHome)) });
+    }
+
+    let authParams = matchRoute("/api/auth/devices/:id", pathname);
+    if (method === "DELETE" && authParams) {
+      if (!context.authHome) return json(res, { error: "Auth is not configured" }, 503);
+      const current = currentDeviceId(req.headers, context.authHome) === authParams.id;
+      if (!revokeAuthSession(context.authHome, authParams.id)) return notFound(res);
+      if (current) res.setHeader("Set-Cookie", clearAuthCookieHeaders(context.authHome));
+      return json(res, { status: "ok", current });
     }
 
     // GET /api/instances
     if (method === "GET" && pathname === "/api/instances") {
       const instances = loadInstances();
       const currentPort = context.getConfig().gateway.port || 7777;
+      const gateway = context.getConfig().gateway;
+      const protocol = requestIsSecure(
+        req,
+        gateway.trustProxyHeaders === true,
+        gateway.trustedProxyAddresses ?? [],
+      ) ? "https" : "http";
+      let requestHostname = "localhost";
+      try { requestHostname = new URL(`${protocol}://${req.headers.host || "localhost"}`).hostname; } catch { /* fallback */ }
+      const urlHost = requestHostname.includes(":") ? `[${requestHostname}]` : requestHostname;
       const results = await Promise.all(
         instances.map(async (inst) => ({
           name: inst.name,
+          displayName: inst.name.split("-").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" "),
           port: inst.port,
           running: inst.port === currentPort ? true : await checkInstanceHealth(inst.port),
           current: inst.port === currentPort,
+          switchUrl: `${protocol}://${urlHost}:${inst.port}/chat`,
         }))
       );
       return json(res, results);
@@ -488,8 +867,35 @@ export async function handleApiRequest(
 
     // GET /api/sessions
     if (method === "GET" && pathname === "/api/sessions") {
+      if (url.searchParams.has("limit") || url.searchParams.has("cursor")) {
+        let cursor;
+        try { cursor = decodeSessionCursor(url.searchParams.get("cursor")); }
+        catch (err) { return badRequest(res, err instanceof Error ? err.message : String(err)); }
+        const limit = Math.max(1, Math.min(parseInt(url.searchParams.get("limit") || "100", 10) || 100, 200));
+        const page = listSessionPage(limit, cursor);
+        return json(res, {
+          sessions: page.sessions.map((session) => serializeSession(session, context)),
+          nextCursor: encodeSessionCursor(page.nextCursor),
+        });
+      }
       const sessions = listSessions();
       return json(res, sessions.map((session) => serializeSession(session, context)));
+    }
+
+    // GET /api/search/messages?q=... — FTS5 over user/assistant history.
+    if (method === "GET" && pathname === "/api/search/messages") {
+      const query = (url.searchParams.get("q") || "").replace(/[\u0000-\u001f\u007f]/g, " ").trim();
+      if (!query) return badRequest(res, "q is required");
+      if (query.length > 500) return badRequest(res, "q is too long (max 500 characters)");
+      const role = url.searchParams.get("role");
+      if (role && role !== "user" && role !== "assistant") return badRequest(res, 'role must be "user" or "assistant"');
+      const results = searchMessages(query, parseInt(url.searchParams.get("limit") || "20", 10), {
+        sessionId: url.searchParams.get("sessionId") || undefined,
+        employee: url.searchParams.get("employee") || undefined,
+        engine: url.searchParams.get("engine") || undefined,
+        role: role as "user" | "assistant" | undefined,
+      });
+      return json(res, { query, results, indexing: isFtsBackfillPending() });
     }
 
     // GET /api/sessions/interrupted — list sessions that can be resumed after a restart
@@ -504,26 +910,38 @@ export async function handleApiRequest(
     if (method === "GET" && params) {
       const session = getSession(params.id);
       if (!session) return notFound(res);
-      let messages = getMessages(params.id);
+      const includeMessages = url.searchParams.get("messages") !== "0";
+      const lastN = Math.max(0, Math.min(parseInt(url.searchParams.get("last") || "0", 10) || 0, 200));
+      let messagePage = includeMessages && lastN > 0 ? getMessagePage(params.id, { limit: lastN }) : null;
+      let messages = includeMessages ? (messagePage?.messages ?? getMessages(params.id)) : [];
 
       // Backfill from Claude Code's JSONL transcript if our DB has no messages
-      if (messages.length === 0 && session.engineSessionId) {
+      if (includeMessages && messages.length === 0 && session.engineSessionId) {
         const transcriptMessages = loadTranscriptMessages(session.engineSessionId);
         if (transcriptMessages.length > 0) {
           for (const tm of transcriptMessages) {
             insertMessage(params.id, tm.role, tm.content);
           }
-          messages = getMessages(params.id);
+          messagePage = lastN > 0 ? getMessagePage(params.id, { limit: lastN }) : null;
+          messages = messagePage?.messages ?? getMessages(params.id);
         }
       }
 
-      // Support ?last=N to return only the N most recent messages
-      const lastN = parseInt(url.searchParams.get("last") || "0", 10);
-      if (lastN > 0 && messages.length > lastN) {
-        messages = messages.slice(-lastN);
-      }
+      return json(res, {
+        ...serializeSession(session, context),
+        ...(includeMessages ? { messages } : {}),
+        ...(messagePage ? { messagesPage: { hasOlder: messagePage.hasOlder } } : {}),
+      });
+    }
 
-      return json(res, { ...serializeSession(session, context), messages });
+    // GET /api/sessions/:id/messages?before=<messageId>&limit=N
+    params = matchRoute("/api/sessions/:id/messages", pathname);
+    if (method === "GET" && params) {
+      if (!getSession(params.id)) return notFound(res);
+      const limit = Math.max(1, Math.min(parseInt(url.searchParams.get("limit") || "100", 10) || 100, 200));
+      const around = url.searchParams.get("around");
+      if (around) return json(res, getMessageWindow(params.id, around, Math.min(limit, 100)));
+      return json(res, getMessagePage(params.id, { before: url.searchParams.get("before") || undefined, limit }));
     }
 
     // PUT /api/sessions/:id
@@ -564,6 +982,7 @@ export async function handleApiRequest(
 
       const deleted = deleteSession(params.id);
       if (!deleted) return notFound(res);
+      ptySnapshotStore.deleteSync(params.id);
       logger.info(`Session deleted: ${params.id}`);
       context.emit("session:deleted", { sessionId: params.id });
       return json(res, { status: "deleted" });
@@ -604,6 +1023,7 @@ export async function handleApiRequest(
         lastError: null,
         transportMeta: meta as any,
       });
+      ptySnapshotStore.deleteSync(params.id);
       logger.info(`Session ${params.id} reset via API (cleared engineSessions, engineOverride, engineSessionId, lastError)`);
       context.emit("session:updated", { sessionId: params.id });
       return json(res, { status: "reset", sessionId: params.id });
@@ -727,6 +1147,7 @@ export async function handleApiRequest(
 
       const count = deleteSessions(ids);
       for (const id of ids) {
+        ptySnapshotStore.deleteSync(id);
         context.emit("session:deleted", { sessionId: id });
       }
       logger.info(`Bulk deleted ${count} sessions`);
@@ -783,8 +1204,8 @@ export async function handleApiRequest(
       if (!_parsed.ok) return;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const body = _parsed.body as any;
-      const prompt = body.prompt || body.message;
-      if (!prompt) return badRequest(res, "prompt or message is required");
+      const prompt = messageText(body, ["prompt", "message"]);
+      if (!prompt) return badRequest(res, "prompt or message must be a non-empty string");
       const config = context.getConfig();
       const engineName = body.engine || config.engines.default;
       const sessionKey = `web:${Date.now()}`;
@@ -844,19 +1265,48 @@ export async function handleApiRequest(
       if (!_parsed.ok) return;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const body = _parsed.body as any;
-      const prompt = body.message || body.prompt;
-      if (!prompt) return badRequest(res, "message is required");
+      const prompt = messageText(body, ["message", "prompt"]);
+      if (!prompt) return badRequest(res, "message must be a non-empty string");
 
       // Allow internal callers (e.g. child session callbacks) to specify a non-user role
       const messageRole: string = body.role === "notification" ? "notification" : "user";
       const isNotification = messageRole === "notification";
 
+      // Notification wake-ups are a loopback-only mechanism (job monitors,
+      // child-session callbacks). A remote caller must not be able to wake an
+      // arbitrary session — the woken turn can post into its origin Slack
+      // conversation, so this would be a remote-to-customer-channel bridge.
+      if (isNotification && (!req.socket.remoteAddress || !HOOK_LOOPBACK.has(req.socket.remoteAddress))) {
+        return json(res, { error: "notification role is loopback-only" }, 403);
+      }
+
+      // Idempotency: a job monitor retries its wake-up when a response is
+      // lost after the gateway already accepted it. Same dedupeKey (+ an
+      // identical persisted notification, which survives restarts) → don't
+      // enqueue a second engine turn. The key is only REMEMBERED after the
+      // message + queue item are durably persisted below, so a failure
+      // before that point never turns the retry into a false duplicate.
+      const dedupeKey = typeof body.dedupeKey === "string" && body.dedupeKey.trim() ? body.dedupeKey.trim() : null;
+      const dedupedNotification = isNotification && dedupeKey !== null;
+      if (dedupedNotification) {
+        const duplicate = seenDedupeKeys.has(dedupeKey!)
+          || getMessages(session.id).some((m) => m.role === "notification" && m.content === prompt);
+        if (duplicate) {
+          return json(res, { status: "duplicate", sessionId: session.id });
+        }
+      }
+
       const config = context.getConfig();
       const engine = context.sessionManager.getEngine(session.engine);
       if (!engine) return serverError(res, `Engine "${session.engine}" not available`);
 
-      // Persist the message immediately
-      insertMessage(session.id, messageRole, prompt);
+      // Persist the message immediately. Deduped notifications defer this to
+      // the atomic message+queue-item write below — the duplicate check above
+      // treats "message exists" as "turn queued", so the two writes must
+      // never be separable by a crash.
+      if (!dedupedNotification) {
+        insertMessage(session.id, messageRole, prompt);
+      }
 
       // Emit notification event for UI display (renders as system banner, not user bubble)
       if (isNotification) {
@@ -907,10 +1357,20 @@ export async function handleApiRequest(
       const attachmentPaths = resolveAttachmentPaths(body.attachments);
 
       const sessionKey = session.sessionKey || session.sourceRef || session.id;
-      const queueItemId = enqueueQueueItem(session.id, sessionKey, prompt);
+      const queueItemId = dedupedNotification
+        ? insertNotificationWithQueueItem(session.id, sessionKey, prompt)
+        : enqueueQueueItem(session.id, sessionKey, prompt);
+      if (dedupedNotification) rememberDedupeKey(dedupeKey!);
       context.emit("queue:updated", { sessionId: session.id, sessionKey });
 
-      dispatchWebSessionRun(session, prompt, engine, config, context, { queueItemId, attachments: attachmentPaths.length > 0 ? attachmentPaths : undefined });
+      dispatchWebSessionRun(session, prompt, engine, config, context, {
+        queueItemId,
+        attachments: attachmentPaths.length > 0 ? attachmentPaths : undefined,
+        // A notification wake-up (detached job finished, child callback) runs
+        // on this connector-less path; deliver the answer back to the origin
+        // conversation so e.g. a Slack thread is not left waiting silently.
+        deliverToConnector: isNotification,
+      });
 
       return json(res, { status: "queued", sessionId: session.id });
     }
@@ -954,11 +1414,16 @@ export async function handleApiRequest(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const body = _parsed.body as any;
       const jobs = loadJobs();
+      const newJobId = typeof body.id === "string" && body.id.trim() ? body.id.trim() : crypto.randomUUID();
+      if (jobs.some((job) => job.id === newJobId)) {
+        return json(res, { error: `Cron job id already exists: ${newJobId}` }, 409);
+      }
       const newJob: CronJob = {
-        id: body.id || crypto.randomUUID(),
+        id: newJobId,
         name: body.name || "untitled",
         enabled: body.enabled ?? true,
         schedule: body.schedule || "0 * * * *",
+        kind: body.kind === "update-notification" ? "update-notification" : "prompt",
         timezone: body.timezone,
         engine: body.engine,
         model: body.model,
@@ -966,6 +1431,16 @@ export async function handleApiRequest(
         prompt: body.prompt || "",
         delivery: body.delivery,
       };
+      if (newJob.kind === "update-notification") {
+        if (!cron.validate(newJob.schedule)) return badRequest(res, "Invalid cron schedule");
+        if (newJob.enabled && (
+          !newJob.delivery ||
+          typeof newJob.delivery.connector !== "string" || !newJob.delivery.connector.trim() ||
+          typeof newJob.delivery.channel !== "string" || !newJob.delivery.channel.trim()
+        )) {
+          return badRequest(res, "Enabled update notifications require a delivery connector and channel");
+        }
+      }
       jobs.push(newJob);
       saveJobs(jobs);
       reloadScheduler(jobs);
@@ -982,7 +1457,21 @@ export async function handleApiRequest(
       if (!_parsed.ok) return;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const body = _parsed.body as any;
-      jobs[idx] = { ...jobs[idx], ...body, id: params.id };
+      const updated = { ...jobs[idx], ...body, id: params.id } as CronJob;
+      if (updated.kind !== undefined && updated.kind !== "prompt" && updated.kind !== "update-notification") {
+        return badRequest(res, "Invalid cron job kind");
+      }
+      if (updated.kind === "update-notification") {
+        if (!cron.validate(updated.schedule)) return badRequest(res, "Invalid cron schedule");
+        if (updated.enabled && (
+          !updated.delivery ||
+          typeof updated.delivery.connector !== "string" || !updated.delivery.connector.trim() ||
+          typeof updated.delivery.channel !== "string" || !updated.delivery.channel.trim()
+        )) {
+          return badRequest(res, "Enabled update notifications require a delivery connector and channel");
+        }
+      }
+      jobs[idx] = updated;
       saveJobs(jobs);
       reloadScheduler(jobs);
       return json(res, jobs[idx]);
@@ -1353,6 +1842,8 @@ Handle this as a priority request from a colleague.`;
             signingSecret: inst?.signingSecret ? "***" : undefined,
             botToken: inst?.botToken ? "***" : undefined,
             appToken: inst?.appToken ? "***" : undefined,
+            proxyViaToken: inst?.proxyViaToken ? "***" : undefined,
+            channelRouting: sanitizeChannelRouting(inst?.channelRouting),
           }));
         } else if (v && typeof v === "object") {
           sanitizedConnectors[k] = {
@@ -1361,6 +1852,8 @@ Handle this as a priority request from a colleague.`;
             signingSecret: (v as any)?.signingSecret ? "***" : undefined,
             botToken: (v as any)?.botToken ? "***" : undefined,
             appToken: (v as any)?.appToken ? "***" : undefined,
+            proxyViaToken: (v as any)?.proxyViaToken ? "***" : undefined,
+            channelRouting: sanitizeChannelRouting((v as any)?.channelRouting),
           };
         } else {
           sanitizedConnectors[k] = v;
@@ -1395,6 +1888,7 @@ Handle this as a priority request from a colleague.`;
         "mcp",
         "sessions",
         "cron",
+        "workflows",
         "notifications",
         "portal",
         "context",
@@ -1418,6 +1912,10 @@ Handle this as a priority request from a colleague.`;
       if (body.engines !== undefined && (typeof body.engines !== "object" || Array.isArray(body.engines))) {
         return badRequest(res, "engines must be an object");
       }
+      // Every read→merge→write→reload of config.yaml runs under one lock, so a
+      // concurrent writer (another PUT, the onboarding Slack connect and its
+      // rollback) can never interleave with — or be overwritten by — this one.
+      return withConfigLock(async () => {
       // Deep-merge incoming config with existing config to preserve
       // fields not included in the update (e.g. connector tokens).
       let existing: Record<string, unknown> = {};
@@ -1457,6 +1955,7 @@ Handle this as a priority request from a colleague.`;
 
       fs.writeFileSync(CONFIG_PATH, yamlStr);
       invalidateModelRegistry(); // models/engines may have changed — rebuild on next read
+      _resetEngineProbeCache(); // engine bins may have changed — the onboarding probe must re-run
       logger.info("Config updated via API");
 
       if (connectorsChanged && context.reloadAllConnectors) {
@@ -1501,6 +2000,7 @@ Handle this as a priority request from a colleague.`;
       }
 
       return json(res, { status: "ok" });
+      });
     }
 
     // GET /api/logs
@@ -1556,6 +2056,7 @@ Handle this as a priority request from a colleague.`;
 
       // Download attachments from Discord CDN URLs to local temp
       const { downloadAttachment } = await import("../connectors/discord/format.js");
+      const { sanitizeIncomingDiscordMeta } = await import("../connectors/discord/remote.js");
       const attachments = await Promise.all(
         (body.attachments || []).map(async (att: { name: string; url: string; mimeType: string }) => {
           if (att.url) {
@@ -1582,7 +2083,9 @@ Handle this as a priority request from a colleague.`;
         messageId: body.messageId,
         attachments,
         replyContext: body.replyContext || {},
-        transportMeta: body.transportMeta,
+        // Boundary scrub: this endpoint carries Discord traffic — drop
+        // cross-platform identity fields a forged payload might smuggle in.
+        transportMeta: sanitizeIncomingDiscordMeta(body.transportMeta) as IncomingMessage["transportMeta"],
         raw: body,
       };
 
@@ -1608,10 +2111,17 @@ Handle this as a priority request from a colleague.`;
       let messageId: string | undefined;
 
       switch (action) {
-        case "sendMessage":
+        case "sendMessage": {
           if (!target || !body.text) return badRequest(res, "target and text are required");
-          messageId = (await connector.sendMessage(target, body.text)) as string | undefined;
+          // Same contract as /send: an explicit thread on the target means a
+          // thread reply. Connectors' sendMessage historically dropped
+          // target.thread, landing "thread replies" bare in the channel (#6).
+          const proxyThread = explicitThread(target.thread);
+          messageId = proxyThread
+            ? ((await connector.replyMessage({ ...target, thread: proxyThread }, body.text)) as string | undefined)
+            : ((await connector.sendMessage(target, body.text)) as string | undefined);
           break;
+        }
         case "replyMessage":
           if (!target || !body.text) return badRequest(res, "target and text are required");
           messageId = (await connector.replyMessage(target, body.text)) as string | undefined;
@@ -1650,9 +2160,9 @@ Handle this as a priority request from a colleague.`;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const body = _parsed.body as any;
       if (!body.channel || !body.text) return badRequest(res, "channel and text are required");
-      const hasThread = typeof body.thread === "string" && body.thread.trim().length > 0;
-      const target = { channel: body.channel, thread: body.thread };
-      if (hasThread) {
+      const thread = explicitThread(body.thread);
+      const target = { channel: body.channel, thread };
+      if (thread) {
         await connector.replyMessage(target, body.text);
       } else {
         await connector.sendMessage(target, body.text);
@@ -1749,61 +2259,56 @@ Handle this as a priority request from a colleague.`;
       const body = _parsed.body as any;
       const { portalName, operatorName, language } = body;
 
-      // Read current config and merge portal settings
+      // Read current config and merge portal settings. Empty strings are
+      // treated as "not provided" — deleting the key would silently revert
+      // the portal to its defaults.
       const config = context.getConfig();
-      const updated = {
-        ...config,
-        portal: {
-          ...config.portal,
-          onboarded: true,
-          ...(portalName !== undefined && { portalName: portalName || undefined }),
-          ...(operatorName !== undefined && { operatorName: operatorName || undefined }),
-          ...(language !== undefined && { language: language || undefined }),
-        },
+      const provided = (v: unknown): v is string => typeof v === "string" && v.trim() !== "";
+      const portalPatch: Record<string, unknown> = {
+        ...config.portal,
+        onboarded: true,
+        ...(provided(portalName) && { portalName }),
+        ...(provided(operatorName) && { operatorName }),
+        ...(provided(language) && { language }),
       };
+      const updated = { ...config, portal: portalPatch };
 
-      // Write updated config
-      const yamlStr = yaml.dump(updated, { lineWidth: -1 });
-      fs.writeFileSync(CONFIG_PATH, yamlStr);
+      // Patch only the portal block — a whole-file yaml.dump would strip
+      // every comment the shipped config template carries.
+      const rawConfig = fs.existsSync(CONFIG_PATH) ? fs.readFileSync(CONFIG_PATH, "utf-8") : "";
+      writeFileAtomic(CONFIG_PATH, patchPortalSection(rawConfig, portalPatch));
       logger.info(`Onboarding: portal name="${portalName}", operator="${operatorName}", language="${language}"`);
 
-      const effectiveName = portalName || "Ryoko";
+      const effectiveName = resolveEffectiveName(portalName, config.portal?.portalName);
       const languageSection = language && language !== "English"
         ? `\n\n## Language\nAlways respond in ${language}. All communication with the user must be in ${language}.`
         : "";
 
-      // Update CLAUDE.md with personalized COO name and language
-      const claudeMdPath = path.join(JINN_HOME, "CLAUDE.md");
-      if (fs.existsSync(claudeMdPath)) {
-        let claudeMd = fs.readFileSync(claudeMdPath, "utf-8");
-        // Replace the identity line in CLAUDE.md
-        claudeMd = claudeMd.replace(
-          /^You are \w+, the COO of the user's AI organization\.$/m,
-          `You are ${effectiveName}, the COO of the user's AI organization.`,
-        );
-        // Remove existing language section if present, then add new one if needed
-        claudeMd = claudeMd.replace(/\n\n## Language\nAlways respond in .+\. All communication with the user must be in .+\./m, "");
-        if (languageSection) {
-          claudeMd = claudeMd.trimEnd() + languageSection + "\n";
+      // Update CLAUDE.md / AGENTS.md: language section always; the name only
+      // when this request actually carries one (a language-only update must
+      // not rename a customized assistant back to the default).
+      for (const filename of ["CLAUDE.md", "AGENTS.md"]) {
+        const mdPath = path.join(JINN_HOME, filename);
+        if (!fs.existsSync(mdPath)) continue;
+        let md = fs.readFileSync(mdPath, "utf-8");
+        if (provided(portalName)) {
+          md = personalizeInstructionMd(md, effectiveName);
         }
-        fs.writeFileSync(claudeMdPath, claudeMd);
+        // Remove existing language section if present, then add new one if needed
+        md = md.replace(/\n\n## Language\nAlways respond in .+\. All communication with the user must be in .+\./m, "");
+        if (languageSection) {
+          md = md.trimEnd() + languageSection + "\n";
+        }
+        writeFileAtomic(mdPath, md);
       }
 
-      // Update AGENTS.md with personalized name and language
-      const agentsMdPath = path.join(JINN_HOME, "AGENTS.md");
-      if (fs.existsSync(agentsMdPath)) {
-        let agentsMd = fs.readFileSync(agentsMdPath, "utf-8");
-        // Replace the bold identity line (e.g. "You are **Jinn**")
-        agentsMd = agentsMd.replace(
-          /You are \*\*\w+\*\*/,
-          `You are **${effectiveName}**`,
+      // Keep the persona file's Name section in sync
+      const identityMdPath = path.join(JINN_HOME, "IDENTITY.md");
+      if (provided(portalName) && fs.existsSync(identityMdPath)) {
+        writeFileAtomic(
+          identityMdPath,
+          personalizeIdentityMd(fs.readFileSync(identityMdPath, "utf-8"), effectiveName),
         );
-        // Remove existing language section if present, then add new one if needed
-        agentsMd = agentsMd.replace(/\n\n## Language\nAlways respond in .+\. All communication with the user must be in .+\./m, "");
-        if (languageSection) {
-          agentsMd = agentsMd.trimEnd() + languageSection + "\n";
-        }
-        fs.writeFileSync(agentsMdPath, agentsMd);
       }
 
       context.emit("config:updated", { portal: updated.portal });
@@ -2041,6 +2546,7 @@ Handle this as a priority request from a colleague.`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error(`API error: ${msg}`);
+    if (msg.startsWith("Insufficient disk space")) return json(res, { error: msg }, 507);
     return serverError(res, msg);
   }
 }
@@ -2235,6 +2741,11 @@ async function runWebSession(
   config: JinnConfig,
   context: ApiContext,
   attachments?: string[],
+  /** Deliver the final answer to the session's origin connector (Slack thread
+   *  etc.). Set for notification-triggered wake-ups: this run path has no
+   *  connector of its own, so without explicit delivery a woken Slack session
+   *  would compute its reply and post it nowhere (issue #38 follow-up). */
+  deliverToConnector?: boolean,
 ): Promise<void> {
   const currentSession = getSession(session.id);
   if (!currentSession) {
@@ -2268,13 +2779,24 @@ async function runWebSession(
   try {
 
     const systemPrompt = buildContext({
-      source: "web",
+      // Preserve the session's true origin — labeling everything "web" here
+      // would grant web-level trust (MEMORY injection) to Slack/cron-origin
+      // sessions driven through this runner.
+      source: currentSession.source || "web",
       channel: currentSession.sourceRef,
       user: "web-user",
       employee,
       connectors: Array.from(context.connectors.keys()),
       config,
       sessionId: currentSession.id,
+      // Interactive PTY survives across turns; everything else is a one-shot
+      // process whose background tasks die at turn end (#38).
+      processLifetime:
+        currentSession.engine === "claude" &&
+        config.engines.claude?.interactive === true &&
+        !employee?.sshHost
+          ? "persistent"
+          : "one-shot",
       hierarchy: orgHierarchy,
     });
 
@@ -2349,7 +2871,6 @@ async function runWebSession(
     }).finally(() => {
       clearInterval(runHeartbeat);
     });
-
     if (!getSession(currentSession.id)) {
       logger.info(`Skipping completion for deleted web session ${currentSession.id}`);
       return;
@@ -2443,6 +2964,7 @@ async function runWebSession(
               });
             },
           });
+          recordTurnAccounting(currentSession.id, fallbackResult);
 
           if (fallbackResult.result) {
             insertMessage(currentSession.id, "assistant", fallbackResult.result);
@@ -2466,6 +2988,10 @@ async function runWebSession(
           });
           if (completedFallback) {
             notifyParentSession(completedFallback, { result: fallbackResult.result, error: fallbackResult.error ?? null, cost: fallbackResult.cost, durationMs: fallbackResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
+            if (deliverToConnector && fallbackResult.result && !fallbackResult.error) {
+              const delivery = await deliverToOriginConnector(completedFallback, fallbackResult.result, context.connectors);
+              if (isUndeliveredToOrigin(delivery, completedFallback)) recordFailedOriginDelivery(completedFallback, context.emit);
+            }
           }
 
           context.emit("session:completed", {
@@ -2576,7 +3102,6 @@ async function runWebSession(
               });
             },
           });
-
           const retryInterrupted = retryResult.error?.startsWith("Interrupted");
           const retryRateLimit = !retryInterrupted ? detectRateLimit(retryResult) : { limited: false as const };
 
@@ -2600,6 +3125,7 @@ async function runWebSession(
           }
 
           // Usage limit cleared — handle result
+          recordTurnAccounting(currentSession.id, retryResult);
           if (retryResult.result) {
             insertMessage(currentSession.id, "assistant", retryResult.result);
           }
@@ -2618,6 +3144,10 @@ async function runWebSession(
               `✅ Claude usage limit cleared. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} resumed.`,
             );
             notifyParentSession(completedAfterRetry, { result: retryResult.result, error: retryResult.error ?? null, cost: retryResult.cost, durationMs: retryResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
+            if (deliverToConnector && retryResult.result && !retryResult.error) {
+              const delivery = await deliverToOriginConnector(completedAfterRetry, retryResult.result, context.connectors);
+              if (isUndeliveredToOrigin(delivery, completedAfterRetry)) recordFailedOriginDelivery(completedAfterRetry, context.emit);
+            }
           }
 
           context.emit("session:completed", {
@@ -2658,11 +3188,24 @@ async function runWebSession(
       }
     }
 
+    // A turn interrupted by a newer user message is not an error — the newer
+    // message is already being dispatched as its own turn. Surface a calm
+    // notice instead of a red error, and let the new turn drive the UI/status.
+    if (wasInterrupted) {
+      const noticeText = "🔄 新しいメッセージを踏まえて再検討";
+      insertMessage(currentSession.id, "notification", noticeText);
+      context.emit("session:notification", { sessionId: currentSession.id, message: noticeText });
+      updateSession(currentSession.id, { lastActivity: new Date().toISOString(), lastError: null });
+      logger.info(`Web session ${currentSession.id} interrupted by new message — reconsidering`);
+      return;
+    }
+
     // Persist the assistant response
     if (result.result) {
       insertMessage(currentSession.id, "assistant", result.result);
     }
 
+    recordTurnAccounting(currentSession.id, result);
     const completedSession = updateSession(currentSession.id, {
       ...(result.sessionId?.trim() ? { engineSessionId: result.sessionId } : {}),
       status: result.error ? "error" : "idle",
@@ -2680,6 +3223,10 @@ async function runWebSession(
     }
     if (completedSession) {
       notifyParentSession(completedSession, { result: result.result, error: result.error ?? null, cost: result.cost, durationMs: result.durationMs }, { alwaysNotify: employee?.alwaysNotify });
+      if (deliverToConnector && result.result && !result.error) {
+        const delivery = await deliverToOriginConnector(completedSession, result.result, context.connectors);
+        if (isUndeliveredToOrigin(delivery, completedSession)) recordFailedOriginDelivery(completedSession, context.emit);
+      }
     }
 
     context.emit("session:completed", {
@@ -2718,4 +3265,301 @@ async function runWebSession(
     });
     logger.error(`Web session ${currentSession.id} error: ${errMsg}`);
   }
+}
+
+
+// ---------------------------------------------------------------------------
+// Config write serialization (fork addition)
+// ---------------------------------------------------------------------------
+
+/** One writer at a time for config.yaml + connector reload. The chain never
+ *  rejects: a failing writer settles its own promise and the next waiter runs. */
+let configWriteChain: Promise<void> = Promise.resolve();
+export function withConfigLock<T>(work: () => Promise<T>): Promise<T> {
+  const run = configWriteChain.then(work, work);
+  configWriteChain = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+// ---------------------------------------------------------------------------
+// Onboarding probes (fork addition)
+// ---------------------------------------------------------------------------
+
+interface EngineProbeResult {
+  name: string;
+  configured: boolean;
+  installed: boolean;
+  runnable: boolean;
+  bin?: string;
+  version?: string;
+  error?: string;
+  auth?: { method: "api-key" | "oauth" | "chatgpt" | "none" | "unknown"; expiresAt?: string; expired?: boolean; note: string };
+}
+
+const ENGINE_PROBE_TTL_MS = 10_000;
+type EngineProbePayload = { default: string; probedAt: string; engines: EngineProbeResult[] };
+/** Cache and in-flight probe are keyed by the engine config they were taken
+ *  under, so a bin/default change is never answered from a stale result — and
+ *  a probe started under the old config only ever caches under the old key. */
+let engineProbeInFlight: { key: string; promise: Promise<EngineProbePayload> } | null = null;
+let engineProbeCache: { key: string; at: number; value: EngineProbePayload } | null = null;
+
+function engineProbeKey(config: JinnConfig): string {
+  return JSON.stringify({
+    default: config.engines.default,
+    claude: config.engines.claude?.bin, codex: config.engines.codex?.bin, gemini: config.engines.gemini?.bin,
+  });
+}
+
+function runBinary(bin: string, args: string[], timeoutMs: number): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    import("node:child_process").then(({ execFile }) => {
+      execFile(bin, args, { timeout: timeoutMs, windowsHide: true }, (err, stdout, stderr) => {
+        resolve({ ok: !err, stdout: String(stdout ?? ""), stderr: String(stderr ?? err?.message ?? "") });
+      });
+    });
+  });
+}
+
+async function probeEngine(name: string, bin: string | undefined): Promise<EngineProbeResult> {
+  if (!bin) return { name, configured: false, installed: false, runnable: false };
+  const { tryResolveBin } = await import("../shared/resolveBin.js");
+  const resolved = tryResolveBin(bin);
+  if (!resolved) return { name, configured: true, installed: false, runnable: false, bin, error: `${bin} が PATH にありません` };
+  const version = await runBinary(resolved, ["--version"], 8_000);
+  if (!version.ok) {
+    return { name, configured: true, installed: true, runnable: false, bin: resolved,
+      error: version.stderr.trim().split("\n")[0] || "起動に失敗しました" };
+  }
+  return { name, configured: true, installed: true, runnable: true, bin: resolved, version: version.stdout.trim().split("\n")[0] };
+}
+
+/** What can be observed about Claude's login WITHOUT spending anything: an API
+ *  key in the environment, or the subscription OAuth file's expiry. Neither
+ *  proves the credential still works — the note says so. */
+function observeClaudeAuth(): NonNullable<EngineProbeResult["auth"]> {
+  if (process.env.ANTHROPIC_API_KEY) return { method: "api-key", note: "API キーが設定されています（有効性は初回実行時に判明）" };
+  try {
+    const dir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
+    const raw = fs.readFileSync(path.join(dir, ".credentials.json"), "utf-8");
+    const expiresAt = JSON.parse(raw)?.claudeAiOauth?.expiresAt;
+    if (typeof expiresAt === "number" && expiresAt > 0) {
+      const expired = expiresAt < Date.now();
+      return { method: "oauth", expiresAt: new Date(expiresAt).toISOString(), expired,
+        note: expired ? "ログインの期限が切れています（claude を一度起動すると更新されます）" : "ログイン情報があります（有効性は初回実行時に判明）" };
+    }
+    return { method: "unknown", note: "ログイン情報の形式を判定できませんでした" };
+  } catch {
+    return { method: "none", note: "ログイン情報が見つかりません（端末で claude と入力してログイン）" };
+  }
+}
+
+/** `codex login status` answers with its exit code — the one engine that can
+ *  be asked directly, still without spending anything. */
+async function observeCodexAuth(resolvedBin: string): Promise<NonNullable<EngineProbeResult["auth"]>> {
+  const status = await runBinary(resolvedBin, ["login", "status"], 8_000);
+  if (status.ok) return { method: "chatgpt", note: (status.stdout.trim().split("\n")[0] || "ログイン済み") };
+  return { method: "none", note: "未ログインです（端末で codex login を実行）" };
+}
+
+async function probeOnboardingEngines(config: JinnConfig): Promise<EngineProbePayload> {
+  const key = engineProbeKey(config);
+  if (engineProbeCache && engineProbeCache.key === key && Date.now() - engineProbeCache.at < ENGINE_PROBE_TTL_MS) {
+    return engineProbeCache.value;
+  }
+  if (engineProbeInFlight && engineProbeInFlight.key === key) return engineProbeInFlight.promise;
+  const promise = (async () => {
+    const [claude, codex, gemini] = await Promise.all([
+      probeEngine("claude", config.engines.claude?.bin),
+      probeEngine("codex", config.engines.codex?.bin),
+      probeEngine("gemini", config.engines.gemini?.bin),
+    ]);
+    if (claude.runnable) claude.auth = observeClaudeAuth();
+    if (codex.runnable && codex.bin) codex.auth = await observeCodexAuth(codex.bin);
+    const value: EngineProbePayload = {
+      default: config.engines.default, probedAt: new Date().toISOString(),
+      engines: [claude, codex, ...(gemini.configured ? [gemini] : [])],
+    };
+    // Only the newest config's probe may become "the" cache; a probe that ran
+    // under a config since replaced must not resurrect a stale answer.
+    if (!engineProbeCache || engineProbeCache.key === key || engineProbeInFlight?.key === key) {
+      engineProbeCache = { key, at: Date.now(), value };
+    }
+    return value;
+  })();
+  engineProbeInFlight = { key, promise };
+  promise.finally(() => { if (engineProbeInFlight?.promise === promise) engineProbeInFlight = null; });
+  return promise;
+}
+
+/** Exposed for tests: forget the cached probe. */
+export function _resetEngineProbeCache(): void {
+  engineProbeCache = null;
+  engineProbeInFlight = null;
+}
+
+interface SlackVerifyResult {
+  ok: boolean;
+  bot: { ok: boolean; team?: string; user?: string; error?: string };
+  app: { ok: boolean; error?: string };
+}
+
+async function slackApi(method: string, token: string): Promise<{ ok: boolean; error?: string; [key: string]: unknown }> {
+  try {
+    const response = await fetch(`https://slack.com/api/${method}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/x-www-form-urlencoded" },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) {
+      logger.warn(`[onboarding] Slack ${method} answered HTTP ${response.status}`);
+      return { ok: false, error: `http_${response.status}` };
+    }
+    const payload = await response.json() as { ok?: boolean; error?: string; [key: string]: unknown };
+    return { ...payload, ok: payload.ok === true };
+  } catch (err) {
+    // The raw message (DNS, TLS, timeout details) goes to the log; the client
+    // gets a stable, non-leaky code.
+    logger.warn(`[onboarding] Slack ${method} request failed: ${err instanceof Error ? err.message : String(err)}`);
+    return { ok: false, error: "network_error" };
+  }
+}
+
+async function verifySlackTokens(botToken: string, appToken: string): Promise<SlackVerifyResult> {
+  const [bot, app] = await Promise.all([
+    slackApi("auth.test", botToken),
+    slackApi("apps.connections.open", appToken),
+  ]);
+  const botResult = bot.ok
+    ? { ok: true, team: typeof bot.team === "string" ? bot.team : undefined, user: typeof bot.user === "string" ? bot.user : undefined }
+    : { ok: false, error: bot.error ?? "auth.test failed" };
+  const appResult = app.ok ? { ok: true } : { ok: false, error: app.error ?? "apps.connections.open failed" };
+  return { ok: botResult.ok && appResult.ok, bot: botResult, app: appResult };
+}
+
+interface ConfigPatchOutcome {
+  status: "ok" | "partial";
+  connectorsReload?: { started: string[]; stopped: string[]; errors: string[] };
+  connectorsReloadError?: string;
+}
+
+/** Merge a patch into config.yaml and reload connectors — the same steps
+ *  PUT /api/config performs, callable from a server-side flow that has to
+ *  read the outcome and possibly undo the write. */
+async function writeConfigPatchAndReload(context: ApiContext, patch: Record<string, unknown>): Promise<ConfigPatchOutcome> {
+  let existing: Record<string, unknown> = {};
+  try {
+    existing = (yaml.load(fs.readFileSync(CONFIG_PATH, "utf-8")) as Record<string, unknown>) || {};
+  } catch { /* first write */ }
+  const merged = deepMerge(existing, patch);
+  context.suppressNextConnectorReload?.();
+  fs.writeFileSync(CONFIG_PATH, yaml.dump(merged));
+  invalidateModelRegistry();
+  _resetEngineProbeCache();
+  if (!context.reloadAllConnectors) return { status: "ok" };
+  try {
+    const reload = await context.reloadAllConnectors();
+    context.config = context.getConfig();
+    context.emit("connectors:reloaded", reload);
+    if (reload.errors.length > 0) context.clearSuppressNextConnectorReload?.();
+    return { status: reload.errors.length > 0 ? "partial" : "ok", connectorsReload: reload };
+  } catch (err) {
+    context.clearSuppressNextConnectorReload?.();
+    return { status: "ok", connectorsReloadError: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+interface SlackConnectResult {
+  ok: boolean;
+  stage?: "verify" | "reload";
+  error?: string;
+  /** What was on disk before this attempt: an existing Slack block, or none.
+   *  Tells the caller what a rollback means here — "the old connection is
+   *  back" vs "the attempt was undone and Slack is unconfigured again". */
+  previous?: "config" | "none";
+  /** True only when the pre-attempt state is fully back: the file (the old
+   *  block restored, or removed again for previous:"none") AND the live
+   *  connectors settled on it without a Slack error — the old connector
+   *  running again for "config", nothing left to run for "none". Never true
+   *  when the second reload reported a failure. */
+  rolledBack?: boolean;
+  /** What the rollback achieved, separately: the file, and the live
+   *  connector. running is always false for previous:"none" — there is no
+   *  previous connector to bring back. */
+  restored?: { disk: boolean; running: boolean };
+  rollbackError?: string;
+  /** Set when the on-disk Slack block was changed by someone else between our
+   *  write and the rollback — we leave their value alone. */
+  rollbackSkipped?: string;
+  team?: string;
+  user?: string;
+  bot?: SlackVerifyResult["bot"];
+  app?: SlackVerifyResult["app"];
+}
+
+function slackFailure(outcome: ConfigPatchOutcome): string | null {
+  if (outcome.connectorsReloadError) return outcome.connectorsReloadError;
+  const errors = outcome.connectorsReload?.errors ?? [];
+  const slack = errors.find((line) => /slack/i.test(line));
+  if (slack) return slack;
+  if (outcome.status === "partial" && errors.length > 0) return errors.join(" | ");
+  return null;
+}
+
+function readSlackBlock(): Record<string, unknown> | null {
+  try {
+    const current = (yaml.load(fs.readFileSync(CONFIG_PATH, "utf-8")) as { connectors?: { slack?: Record<string, unknown> } }) || {};
+    return current.connectors?.slack ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function connectSlack(context: ApiContext, botToken: string, appToken: string): Promise<SlackConnectResult> {
+  const verified = await verifySlackTokens(botToken, appToken);
+  if (!verified.ok) return { ok: false, stage: "verify", error: "token verification failed", bot: verified.bot, app: verified.app };
+
+  // Snapshot → write → reload → (rollback) is ONE critical section: a PUT
+  // /api/config or a second connect waits for it, so the snapshot we would
+  // restore can never be older than what a concurrent writer put down.
+  return withConfigLock(async () => {
+    const previousSlack = readSlackBlock();
+    const previous = previousSlack ? ("config" as const) : ("none" as const);
+    const outcome = await writeConfigPatchAndReload(context, { connectors: { slack: { botToken, appToken } } });
+    const failure = slackFailure(outcome);
+    if (!failure) return { ok: true, team: verified.bot.team, user: verified.bot.user };
+
+    // The connector did not come up on tokens Slack itself accepted. Put the
+    // previous configuration back (or remove the block if there was none) —
+    // but only if the block on disk is still OURS: an out-of-band editor may
+    // have written something else meanwhile, and that is theirs to keep.
+    const onDisk = readSlackBlock();
+    if (onDisk?.botToken !== botToken || onDisk?.appToken !== appToken) {
+      logger.warn(`[onboarding] Slack connect failed (${failure}) but the Slack config changed concurrently — leaving it as is`);
+      return { ok: false, stage: "reload", error: failure, previous, rolledBack: false,
+        restored: { disk: false, running: false }, rollbackSkipped: "config changed concurrently" };
+    }
+    logger.warn(`[onboarding] Slack connect failed after save (${failure}) — ${previous === "config" ? "restoring previous Slack config" : "removing the Slack block again"}`);
+    let rollback: ConfigPatchOutcome;
+    try {
+      rollback = await writeConfigPatchAndReload(context, { connectors: { slack: previousSlack ?? null } });
+    } catch (err) {
+      const rollbackError = err instanceof Error ? err.message : String(err);
+      logger.error(`[onboarding] Slack rollback write failed: ${rollbackError}`);
+      return { ok: false, stage: "reload", error: failure, previous, rolledBack: false,
+        restored: { disk: false, running: false }, rollbackError };
+    }
+    // The rollback is only a rollback if the live side settled on the restored
+    // file: the previous connector came back up (previous:"config"), or the
+    // removal reload finished without a Slack error (previous:"none"). A
+    // partial/errored second reload is reported as such in both cases — the
+    // file is back, the connectors are not known to be.
+    const rollbackFailure = slackFailure(rollback);
+    if (rollbackFailure) {
+      logger.error(`[onboarding] Slack rollback wrote the previous config but the connectors did not settle on it: ${rollbackFailure}`);
+      return { ok: false, stage: "reload", error: failure, previous, rolledBack: false,
+        restored: { disk: true, running: false }, rollbackError: rollbackFailure };
+    }
+    return { ok: false, stage: "reload", error: failure, previous, rolledBack: true, restored: { disk: true, running: previous === "config" } };
+  });
 }

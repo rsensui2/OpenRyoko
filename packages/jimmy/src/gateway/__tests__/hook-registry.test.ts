@@ -35,6 +35,18 @@ describe("HookRegistry", () => {
     expect(seen).toEqual(["SessionStart"]);
   });
 
+  it("marks drained hooks as buffered and live hooks as current delivery", () => {
+    const reg = make();
+    const deliveries: Array<{ event: string; buffered: boolean }> = [];
+    reg.deliver("meta", { hook_event_name: "PreToolUse" });
+    reg.register("meta", (hook, delivery) => deliveries.push({ event: hook.hook_event_name, buffered: delivery.buffered }));
+    reg.deliver("meta", { hook_event_name: "PostToolUse" });
+    expect(deliveries).toEqual([
+      { event: "PreToolUse", buffered: true },
+      { event: "PostToolUse", buffered: false },
+    ]);
+  });
+
   it("unregister stops delivery and clears buffer", () => {
     const reg = make();
     const seen: string[] = [];

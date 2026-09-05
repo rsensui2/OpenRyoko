@@ -6,6 +6,7 @@ interface FakePty {
   pid: number;
   _exitCode: number | null;
   _killCalled: boolean;
+  writes: string[];
   _exitCb?: (e: { exitCode: number }) => void;
   onData: (cb: (d: string) => void) => void;
   onExit: (cb: (e: { exitCode: number }) => void) => void;
@@ -25,10 +26,11 @@ function makeFakePty(): FakePty {
     pid: 1000 + ptys.length,
     _exitCode: null,
     _killCalled: false,
+    writes: [],
     onData() {},
     onExit(cb) { p._exitCb = cb; },
     kill() { p._killCalled = true; }, // signal sent; real exit is async (fireExit)
-    write() {},
+    write(d) { p.writes.push(d); },
     resize() {},
     on(event, cb) { if (event === "error") p._errorCb = cb as (err: Error) => void; },
     fireExit() { p._exitCode = 0; p._exitCb?.({ exitCode: 0 }); },
@@ -47,14 +49,27 @@ vi.mock("../sse-pty-proxy.js", () => ({
     constructor(_label: string, _onEvent: (e: unknown) => void) {}
     async start() { return 41000; }
     stop() {}
+    hasInflight() { return false; }
+    isBusy() { return false; }
   },
 }));
 vi.mock("../shared/claude-settings.js", () => ({
   writeSessionSettings: () => "/tmp/fake-settings.json",
 }));
+// spawn() awaits the shared-OAuth refresh gate before pty.spawn(). Unmocked, it
+// reads the real ~/.claude/.credentials.json — and when that token is within 90s
+// of expiry (or expired), the gate serializes the spawn herd: the first spawn
+// leads and opens a 25s refresh window that blocks every later spawn, so
+// pty.spawn() is never reached within the test's 15ms flush and ptys[] stays
+// empty. These tests exercise the PTY lifecycle, not the OAuth gate — stub it to
+// resolve instantly so they don't depend on the runner's real credential state.
+vi.mock("../../shared/claude-oauth-gate.js", () => ({
+  awaitFreshClaudeCredentials: async () => {},
+}));
 
 import { InteractiveClaudeEngine } from "../claude-interactive.js";
 import { PtyLifecycleManager } from "../pty-lifecycle.js";
+import { HookRegistry } from "../../gateway/hook-registry.js";
 
 const flush = () => new Promise((r) => setTimeout(r, 15));
 
@@ -117,6 +132,46 @@ describe("InteractiveClaudeEngine — kill->respawn race (Item C)", () => {
     ptyC.fireExit(); // current PTY dies mid-turn with no Stop hook
     const r = await p;
     expect(r.error).toMatch(/claude process exited/);
+  });
+
+  it("clears permission-prompt recovery mode only after every parallel tool completes", async () => {
+    const run = engine.run({ sessionId: "permission-manual", prompt: "run it", cwd: "/tmp" } as any);
+    await flush();
+    hookCb!({ hook_event_name: "SessionStart", session_id: "permission-native" });
+    hookCb!({ hook_event_name: "PreToolUse", tool_name: "Read" });
+    hookCb!({ hook_event_name: "PreToolUse", tool_name: "Bash" });
+    hookCb!({ hook_event_name: "Notification", notification_type: "permission_prompt" });
+    expect((engine as any).active.get("permission-manual").permissionPromptPending).toBe(true);
+
+    hookCb!({ hook_event_name: "PostToolUse", tool_name: "Read" });
+    expect((engine as any).active.get("permission-manual").permissionPromptPending).toBe(true);
+    hookCb!({ hook_event_name: "PostToolUse", tool_name: "Bash" });
+    expect((engine as any).active.get("permission-manual").permissionPromptPending).toBe(false);
+    hookCb!({ hook_event_name: "Stop", last_assistant_message: "approved" });
+    expect((await run).result).toBe("approved");
+  });
+
+  it("replays a restored screen, then resets it before a new PTY stream", () => {
+    const controls: string[] = [];
+    const replay: string[] = [];
+    (engine as any).streams.set("restored", {
+      chunks: [Buffer.from("old screen")],
+      totalBytes: 10,
+      subscribers: new Set(),
+      hasSeenPty: true,
+    });
+    const unsubscribe = engine.subscribeOutput(
+      "restored",
+      (data) => replay.push(data.toString()),
+      (event) => controls.push(event.type),
+    );
+    expect(engine.getScrollback("restored").toString()).toBe("old screen");
+    expect(replay).toEqual([]);
+
+    (engine as any).wireProcToStream("restored", makeFakePty());
+    expect(controls).toEqual(["reset"]);
+    expect(engine.getScrollback("restored").length).toBe(0);
+    unsubscribe();
   });
 });
 
@@ -193,5 +248,76 @@ describe("InteractiveClaudeEngine — PTY socket error / EIO (issue #18)", () =>
     const r = await p;
     expect(r.error).toMatch(/socket error/); // not overwritten by "process exited"
     expect(lifecycle.getWarm("s5")).toBeUndefined();
+  });
+});
+
+describe("InteractiveClaudeEngine — reviewed stall and submit races", () => {
+  beforeEach(() => {
+    ptys.length = 0;
+  });
+
+  it("evicts the PTY when a quiet turn crosses the stall backstop", async () => {
+    vi.useFakeTimers();
+    const lifecycle = new PtyLifecycleManager({ maxLivePtys: 10 });
+    const registry = new HookRegistry();
+    try {
+      const engine = new InteractiveClaudeEngine(lifecycle, registry, undefined, 30 * 60_000);
+      // A prior turn's orphan PreToolUse drains during register(). It must not
+      // count as current work and suppress this turn's stall recovery.
+      registry.deliver("stall", { hook_event_name: "PreToolUse", tool_name: "Bash" });
+      const resultPromise = engine.run({ sessionId: "stall", prompt: "work", cwd: "/tmp" } as any);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(lifecycle.getWarm("stall")).toBeDefined();
+
+      await vi.advanceTimersByTimeAsync(15 * 60_000 + 2_000);
+      const result = await resultPromise;
+      expect(result.error).toMatch(/^Turn stalled:/);
+      expect(lifecycle.getWarm("stall")).toBeUndefined();
+      expect(ptys.at(-1)?._killCalled).toBe(true);
+    } finally {
+      registry.dispose();
+      lifecycle.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not treat a previous turn's buffered tool hook as submit acknowledgement", async () => {
+    const lifecycle = new PtyLifecycleManager({ maxLivePtys: 10 });
+    const registry = new HookRegistry();
+    try {
+      const engine = new InteractiveClaudeEngine(lifecycle, registry);
+      const first = engine.run({ sessionId: "submit", prompt: "one", cwd: "/tmp" } as any);
+      await flush();
+      registry.deliver("submit", { hook_event_name: "SessionStart", session_id: "claude-submit" });
+      registry.deliver("submit", { hook_event_name: "Stop", last_assistant_message: "done" });
+      await first;
+
+      // Arrives after unregister and is buffered for the next register() drain.
+      registry.deliver("submit", { hook_event_name: "PostToolUse", tool_name: "Bash" });
+      const deltas: any[] = [];
+      const second = engine.run({
+        sessionId: "submit",
+        prompt: "two",
+        resumeSessionId: "claude-submit",
+        cwd: "/tmp",
+        onStream: (delta: any) => deltas.push(delta),
+      } as any);
+      await new Promise((resolve) => setTimeout(resolve, 180));
+      const warm = ptys[0];
+      expect(warm.writes.filter((write) => write === "\r")).toHaveLength(1);
+      expect(deltas).toEqual([]); // stale PostToolUse must not render in the new turn
+
+      // The stale PostToolUse must not stop the retry loop.
+      await new Promise((resolve) => setTimeout(resolve, 1_550));
+      expect(warm.writes.filter((write) => write === "\r").length).toBeGreaterThanOrEqual(2);
+
+      registry.deliver("submit", { hook_event_name: "UserPromptSubmit" });
+      registry.deliver("submit", { hook_event_name: "Stop", last_assistant_message: "done two" });
+      const result = await second;
+      expect(result.result).toBe("done two");
+    } finally {
+      registry.dispose();
+      lifecycle.dispose();
+    }
   });
 });

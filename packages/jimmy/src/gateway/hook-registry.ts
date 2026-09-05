@@ -11,7 +11,12 @@ export interface HookPayload {
   [k: string]: unknown;
 }
 
-type HookListener = (h: HookPayload) => void;
+export interface HookDelivery {
+  buffered: boolean;
+  receivedAt: number;
+}
+
+type HookListener = (h: HookPayload, delivery: HookDelivery) => void;
 interface Buffered { payload: HookPayload; at: number; }
 
 export class HookRegistry {
@@ -47,7 +52,7 @@ export class HookRegistry {
       this.buffer.delete(jinnSessionId);
       const now = Date.now();
       for (const b of pending) {
-        if (now - b.at <= this.ttlMs) listener(b.payload);
+        if (now - b.at <= this.ttlMs) listener(b.payload, { buffered: true, receivedAt: b.at });
       }
     }
   }
@@ -66,7 +71,7 @@ export class HookRegistry {
 
   deliver(jinnSessionId: string, payload: HookPayload): void {
     const listener = this.listeners.get(jinnSessionId);
-    if (listener) { listener(payload); return; }
+    if (listener) { listener(payload, { buffered: false, receivedAt: Date.now() }); return; }
     const isTerminal = payload.hook_event_name === "Stop" || payload.hook_event_name === "StopFailure";
     if (this.orphanHandler) {
       try { this.orphanHandler(jinnSessionId, payload); } catch { /* never break the endpoint */ }

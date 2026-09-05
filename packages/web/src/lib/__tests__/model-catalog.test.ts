@@ -1,9 +1,18 @@
 import { describe, it, expect } from "vitest"
 import {
   CLAUDE_MODELS,
+  GEMINI_MODELS,
   OPENAI_MODELS,
   DEFAULT_CODEX_MODEL,
   DEFAULT_CLAUDE_MODEL,
+  DEFAULT_GEMINI_MODEL,
+  DEFAULT_TRIAGE_CODEX_MODEL,
+  DEFAULT_TRIAGE_CLAUDE_MODEL,
+  MODEL_VENDORS,
+  TRIAGE_MODEL_VENDORS,
+  defaultModelForEngine,
+  defaultTriageModelForEngine,
+  isCatalogModel,
   modelsForEngine,
   withCurrentValue,
 } from "@/lib/model-catalog"
@@ -27,10 +36,42 @@ describe("model-catalog", () => {
     expect(ids).toEqual(expect.arrayContaining(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]))
   })
 
-  it("modelsForEngine returns Claude models for claude, OpenAI models otherwise", () => {
+  it("modelsForEngine returns the catalog for each vendor", () => {
     expect(modelsForEngine("claude")).toBe(CLAUDE_MODELS)
     expect(modelsForEngine("codex")).toBe(OPENAI_MODELS)
+    expect(modelsForEngine("gemini")).toBe(GEMINI_MODELS)
     expect(modelsForEngine(undefined)).toBe(OPENAI_MODELS)
+  })
+
+  it("maps vendor choices and defaults to config-compatible engine values", () => {
+    expect(MODEL_VENDORS.map((vendor) => vendor.value)).toEqual([
+      "claude",
+      "codex",
+      "gemini",
+    ])
+    expect(defaultModelForEngine("claude")).toBe(DEFAULT_CLAUDE_MODEL)
+    expect(defaultModelForEngine("codex")).toBe(DEFAULT_CODEX_MODEL)
+    expect(defaultModelForEngine("gemini")).toBe(DEFAULT_GEMINI_MODEL)
+    expect(defaultTriageModelForEngine("claude")).toBe(DEFAULT_TRIAGE_CLAUDE_MODEL)
+    expect(defaultTriageModelForEngine("codex")).toBe(DEFAULT_TRIAGE_CODEX_MODEL)
+    expect(TRIAGE_MODEL_VENDORS.map((vendor) => vendor.value)).toEqual([
+      "claude",
+      "codex",
+    ])
+  })
+
+  it("keeps every default model in its corresponding catalog", () => {
+    expect(isCatalogModel("claude", DEFAULT_CLAUDE_MODEL)).toBe(true)
+    expect(isCatalogModel("codex", DEFAULT_CODEX_MODEL)).toBe(true)
+    expect(isCatalogModel("gemini", DEFAULT_GEMINI_MODEL)).toBe(true)
+    expect(isCatalogModel("claude", DEFAULT_TRIAGE_CLAUDE_MODEL)).toBe(true)
+    expect(isCatalogModel("codex", DEFAULT_TRIAGE_CODEX_MODEL)).toBe(true)
+  })
+
+  it("distinguishes curated ids from custom model ids", () => {
+    expect(isCatalogModel("codex", "gpt-5.6-sol")).toBe(true)
+    expect(isCatalogModel("codex", "gpt-private-preview")).toBe(false)
+    expect(isCatalogModel("claude", undefined)).toBe(false)
   })
 
   it("withCurrentValue keeps an unknown hand-typed value selectable", () => {

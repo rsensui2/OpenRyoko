@@ -11,7 +11,7 @@ This skill activates when the user wants to manage their organization: hiring or
 
 ## Organization Structure
 
-The organization lives under the `org/` directory in the {{portalName}} home folder (`~/.jinn/org/`). Each department is a subdirectory containing employee persona YAML files and a task board.
+The organization lives under `org/` in the {{portalName}} home directory — which is always your working directory, so relative paths in this skill resolve correctly on any instance. Each department is a subdirectory containing employee persona YAML files and a task board.
 
 ```
 org/

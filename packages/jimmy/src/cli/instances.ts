@@ -13,15 +13,33 @@ export interface Instance {
 export function loadInstances(): Instance[] {
   if (!fs.existsSync(INSTANCES_REGISTRY)) return [];
   try {
-    return JSON.parse(fs.readFileSync(INSTANCES_REGISTRY, "utf-8"));
+    const parsed = JSON.parse(fs.readFileSync(INSTANCES_REGISTRY, "utf-8"));
+    if (!Array.isArray(parsed)) return [];
+    const seenNames = new Set<string>();
+    const seenPorts = new Set<number>();
+    return parsed.filter((item): item is Instance => {
+      if (!item || typeof item !== "object") return false;
+      const candidate = item as Partial<Instance>;
+      if (typeof candidate.name !== "string" || !/^[a-z][a-z0-9-]*$/.test(candidate.name)) return false;
+      if (!Number.isInteger(candidate.port) || candidate.port! < 1 || candidate.port! > 65_535) return false;
+      if (typeof candidate.home !== "string" || !path.isAbsolute(candidate.home)) return false;
+      if (typeof candidate.createdAt !== "string" || Number.isNaN(Date.parse(candidate.createdAt))) return false;
+      if (seenNames.has(candidate.name) || seenPorts.has(candidate.port!)) return false;
+      seenNames.add(candidate.name);
+      seenPorts.add(candidate.port!);
+      return true;
+    });
   } catch {
     return [];
   }
 }
 
 export function saveInstances(instances: Instance[]): void {
-  fs.mkdirSync(path.dirname(INSTANCES_REGISTRY), { recursive: true });
-  fs.writeFileSync(INSTANCES_REGISTRY, JSON.stringify(instances, null, 2) + "\n");
+  fs.mkdirSync(path.dirname(INSTANCES_REGISTRY), { recursive: true, mode: 0o700 });
+  const temporary = `${INSTANCES_REGISTRY}.tmp-${process.pid}`;
+  fs.writeFileSync(temporary, JSON.stringify(instances, null, 2) + "\n", { mode: 0o600 });
+  fs.renameSync(temporary, INSTANCES_REGISTRY);
+  fs.chmodSync(INSTANCES_REGISTRY, 0o600);
 }
 
 /** Find the next available port starting from 7777, skipping ports already used by instances. */

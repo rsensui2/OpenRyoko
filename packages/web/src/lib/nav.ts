@@ -21,7 +21,7 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/chat", label: "チャット", icon: MessageSquare },
   { href: "/org", label: "組織", icon: Users },
   { href: "/kanban", label: "カンバン", icon: LayoutGrid },
-  { href: "/cron", label: "スケジュール", icon: Clock },
+  { href: "/cron", label: "自動化", icon: Clock },
   { href: "/logs", label: "アクティビティ", icon: Activity },
   { href: "/skills", label: "スキル", icon: Zap },
   { href: "/settings", label: "設定", icon: Settings },

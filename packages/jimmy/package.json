@@ -1,6 +1,6 @@
 {
   "name": "openryoko",
-  "version": "2026.7.27",
+  "version": "2026.9.5",
   "description": "OpenRyoko — Slackで空気を読んで働くAIアシスタント・ゲートウェイ（Jinnベース、Claude Code/Codex/Gemini CLI対応）",
   "license": "MIT",
   "type": "module",
@@ -14,10 +14,12 @@
   "types": "./dist/src/index.d.ts",
   "files": [
     "dist/",
-    "template/"
+    "template/",
+    "scripts/"
   ],
   "scripts": {
-    "build": "tsc && rm -rf dist/web && cp -r ../web/out dist/web 2>/dev/null || true && rm -rf dist/assets && cp -r assets dist/assets 2>/dev/null || true",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && cp -r assets dist/assets && cp -r ../web/out dist/web",
+    "postinstall": "node scripts/fix-prebuild-permissions.mjs",
     "dev": "tsc && (tsc --watch &) && node --watch-path=dist dist/bin/jimmy.js start",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -25,30 +27,30 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@slack/bolt": "^4.3.0",
-    "@whiskeysockets/baileys": "7.0.0-rc.9",
+    "@slack/bolt": "^4.7.3",
+    "@whiskeysockets/baileys": "7.0.0-rc14",
     "better-sqlite3": "^11.8.0",
     "busboy": "^1.6.0",
     "chokidar": "^4.0.0",
     "classic-level": "^2.0.0",
     "commander": "^13.1.0",
-    "discord.js": "^14.25.1",
-    "js-yaml": "^4.1.0",
-    "node-cron": "^3.0.0",
+    "discord.js": "^14.27.0",
+    "js-yaml": "^4.3.1",
+    "node-cron": "4.6.0",
     "node-pty": "^1.1.0",
-    "node-telegram-bot-api": "^0.67.0",
+    "node-telegram-bot-api": "2.0.0",
     "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",
-    "uuid": "^11.1.0",
-    "ws": "^8.18.0"
+    "uuid": "^11.1.1",
+    "ws": "^8.21.3",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@openryoko/web": "workspace:*",
     "@types/better-sqlite3": "^7.6.0",
     "@types/busboy": "^1.5.4",
     "@types/js-yaml": "^4.0.0",
     "@types/node": "^22.0.0",
-    "@types/node-cron": "^3.0.0",
-    "@types/node-telegram-bot-api": "^0.64.14",
     "@types/qrcode": "^1.5.6",
     "@types/uuid": "^10.0.0",
     "@types/ws": "^8.5.0",

@@ -1,4 +1,4 @@
-import cron from "node-cron";
+import cron, { type ScheduledTask } from "node-cron";
 import type {
   CronJob,
   JinnConfig,
@@ -13,7 +13,7 @@ import { loadJobs, saveJobs } from "./jobs.js";
  *  herd of jobs that share a schedule (e.g. every-15-min jobs all firing at :00). */
 const CRON_JITTER_MS = 20 * 1000;
 
-let tasks: cron.ScheduledTask[] = [];
+let tasks: ScheduledTask[] = [];
 /** Pending jitter timers (the 0–CRON_JITTER_MS delay between a cron fire and the
  *  actual run). Tracked so stopScheduler()/reload can cancel them — otherwise a
  *  delayed fire would run AFTER its job was disabled/deleted, against a stale
@@ -42,7 +42,8 @@ export function reloadScheduler(jobs: CronJob[]): void {
 
 export function stopScheduler(): void {
   for (const task of tasks) {
-    task.stop();
+    // node-cron v4 keeps stopped tasks in its registry; destroy removes them.
+    void task.destroy();
   }
   tasks = [];
   // Cancel any in-flight jitter delays so a stale fire can't land after stop/reload.

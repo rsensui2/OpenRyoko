@@ -2,12 +2,331 @@
 
 > **バージョン体系について**: 2026.4.26 から日付ベース (`YYYY.M.D`) のCalVerに移行しました。npm semver の制約上、月・日の leading zero は付けません (例: 4月26日 → `2026.4.26`)。
 
-## [2026.7.27] - 2026-07-26
+## Unreleased
+
+- **セッション横断の直近アクション**: 他の会話で送った直近の返信を system prompt に注入し、完了済み作業の再確認や重複対応を防ぐ。既定は過去6時間・15件、`context.crossSessionWindowHours` / `context.crossSessionLimit` のいずれかを0にすると無効化。
+- **会話履歴の公開範囲を保持**: 全チャネルとDMの履歴は Web または信頼IDの1対1DMに限定。共有Slackスレッドには同じチャネルの別スレッドだけを表示し、社員エージェント・cronの発言は除外。表示名の一致では非公開履歴へのアクセスを許可しない。
+
+## [2026.9.3] - 2026-09-01
+
+> 従業員に委譲した親セッションが「二度と起きない」問題の修正。8/18 の gateway 認証強化以降、子セッションの完了通知が自分の gateway に未認証で POST され、401 で無音のまま捨てられていた。
+
+### 修正
+
+- **子セッション完了通知・レート制限通知が 401 で全滅していた**（PR #67, @mrkm86）: `sessions/callbacks.ts` の 2 経路（`POST /api/sessions/:id/message` = 子→親の完了通知、`POST /api/connectors/:name/send` = usage limit 等の通知・呼び出し 8 箇所）が Authorization ヘッダを付けておらず、`fetch()` は 4xx で reject しないため `.catch()` も `res.ok` も無く、ログにも残らなかった。2026.8.20（`jobs/notify.ts` の同種修正）の取りこぼし。`_postToGateway()` に統合し、`readGatewayAuthToken()` でトークンを付与、`res.ok` を確認して拒否は warn に出す。抑止経路（`alwaysNotify: false` / 親不在 / 親が error）もログを残す。レスポンス body は `cancel()` で解放
+  - 影響条件: `gateway.host` が network（`0.0.0.0` 等）または `authRequired: true` で Bearer 必須になっている環境。既定の `127.0.0.1` は無傷
+- **委譲プロトコル（COO の system prompt）を「onComplete 通知が主経路、ただし保証ではない」に改訂**: 旧文面の「通知は必ず来る／NEVER poll」という無条件の約束をやめ、通知が省略される 3 条件（`parentSessionId` 無し / `alwaysNotify: false` / 親が `error`）と「POST 失敗は gateway.log にしか出ない」を明記。即返答してターンを終える運用は維持し（ターン内ポーリング禁止）、保険として `GET /api/sessions/<child-id>?last=5` と `ryoko job run … -- 'sleep <sec>'` の watchdog を案内。`parentSessionId` は必須
+- テストヘルパー `makeSession()` が `overrides` を spread していなかった不備を修正（既存テストが別の理由で通っていた）
+
+### Verification
+
+- 実機（host 0.0.0.0）で修正前の 401 を再現（no-token → 401 / with-token → 404）
+- Backend: **152 test files / 1,751 tests pass**、tsc clean
+- PR: [#67](https://github.com/rsensui2/OpenRyoko/pull/67)
+
+## [2026.9.2] - 2026-08-31
+
+> macOS で `npm install -g openryoko` した直後に、最初のチャットで gateway が落ちる問題の修正。
+
+### 修正
+
+- **node-pty の `spawn-helper` に実行権限を付与する postinstall**（PR #62）: node-pty@1.1.0 の npm tarball は `prebuilds/darwin-*/spawn-helper` を 0644 で同梱しており、npm でも pnpm でも +x が付かない。macOS では最初の PTY 起動（チャットがエンジンを起動した瞬間）に `posix_spawnp` が失敗して gateway が落ちていた。公開パッケージ側の `postinstall`（`scripts/fix-prebuild-permissions.mjs`）が npm 配置（nested / hoisted / global）と pnpm workspace 配置の両方で `spawn-helper` を 0755 にする。失敗は全て非致命、Windows は即終了。開発用にルート `package.json` にも同種の postinstall（upstream jinn #104 の移植）
+- Linux（本番コンテナ）は darwin プレビルドを使わないため挙動に変化なし
+
+### Verification
+
+- 本物の `npm install`（node-pty@1.1.0 依存 + 同 postinstall）で 0644 → 0755、`--ignore-scripts` の対照は 0644 のまま。pnpm workspace で root / packages/jimmy 両方の postinstall が正常終了
+- Backend: **151 test files / 1,726 tests pass**（npm / hoisted / pnpm symlink / 未リンクの .pnpm ストア / 冪等 / node-pty 不在 の 6 ケースを新設）、tsc clean
+- Codex（gpt-5.6）2巡レビュー（不可 → 公開パッケージ側 postinstall を追加 → 可）
+- PR: [#62](https://github.com/rsensui2/OpenRyoko/pull/62)
+
+## [2026.9.1] - 2026-08-31
+
+> 初回セットアップが「動くところまで」になった。名前を入れたら、エンジンの起動確認 → Slack をその場で検証して接続 → 最初の自動化を選ぶ、で Ryoko が仕事を始められる。
+
+### このリリースでできるようになったこと
+
+- **オンボーディング再設計**（/onboarding）: 名前 → エンジン確認 → Slack 接続 → 最初の自動化 → 完了。完了後は「自動化」ページの作成パネルが開いた状態で始まる（`/cron?create=<templateId>`）
+- **エンジンの起動確認を自動化**: Claude / Codex が **このマシンで起動できるか**（インストール・認証切れ）をプローブして表示。「設定してあるはずなのに動かない」を最初のステップで潰す
+- **Slack 接続を 1 操作に**: トークンを Slack に問い合わせて検証してから保存し、コネクタを再起動。失敗したら以前の設定に戻し、**戻せたかどうかも正直に表示**（ディスク／稼働の別）
+- **config 書込の安全化**: 設定 API と Slack 接続の書込を直列化し、rollback 前に外部変更を検出（`withConfigLock` + CAS）。設定ファイル watcher の自己書込抑止をカウンタ化
+
+### 同梱した修正（別スレッド）
+
+- Slack `respondTo.channel` が `mention` / `never` のとき、チャンネルの絵文字リアクションも処理しない（複数 Bot 同居で二重反応していた。グループDM は channel スコープ側に倒す）— PR #63
+
+### Verification
+
+- Backend: **150 test files / 1,720 tests pass**（engines / slack-verify / slack-connect の API テストを新設。rollback 失敗・out-of-band 変更・同時 connect の直列化を含む）、tsc clean（jimmy/web）、web build 成功
+- Codex（gpt-5.6）5巡レビュー（マージ不可×4 → 全指摘消化 → マージ可）。PR #63 も Codex マージ可（提案のテストを追加）
+- PR: [#64](https://github.com/rsensui2/OpenRyoko/pull/64)（本体）、[#63](https://github.com/rsensui2/OpenRyoko/pull/63)（取り込み）
+
+## [2026.8.31] - 2026-08-31
+
+> Workflow に「顔」がついた。cron と Workflow をひとつの「自動化」ページで扱い、テンプレートの穴埋めだけで作れる。AI エージェントは CLI から同じことができる。
+
+### このリリースでできるようになったこと
+
+- **「自動化」ページ**（旧「スケジュール」/cron）: cron と Workflow を1つのリストで表示・ON/OFF。行を開くと流れ図と実行履歴、「今すぐ実行」。集計・フィルタも両方を合算
+- **テンプレートから Workflow を作成**: 「見張り型」（定期チェック→必要な時だけ重いモデル）・「定時実行型」・「イベント駆動型」の3型。名前・間隔・プロンプト等の穴埋めだけで、ノードエディタ不要
+- **見張り型は既定で人間の承認ゲート付き**: 外部データ（メール等）の要約が何を言おうと、operator が承認するまで重いモデルは動かない。承認は Web の run 行のボタンか \`ryoko workflow approve\`。判定材料は「外部由来・未検証」ラベル付きで表示
+- **AI エージェント向け CLI**: \`ryoko automation list|enable|disable\`（cron/workflow を同じ動詞で）、\`ryoko workflow templates|list|create|show|run|runs|approve\`。全コマンド \`--json\`。同梱 docs（\`docs/automations.md\`）にエージェントの操作ガイド
+- **atomic な作成 API**: \`POST /api/automation/templates/:id\` / \`POST /api/automation/definitions\` — 完全検証を先に行い、作成〜有効化を1トランザクションで（失敗時に骨定義が残らない。通知と trigger 再アームは commit 後に1回）
+
+### 内部改善・整理
+
+- Workflow 一覧のカーソルページング対応（Web/CLI）、設定ページの「Cron」節を「自動化の通知」に役割限定
+- 滞留 PR の整理: #26（中断ターンを赤エラーにしない）と #57（crypto.randomUUID polyfill、#16 のリベース）を取り込み
+
+### Verification
+
+- Backend: **147 test files / 1,692 tests pass**（承認 routing・schedule→Merge 経路・atomic ロールバック・承認 API の HTTP 契約テストを含む）、tsc clean（jimmy/web）、web build 成功
+- Codex（gpt-5.6-sol）5巡レビュー（マージ不可×4 → 全指摘消化 → マージ可）
+- PR: [#59](https://github.com/rsensui2/OpenRyoko/pull/59)（本体）、[#57](https://github.com/rsensui2/OpenRyoko/pull/57)・[#26](https://github.com/rsensui2/OpenRyoko/pull/26)（取り込み）
+
+## [2026.8.29] - 2026-08-28
+
+> 上流 Jinn の Workflow 基盤を移植した（オプトイン・既定OFF）。タスクの性質に応じて「決定的判定 / 軽量モデル / Opus級」を選べるルーティング基盤の第1弾（backend core）。
+
+### このリリースでできるようになったこと
+
+- **Workflow エンジン（`config.workflows.enabled: true` でオプトイン）**: 上流 `hristo2612/jinn` の Workflow 基盤を backend core として移植。trigger 3種（manual / schedule / event）、ノード7種（Employee / Workflow Call / Condition / Merge / Approval / Wait / End）、`/api/workflows` API 一式
+- **ノード単位のモデルルーティング**: Employee ノードごとに engine / model / effort / fallback を指定でき、構造化出力 → Condition（決定的判定・LLM 不使用）で「安いモデルで判定し、必要なときだけ高性能モデルへ渡す」を表現できる
+- **外部イベント連携**: `POST /api/workflows/events/<name>`（fireId 冪等・64KiB 上限）。外部監視は OS スケジューラのスクリプトから event trigger を叩く上流方針を踏襲
+- **利用量の帰属**: run 単位で attempt / session / engine / model と `spendUsd` を追跡
+- **無効時は副作用ゼロ**: フラグ未設定なら Workflow DB 作成・trigger arming・API ルート露出のいずれも行われない。既存の Cron・Slack respond-policy・MEMORY 注入には非干渉
+
+### 移植の設計判断
+
+- Todo（work-items）サブシステムは移植せず、型互換の不活性 shim で分離。todo-status trigger / todo-comment wait を含む定義は保存時に 422 `unsupported-capability` で拒否
+- dispatch claim は CAS + 永続 claim + settle と queue close の同一トランザクション化で排他を担保。graceful shutdown は次回 boot と同一の sweep で `gateway-restart` receipt を刻む（再起動が run を失敗させない）
+- WorkflowService の構築は listen + gateway.json 書込後に延期（interactive PTY turn の Stop hook 競合を回避）
+- vitest にテストホーム隔離（globalSetup + per-worker 分離 + fail-closed ガード）を導入 — テストが実 `~/.ryoko` に触れることを構造的に防止
+
+### Verification
+
+- Backend: **144 test files / 1,650 tests pass**（Workflow 新規 811 件を含む）、tsc clean
+- Codex（gpt-5.6-sol）による4巡レビュー（マージ不可×3 → 修正 → マージ可）で HIGH 2件含む全指摘を消化
+- PR: [#55](https://github.com/rsensui2/OpenRyoko/pull/55)、評価文書: `docs/plans/2026-08-28-workflow-port-evaluation.md`
+
+## [2026.8.28] - 2026-08-28
+
+> MEMORY.md（長期記憶）の注入がプライバシーゲート付きのコア機能になった。
+
+### このリリースでできるようになったこと
+
+- **長期記憶が実際に効くようになった**: これまで MEMORY.md はコードでは注入されず、テンプレート CLAUDE.md の `@MEMORY.md` import（Claude エンジンのみ・話者を問わず）だけが頼りだった。gateway が **private web セッションと、`portal.trustedSpeakers` に載る相手との DM に限り** MEMORY.md を system prompt に注入する
+- **共有チャンネルでは誰が話していても注入されない**: スレッドのセッションは参加者をまたいで再利用されるため、一度注入した記憶が履歴に残るのを構造的に防ぐ。cron・employee セッションにも注入されない
+- **`portal.operatorSlackId`**: 設定するとオペレータ本人確認が Slack ID の厳密一致になり、表示名の一致では本人扱いされない（表示名は誰でも変更できるため、信頼できないメンバーがいるワークスペースでは必ず設定を推奨）。未設定時の名前一致は「name match only — NOT identity proof」と明示される
+- **既存インスタンス向けマイグレーション**: `ryoko migrate` が既存 CLAUDE.md の `@MEMORY.md` import（新ゲートの迂回路）を除去し、記憶セクションの記述を新仕様に更新する
+
+### Security
+
+- セッションの source を web に固定していた実行経路を修正（Slack/cron 起源のセッションが web 扱いで注入対象になる迂回を遮断）
+- 注入キャップを UTF-8 バイト基準に（日本語テキストで文書化済み上限 24,000B を大幅超過できた）
+
+### Verification
+
+- Backend: **103 test files / 833 tests pass**（+11: 共有チャンネル拒否・なりすまし・source 偽装・バイトキャップ等）
+- Codex（gpt-5.6-sol）による4巡の敵対的レビューで CRITICAL 2件含む全指摘を消化、最終 VERDICT: OK
+- PR: [#54](https://github.com/rsensui2/OpenRyoko/pull/54)
+
+## [2026.8.27] - 2026-08-27
+
+> 新規セットアップ体験の総点検リリース。config テンプレート・skills.json・メモリ指示・同梱 docs・Web オンボーディングの不整合をまとめて修正し、Codex + 独立レビュアーによる多段レビューで発覚したセキュリティ問題も解消。
+
+### このリリースでできるようになったこと
+
+- **ドキュメント通りのデフォルトが実際に適用される**: `ryoko setup` が同梱テンプレート `config.default.yaml` を正しく使うようになった（従来はファイル名不一致で常に最小構成へ無言フォールバックし、`mcp.fetch` 等が無効だった）。名前に `"` や `\` や `$` を含めても config が壊れない
+- **`ryoko skills list / add / update` が素の環境で動く**: skills.json の正典を `{"installed": {...}}` オブジェクト形式に統一（テンプレート・find-and-install スキルと一致）。旧配列形式も読める。未知フィールドは保持
+- **メモリ指示の一本化**: セッション注入プロンプトを MEMORY.md + knowledge/ の2層方式に統一（upstream 由来の user-profile 3ファイル方式と旧 `~/.jinn` パス表記を全廃）。オンボーディング判定は BOOTSTRAP.md 基準になり、旧版から移行したユーザーがオンボーディングに閉じ込められない
+- **Web オンボーディングが日本語テンプレートに効く**: 名前変更が CLAUDE.md / AGENTS.md / IDENTITY.md に正しく反映。言語だけの変更で名前が Ryoko に巻き戻らない。config.yaml の書き換えは portal ブロック限定になり、テンプレートの案内コメントが消えない
+- **カスタムインスタンス対応**: 注入プロンプト・BOOTSTRAP.md・同梱スキルの操作パスを実インスタンスホーム（`JINN_HOME` / cwd 相対）に統一。`RYOKO_INSTANCE` 環境でも正しい場所を操作する
+
+### Security
+
+- agent が自由に書く skills.json の `source` が `shell: true` の spawn に到達するコマンドインジェクション経路を遮断（POSIX はシェルなし直接 spawn、source は `owner/repo[@skill]` 形式のみ許可、`../repo` 等のローカルパス形式も拒否）
+- Windows 互換のため shell 経由になる経路も、CLI 引数の形式検証と検索語の無害化（Unicode 対応・日本語検索語は保持）で全 argv を検証済みに
+
+### Verification
+
+- Backend: **102 test files / 822 tests pass**（前版から +26。セキュリティ・回帰ケースを追加）
+- Codex（gpt-5.6-sol）と独立コードレビュアーによる4巡のレビューで CRITICAL〜MEDIUM 指摘を全消化、最終 VERDICT: OK
+- PR: [#51](https://github.com/rsensui2/OpenRyoko/pull/51) / [#52](https://github.com/rsensui2/OpenRyoko/pull/52)
+
+## [2026.8.21] - 2026-08-20
+
+> Gateway認証を有効にした環境で、`ryoko job run` の完了通知が401になり、元のセッションが起床しない問題を修正。
+
+### Reliability / Fixes
+
+- 完了通知の全リトライに、このOpenRyoko instanceのBearer tokenを自動付与。
+- 各リトライ直前にtokenを再読込し、Gateway再起動中にtokenが作成・更新された場合も復旧。
+- Gateway認証を無効化した既存環境との互換性、および通知のdedupe挙動を維持。
+
+### Verification
+
+- Backend: **97 test files / 782 tests pass**
+- backend TypeScript typecheck、production build、`git diff --check`
+- token付与、token未作成時の互換性、401後のtoken再読込、実job monitor経路を回帰テスト化
+
+## [2026.8.20] - 2026-08-18
+
+> `gateway.host: 0.0.0.0` / `::` の環境で、AIやCLIへ渡されたURLがGateway自身に
+> `421 host_not_allowed` で拒否され、CronやSlack投稿が無言で止まる問題を恒久修正。
+
+### このリリースでできるようになったこと
+
+- **ネットワーク待受でも内部処理が止まらない**: 待受アドレス（bind）と接続先URL（connect）を明確に分離。`0.0.0.0` / `::` で待ち受けても、システムプロンプト、`ryoko status`、`ryoko pair`、AIの子プロセスには接続可能なloopback URLを渡す。
+- **認証情報やURLを手書きせずGateway APIを呼べる**: `ryoko api GET /api/status`、`ryoko api POST /api/sessions --data '{...}'` を追加。正しい接続先とBearer tokenを自動選択し、外部URLへのtoken送信を拒否。401 / 421を含むHTTPエラーも終了コードと本文で確認できる。
+- **既存のスキルやCronをアップデート時に修復できる**: `ryoko update` が `~/.ryoko` 内の `http://0.0.0.0:<port>` / `http://[::]:<port>` を検出し、バックアップ後にloopbackへ自動置換。`ryoko migrate --check` で確認、`ryoko migrate --fix` で手動修復もできる。
+- **Bearer付け忘れ候補に気づける**: マイグレーション監査が、保護APIを直接curlしているのに認証処理が見当たらないファイルを警告し、`ryoko api`への移行を案内する。
+
+### 安全性と信頼性
+
+- Hostガードは緩和しない。`Host: 0.0.0.0` / `Host: [::]` は、ブラウザらしいヘッダーの有無に関係なく拒否する。
+- `gateway.allowedHosts` にワイルドカードbindを追加しても安全なHost名として扱わず、警告して無視する。DNS rebinding / “0.0.0.0 day” への防御を維持。
+- 421レスポンスとwarnログに、拒否理由と使うべきloopback URLを表示。ログはHostごとに一度、最大50種類までに制限してログ洪水を防ぐ。
+- 自動置換はテキストファイルだけを対象にし、symlink、ログ、DB、モデル、ソースcheckout、巨大ファイルを除外。変更前ファイルをユーザー専用backup directoryへ保存し、元のpermissionを維持してatomic置換する。
+- AIへ渡す標準の委任・コネクタ・同期例を、認証なしcurlから`ryoko api`へ変更。
+
+### 互換性に関する注意
+
+- `http://0.0.0.0:<port>` は待受指定であり、クライアントの接続先としては使えない。`~/.ryoko` 外にある独自スクリプトは `ryoko api` または `$RYOKO_GATEWAY_URL` + Bearer認証へ変更する。
+- 応急処置で `gateway.allowedHosts: [0.0.0.0]` を追加していた場合、この値は本リリースから無視されるため削除できる。
+
+### Verification
+
+- Backend: **97 test files / 780 tests pass**
+- Web: **12 test files / 85 tests pass**
+- backend / WebのTypeScript typecheck、production build、`git diff --check`
+- strict Hostガード、URL変換、token付与、外部URL拒否、バックアップ付き移行監査を回帰テスト化
+- ワイルドカードbindの実Gatewayでloopback成功、wildcard Host拒否、401 / 421診断、`ryoko api`を実測
+- production依存監査とnpm公開物のsecret・秘密鍵・個人絶対パス走査
+
+## [2026.8.19] - 2026-08-18
+
+> 2026.8.18 と同日の追加リリース。OpenRyoko自身の更新をダッシュボードとチャットで見逃さないための通知機能を追加。
+
+### このリリースでできるようになったこと
+
+- **ダッシュボードで新しいバージョンに気づける**: npmに最新版が公開されると、現在版と最新版、更新コマンド、公式リリースノートへのリンクをダッシュボードに表示。通知はバージョン単位で閉じられるため、同じ案内が繰り返し邪魔にならない。
+- **AIからいつものチャットへ更新を知らせてもらえる**: 更新通知専用Cronを設定すると、Slackなど指定したコネクタ／チャンネルへAIが分かりやすい通知文を送信。スケジュール、タイムゾーン、通知先を設定画面から変更でき、「今すぐ確認」も可能。
+- **更新がない日はAIを消費しない**: 定期確認自体は固定されたnpm公式エンドポイントへ直接問い合わせ、AIを起動するのは新しい未通知バージョンが見つかった時だけ。同じバージョンはジョブごとに一度だけ通知する。
+
+### 安全性と信頼性
+
+- npm応答は3区切りの数値バージョンだけを受理し、リリース本文など外部の文面をAIプロンプトへ混ぜない。確認先・リリースリンクもOpenRyoko公式の固定URLに限定。
+- AIターンが終了しただけでは通知済みにせず、確認済みの最新バージョンを含むメッセージが実際のチャットコネクタで受理された場合だけ記録。無言終了やエラーメッセージは次回再試行する。
+- 更新確認は6時間キャッシュ、5秒タイムアウト、同一ジョブの多重実行防止付き。通知状態はユーザー専用権限でatomic保存。
+- 更新通知Cronの無効なスケジュール、通知先未設定、重複ジョブIDをAPI側で拒否。
+
+### Verification
+
+- Backend: **93 test files / 764 tests pass**
+- Web: **12 test files / 85 tests pass**
+- backend / WebのTypeScript typecheck、production build、`git diff --check`
+- 実npmレジストリへの更新確認、openclaw-sandboxへのデプロイ、実Cron手動実行（最新版時はAIを起動せず`up-to-date`で終了）
+- Claude CLIによる2巡の独立レビューと指摘事項の回帰テスト化
+
+## [2026.8.18] - 2026-08-18
+
+> 2026.8.17 の公開後監査で見つかった依存脆弱性と、ネットワーク公開時の認証境界を修正したセキュリティリリース。
+
+### このリリースで安全になったこと
+
+- **WhatsApp / Telegramの既知Critical依存を解消**: Baileysを修正版へ更新し、Telegramを依存ゼロの公式v2 APIへ移行。送受信・返信・編集・typingの既存動作は維持。
+- **依存監査をゼロ件まで改善**: production依存の `pnpm audit` で critical / high / moderate / low がすべて0件。
+- **外部公開時に稼働情報を見せない**: `/api/status`も端末認証の対象にし、モデル、コネクタ、セッション数、空き容量の未認証取得を防止。
+- **監視は情報を出さず継続可能**: 認証不要の `/api/health` は `{ "ok": true }` だけを返し、Dockerや外形監視の生存確認に利用可能。
+- **端末認証がサーバー側でも30日で失効**: Cookieだけでなく保存済み端末セッションにも有効期限を持たせ、盗まれたCookieが無期限に使われないよう修正。
+- **ペアリング総当たりとディスクI/O攻撃を抑止**: 送信元ごとに5分間10回までに制限し、存在しないコードでは認証ファイルを書き換えない。
+- **ワイルドカードbindでも任意Hostを信用しない**: `0.0.0.0` / `::` は実際のローカルNIC、loopback、`gateway.allowedHosts`に限定。DNS rebinding耐性を維持。
+- **プロキシヘッダーを二重の明示設定時だけ信頼**: `gateway.trustProxyHeaders: true`に加え、接続元が`gateway.trustedProxyAddresses`に一致する場合だけ転送ヘッダーを利用。
+- **静的ファイル配信の境界を厳密化**: 名前が似た隣接ディレクトリへ抜けられないよう、実ディレクトリ境界で検証。
+- **npm公開物を最小化**: 実行に不要なテストコードとテスト用fixtureをproduction buildから除外。
+
+### 外部公開している場合の設定
+
+- 平文HTTPでインターネットへ直接公開せず、Tailscale/VPNまたはHTTPSリバースプロキシを利用する。
+- リバースプロキシの公開名を `gateway.allowedHosts` に追加する。
+- `gateway.trustProxyHeaders: true`を設定し、信頼するプロキシの接続元IPを`gateway.trustedProxyAddresses`に追加する。
+- LANの実IPで直接利用する場合は自動許可されるため、追加設定は不要。
+
+### 互換性に関する注意
+
+- `/api/status`を直接監視していた場合は、Bearer認証を付けるか、情報を返さない`/api/health`へ切り替える。
+- 30日より前に作成された既存の端末セッションは失効するため、必要に応じて再ペアリングする。
+
+### Verification
+
+- Backend: **89 test files / 747 tests pass**
+- Web: **11 test files / 82 tests pass**
+- backend / WebのTypeScript typecheck、production build、`git diff --check`
+- production依存監査: 0 vulnerabilities
+- npm公開物のsecret・秘密鍵・個人絶対パス走査
+- Claude CLIによる独立セキュリティレビュー
+
+## [2026.8.17] - 2026-08-17
+
+> Jinn v0.10〜v0.30 の改善を OpenRyoko の既存設計へ選別統合し、モデル設定をベンダー／モデル選択とカスタム入力の両方に対応したリリース。
+
+### このリリースでできるようになったこと
+
+- **用途に合わせてAIを選べる**: 通常の会話、Slackの空気読み、Goal判定ごとに、ベンダーとモデルを画面から選択できる。一覧にないモデルもIDを手入力して利用可能。
+- **外出先から安全に使える**: OpenRyokoをネットワーク公開する場合に、端末ごとの認証・ペアリング・アクセス解除を利用できる。
+- **長い会話から必要な情報を見つけやすい**: 過去メッセージの検索、検索結果への直接移動、古い履歴の追加読み込みに対応。
+- **長時間の作業を安心して任せられる**: Claudeの長時間セッションや再接続を安定化し、再起動後も作業画面を復元。データの自動バックアップと容量監視も追加。
+- **Slackの短い承認で、そのまま作業を続けられる**: `GO`、`はい`、`OK`、`了解`、`続けて`、`✅`などをReactionだけで終わらせず、依頼の続きとして処理する。
+- **Claudeの利用状況を確認できる**: Dashboardから5時間・7日間の利用状況を確認できる。
 
 ### Features
-- **セッション横断の直近アクション注入（`## Recent activity in other conversations`）**: セッションはスレッド単位（`slack:<channel>:<threadTs>`）で分かれるため、1つの案件が「発生元スレッド」「エスカレーション先スレッド」「続報スレッド」に割れると、それぞれ記憶を共有しない別セッションとして動く。結果、あるセッションが数十分前に別セッションが実行済みの作業を「未着手」と報告したり、決着済みの判断を再度仰いだりする事故が起きていた。system prompt に「過去 N 時間に自分が他の会話で送った返信」のダイジェストを **ESSENTIAL tier**（コンテキスト逼迫時も削られない）で注入し、各セッションが「自分が既に言ったこと・やったこと」を見られるようにした。cron 実行分は定型の無風報告でダイジェストを埋めるため除外。`RYOKO-DISPOSITION` トレーラーは除去し1件240字に圧縮。
-- **設定**: `context.crossSessionWindowHours`（既定 6）/ `context.crossSessionLimit`（既定 15）。いずれか `0` で無効化。
-- **信頼話者ゲート**: ダイジェストは他チャンネルでの発言を全セッションに配るため、`portal.trustedSpeakers` に含まれない話者に対しては **DM 由来の発言を除外** する（チャンネル間の可視性は維持したまま、1対1の会話が社外向けセッションのプロンプトに載るのを防ぐ）。あわせて `portal.trustedSpeakers` を `PortalConfig` 型に追加。
+- **モデル選択 UI の刷新**: デフォルトモデルは Anthropic / OpenAI / Google、空気読みトリアージと Goal 判定は対応する Anthropic / OpenAI からベンダーとモデルを個別選択できる。すべてカスタムモデル ID の手入力と「自動」への復帰に対応し、ネイティブ label・focus・keyboard 操作も整備。
+- **ネットワーク公開時の認証**: bearer/device auth、5分・単回使用の pairing code、browser device revoke、Host / Origin 防御を追加。loopback の従来操作は維持し、instance ごとに認証状態を分離。
+- **長期セッションの履歴操作**: session/activity の cursor pagination、message の timestamp+rowid paging、FTS5 検索、検索結果への message anchor、旧履歴の段階読込に対応。
+- **耐久性と運用ヘルス**: SQLite online backup（日次・7世代）、書込前の空き容量判定、status の storage health、上限付きログローテーション、機密値の redact、home/config の権限強制を追加。
+- **Durable PTY と権限プロンプト**: 256 KiB・atomic 保存の scrollback snapshot、再起動後の復元、明示 opt-in の自動承認、曖昧な権限入力の拒否を追加。
+- **Claude usage 表示**: OAuth usage API の 5h / 7d / model-scoped bucket を Dashboard に投影し、token と provider error は外部へ公開しない。
+
+### Reliability / Fixes
+- **Slack Reaction がタスク継続指示を飲み込む問題**: DM／DM相当会話のreact-only候補を、純粋な感謝・会話終了表現へ決定論的に限定。`GO`、`はい`、`OK`、`了解`、`続けて`、`お願いします`や承認系emojiは通常セッションへ渡し、直前がbot発言の場合もReaction判定を上書きしてタスク停止を防止。
+- **Claude PTY の長時間ターン安定化**: 実モデルの context / auto-compact 上限を反映し、`UserPromptSubmit` 未確認時の Enter 再送、添付パスの保護、無活動 stall 判定、suggestion/reasoning metadata 除去を追加。
+- **正確なターン会計**: 累積 transcript から今回ターン分だけを差分算出し、Web / connector / fallback / retry の各経路で一度だけ計上。
+- **SSE proxy の再利用と回復**: PTY 単位の keep-alive pool、停止時 cleanup、応答前 socket error の backoff 付き再試行を追加。
+- **Codex と Web API の入力境界**: positional argument に `--` fence、メッセージ本文にサイズ・空白検証を追加。
+- **interactive PTY のレース修正**: stale hook、PTY death、permission pending、shutdown 時の snapshot flush、復元済み buffer reset の競合を解消。
+
+### Verification
+- backend: **85 test files / 732 tests pass**
+- Web: **11 test files / 82 tests pass**
+- backend / Web の TypeScript typecheck、production build、`git diff --check` 成功
+- Claude CLI によるレビューを2巡し、最終競合指摘まで回帰テスト化
+- 隔離された実行環境へデプロイし、OpenRyoko API、Slack Socket Mode、OpenClaw Gateway、Dashboard の正常稼働を確認
+
+**Breaking changes**: なし。
+
+## [2026.8.6] - 2026-08-04
+
+> 2026.8.5 の実機検証で発見した誤警報のホットフィックス。
+
+### Fixes
+- **web セッションの notification 起床で「配信失敗」誤警報が出る問題**: web/API セッションは `connector` に擬似名（"web" 等 — createSession が source をデフォルト代入）を持つため、配信先が元々存在しないのに `no_target` が「顧客未達」として毎回記録されていた（親子セッションのコールバック起床でも発生）。reply_context に実際の宛先（channel/chatId/to）がある場合のみ未達として記録するよう修正。
+
+## [2026.8.5] - 2026-08-04
+
+> 2026.8.4 と同日の追加リリース（npm は同一 version の再 publish 不可のため番号を +1。2026.7.25 / 2026.7.26 の前例に倣う）。
+
+### Features（Issue #38 フォローアップ: 自己起床する切り離しジョブ）
+- **`ryoko job run` — 自己起床ジョブランナー**: ターンを跨ぐ長時間ジョブを 1 コマンドで切り離し実行。ジョブ終了時（成功 / 失敗 / タイムアウトすべて）に元のセッションを自動起床し、終了コード・ログパス・ログ末尾 40 行を通知する。monitor プロセスは `detached`（POSIX で setsid(2) 相当。macOS でも外部 `setsid` 不要）で自分のプロセスグループを持ち、ターン終了・エンジンの group kill・gateway 再起動を生き延びる。exactly-once 保証（O_EXCL claim ＋ dedupeKey ＋ sqlite トランザクション）、タイムアウト時のプロセスツリー kill、状態ファイル（`~/.ryoko/jobs/`）による孤児検知付き。`ryoko job list` で一覧。
+- **notification 起床ターンの返信を元の会話へ配信**: `POST /api/sessions/:id/message` (`role: notification`) で起こされたターンの最終回答を、セッションの reply_context から元の Slack チャンネル / スレッドへ配信（disposition trailer の除去も同経路で担保）。gateway 再起動後の復元にも対応。配信失敗はセッションに永続記録され、無言の放置にならない。notification role は loopback 限定（外部から任意セッションを起こす口は作らない）。
+- **system prompt の更新**: Process lifetime セクションの第一選択を `ryoko job run`（実セッション ID 埋め込み）に更新。起こされないまま終わったジョブ（notify_failed / orphaned）は次ターンの context に自セッション分のみ注入され、「起こされないまま放置」を構造的に防ぐ。
+
+## [2026.8.4] - 2026-08-04
+
+### Fixes
+- **バックグラウンドタスクの寿命を system prompt で警告 (#38)**: one-shot エンジンプロセスのターン終了でバックグラウンドタスクがプロセスグループごと無言で死ぬ問題への予防策。`## Process lifetime` セクション（ESSENTIAL）を注入し、フォアグラウンド待機 / 切り離し手順（Linux: setsid、macOS: nohup+disown）/ 検証してから完了報告、を案内。interactive PTY セッションには persistent 変種を出し分け。
+- **Slack sendMessage が target.thread を無視する非対称を解消 (#6)**: `explicitThread` ヘルパーで `/send`・proxy (`action: sendMessage`)・Slack コネクタの 3 経路を統一。proxy 経由の全コネクタで thread 指定がスレッド返信として配送されるようになった。
+- **PTY レーステストの claude-oauth-gate 依存を解消**: 環境依存で落ちていたテスト 5 件を安定化。
 
 ## [2026.7.26] - 2026-07-25
 

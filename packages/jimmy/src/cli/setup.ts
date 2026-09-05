@@ -3,7 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { execSync, spawn } from "node:child_process";
-import yaml from "js-yaml";
 import {
   JINN_HOME,
   CONFIG_PATH,
@@ -20,13 +19,14 @@ import {
   MIGRATIONS_DIR,
 } from "../shared/paths.js";
 import { initDb } from "../sessions/registry.js";
-import { getPackageVersion } from "../shared/version.js";
 import {
   applyTemplateReplacements,
   isTemplateFile,
   readPortalName,
   buildTemplateReplacements,
 } from "../shared/templateReplacements.js";
+import { ensureOwnerOnlyDirectory } from "../shared/owner-only.js";
+import { buildInitialConfig } from "./initial-config.js";
 
 const GREEN = "\x1b[32m";
 const YELLOW = "\x1b[33m";
@@ -229,33 +229,10 @@ function detectProjectContext(portalSlug: string): void {
   }
 }
 
-const DEFAULT_CONFIG = `jinn:
-  version: "${getPackageVersion()}"
-
-gateway:
-  port: 7777
-  host: "127.0.0.1"
-engines:
-  default: claude
-  claude:
-    bin: claude
-    model: claude-opus-5
-    effortLevel: xhigh
-  codex:
-    bin: codex
-    model: gpt-5.6-sol
-connectors: {}
-portal: {}
-logging:
-  file: true
-  stdout: true
-  level: info
-`;
-
 function defaultClaudeMd(portalName: string) {
   return `# ${portalName} AI Gateway
 
-This is the ${portalName} home directory (~/.jinn).
+This is the ${portalName} home directory (~/.ryoko).
 ${portalName} orchestrates Claude Code and Codex as AI engines.
 `;
 }
@@ -346,35 +323,20 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
     }
   }
 
-  // 6. Create ~/.jinn directory structure
+  // 6. Create ~/.ryoko directory structure
   console.log("");
   const created: string[] = [];
 
-  if (ensureDir(JINN_HOME)) created.push(JINN_HOME);
+  const homePermission = ensureOwnerOnlyDirectory(JINN_HOME);
+  if (homePermission.warning) warn(`インスタンスディレクトリの権限を制限できませんでした: ${homePermission.warning}`);
+  if (homePermission.changed) created.push(JINN_HOME);
 
   // Copy or create config files
-  const templateConfig = path.join(TEMPLATE_DIR, "config.yaml");
   const templateClaude = path.join(TEMPLATE_DIR, "CLAUDE.md");
   const templateAgents = path.join(TEMPLATE_DIR, "AGENTS.md");
 
   if (!fs.existsSync(CONFIG_PATH)) {
-    let source = fs.existsSync(templateConfig)
-      ? fs.readFileSync(templateConfig, "utf-8")
-      : DEFAULT_CONFIG;
-    // Stamp the current package version into the config
-    source = source.replace(/version:\s*"[^"]*"/, `version: "${getPackageVersion()}"`);
-    // Apply interactive choices
-    source = source.replace(/default:\s*claude/, `default: ${chosenEngine}`);
-    if (chosenName !== "Ryoko") {
-      // Template already has `portalName: Ryoko` under portal. Substitute.
-      // Also handle the legacy `portal: {}` form for back-compat.
-      if (source.includes("portalName: Ryoko")) {
-        source = source.replace("portalName: Ryoko", `portalName: "${chosenName}"`);
-      } else {
-        source = source.replace("portal: {}", `portal:\n  portalName: "${chosenName}"`);
-      }
-    }
-    ensureFile(CONFIG_PATH, source);
+    ensureFile(CONFIG_PATH, buildInitialConfig(chosenEngine, chosenName));
     created.push(CONFIG_PATH);
   }
 

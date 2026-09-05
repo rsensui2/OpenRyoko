@@ -54,13 +54,13 @@ Modular adapters that implement a standard interface. Each connector translates 
 Uses `node-cron` to run scheduled AI jobs. Watches `cron/jobs.json` for hot-reload. See `cron.md`.
 
 ### File Watcher
-Uses `chokidar` to watch `~/.jinn/` for changes and trigger appropriate reloads:
+Uses `chokidar` to watch `~/.ryoko/` for changes and trigger appropriate reloads:
 - `config.yaml` changes → reload gateway configuration
 - `cron/jobs.json` changes → reschedule cron jobs
 - `org/` changes → rebuild employee registry
 
 ### SQLite Session Registry
-Stores session metadata (id, engine, employee, connector source, timestamps) in `jinn.db`.
+Stores session metadata (id, engine, employee, connector source, timestamps) in `sessions/registry.db`.
 
 ## Data Flow
 

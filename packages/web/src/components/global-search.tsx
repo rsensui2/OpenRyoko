@@ -21,6 +21,7 @@ import { useOrg } from "@/hooks/use-employees"
 import { useCronJobs } from "@/hooks/use-cron"
 import { useSessions } from "@/hooks/use-sessions"
 import { useSkills } from "@/hooks/use-skills"
+import { api, type MessageSearchResult } from "@/lib/api"
 
 const RECENT_KEY = "jinn-command-recent"
 const MAX_RECENT = 5
@@ -65,6 +66,9 @@ export function GlobalSearch() {
   const portalName = settings.portalName ?? "Ryoko"
   const [open, setOpen] = useState(false)
   const [recents, setRecents] = useState<RecentItem[]>([])
+  const [search, setSearch] = useState("")
+  const [messageResults, setMessageResults] = useState<MessageSearchResult[]>([])
+  const [historyIndexing, setHistoryIndexing] = useState(false)
   const router = useRouter()
 
   const { data: orgData } = useOrg()
@@ -87,7 +91,34 @@ export function GlobalSearch() {
   // Load recents when opened
   useEffect(() => {
     if (open) setRecents(loadRecent())
+    else {
+      setSearch("")
+      setMessageResults([])
+      setHistoryIndexing(false)
+    }
   }, [open])
+
+  useEffect(() => {
+    const query = search.trim()
+    if (!open || query.length < 2) {
+      setMessageResults([])
+      return
+    }
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      api.searchMessages(query).then((response) => {
+        if (cancelled) return
+        setMessageResults(response.results)
+        setHistoryIndexing(response.indexing)
+      }).catch(() => {
+        if (!cancelled) setMessageResults([])
+      })
+    }, 250)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [open, search])
 
   const navigate = useCallback((href: string, item: RecentItem) => {
     saveRecent(item)
@@ -107,9 +138,43 @@ export function GlobalSearch() {
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="p-0 gap-0 max-w-[560px]">
           <Command className="rounded-lg">
-            <CommandInput placeholder={`Search ${portalName}...`} />
+            <CommandInput
+              value={search}
+              onValueChange={setSearch}
+              placeholder={`Search ${portalName}...`}
+            />
             <CommandList>
               <CommandEmpty>No results found.</CommandEmpty>
+
+              {messageResults.length > 0 && (
+                <>
+                  <CommandGroup heading={historyIndexing ? "Messages (indexing older history…)" : "Messages"}>
+                    {messageResults.map((result) => {
+                      const href = `/chat?session=${encodeURIComponent(result.sessionId)}&message=${encodeURIComponent(result.messageId)}`
+                      const label = result.snippet.replace(/[«»]/g, '')
+                      return (
+                        <CommandItem
+                          key={result.messageId}
+                          value={`${label} ${result.employee ?? ''}`}
+                          onSelect={() => navigate(href, {
+                            id: `message-${result.messageId}`,
+                            label,
+                            href,
+                            type: 'message',
+                          })}
+                        >
+                          <MessageSquare size={16} className="mr-2 shrink-0 opacity-50" />
+                          <span className="min-w-0 flex-1 truncate">{label}</span>
+                          {result.employee ? (
+                            <span className="ml-2 shrink-0 text-xs text-muted-foreground">{result.employee}</span>
+                          ) : null}
+                        </CommandItem>
+                      )
+                    })}
+                  </CommandGroup>
+                  <CommandSeparator />
+                </>
+              )}
 
               {/* Recent items */}
               {recents.length > 0 && (
@@ -174,7 +239,10 @@ export function GlobalSearch() {
                     return (
                       <CommandItem
                         key={id}
-                        onSelect={() => navigate('/chat', { id: `session-${id}`, label: title, href: '/chat', type: 'session' })}
+                        onSelect={() => {
+                          const href = `/chat?session=${encodeURIComponent(id)}`
+                          navigate(href, { id: `session-${id}`, label: title, href, type: 'session' })
+                        }}
                       >
                         <MessageSquare size={16} className="mr-2 opacity-50" />
                         {title}

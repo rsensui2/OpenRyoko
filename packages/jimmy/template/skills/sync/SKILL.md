@@ -22,21 +22,21 @@ You fetch the conversation yourself using the gateway API. No magic injection â€
 2. **List all sessions** to find the employee's most recent one:
 
 ```bash
-curl -s $GATEWAY_URL/api/sessions | jq '[.[] | select(.employee == "EMPLOYEE_NAME")] | sort_by(.lastActivity) | reverse | .[0]'
+ryoko api GET /api/sessions | jq '[.[] | select(.employee == "EMPLOYEE_NAME")] | sort_by(.lastActivity) | reverse | .[0]'
 ```
 
-Replace `EMPLOYEE_NAME` with the target and `$GATEWAY_URL` with the gateway URL from your system prompt. This gives you the most recent session for that employee.
+Replace `EMPLOYEE_NAME` with the target. `ryoko api` selects the safe local URL and adds gateway authentication automatically. This gives you the most recent session for that employee.
 
 **Tip**: Your own session ID is in the "Current session" section of your system prompt. If you want to exclude child sessions of the current session (to avoid circular references), filter with:
 
 ```bash
-curl -s $GATEWAY_URL/api/sessions | jq '[.[] | select(.employee == "EMPLOYEE_NAME" and .parentSessionId != "YOUR_SESSION_ID")] | sort_by(.lastActivity) | reverse | .[0]'
+ryoko api GET /api/sessions | jq '[.[] | select(.employee == "EMPLOYEE_NAME" and .parentSessionId != "YOUR_SESSION_ID")] | sort_by(.lastActivity) | reverse | .[0]'
 ```
 
 3. **Fetch the full conversation** using the session ID from step 2:
 
 ```bash
-curl -s $GATEWAY_URL/api/sessions/SESSION_ID | jq '.messages'
+ryoko api GET /api/sessions/SESSION_ID | jq '.messages'
 ```
 
 This returns all messages with `role` and `content` fields. Read through them to understand what was discussed.
@@ -55,7 +55,7 @@ After fetching and reading the conversation:
 
 - **No sessions found**: If no sessions exist for that employee, tell the user: "I don't see any recent conversations with @employee-name."
 - **Empty messages**: If the session exists but has no messages, note that the session was created but no conversation happened yet.
-- **Employee not found**: If the name doesn't match any sessions, suggest the user check the org with `curl -s $GATEWAY_URL/api/org` to see available employees.
+- **Employee not found**: If the name doesn't match any sessions, suggest the user check the org with `ryoko api GET /api/org` to see available employees.
 - **Very long conversations**: You decide how much to read. You can fetch the full conversation and focus on the most recent messages, or read everything if it's short. No artificial limits.
 
 ## Examples

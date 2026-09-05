@@ -72,3 +72,26 @@ export function evaluateRespondPolicy(input: RespondPolicyInput): RespondDecisio
   }
   return { allow: true };
 }
+
+/**
+ * True when a reaction event should be handled at all.
+ *
+ * Reactions carry no @-mention, so a channel scope of "mention" (or "never")
+ * can never be satisfied here — the message-path gate in
+ * `evaluateRespondPolicy` has no equivalent on the reaction path. Without this
+ * check a secondary bot sharing channels with the primary bot double-handles
+ * every channel reaction; the primary bot (channel="always") owns them.
+ *
+ * `reaction_added` reports only `item.channel`, with no `channel_type`, so the
+ * scope has to be inferred from the id prefix. Only DMs ("D…") are
+ * distinguishable; group DMs fall under the channel scope rather than mpim.
+ * That is deliberate — the conservative side of the gate — and matches how
+ * the reaction path behaved before this scope existed.
+ */
+export function shouldHandleReaction(
+  config: SlackRespondToConfig | undefined,
+  itemChannel: string,
+): boolean {
+  if (itemChannel.startsWith("D")) return true;
+  return resolveRespondMode(config, "channel") === "always";
+}

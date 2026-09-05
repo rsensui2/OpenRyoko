@@ -16,8 +16,12 @@ import type {
  */
 
 /** Engines registered in this build (mirrors server.ts engine map). */
-const ENGINE_NAMES = ["claude", "codex", "gemini"] as const;
-type EngineName = (typeof ENGINE_NAMES)[number];
+export const ENGINE_NAMES = ["claude", "codex", "gemini"] as const;
+export type EngineName = (typeof ENGINE_NAMES)[number];
+
+export function isKnownEngine(engine: string): engine is EngineName {
+  return (ENGINE_NAMES as readonly string[]).includes(engine);
+}
 
 const EFFORT_MECHANISM: Record<EngineName, EffortMechanism> = {
   claude: "claude-flag",

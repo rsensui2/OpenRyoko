@@ -37,6 +37,28 @@ describe("CodexEngine", () => {
   });
 
   describe("run() — agent_message handling", () => {
+    it("uses a positional fence so dash-prefixed prompts are never parsed as CLI flags", async () => {
+      const proc = createMockProcess();
+      mockSpawn.mockReturnValue(proc as any);
+      const resultPromise = engine.run({ prompt: "--help", cwd: "/tmp" });
+      const args = mockSpawn.mock.calls.at(-1)?.[1] as string[];
+      expect(args.slice(-2)).toEqual(["--", "--help"]);
+      proc.exitCode = 0;
+      proc.emit("close", 0);
+      await resultPromise;
+    });
+
+    it("fences both the resume thread id and prompt", async () => {
+      const proc = createMockProcess();
+      mockSpawn.mockReturnValue(proc as any);
+      const resultPromise = engine.run({ prompt: "--help", resumeSessionId: "--last", cwd: "/tmp" });
+      const args = mockSpawn.mock.calls.at(-1)?.[1] as string[];
+      expect(args.slice(-3)).toEqual(["--", "--last", "--help"]);
+      proc.exitCode = 0;
+      proc.emit("close", 0);
+      await resultPromise;
+    });
+
     it("delivers only the final agent_message, not interim progress narration", async () => {
       const proc = createMockProcess();
       mockSpawn.mockReturnValue(proc as any);

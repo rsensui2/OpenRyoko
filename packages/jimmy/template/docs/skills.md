@@ -4,7 +4,7 @@ Skills are markdown instruction sets that engines read and follow. There is no r
 
 ## How Skills Work
 
-Each skill is a directory in `~/.jinn/skills/` containing at minimum a `SKILL.md` file. When an engine starts a session, it has access to the skills directory and can read any skill's instructions.
+Each skill is a directory in `~/.ryoko/skills/` containing at minimum a `SKILL.md` file. When an engine starts a session, it has access to the skills directory and can read any skill's instructions.
 
 The `SKILL.md` file contains:
 - **Trigger description**: When this skill should be activated
@@ -14,7 +14,7 @@ The `SKILL.md` file contains:
 ## Creating a Skill
 
 ```
-~/.jinn/skills/
+~/.ryoko/skills/
   my-skill/
     SKILL.md          # Required: instructions
     data.json         # Optional: supporting data
@@ -41,13 +41,16 @@ When the user says "deploy" or asks about deployment status.
 
 ## Pre-packaged Skills
 
-{{portalName}} ships with several default skills:
+{{portalName}} ships with these default skills (see `~/.ryoko/skills/`):
 
-- **self**: Instructions for {{portalName}} to understand and modify its own configuration
-- **slack**: Slack-specific behavior and formatting guidelines
-- **cron**: How to create and manage scheduled jobs
-- **org**: Working with the organization structure and employee personas
-- **skills**: Meta-skill for creating and managing other skills
+- **onboarding**: First-run setup — fills IDENTITY.md / SOUL.md / MEMORY.md interactively
+- **management**: Hiring, firing, promotions, delegation, and board reviews for the org
+- **cron-manager**: Create, edit, enable/disable, and troubleshoot cron jobs
+- **skill-creator**: Write a SKILL.md playbook to create a new skill
+- **find-and-install**: Discover skills via `npx skills find` and install them
+- **self-heal**: Diagnose and repair {{portalName}}'s own configuration and runtime
+- **migrate**: Apply pending version migrations
+- **sync** / **new** / **status**: Slash-command playbooks (`/sync`, `/new`, `/status`)
 
 ## Key Points
 

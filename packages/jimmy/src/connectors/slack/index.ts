@@ -11,16 +11,27 @@ import type {
   SlackGoalExtractionConfig,
 } from "../../shared/types.js";
 import { buildReplyContext, deriveSessionKey, isOldSlackMessage } from "./threads.js";
-import { formatResponse, downloadAttachment } from "./format.js";
+import {
+  downloadAttachment,
+  formatAttachmentFailureNotice,
+  formatResponse,
+  resolveSlackFileAttachment,
+} from "./format.js";
 import { normalizeSpeakerInfo, type SpeakerInfo } from "./speaker.js";
 import { runTriage } from "./triage.js";
-import { isShortAckCandidate } from "./triage-prompt.js";
+import {
+  shouldForceTaskContinuationReply,
+  shouldRunReactOnlyTriage,
+} from "./triage-prompt.js";
 import {
   evaluateRespondPolicy,
   hasMentionScope,
+  resolveRespondMode,
   respondPolicyNeedsTracking,
+  shouldHandleReaction,
 } from "./respond-policy.js";
 import { isOperatorSpeaker } from "../../shared/operator-match.js";
+import { explicitThread } from "../../shared/threading.js";
 import { ConversationTracker } from "./conversation-tracker.js";
 import { AgentsCanvasUpdater } from "./agents-canvas.js";
 import { extractGoalCondition, shouldExtractGoal } from "./goal-extractor.js";
@@ -221,7 +232,7 @@ export class SlackConnector implements Connector {
 
     const channelDescription = ctx.channelName ? `#${ctx.channelName}` : event.channel;
 
-    return runTriage(
+    const decision = await runTriage(
       {
         botName: this.portalName || "Ryoko",
         persona: this.triageConfig?.persona,
@@ -249,6 +260,22 @@ export class SlackConnector implements Connector {
         failOpenAction: ctx.dmEquivalent || !this.botUserId ? "reply" : "silent",
       },
     );
+
+    if (
+      decision.action === "react" &&
+      shouldForceTaskContinuationReply({
+        text: ctx.messageText,
+        dmEquivalent: ctx.dmEquivalent === true,
+        previousWasBot: recentThread.at(-1)?.isBot,
+      })
+    ) {
+      logger.info(
+        `[slack] triage react overridden — task continuation must reach session for ts=${event.ts}`,
+      );
+      return { action: "reply", reason: "task_continuation" };
+    }
+
+    return decision;
   }
 
   private async fetchRecentThreadForTriage(
@@ -256,7 +283,7 @@ export class SlackConnector implements Connector {
     threadTs: string | undefined,
     messageTs: string | undefined,
     limit: number,
-  ): Promise<Array<{ speaker: string; text: string }>> {
+  ): Promise<Array<{ speaker: string; text: string; isBot: boolean }>> {
     try {
       const messages = threadTs
         ? (await this.app.client.conversations.replies({
@@ -273,18 +300,22 @@ export class SlackConnector implements Connector {
 
       if (!messages) return [];
       const chronological = threadTs ? messages : [...messages].reverse();
-      const result: Array<{ speaker: string; text: string }> = [];
+      const result: Array<{ speaker: string; text: string; isBot: boolean }> = [];
       for (const m of chronological) {
+        // conversations.replies may include the event currently being triaged.
+        // Exclude it so the last item really is the preceding speaker/message.
+        if (messageTs && (m as any).ts === messageTs) continue;
         const text = (m as any).text as string | undefined;
         if (!text) continue;
         const userId = (m as any).user as string | undefined;
         const botId = (m as any).bot_id as string | undefined;
-        const speakerLabel = userId
-          ? (await this.resolveSpeakerInfo(userId))?.name ?? userId
-          : botId
-            ? `bot:${botId}`
+        const isBot = !!botId || (!!userId && userId === this.botUserId);
+        const speakerLabel = isBot
+          ? `bot:${botId ?? userId}`
+          : userId
+            ? (await this.resolveSpeakerInfo(userId))?.name ?? userId
             : "unknown";
-        result.push({ speaker: speakerLabel, text });
+        result.push({ speaker: speakerLabel, text, isBot });
       }
       return result;
     } catch (err) {
@@ -430,22 +461,31 @@ export class SlackConnector implements Connector {
 
       // Download attachments if present
       const attachments = [];
+      const failedAttachments: string[] = [];
       if ((event as any).files) {
         for (const file of (event as any).files) {
           try {
+            const resolved = await resolveSlackFileAttachment(
+              file,
+              (args) => this.app.client.files.info(args),
+            );
             const localPath = await downloadAttachment(
-              file.url_private,
+              resolved.url,
               this.app.client.token!,
               TMP_DIR,
             );
             attachments.push({
-              name: file.name,
-              url: file.url_private,
-              mimeType: file.mimetype,
+              name: resolved.name,
+              url: resolved.url,
+              mimeType: resolved.mimeType,
               localPath,
             });
           } catch (err) {
-            logger.warn(`Failed to download attachment: ${err}`);
+            // File names are user-controlled. Keep the injected failure notice
+            // limited to Slack's opaque ID so it cannot become prompt content.
+            const label = file.id ? `Slack file ${file.id}` : "Slack attachment";
+            failedAttachments.push(label);
+            logger.warn(`[slack] Failed to retrieve attachment ${label}: ${err}`);
           }
         }
       }
@@ -464,7 +504,10 @@ export class SlackConnector implements Connector {
       // "[Thread context — …]" preamble below silently breaks that parsing,
       // so a command typed inside a Slack thread would never be intercepted.
       // Commands don't need conversation context anyway — pass them verbatim.
-      const text = startsWithSlashCommand(rawText) ? rawText : parentContext + rawText;
+      const attachmentFailureNotice = formatAttachmentFailureNotice(failedAttachments);
+      const text = startsWithSlashCommand(rawText)
+        ? rawText + attachmentFailureNotice
+        : parentContext + rawText + attachmentFailureNotice;
 
       const msg: IncomingMessage = {
         connector: this.name,
@@ -502,17 +545,19 @@ export class SlackConnector implements Connector {
           : false;
       // Short-ack exception: the always-reply fast paths (real DMs and
       // DM-equivalent conversations) otherwise swallow the one situation
-      // react-triage is FOR — "ありがとう"/"了解" right after the bot replied
+      // react-triage is FOR — pure appreciation right after the bot replied
       // (the bot having replied is what makes a conversation DM-equivalent).
       // Send lexical short-ack candidates through triage in a 1:1-aware mode
       // (react vs reply, never silent) so a bare thanks can get an emoji
       // instead of a full engine turn. Everything else keeps the fast-path
       // full reply. @-mentions always get a real reply, even short ones.
-      const shortAckTriage =
-        (channelType === "im" || isDmEquivalent) &&
-        !wasMentioned &&
-        attachments.length === 0 &&
-        isShortAckCandidate(rawText);
+      const shortAckTriage = shouldRunReactOnlyTriage({
+        channelType,
+        isDmEquivalent,
+        wasMentioned,
+        attachmentCount: attachments.length,
+        text: rawText,
+      });
       const skipTriage =
         !triageEnabled ||
         wasMentioned ||
@@ -619,6 +664,15 @@ export class SlackConnector implements Connector {
 
       // Skip bot's own reactions
       if (this.botUserId && event.user === this.botUserId) return;
+
+      // A mention-gated channel scope cannot be satisfied by a reaction, which
+      // carries no @-mention; see shouldHandleReaction.
+      if (!shouldHandleReaction(this.respondTo, event.item.channel)) {
+        logger.debug(
+          `[slack] respondTo.channel=${resolveRespondMode(this.respondTo, "channel")} — ignoring channel reaction on ${event.item.channel}:${event.item.ts}`,
+        );
+        return;
+      }
 
       if (!this.handler) return;
 
@@ -807,6 +861,14 @@ export class SlackConnector implements Connector {
 
   async sendMessage(target: Target, text: string): Promise<string | undefined> {
     if (!text || !text.trim()) return undefined;
+    // An explicit thread target must never be dropped: posting a "thread
+    // reply" without thread_ts lands it bare in the channel. Callers that
+    // reach sendMessage with a thread (proxy endpoint, MCP tool) get the
+    // same behavior as replyMessage.
+    const thread = explicitThread(target.thread);
+    if (thread) {
+      return this.replyMessage({ ...target, thread }, text);
+    }
     const chunks = formatResponse(text);
     let lastTs: string | undefined;
     for (const chunk of chunks) {

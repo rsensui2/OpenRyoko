@@ -11,25 +11,25 @@ This skill activates when the user wants to create a new custom skill for {{port
 
 ## Output Location
 
-All skills are stored at `~/.jinn/skills/<skill-name>/SKILL.md`. Each skill lives in its own directory named with kebab-case.
+All skills are stored at `skills/<skill-name>/SKILL.md`. Each skill lives in its own directory named with kebab-case.
 
 ## Behavior by Engine
 
 ### Claude Code (claude engine)
 
-Claude Code has native skill creation capabilities. Defer to the engine's built-in skill/memory system when available. The engine knows how to create well-structured instruction files. Simply ensure the output file lands at the correct path: `~/.jinn/skills/<skill-name>/SKILL.md`.
+Claude Code has native skill creation capabilities. Defer to the engine's built-in skill/memory system when available. The engine knows how to create well-structured instruction files. Simply ensure the output file lands at the correct path: `skills/<skill-name>/SKILL.md`.
 
 ### Codex (codex engine)
 
-Create the SKILL.md file manually following the conventions below. Write the file directly to `~/.jinn/skills/<skill-name>/SKILL.md`.
+Create the SKILL.md file manually following the conventions below. Write the file directly to `skills/<skill-name>/SKILL.md`.
 
 ## Steps
 
 1. Ask the user what the skill should do. Get a clear description of the capability.
 2. Ask for a name (kebab-case). Suggest one if the user does not provide it.
-3. Create the directory `~/.jinn/skills/<skill-name>/` if it does not exist.
+3. Create the directory `skills/<skill-name>/` if it does not exist.
 4. Generate the SKILL.md content following the conventions below.
-5. Write the file to `~/.jinn/skills/<skill-name>/SKILL.md`.
+5. Write the file to `skills/<skill-name>/SKILL.md`.
 6. Confirm the skill was created and summarize what it does.
 
 ## Conventions for Writing Good SKILL.md Files
@@ -47,12 +47,12 @@ Bad: "This skill does reporting stuff."
 
 Provide numbered steps that an AI engine can follow without ambiguity. Each step should be a concrete action, not a vague directive.
 
-Good: "1. Read the file at `~/.jinn/data/repos.json`. 2. For each repository, fetch the latest commits from the past 7 days."
+Good: "1. Read the file at `data/repos.json`. 2. For each repository, fetch the latest commits from the past 7 days."
 Bad: "1. Get the data. 2. Process it."
 
 ### 3. Data File References
 
-Specify exact file paths for any data the skill reads or writes. Use `~/.jinn/` as the base directory. Define the expected schema for any JSON or YAML files.
+Specify exact file paths for any data the skill reads or writes, relative to the {{portalName}} home directory (always the working directory). Define the expected schema for any JSON or YAML files.
 
 ### 4. Error Handling Guidance
 
@@ -84,7 +84,7 @@ This skill activates when <specific trigger description>.
 
 ## Data Files
 
-- `~/.jinn/<path>` — <description of the file and its format>
+- `<path>` — <description of the file and its format>
 
 ## Steps
 
@@ -103,7 +103,7 @@ This skill activates when <specific trigger description>.
 
 ## Auto-Sync
 
-The gateway automatically creates symlinks in `~/.jinn/.claude/skills/` and `~/.jinn/.agents/skills/` pointing to each skill directory. This happens on startup and whenever the `skills/` directory changes. You do not need to manage symlinks manually.
+The gateway automatically creates symlinks in `.claude/skills/` and `.agents/skills/` pointing to each skill directory. This happens on startup and whenever the `skills/` directory changes. You do not need to manage symlinks manually.
 
 ## Error Handling
 

@@ -1,6 +1,6 @@
 "use client"
 import React, { useState, useCallback, useEffect, useRef, useMemo, Suspense } from 'react'
-import { useSearchParams } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { api } from '@/lib/api'
 import { useGateway } from '@/hooks/use-gateway'
 import { PageLayout } from '@/components/page-layout'
@@ -17,11 +17,12 @@ import { useQueryClient } from '@tanstack/react-query'
 import { queryKeys } from '@/lib/query-keys'
 import { cn } from '@/lib/utils'
 import { Check, Copy, EllipsisVertical, Trash2 } from 'lucide-react'
+import { consumeUrlSessionSelection } from '@/components/chat/url-session-selection'
 
 function getOnboardingPrompt(portalName: string, userMessage: string) {
   return `This is your first time being activated. The user just set up ${portalName} and opened the web dashboard for the first time.
 
-Read your CLAUDE.md instructions and the onboarding skill at ~/.jinn/skills/onboarding/SKILL.md, then follow the onboarding flow:
+Read your CLAUDE.md instructions and the onboarding skill at ./skills/onboarding/SKILL.md (relative to your home directory, which is your working directory), then follow the onboarding flow:
 - Greet the user warmly and introduce yourself as ${portalName}
 - Briefly explain what you can do (manage cron jobs, hire AI employees, connect to Slack, etc.)
 - Ask the user what they'd like to set up first
@@ -113,6 +114,8 @@ function ChatPage() {
   const { events, connectionSeq, skillsVersion, subscribe } = useGateway()
   const chatTabs = useChatTabs()
   const searchParams = useSearchParams()
+  const router = useRouter()
+  const appliedUrlSessionRef = useRef<string | null>(null)
   const onboardingTriggered = useRef(false)
   // When set, the current session is a stub awaiting the user's first message
   const stubSessionRef = useRef(false)
@@ -209,6 +212,13 @@ function ChatPage() {
     [chatTabs]
   )
 
+  useEffect(() => {
+    const requestedSessionId = searchParams.get('session')
+    const consumed = consumeUrlSessionSelection(requestedSessionId, appliedUrlSessionRef.current, selectedId)
+    appliedUrlSessionRef.current = consumed.appliedMarker
+    if (consumed.sessionIdToSelect) handleSelect(consumed.sessionIdToSelect)
+  }, [searchParams, selectedId, handleSelect])
+
   const handleNewChat = useCallback(() => {
     newChatIntentRef.current = true
     setSelectedId(null)
@@ -218,6 +228,12 @@ function ChatPage() {
     chatTabs.clearActiveTab()
     setFocusTrigger(prev => prev + 1)
   }, [chatTabs])
+
+  const clearFocusedMessage = useCallback(() => {
+    const params = new URLSearchParams(searchParams.toString())
+    params.delete('message')
+    router.replace(`/chat${params.size ? `?${params}` : ''}`, { scroll: false })
+  }, [router, searchParams])
 
   const handleSessionsLoaded = useCallback(
     (sessions: { id: string }[]) => {
@@ -322,8 +338,12 @@ function ChatPage() {
   const copyChat = useCallback(async () => {
     if (!selectedId) return
     try {
-      const session = await api.getSession(selectedId) as { messages?: Array<{ role: string; content: string }> }
-      const messages = session.messages ?? []
+      let page = await api.getSessionMessages(selectedId, undefined, 200)
+      let messages = [...page.messages]
+      while (page.hasOlder && messages.length < 10_000) {
+        page = await api.getSessionMessages(selectedId, messages[0]?.id, 200)
+        messages = [...page.messages, ...messages]
+      }
       const text = messages
         .filter((m) => m.role === 'user' || m.role === 'assistant')
         .map((m) => `[${m.role}]: ${m.content}`)
@@ -551,6 +571,8 @@ function ChatPage() {
               onStubCleared={handleStubCleared}
               focusTrigger={focusTrigger}
               onShortcutsClick={() => setShowShortcutOverlay(true)}
+              focusMessageId={searchParams.get('message')}
+              onFocusDismissed={clearFocusedMessage}
             />
           </div>
         </div>

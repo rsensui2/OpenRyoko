@@ -11,11 +11,11 @@ This skill activates when {{portalName}} is experiencing issues, errors, or unex
 
 ## Diagnostic Steps
 
-Work through these checks in order. Stop and fix issues as you find them.
+Work through these checks in order. Stop and fix issues as you find them. All relative paths below are relative to the {{portalName}} home directory, which is always your working directory.
 
 ### 1. Check Gateway Logs
 
-Read `~/.jinn/logs/gateway.log` and look for:
+Read the newest log file under `logs/` and look for:
 - Error messages or stack traces
 - Repeated failures or crash loops
 - Connection refused or timeout errors
@@ -26,7 +26,7 @@ Summarize any problems found to the user.
 
 ### 2. Validate Configuration
 
-Read `~/.jinn/config.yaml` and verify:
+Read `config.yaml` and verify:
 - The file is valid YAML (no syntax errors)
 - The `port` field is a valid number (typically 3777)
 - Required fields are present: `port`, `engine`, `model`
@@ -44,13 +44,13 @@ If the engine command is not found, inform the user that the engine is not insta
 ### 4. Check Session Database
 
 Look at the session registry for stuck sessions:
-- Read `~/.jinn/sessions.db` or the session storage
+- Read `sessions/registry.db` (the SQLite session registry)
 - Look for sessions with status `running` that have not been updated recently (more than 30 minutes old)
 - These may be stuck and need to be reset
 
 ### 5. Check Disk and Temp Files
 
-- Check if `~/.jinn/tmp/` contains stale files that should be cleaned up
+- Check if `tmp/` contains stale files that should be cleaned up
 - Large or numerous temp files can cause issues
 
 ## Common Fixes
@@ -68,7 +68,7 @@ jinn stop && jinn start
 
 If temp files are stale or causing issues:
 
-Delete all contents of `~/.jinn/tmp/` but keep the directory itself.
+Delete all contents of `tmp/` but keep the directory itself.
 
 ### Fix Malformed JSON
 
@@ -104,7 +104,7 @@ If the gateway cannot bind to its configured port:
 
 ## Reference
 
-For understanding {{portalName}}'s architecture and component relationships, refer to the documentation in `~/.jinn/docs/` if available.
+For understanding {{portalName}}'s architecture and component relationships, refer to the documentation in `docs/` if available.
 
 ## Error Handling
 

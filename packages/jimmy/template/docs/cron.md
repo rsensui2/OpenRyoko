@@ -1,6 +1,6 @@
 # Cron
 
-{{portalName}} supports scheduled AI jobs defined in `~/.jinn/cron/jobs.json`.
+{{portalName}} supports scheduled AI jobs defined in `~/.ryoko/cron/jobs.json`.
 
 ## Job Schema
 
@@ -10,6 +10,7 @@ interface CronJob {
   name: string;          // Human-readable name
   enabled: boolean;      // Whether the job is active
   schedule: string;      // Cron expression (standard 5-field)
+  kind?: "prompt" | "update-notification"; // Default: prompt
   timezone?: string;     // IANA timezone (default: system timezone)
   engine: string;        // "claude" or "codex"
   model?: string;        // Override default model
@@ -21,6 +22,12 @@ interface CronJob {
   };
 }
 ```
+
+`kind: "update-notification"` is a built-in low-cost update watcher. It checks
+the fixed OpenRyoko npm registry endpoint on schedule without invoking an AI.
+Only when a newer, not-yet-notified version exists does it ask the configured
+engine to write a short notice and deliver it to the selected connector. Each
+job notifies a given version once.
 
 ## Schedule Format
 
@@ -52,7 +59,7 @@ No restart required. Engines can edit `jobs.json` directly to create or modify s
 
 ## Run Logs
 
-Each job execution is logged to `~/.jinn/cron/runs/<jobId>.jsonl`. Each line is a JSON object:
+Each job execution is logged to `~/.ryoko/cron/runs/<jobId>.jsonl`. Each line is a JSON object:
 
 ```json
 {
@@ -68,6 +75,8 @@ Each job execution is logged to `~/.jinn/cron/runs/<jobId>.jsonl`. Each line is 
 ## Delegation Pattern
 
 When a cron job produces analytical, reporting, or decision-informing output, it should **always target {{portalSlug}}** (the COO), not the employee directly. {{portalName}} then delegates to the employee via a child session, reviews the output, filters noise, and delivers the final result.
+
+> Note: `"employee": "{{portalSlug}}"` here refers to the COO portal session itself — it is NOT an `org/` employee (org.md: `org/` starts empty and {{portalName}} is not defined there). The runner resolves an unknown employee name to a portal session, which is exactly the intended routing.
 
 **Correct** — cron → {{portalSlug}} → employee (via child session) → {{portalSlug}} reviews → delivery:
 ```json
@@ -131,7 +140,7 @@ Direct employee-to-user delivery is only acceptable for simple, no-review-needed
     "timezone": "America/New_York",
     "engine": "claude",
     "employee": "{{portalSlug}}",
-    "prompt": "Review all skills in ~/.jinn/skills/ and suggest improvements or removals for unused skills."
+    "prompt": "Review all skills in ~/.ryoko/skills/ and suggest improvements or removals for unused skills."
   }
 ]
 ```

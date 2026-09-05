@@ -22,9 +22,30 @@ export interface ModelOption {
   label: string
 }
 
+export type SupportedModelEngine = "claude" | "codex" | "gemini"
+export type TriageModelEngine = Exclude<SupportedModelEngine, "gemini">
+
+/** Vendor labels shown in settings; values stay compatible with config.yaml. */
+export const MODEL_VENDORS: ModelOption[] = [
+  { value: "claude", label: "Anthropic（Claude）" },
+  { value: "codex", label: "OpenAI（Codex）" },
+  { value: "gemini", label: "Google（Gemini）" },
+]
+
+/** One-shot triage currently has no Gemini adapter. */
+export const TRIAGE_MODEL_VENDORS = MODEL_VENDORS.filter(
+  (vendor) => vendor.value !== "gemini",
+)
+
+/** Internal select value used to reveal the free-form model-id input. */
+export const CUSTOM_MODEL_VALUE = "__custom_model__"
+
 /** Default model id for each engine, mirrored by the backend synth defaults. */
 export const DEFAULT_CLAUDE_MODEL = "claude-opus-5"
 export const DEFAULT_CODEX_MODEL = "gpt-5.6-sol"
+export const DEFAULT_GEMINI_MODEL = "gemini-2.5-pro"
+export const DEFAULT_TRIAGE_CLAUDE_MODEL = "claude-haiku-4-5"
+export const DEFAULT_TRIAGE_CODEX_MODEL = "gpt-5-nano"
 
 /** Anthropic tiers. Opus は明示 ID（CLI 版数に依存しない）、他は裸エイリアス。 */
 export const CLAUDE_MODELS: ModelOption[] = [
@@ -32,6 +53,7 @@ export const CLAUDE_MODELS: ModelOption[] = [
   { value: "claude-opus-4-8", label: "Opus 4.8 — 旧世代（ピン留め用 / claude-opus-4-8）" },
   { value: "opus", label: "Opus — CLI が解決する最新 Opus に自動追従" },
   { value: "sonnet", label: "Sonnet 5 — 中（バランス / claude-sonnet-5）" },
+  { value: "claude-haiku-4-5", label: "Haiku 4.5 — 小（明示ID / トリアージ既定）" },
   { value: "haiku", label: "Haiku 4.5 — 小（軽量・高速 / claude-haiku-4-5）" },
 ]
 
@@ -54,9 +76,39 @@ export const OPENAI_MODELS: ModelOption[] = [
   { value: "gpt-5-nano", label: "GPT-5 nano — 軽量（トリアージ向け）" },
 ]
 
+/** Gemini CLI aliases plus stable and preview ids documented by Google. */
+export const GEMINI_MODELS: ModelOption[] = [
+  { value: "auto", label: "Auto — タスクに応じて自動選択（Gemini CLI推奨）" },
+  { value: "pro", label: "Pro — 高度な推論向け（自動追従）" },
+  { value: "flash", label: "Flash — 高速・バランス（自動追従）" },
+  { value: "flash-lite", label: "Flash Lite — 最速・軽量（自動追従）" },
+  { value: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro Preview" },
+  { value: "gemini-3-pro-preview", label: "Gemini 3 Pro Preview" },
+  { value: "gemini-3-flash-preview", label: "Gemini 3 Flash Preview" },
+  { value: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+  { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
+  { value: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
+]
+
 /** Model list for a given triage/goal engine (defaults to the OpenAI list). */
 export function modelsForEngine(engine: string | undefined): ModelOption[] {
-  return engine === "claude" ? CLAUDE_MODELS : OPENAI_MODELS
+  if (engine === "claude") return CLAUDE_MODELS
+  if (engine === "gemini") return GEMINI_MODELS
+  return OPENAI_MODELS
+}
+
+export function defaultModelForEngine(engine: SupportedModelEngine): string {
+  if (engine === "claude") return DEFAULT_CLAUDE_MODEL
+  if (engine === "gemini") return DEFAULT_GEMINI_MODEL
+  return DEFAULT_CODEX_MODEL
+}
+
+export function defaultTriageModelForEngine(engine: TriageModelEngine): string {
+  return engine === "claude" ? DEFAULT_TRIAGE_CLAUDE_MODEL : DEFAULT_TRIAGE_CODEX_MODEL
+}
+
+export function isCatalogModel(engine: string | undefined, model: string | undefined): boolean {
+  return Boolean(model && modelsForEngine(engine).some((option) => option.value === model))
 }
 
 /**

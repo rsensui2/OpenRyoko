@@ -7,7 +7,16 @@ import { describe, it, expect, vi } from "vitest";
 // focused and CI-portable.
 vi.mock("node-pty", () => ({ spawn: vi.fn() }));
 
-import { TurnResolver, isNativeClaudeCommand } from "../claude-interactive.js";
+import {
+  TurnResolver,
+  buildAttachmentSuffix,
+  buildClaudePtyEnv,
+  isNativeClaudeCommand,
+  pasteAndSubmit,
+  sanitizeAssistantText,
+  shouldSettleStalledTurn,
+  sumTranscriptUsage,
+} from "../claude-interactive.js";
 
 describe("TurnResolver", () => {
   it("resolves only after BOTH SessionStart and Stop", async () => {
@@ -174,5 +183,73 @@ describe("native Claude command handling (upstream port)", () => {
     const v = await r.promise;
     expect(v.result).toBe("");
     expect(v.numTurns).toBe(1);
+  });
+});
+
+describe("Jinn v0.27-v0.30 reliability ports", () => {
+  it("scopes cumulative transcript usage to the current turn", () => {
+    const content = [
+      { type: "assistant", timestamp: "2026-08-17T00:00:00.000Z", message: { id: "old", usage: { input_tokens: 100, output_tokens: 10 } } },
+      { type: "assistant", timestamp: "2026-08-17T00:01:00.000Z", message: { id: "new", usage: { input_tokens: 20, output_tokens: 3 } } },
+      // Duplicate high-effort line with the same message id must not count twice.
+      { type: "assistant", timestamp: "2026-08-17T00:01:01.000Z", message: { id: "new", usage: { input_tokens: 20, output_tokens: 3 } } },
+    ].map((line) => JSON.stringify(line)).join("\n");
+    const usage = sumTranscriptUsage(content, Date.parse("2026-08-17T00:00:30.000Z"));
+    expect(usage).toMatchObject({ inputTokens: 20, outputTokens: 3, assistantTurns: 1 });
+  });
+
+  it("keeps attachment paths out of Claude's async image paste parser", () => {
+    expect(buildAttachmentSuffix(["/tmp/a b.png"])).toContain("- `/tmp/a b.png`");
+    expect(buildAttachmentSuffix(["/tmp/weird`file.png"])).toContain("- ``/tmp/weird`file.png``");
+  });
+
+  it("strips suggestion metadata without dropping the real answer", () => {
+    expect(sanitizeAssistantText("<suggestion>do this next</suggestion>Real answer")).toBe("Real answer");
+    expect(sanitizeAssistantText("Real answer<suggestion>unfinished")).toBe("Real answer");
+  });
+
+  it("restores the real model context ceiling behind the local proxy", () => {
+    const env = buildClaudePtyEnv(4321, {
+      PATH: "/bin",
+      CLAUDECODE: "nested",
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW: "750000",
+      ANTHROPIC_BASE_URL: "https://stale.invalid",
+      ANTHROPIC_API_KEY: "secret",
+    });
+    expect(env.PATH).toBe("/bin");
+    expect(env.CLAUDECODE).toBeUndefined();
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(env.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:4321");
+    expect(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe("750000");
+    expect(env._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL).toBe("1");
+  });
+
+  it("requires both elapsed and quiet thresholds before settling a stall", () => {
+    expect(shouldSettleStalledTurn(15 * 60_000, 5 * 60_000)).toBe(true);
+    expect(shouldSettleStalledTurn(14 * 60_000, 8 * 60_000)).toBe(false);
+    expect(shouldSettleStalledTurn(30 * 60_000, 4 * 60_000)).toBe(false);
+  });
+
+  it("retries Enter until a submit hook acknowledges the warm prompt", () => {
+    vi.useFakeTimers();
+    try {
+      let submitted = false;
+      const writes: string[] = [];
+      const cancel = pasteAndSubmit({ write: (s: string) => writes.push(s) }, "hello", {
+        submitted: () => submitted,
+        intervalMs: 10,
+        attempts: 2,
+      });
+      vi.advanceTimersByTime(150);
+      expect(writes.filter((s) => s === "\r")).toHaveLength(1);
+      vi.advanceTimersByTime(10);
+      expect(writes.filter((s) => s === "\r")).toHaveLength(2);
+      submitted = true;
+      vi.advanceTimersByTime(20);
+      expect(writes.filter((s) => s === "\r")).toHaveLength(2);
+      cancel();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

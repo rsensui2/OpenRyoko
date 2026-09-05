@@ -5,6 +5,7 @@ import {
   evaluateRespondPolicy,
   hasMentionScope,
   respondPolicyNeedsTracking,
+  shouldHandleReaction,
 } from "../respond-policy.js";
 import type { SlackRespondToConfig } from "../../../shared/types.js";
 
@@ -176,5 +177,46 @@ describe("hasMentionScope / respondPolicyNeedsTracking", () => {
   it("needs tracking only when engaged-thread continuation is on", () => {
     expect(respondPolicyNeedsTracking({ channel: "mention" })).toBe(true);
     expect(respondPolicyNeedsTracking({ channel: "mention", engagedThreads: false })).toBe(false);
+  });
+});
+
+describe("shouldHandleReaction", () => {
+  // Reactions carry no @-mention, so a mention-gated channel scope can never
+  // be satisfied on this path. Without the gate a secondary bot sharing
+  // channels with the primary bot double-handles every channel reaction.
+
+  it("handles channel reactions when the channel scope is always", () => {
+    expect(shouldHandleReaction({ channel: "always" }, "C123")).toBe(true);
+  });
+
+  it("ignores channel reactions when the channel scope is mention", () => {
+    expect(shouldHandleReaction({ channel: "mention" }, "C123")).toBe(false);
+  });
+
+  it("ignores channel reactions when the channel scope is never", () => {
+    expect(shouldHandleReaction({ channel: "never" }, "C123")).toBe(false);
+  });
+
+  it("always handles DM reactions regardless of the channel scope", () => {
+    expect(shouldHandleReaction({ channel: "mention" }, "D123")).toBe(true);
+    expect(shouldHandleReaction({ channel: "never" }, "D123")).toBe(true);
+  });
+
+  it("defaults to handling when respondTo is absent or invalid (legacy behavior)", () => {
+    expect(shouldHandleReaction(undefined, "C123")).toBe(true);
+    expect(shouldHandleReaction({} as SlackRespondToConfig, "C123")).toBe(true);
+  });
+
+  it("gates a DM-scope setting independently of the channel scope", () => {
+    // im="never" does not silence DM reactions: the reaction path is gated on
+    // the channel scope only, matching the pre-existing behavior.
+    expect(shouldHandleReaction({ im: "never", channel: "always" }, "D123")).toBe(true);
+  });
+
+  it("treats a group DM (G…) as channel scope, not mpim — the conservative side", () => {
+    // reaction_added has no channel_type; only "D…" is distinguishable, so a
+    // group DM follows the channel scope exactly like a public channel.
+    expect(shouldHandleReaction({ channel: "mention" }, "G123")).toBe(false);
+    expect(shouldHandleReaction({ channel: "always" }, "G123")).toBe(true);
   });
 });

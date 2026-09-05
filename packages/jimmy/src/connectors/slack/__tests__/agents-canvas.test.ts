@@ -405,3 +405,112 @@ describe("renderCanvasMarkdown — user-controlled string defang", () => {
     expect(md).toContain("\\#");
   });
 });
+
+describe("AgentsCanvasUpdater — free_team_canvas_tab_already_exists recovery", () => {
+  // Regression coverage: on free Slack workspaces the create call (either
+  // conversations.canvases.create or canvases.create) fails with
+  // `free_team_canvas_tab_already_exists`. The updater must adopt the existing
+  // canvas if it can be located, and otherwise stop the timer instead of
+  // looping every poll interval.
+
+  function makeSlackError(code: string): Error & { data: { error: string } } {
+    const err = new Error(`An API error occurred: ${code}`) as Error & {
+      data: { error: string };
+    };
+    err.data = { error: code };
+    return err;
+  }
+
+  function makeFakeApp(apiCall: (method: string, payload: unknown) => unknown) {
+    return { client: { apiCall: vi.fn(apiCall) } } as unknown as ConstructorParameters<
+      typeof AgentsCanvasUpdater
+    >[0];
+  }
+
+  it("adopts the existing channel canvas when create returns free_team_canvas_tab_already_exists", async () => {
+    const calls: Array<{ method: string; payload: Record<string, unknown> }> = [];
+    const app = makeFakeApp(async (method, payload) => {
+      calls.push({ method, payload: payload as Record<string, unknown> });
+      if (method === "conversations.canvases.create") {
+        throw makeSlackError("free_team_canvas_tab_already_exists");
+      }
+      if (method === "conversations.info") {
+        return { channel: { properties: { canvas: { file_id: "F_EXISTING" } } } };
+      }
+      if (method === "canvases.edit") {
+        return { ok: true };
+      }
+      throw new Error(`unexpected api call ${method}`);
+    });
+
+    const updater = new AgentsCanvasUpdater(app, {
+      enabled: true,
+      channelId: "C123",
+      pollIntervalMs: 5_000,
+    });
+    await (updater as unknown as { tick(): Promise<void> }).tick();
+
+    const methods = calls.map((c) => c.method);
+    expect(methods).toContain("conversations.canvases.create");
+    expect(methods).toContain("conversations.info");
+    const edit = calls.find((c) => c.method === "canvases.edit");
+    expect(edit?.payload.canvas_id).toBe("F_EXISTING");
+  });
+
+  it("falls back to files.list when the channel does not own the existing canvas", async () => {
+    const calls: Array<{ method: string; payload: Record<string, unknown> }> = [];
+    const app = makeFakeApp(async (method, payload) => {
+      calls.push({ method, payload: payload as Record<string, unknown> });
+      if (method === "conversations.canvases.create") {
+        throw makeSlackError("free_team_canvas_tab_already_exists");
+      }
+      if (method === "conversations.info") {
+        return { channel: {} };
+      }
+      if (method === "files.list") {
+        return { files: [{ id: "F_STANDALONE", title: "Ryoko Agents View" }] };
+      }
+      if (method === "canvases.edit") {
+        return { ok: true };
+      }
+      throw new Error(`unexpected api call ${method}`);
+    });
+
+    const updater = new AgentsCanvasUpdater(app, {
+      enabled: true,
+      channelId: "C123",
+      pollIntervalMs: 5_000,
+    });
+    await (updater as unknown as { tick(): Promise<void> }).tick();
+
+    const methods = calls.map((c) => c.method);
+    expect(methods).toContain("files.list");
+    const edit = calls.find((c) => c.method === "canvases.edit");
+    expect(edit?.payload.canvas_id).toBe("F_STANDALONE");
+  });
+
+  it("stops the updater after one log when no existing canvas can be located", async () => {
+    const app = makeFakeApp(async (method) => {
+      if (method === "conversations.canvases.create") {
+        throw makeSlackError("free_team_canvas_tab_already_exists");
+      }
+      if (method === "conversations.info") return { channel: {} };
+      if (method === "files.list") return { files: [] };
+      throw new Error(`unexpected api call ${method}`);
+    });
+
+    const updater = new AgentsCanvasUpdater(app, {
+      enabled: true,
+      channelId: "C123",
+      pollIntervalMs: 5_000,
+    });
+    await (updater as unknown as { tick(): Promise<void> }).tick();
+
+    // Second tick must be a no-op now that the timer has been stopped — i.e.
+    // no further apiCalls should happen on subsequent invocations.
+    const fakeClient = (app as unknown as { client: { apiCall: ReturnType<typeof vi.fn> } }).client;
+    const callsBefore = fakeClient.apiCall.mock.calls.length;
+    await (updater as unknown as { tick(): Promise<void> }).tick();
+    expect(fakeClient.apiCall.mock.calls.length).toBe(callsBefore);
+  });
+});

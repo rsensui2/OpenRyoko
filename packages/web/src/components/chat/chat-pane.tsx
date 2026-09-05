@@ -49,6 +49,9 @@ interface ChatPaneProps {
   focusTrigger?: number
   /** Callback to open keyboard shortcuts overlay */
   onShortcutsClick?: () => void
+  /** Message selected from global search; loads a bounded window around it. */
+  focusMessageId?: string | null
+  onFocusDismissed?: () => void
 }
 
 export function ChatPane({
@@ -69,9 +72,14 @@ export function ChatPane({
   onStubCleared,
   focusTrigger,
   onShortcutsClick,
+  focusMessageId,
+  onFocusDismissed,
 }: ChatPaneProps) {
   const [messages, setMessages] = useState<Message[]>([])
   const [loading, setLoading] = useState(false)
+  const [hasOlder, setHasOlder] = useState(false)
+  const [loadingOlder, setLoadingOlder] = useState(false)
+  const [hasNewer, setHasNewer] = useState(false)
   const streamingTextRef = useRef('')
   const [streamingText, setStreamingText] = useState('')
   const intermediateStartRef = useRef<number>(-1)
@@ -80,6 +88,7 @@ export function ChatPane({
   // the CLI view: live xterm (/ws/pty) when on, poll-based transcript when off.
   const [claudeInteractive, setClaudeInteractive] = useState(false)
   const sessionIdRef = useRef(sessionId)
+  const loadGenerationRef = useRef(0)
 
   // Employee picker state for new chat
   const [selectedEmployee, setSelectedEmployee] = useState<string | null>(null)
@@ -179,6 +188,12 @@ export function ChatPane({
             persistIntermediate(updated, sid)
             return updated
           })
+        } else if (deltaType === 'permission') {
+          const content = String(p.content || 'Claude is waiting for approval in the CLI view.')
+          setMessages((prev) => [
+            ...prev,
+            { id: crypto.randomUUID(), role: 'notification' as const, content, timestamp: Date.now() },
+          ])
         }
       }
 
@@ -251,8 +266,12 @@ export function ChatPane({
         // message history — the turn just persisted lastContextTokens server-side.
         if (completedSessionId) {
           api
-            .getSession(completedSessionId)
-            .then((s) => setCurrentSession(s as Record<string, unknown>))
+            .getSession(completedSessionId, { messages: false })
+            .then((s) => {
+              if (sessionIdRef.current === completedSessionId) {
+                setCurrentSession(s as Record<string, unknown>)
+              }
+            })
             .catch(() => {})
         }
         onRefresh?.()
@@ -275,9 +294,17 @@ export function ChatPane({
   }, [])
 
   // Load session data
-  const loadSession = useCallback(async (id: string) => {
+  const loadSession = useCallback(async (id: string, options?: { latest?: boolean }) => {
+    const generation = ++loadGenerationRef.current
     try {
-      const session = (await api.getSession(id)) as Record<string, unknown>
+      const activeFocus = !options?.latest && focusMessageId ? focusMessageId : null
+      let session = (await api.getSession(id, activeFocus ? { messages: false } : { last: 100 })) as Record<string, unknown>
+      let anchoredPage = activeFocus ? await api.getSessionMessageWindow(id, activeFocus, 50) : null
+      if (activeFocus && !anchoredPage?.anchorFound) {
+        session = (await api.getSession(id, { last: 100 })) as Record<string, unknown>
+        anchoredPage = null
+      }
+      if (generation !== loadGenerationRef.current || sessionIdRef.current !== id) return
       setCurrentSession(session)
       const meta = {
         engine: session.engine ? String(session.engine) : undefined,
@@ -288,10 +315,10 @@ export function ChatPane({
       }
       onSessionMetaChange?.(meta)
 
-      const history = session.messages || session.history || []
+      const history = anchoredPage?.messages || session.messages || session.history || []
       const backendMessages: Message[] = Array.isArray(history)
         ? history.map((m: Record<string, unknown>) => ({
-            id: crypto.randomUUID(),
+            id: typeof m.id === 'string' ? m.id : crypto.randomUUID(),
             role: (m.role as 'user' | 'assistant' | 'notification') || 'assistant',
             content: String(m.content || m.text || ''),
             timestamp: m.timestamp ? Number(m.timestamp) : Date.now(),
@@ -311,6 +338,9 @@ export function ChatPane({
       }
 
       const isRunning = session.status === 'running'
+      const page = session.messagesPage as { hasOlder?: boolean } | undefined
+      setHasOlder(anchoredPage?.hasOlder ?? page?.hasOlder === true)
+      setHasNewer(anchoredPage?.hasNewer === true)
 
       if (isRunning) {
         const cached = loadIntermediateMessages(id)
@@ -328,18 +358,47 @@ export function ChatPane({
         setMessages(backendMessages)
       }
     } catch {
+      if (generation !== loadGenerationRef.current || sessionIdRef.current !== id) return
       setMessages([])
       setCurrentSession(null)
+      setHasOlder(false)
+      setHasNewer(false)
       intermediateStartRef.current = -1
     }
-  }, [onSessionMetaChange])
+  }, [onSessionMetaChange, focusMessageId])
+
+  const loadOlderMessages = useCallback(async () => {
+    if (!sessionId || loadingOlder || !hasOlder) return
+    const before = messages[0]?.id
+    if (!before) return
+    const generation = loadGenerationRef.current
+    setLoadingOlder(true)
+    try {
+      const page = await api.getSessionMessages(sessionId, before, 100)
+      if (sessionIdRef.current !== sessionId || generation !== loadGenerationRef.current) return
+      setMessages((current) => {
+        const known = new Set(current.map((message) => message.id))
+        const older = page.messages
+          .filter((message) => !known.has(message.id))
+          .map((message) => ({ ...message, role: message.role as Message['role'] }))
+        if (intermediateStartRef.current >= 0) intermediateStartRef.current += older.length
+        return [...older, ...current]
+      })
+      setHasOlder(page.hasOlder)
+    } finally {
+      setLoadingOlder(false)
+    }
+  }, [sessionId, loadingOlder, hasOlder, messages])
 
   // Load on session change
   useEffect(() => {
     if (!sessionId) {
+      loadGenerationRef.current++
       setMessages([])
       setLoading(false)
       setCurrentSession(null)
+      setHasOlder(false)
+      setHasNewer(false)
       streamingTextRef.current = ''
       setStreamingText('')
       intermediateStartRef.current = -1
@@ -350,6 +409,7 @@ export function ChatPane({
     streamingTextRef.current = ''
     setStreamingText('')
     setLoading(false)
+    setLoadingOlder(false)
     loadSession(sessionId)
   }, [sessionId, loadSession])
 
@@ -359,12 +419,18 @@ export function ChatPane({
     loadSession(sessionId)
   }, [connectionSeq, sessionId, loadSession])
 
+  const jumpToLatestMessages = useCallback(() => {
+    if (!sessionId) return
+    onFocusDismissed?.()
+    void loadSession(sessionId, { latest: true })
+  }, [sessionId, onFocusDismissed, loadSession])
+
   // Poll for completion while loading
   useEffect(() => {
     if (!sessionId || !loading) return
     const timer = setInterval(async () => {
       try {
-        const session = (await api.getSession(sessionId)) as Record<string, unknown>
+        const session = (await api.getSession(sessionId, { messages: false })) as Record<string, unknown>
         if (session.status !== 'running') {
           await loadSession(sessionId)
           setLoading(false)
@@ -466,7 +532,7 @@ export function ChatPane({
     }
 
     try {
-      const session = (await api.getSession(sessionId)) as Record<string, unknown>
+      const session = (await api.getSession(sessionId, { messages: false })) as Record<string, unknown>
       const info = [
         '**Session Info**',
         `ID: \`${session.id}\``,
@@ -509,6 +575,8 @@ export function ChatPane({
     setMessages([])
     setLoading(false)
     setCurrentSession(null)
+    setHasOlder(false)
+    setHasNewer(false)
     streamingTextRef.current = ''
     setStreamingText('')
     intermediateStartRef.current = -1
@@ -631,7 +699,17 @@ export function ChatPane({
           <CliTranscript sessionId={sessionId} />
         )
       ) : (sessionId || messages.length > 0) ? (
-        <ChatMessages messages={messages} loading={loading} streamingText={streamingText} />
+        <ChatMessages
+          messages={messages}
+          loading={loading}
+          streamingText={streamingText}
+          hasOlder={hasOlder}
+          loadingOlder={loadingOlder}
+          onLoadOlder={() => void loadOlderMessages()}
+          focusMessageId={focusMessageId}
+          hasNewer={hasNewer}
+          onJumpToLatest={jumpToLatestMessages}
+        />
       ) : null}
 
       {/* Context meter */}

@@ -1,6 +1,6 @@
 # {{portalName}} Overview
 
-{{portalName}} is a lightweight AI gateway daemon that wraps professional AI CLI tools as "engines." It is published as `jinn-cli`.
+{{portalName}} is a lightweight AI gateway daemon that wraps professional AI CLI tools as "engines." It is published as `openryoko`.
 
 ## Core Principle
 
@@ -22,9 +22,10 @@ Traditional approaches build custom tool-calling loops, manage context windows, 
 ## Directory Structure
 
 ```
-~/.jinn/
+~/.ryoko/
   config.yaml          # Gateway configuration
-  jinn.db             # SQLite session registry
+  sessions/
+    registry.db        # SQLite session registry
   docs/                # These reference docs
   skills/              # Skill directories with SKILL.md files
   cron/

@@ -10,6 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { WeeklySchedule } from "@/components/crons/weekly-schedule"
 import { PipelineGraph } from "@/components/crons/pipeline-graph"
 import { EmployeeAvatar } from "@/components/ui/employee-avatar"
+import { WorkflowsSection } from "@/components/crons/workflows-section"
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -20,6 +21,7 @@ interface CronJob {
   name: string
   schedule: string
   enabled: boolean
+  kind?: "prompt" | "update-notification"
   timezone?: string
   engine?: string
   model?: string
@@ -33,10 +35,12 @@ interface CronRun {
   id?: string
   ts?: string
   startedAt?: string
+  timestamp?: string
   finishedAt?: string
   status?: string
   durationMs?: number
   error?: string
+  reason?: string
   [key: string]: unknown
 }
 
@@ -116,7 +120,7 @@ function RecentRuns({ jobId }: { jobId: string }) {
       </div>
       <div className="flex flex-col gap-1">
         {runs.map((run, i) => {
-          const ts = run.ts || run.startedAt || ""
+          const ts = run.ts || run.startedAt || run.timestamp || ""
           const status = run.status || "unknown"
           const statusDot =
             status === "success" || status === "ok" ? "var(--system-green)"
@@ -137,6 +141,11 @@ function RecentRuns({ jobId }: { jobId: string }) {
               {run.error && (
                 <span className="truncate text-[var(--system-red)] min-w-0 flex-1">
                   {run.error}
+                </span>
+              )}
+              {!run.error && run.reason && (
+                <span className="truncate text-[var(--text-tertiary)] min-w-0 flex-1">
+                  {run.reason}
                 </span>
               )}
             </div>
@@ -160,6 +169,24 @@ export default function CronPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [updatedAgo, setUpdatedAgo] = useState("just now")
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date())
+  const [wfCreating, setWfCreating] = useState(false)
+  const [wfInitialTemplate, setWfInitialTemplate] = useState<string | null>(null)
+  const [wfCounts, setWfCounts] = useState({ total: 0, enabled: 0, disabled: 0, engineEnabled: true })
+
+  // Deep link from onboarding: /cron?create=<templateId> opens the creation
+  // panel on that template. The param is consumed once so a reload does not
+  // reopen the panel.
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const params = new URLSearchParams(window.location.search)
+    const create = params.get("create")
+    if (!create) return
+    setWfInitialTemplate(create)
+    setWfCreating(true)
+    params.delete("create")
+    const rest = params.toString()
+    window.history.replaceState(null, "", `${window.location.pathname}${rest ? `?${rest}` : ""}`)
+  }, [])
   const [triggeringId, setTriggeringId] = useState<string | null>(null)
   const [employeeMap, setEmployeeMap] = useState<Map<string, Employee>>(new Map())
 
@@ -245,16 +272,29 @@ export default function CronPage() {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-[length:var(--text-title1)] font-bold text-[var(--text-primary)] tracking-tight leading-[1.2]">
-                Cron Jobs
+                自動化
               </h1>
               {!loading && (
                 <p className="text-[length:var(--text-footnote)] text-[var(--text-secondary)] mt-[var(--space-1)]">
-                  {jobs.length} total &middot; {enabledCount} enabled &middot; {disabledCount} disabled
+                  cron {jobs.length} 件{wfCounts.total > 0 ? <> &middot; ワークフロー {wfCounts.total} 件</> : null} &middot; 有効 {enabledCount + wfCounts.enabled} &middot; 無効 {disabledCount + wfCounts.disabled}
                 </p>
               )}
             </div>
             <ToolbarActions>
               <div className="flex items-center gap-[var(--space-3)]">
+                <button
+                  onClick={() => setWfCreating(true)}
+                  disabled={!wfCounts.engineEnabled}
+                  title={wfCounts.engineEnabled ? undefined : "Workflow エンジンが無効です（config.workflows.enabled: true で有効化）"}
+                  className="px-3.5 py-1.5 rounded-[var(--radius-sm)] border-none text-[length:var(--text-footnote)] font-semibold"
+                  style={{
+                    background: wfCounts.engineEnabled ? "var(--accent)" : "var(--fill-tertiary)",
+                    color: wfCounts.engineEnabled ? "var(--accent-contrast)" : "var(--text-tertiary)",
+                    cursor: wfCounts.engineEnabled ? "pointer" : "not-allowed",
+                  }}
+                >
+                  ＋ 新規作成
+                </button>
                 <span className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">
                   Updated {updatedAgo}
                 </span>
@@ -311,16 +351,25 @@ export default function CronPage() {
               <TabsContent value="overview">
                 {/* Summary cards */}
                 <div className="grid grid-cols-3 gap-[var(--space-3)] mb-[var(--space-4)] mt-[var(--space-4)]">
-                  <SummaryCard label="ジョブ総数" value={jobs.length} />
-                  <SummaryCard label="有効" value={enabledCount} color="var(--system-green)" />
-                  <SummaryCard label="無効" value={disabledCount} color="var(--text-tertiary)" />
+                  <SummaryCard label="自動化の総数" value={jobs.length + wfCounts.total} />
+                  <SummaryCard label="有効" value={enabledCount + wfCounts.enabled} color="var(--system-green)" />
+                  <SummaryCard label="無効" value={disabledCount + wfCounts.disabled} color="var(--text-tertiary)" />
                 </div>
+
+                {/* Workflows live in the same list view, above the cron groups */}
+                <WorkflowsSection
+                  creating={wfCreating}
+                  initialTemplateId={wfInitialTemplate}
+                  onCloseCreate={() => { setWfCreating(false); setWfInitialTemplate(null) }}
+                  filter={filter}
+                  onCountsChange={setWfCounts}
+                />
 
                 {/* Filter pills */}
                 <div className="flex items-center gap-[var(--space-2)] mb-[var(--space-3)]">
                   {(["all", "enabled", "disabled"] as Filter[]).map(f => {
                     const isActive = filter === f
-                    const count = f === "all" ? jobs.length : f === "enabled" ? enabledCount : disabledCount
+                    const count = f === "all" ? jobs.length + wfCounts.total : f === "enabled" ? enabledCount + wfCounts.enabled : disabledCount + wfCounts.disabled
                     return (
                       <button
                         key={f}
@@ -421,6 +470,11 @@ export default function CronPage() {
                                           {job.engine}
                                         </span>
                                       )}
+                                      {job.kind === "update-notification" && (
+                                        <span className="text-[length:var(--text-caption1)] px-2 py-px rounded-xl bg-[color-mix(in_srgb,var(--system-blue)_12%,transparent)] text-[var(--system-blue)]">
+                                          update check
+                                        </span>
+                                      )}
 
                                       {/* Enable/disable toggle */}
                                       <button
@@ -490,6 +544,12 @@ export default function CronPage() {
                                           <>
                                             <span className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">Model</span>
                                             <span className="text-[length:var(--text-caption1)] text-[var(--text-secondary)] font-[family-name:var(--font-mono)]">{job.model}</span>
+                                          </>
+                                        )}
+                                        {job.kind === "update-notification" && (
+                                          <>
+                                            <span className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">Behavior</span>
+                                            <span className="text-[length:var(--text-caption1)] text-[var(--text-secondary)]">AI runs only for a new, unnotified release</span>
                                           </>
                                         )}
                                       </div>
