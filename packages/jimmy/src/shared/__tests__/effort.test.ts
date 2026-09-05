@@ -7,6 +7,12 @@ const CLAUDE = ["low", "medium", "high", "xhigh"];
 const CODEX = ["low", "medium", "high", "xhigh"];
 
 describe("resolveEffort (registry-driven validation)", () => {
+  it("preserves Astra max effort for both engine defaults and child overrides", () => {
+    const levels = ["low", "medium", "high", "xhigh", "max"];
+    expect(resolveEffort({ effortLevel: "max" }, { parentSessionId: null, effortLevel: null }, null, levels)).toBe("max");
+    expect(resolveEffort({}, { parentSessionId: "parent", effortLevel: "max" }, null, levels)).toBe("max");
+  });
+
   it("passes through codex xhigh (the previously silently-dropped level)", () => {
     expect(resolveEffort({}, { parentSessionId: "p", effortLevel: "xhigh" }, null, CODEX)).toBe("xhigh");
   });

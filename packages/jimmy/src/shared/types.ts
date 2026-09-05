@@ -163,7 +163,7 @@ export interface Target {
 export type SessionAttemptOutcome = "succeeded" | "failed" | "interrupted";
 export type WorkflowAttemptInterruptionCause = "user-message" | "attempt-stop" | "gateway-restart";
 export interface WorkflowAttemptContinuation { engine: string; engineSessionId: string; sourceSessionId: string }
-export interface WorkflowAttemptCommand { owner: { workflowId: string; runId: string; nodeId: string; attempt: number }; employeeId: string; engine: string; model?: string; effort?: "low" | "medium" | "high" | "xhigh"; prompt: string; continueFrom?: WorkflowAttemptContinuation }
+export interface WorkflowAttemptCommand { owner: { workflowId: string; runId: string; nodeId: string; attempt: number }; employeeId: string; engine: string; model?: string; effort?: "low" | "medium" | "high" | "xhigh" | "max"; prompt: string; continueFrom?: WorkflowAttemptContinuation }
 export interface WorkflowAttemptCompletion { sessionId: string; owner: { workflowId: string; runId: string; nodeId: string; attempt: number }; turn: number; terminalVersion: number; outcome: "succeeded" | "failed" | "interrupted"; interruptionCause?: WorkflowAttemptInterruptionCause; finalText?: string; error?: string; completedAt: string }
 export type WorkflowAttemptCompletionListener = (event: WorkflowAttemptCompletion) => void | Promise<void>;
 export interface WorkflowSessionExecutor {
@@ -617,9 +617,9 @@ export interface EngineLimitWindow {
 
 // --- Model + capability registry ---
 // Single source of truth for which engines/models exist and what they support.
-// Shipping a NEW model is a config edit (`models:` block in config.yaml), zero
-// code change. When the block is absent, the registry is synthesized from
-// `engines.<name>.model` so existing configs keep working.
+// Custom models can be added through the `models:` block in config.yaml.
+// When the block is absent, the registry combines `engines.<name>.model` with
+// built-in capabilities, preserving the configured default.
 
 /** How an engine conveys reasoning-effort to its CLI. */
 export type EffortMechanism = "claude-flag" | "codex-config" | "none";

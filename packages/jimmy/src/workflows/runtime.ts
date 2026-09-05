@@ -16,7 +16,7 @@ export interface ResolvedEmployeeConfig {
   employeeId: string;
   engine: string;
   model?: string;
-  effort?: 'low' | 'medium' | 'high' | 'xhigh';
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   retry: { attempts: number; delaySeconds: number; backoff: 'fixed' | 'exponential' };
   timeoutMinutes?: number;
   /** The completed attempt session whose engine thread this attempt continues.

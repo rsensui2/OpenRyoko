@@ -82,7 +82,7 @@ function node(value: unknown): { node: WorkflowNode; position: { x: number; y: n
   const maxAttempts = retry?.maxAttempts;
   const timeoutMinutes = options.timeoutMinutes;
   if (options.effort !== undefined
-    && (typeof options.effort !== "string" || !["low", "medium", "high", "xhigh"].includes(options.effort))) {
+    && (typeof options.effort !== "string" || !["low", "medium", "high", "xhigh", "max"].includes(options.effort))) {
     throw new Error(`step ${id} uses unsupported effort ${String(options.effort)}`);
   }
   if (maxAttempts !== undefined && (!Number.isInteger(maxAttempts) || (maxAttempts as number) < 1)) {
@@ -91,7 +91,7 @@ function node(value: unknown): { node: WorkflowNode; position: { x: number; y: n
   if (timeoutMinutes !== undefined && (!Number.isInteger(timeoutMinutes) || (timeoutMinutes as number) < 1)) {
     throw new Error(`step ${id} has invalid timeoutMinutes`);
   }
-  const effort = options.effort as "low" | "medium" | "high" | "xhigh" | undefined;
+  const effort = options.effort as "low" | "medium" | "high" | "xhigh" | "max" | undefined;
   const config = {
     employee: fixed(actorRef),
     prompt: typeof item.instructions === "string" && item.instructions ? item.instructions : `Run ${name}.`,

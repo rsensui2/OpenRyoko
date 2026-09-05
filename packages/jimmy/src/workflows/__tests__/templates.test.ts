@@ -334,8 +334,8 @@ describe("variable validation speaks in fixable terms", () => {
   });
 
   it("refuses an out-of-set option value", () => {
-    expect(() => buildTemplateBody("scheduled-report", { employee: "r", schedule: "15m", prompt: "x", effort: "max" }))
-      .toThrow(/low \/ medium \/ high \/ xhigh/);
+    expect(() => buildTemplateBody("scheduled-report", { employee: "r", schedule: "15m", prompt: "x", effort: "extreme" }))
+      .toThrow(/low \/ medium \/ high \/ xhigh \/ max/);
   });
 
   it("refuses placeholders smuggled in through variables", () => {

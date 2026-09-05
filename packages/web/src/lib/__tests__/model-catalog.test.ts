@@ -11,6 +11,7 @@ import {
   MODEL_VENDORS,
   TRIAGE_MODEL_VENDORS,
   defaultModelForEngine,
+  codexEffortOptionsForModel,
   defaultTriageModelForEngine,
   isCatalogModel,
   modelsForEngine,
@@ -21,9 +22,20 @@ describe("model-catalog", () => {
   it("defaults Codex to GPT-5.6 (Sol) and Claude to Opus 5 (explicit id)", () => {
     expect(DEFAULT_CODEX_MODEL).toBe("gpt-5.6-sol")
     expect(DEFAULT_CLAUDE_MODEL).toBe("claude-opus-5")
-    expect(OPENAI_MODELS[0].value).toBe("gpt-5.6-sol")
+    expect(OPENAI_MODELS.some((m) => m.value === DEFAULT_CODEX_MODEL)).toBe(true)
     expect(CLAUDE_MODELS[0].value).toBe("claude-opus-5")
     expect(CLAUDE_MODELS.some((m) => m.value === DEFAULT_CLAUDE_MODEL)).toBe(true)
+  })
+
+  it("offers GPT-6 Astra by its explicit id and limits max effort to Astra", () => {
+    expect(OPENAI_MODELS[0].value).toBe("gpt-6-astra")
+    expect(isCatalogModel("codex", "gpt-6-astra")).toBe(true)
+    expect(isCatalogModel("codex", "gpt-6")).toBe(false)
+    expect(codexEffortOptionsForModel("gpt-6-astra").map((option) => option.value))
+      .toEqual(["default", "low", "medium", "high", "xhigh", "max"])
+    for (const model of ["gpt-5.6-sol", undefined, "gpt-private-preview"]) {
+      expect(codexEffortOptionsForModel(model).map((option) => option.value)).not.toContain("max")
+    }
   })
 
   it("keeps Opus 4.8 pin and the bare opus alias selectable", () => {

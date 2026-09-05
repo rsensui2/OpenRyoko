@@ -58,11 +58,12 @@ export const CLAUDE_MODELS: ModelOption[] = [
 ]
 
 /**
- * OpenAI models. GPT-5.6 Sol / Terra / Luna lead the list as the current
- * generation's 松竹梅（上・中・小）tiers; older generations remain selectable
- * for pinning. `gpt-5-nano` stays at the tail as a cheap triage-tier option.
+ * OpenAI models. GPT-6 Astra is opt-in; GPT-5.6 Sol remains the default.
+ * Access depends on the connected account and Codex CLI rollout.
+ * https://developers.openai.com/api/docs/models/gpt-6-astra
  */
 export const OPENAI_MODELS: ModelOption[] = [
+  { value: "gpt-6-astra", label: "GPT-6 Astra — 高度な推論・コーディング" },
   { value: "gpt-5.6-sol", label: "GPT-5.6 Sol — 上（フラッグシップ / 既定）" },
   { value: "gpt-5.6-terra", label: "GPT-5.6 Terra — 中（バランス・低コスト）" },
   { value: "gpt-5.6-luna", label: "GPT-5.6 Luna — 小（最速・最安 / トリアージ向け）" },
@@ -75,6 +76,18 @@ export const OPENAI_MODELS: ModelOption[] = [
   { value: "gpt-5.1-codex-mini", label: "GPT-5.1 Codex Mini" },
   { value: "gpt-5-nano", label: "GPT-5 nano — 軽量（トリアージ向け）" },
 ]
+
+/** Model-specific effort choices; older Codex models do not inherit Astra's max. */
+export function codexEffortOptionsForModel(model: string | undefined): ModelOption[] {
+  return [
+    { value: "default", label: "Default" },
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High" },
+    { value: "xhigh", label: "Extra High" },
+    ...(model === "gpt-6-astra" ? [{ value: "max", label: "Max" }] : []),
+  ]
+}
 
 /** Gemini CLI aliases plus stable and preview ids documented by Google. */
 export const GEMINI_MODELS: ModelOption[] = [
