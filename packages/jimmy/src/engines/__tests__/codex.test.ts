@@ -36,6 +36,58 @@ describe("CodexEngine", () => {
     vi.restoreAllMocks();
   });
 
+  describe("run() — skill context budget notice", () => {
+    const notice = {
+      type: "item.completed",
+      item: {
+        type: "error",
+        message: "Skill descriptions were shortened to fit the skills context budget. Codex can still see every skill, but some descriptions are shorter. Disable unused skills or plugins to leave more room for the rest.",
+      },
+    };
+
+    it.each(["before response", "at EOF without a newline"])("preserves a successful turn when the notice arrives %s", async (position) => {
+      const proc = createMockProcess();
+      mockSpawn.mockReturnValue(proc as any);
+      const deltas: StreamDelta[] = [];
+      const resultPromise = engine.run({ prompt: "hello", cwd: "/tmp", onStream: (delta) => deltas.push(delta) });
+      const events: Record<string, unknown>[] = [
+        { type: "thread.started", thread_id: "skill-budget-thread" },
+        { type: "item.completed", item: { type: "agent_message", text: "ASTRA_RUNTIME_OK" } },
+        { type: "turn.completed", usage: { input_tokens: 1234 } },
+      ];
+      if (position === "before response") events.splice(1, 0, notice);
+      else events.push(notice);
+      proc.stdout.emit("data", Buffer.from(events.map((event) => JSON.stringify(event)).join("\n") + (position === "before response" ? "\n" : "")));
+      proc.exitCode = 0;
+      proc.emit("close", 0);
+
+      const result = await resultPromise;
+      expect(result).toMatchObject({ sessionId: "skill-budget-thread", result: "ASTRA_RUNTIME_OK", numTurns: 1, contextTokens: 1234 });
+      expect(result.error).toBeUndefined();
+      expect(deltas).toEqual([{ type: "text", content: "ASTRA_RUNTIME_OK" }]);
+    });
+
+    it("preserves a real turn failure even when a trailing notice has no newline", async () => {
+      const proc = createMockProcess();
+      mockSpawn.mockReturnValue(proc as any);
+      const deltas: StreamDelta[] = [];
+      const resultPromise = engine.run({ prompt: "hello", cwd: "/tmp", onStream: (delta) => deltas.push(delta) });
+      const failure = "The gpt-6-astra model requires a newer version of Codex.";
+      proc.stdout.emit("data", Buffer.from([
+        { type: "thread.started", thread_id: "failed-thread" },
+        notice,
+        { type: "turn.failed", error: { message: failure } },
+        notice,
+      ].map((event) => JSON.stringify(event)).join("\n")));
+      proc.exitCode = 1;
+      proc.emit("close", 1);
+
+      const result = await resultPromise;
+      expect(result.error).toBe(failure);
+      expect(deltas).toEqual([{ type: "error", content: failure }]);
+    });
+  });
+
   describe("run() — agent_message handling", () => {
     it.each([undefined, "thread-astra"])("passes Astra and max effort to Codex (resume=%s)", async (resumeSessionId) => {
       const proc = createMockProcess();

@@ -370,7 +370,11 @@ export class CodexEngine implements InterruptibleEngine {
 
       if (itemType === "error") {
         const message = String(item.message || "Unknown error");
-        if (message.includes("Under-development features") || message.includes("Model metadata")) {
+        if (
+          message.includes("Under-development features") ||
+          message.includes("Model metadata") ||
+          message.startsWith("Skill descriptions were shortened to fit the skills context budget.")
+        ) {
           logger.debug(`[codex] suppressed warning: ${message.slice(0, 200)}`);
           return null;
         }
