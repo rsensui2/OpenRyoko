@@ -30,7 +30,7 @@ OpenRyoko はこの3つを**Slack側のメカニズムごと用意**して解決
 
 | 問題 | OpenRyoko の解 | 実装 |
 |---|---|---|
-| ① うざい | **空気読みトリアージ** — メッセージ毎に Haiku が silent/react/reply を判定。確信度60%未満は黙る | `slack/triage.ts` |
+| ① うざい | **空気読みトリアージ** — メッセージ毎に Haiku が silent/react/reply を判定。返信は慎重に、自然な場面では絵文字で反応 | `slack/triage.ts` |
 | ② 中途半端 | **自然言語 `/goal`** — 「最後までやって」等を Haiku が検出 → Claude Code の Stop hook を自動起動 → 各ターンの応答が個別 Slack メッセージで届く | `slack/goal-extractor.ts` + `engines/claude.ts` |
 | ③ 見えない | **Agents View Canvas** — running/waiting/errored/idle の全セッションを Slack チャンネルのタブとして30秒毎ライブ同期 | `slack/agents-canvas.ts` |
 
@@ -57,7 +57,7 @@ WebUI の onboarding wizard が `/goal` / Canvas / triage を案内するので�
 
 ### Slack 振る舞い系（全て OpenRyoko 独自）
 
-- 🌸 **空気読みトリアージ** — Haiku で `silent / react / reply` を判定。雑談・横の会話には介入しない保守的設計
+- 🌸 **空気読みトリアージ** — Haiku で `silent / react / reply` を判定。テキスト返信は慎重に、挨拶や成果共有には軽い絵文字で反応
 - 🎯 **自然言語 `/goal`** — 「最後までやって」「完成するまで止まらないで」「終わったら教えて」等の意図を Haiku が拾い、Claude Code の Stop hook を起動
 - 🖼️ **Agents View Canvas** — 全 Ryoko セッションを Slack の Canvas タブにライブ同期。設定 UI から channel picker でワンクリック有効化
 - 💬 **ターン毎の個別投稿** — `/goal` で多ターン回した時、Claude の各ターンの応答が個別の Slack メッセージとして到着（進捗が見える）
@@ -67,6 +67,7 @@ WebUI の onboarding wizard が `/goal` / Canvas / triage を案内するので�
 
 ### エンジン / コスト最適化系（全て OpenRyoko 独自）
 
+- **GPT-6 Astra** — 設定画面で OpenAI（Codex）→ GPT-6 Astra を選択。推論強度は `low / medium / high / xhigh / max`。既定の GPT-5.6 Sol を保ち、利用するアカウントでAstraへのアクセス権が必要です。[公式モデル情報](https://developers.openai.com/api/docs/models/gpt-6-astra)
 - 💸 **Interactive PTY エンジン** — Claude を「対話モード」で PTY 起動（`cc_entrypoint=cli`）。2026/6/15 の Claude 改定後も自動化を**通常のサブスク利用枠**で動かし、Agent SDK クレジットの消費・追加課金を回避（オプトイン。SSH 実行は `claude -p` に自動フォールバック、ターンタイムアウト等で堅牢化）
 - 📊 **コンテキストメーター** — codex / claude 両エンジンで直近ターンの入力コンテキスト量を計測・可視化。コンテキスト枯渇の予兆が一目で分かる
 - 🖥️ **ライブ xterm CLI ビュー** — ダッシュボードで Claude の PTY セッションをそのままターミナル表示（`/ws/pty`、Origin/host ガード付き）
@@ -227,7 +228,7 @@ engines:
     interactive: false     # true で対話モード(PTY)起動 → 6/15改定後も通常サブスク枠で動く
   codex:
     bin: codex
-    model: gpt-5.6-sol     # GPT-5.6 3ティア: gpt-5.6-sol(上) / gpt-5.6-terra(中) / gpt-5.6-luna(小)
+    model: gpt-5.6-sol     # gpt-6-astra も選択可能。Sol / Terra / Luna も引き続き利用できます。
 
 connectors:
   slack:
