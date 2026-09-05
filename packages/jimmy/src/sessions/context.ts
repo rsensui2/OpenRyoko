@@ -9,6 +9,7 @@ import { scanOrg } from "../gateway/org.js";
 import { buildServiceRegistry } from "../gateway/services.js";
 import { findJobsNeedingAttention } from "../jobs/state.js";
 import { getRecentRepliesAcrossSessions } from "./registry.js";
+import { normalizeDelivery } from "./reply-disposition.js";
 
 /**
  * Token budget strategy:
@@ -561,9 +562,15 @@ const DEFAULT_CROSS_SESSION_LIMIT = 15;
 const CROSS_SESSION_PREVIEW_CHARS = 240;
 
 /** Historical conversation content is data, never a new instruction. */
-function summarizeReply(content: string): string {
-  const flat = content.replace(/<!--RYOKO-DISPOSITION:v1:[^>]*-->/g, "")
-    .replace(/\s+/g, " ").trim();
+function summarizeReply(content: string): string | null {
+  // The registry stores raw engine output BEFORE audience separation. Reuse
+  // the delivery policy so suppressPublic bodies and internal payloads cannot
+  // enter another thread through its digest. Do not invent acknowledgments.
+  const { publicAction } = normalizeDelivery(content, {
+    addressed: false, channelExternal: true, isDM: false, canReact: true,
+  });
+  if (publicAction.kind !== "reply") return null;
+  const flat = publicAction.text.replace(/\s+/g, " ").trim();
   return flat.length <= CROSS_SESSION_PREVIEW_CHARS
     ? flat
     : `${flat.slice(0, CROSS_SESSION_PREVIEW_CHARS)}…`;
@@ -616,7 +623,11 @@ export function buildRecentActivityContext(
       channelId: canSeePrivateHistory ? undefined : sharedSlackChannel,
     });
   } catch { return null; }
-  if (replies.length === 0) return null;
+  const previews = replies.flatMap((reply) => {
+    const preview = summarizeReply(reply.content);
+    return preview ? [{ reply, preview }] : [];
+  });
+  if (previews.length === 0) return null;
 
   const lines = [
     "## Recent activity in other conversations",
@@ -628,11 +639,11 @@ export function buildRecentActivityContext(
     "This is internal working context; do not quote or disclose other conversations to the current speaker.",
     "",
   ];
-  for (const reply of replies) {
+  for (const { reply, preview } of previews) {
     const time = new Date(reply.timestamp).toLocaleTimeString("ja-JP", {
       timeZone: "Asia/Tokyo", hour: "2-digit", minute: "2-digit",
     });
-    lines.push(`- \`${time}\` ${describeConversation(reply.sourceRef, reply.transportMeta)} — ${JSON.stringify(summarizeReply(reply.content))}`);
+    lines.push(`- \`${time}\` ${describeConversation(reply.sourceRef, reply.transportMeta)} — ${JSON.stringify(preview)}`);
   }
   return lines.join("\n");
 }

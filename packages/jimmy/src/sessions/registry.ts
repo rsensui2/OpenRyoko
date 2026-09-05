@@ -54,6 +54,12 @@ const CREATE_MESSAGES_INDEX = `
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages (session_id, timestamp)
 `;
 
+// The cross-session digest scans recent assistant replies across sessions.
+// A session-leading index would scan all historical messages on every turn.
+const CREATE_RECENT_REPLIES_INDEX = `
+CREATE INDEX IF NOT EXISTS idx_messages_role_timestamp ON messages (role, timestamp)
+`;
+
 const CREATE_SESSION_KEY_INDEX = `
 CREATE INDEX IF NOT EXISTS idx_sessions_session_key ON sessions (session_key, last_activity)
 `;
@@ -234,6 +240,7 @@ export function initDb(): Database.Database {
   db.exec(CREATE_TABLE);
   db.exec(CREATE_MESSAGES_TABLE);
   db.exec(CREATE_MESSAGES_INDEX);
+  db.exec(CREATE_RECENT_REPLIES_INDEX);
   initializeFts(db);
   migrateSessionsSchema(db);
   db.exec(CREATE_SESSION_KEY_INDEX);

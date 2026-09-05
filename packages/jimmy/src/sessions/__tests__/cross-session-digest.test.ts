@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Employee, JinnConfig } from "../../shared/types.js";
 import { buildContext, buildRecentActivityContext } from "../context.js";
-import { createSession, getRecentRepliesAcrossSessions, insertMessage } from "../registry.js";
+import { createSession, getRecentRepliesAcrossSessions, initDb, insertMessage } from "../registry.js";
 
 // vitest.global-setup.ts and vitest.setup.ts isolate the registry in a temp home.
 const digestNow = Date.now();
@@ -31,7 +31,7 @@ function seed(sourceRef: string, reply: string, employee?: string): string {
 let escalationSessionId: string;
 const clock = vi.spyOn(Date, "now").mockReturnValue(digestNow - 1000);
 beforeAll(() => {
-  escalationSessionId = seed(CHANNEL_A, "ESCALATION_DONE 納品完了\n確認済み<!--RYOKO-DISPOSITION:v1:private-->");
+  escalationSessionId = seed(CHANNEL_A, "ESCALATION_DONE 納品完了\n確認済み\n<!--RYOKO-DISPOSITION:v1:private-->");
   seed(CHANNEL_B, "EXTERNAL_REPLY ありがとうございます");
   seed(DM, "PRIVATE_DM 個人的な相談");
   seed(CRON, "CRON_BOOKKEEPING 対象0件");
@@ -74,6 +74,20 @@ describe("getRecentRepliesAcrossSessions", () => {
     expect(recent({ limit: -1 })).toEqual([]);
     expect(recent({ limit: Number.NaN })).toEqual([]);
     expect(recent({ sinceMs: Number.NaN })).toEqual([]);
+  });
+
+  it("uses a time-bounded index scan without sorting all historical messages", () => {
+    const database = initDb();
+    const prepare = vi.spyOn(database, "prepare");
+    recent();
+    const sql = prepare.mock.calls.find(([statement]) => statement.includes("SELECT m.session_id"))![0];
+    prepare.mockRestore();
+    const plan = database.prepare(`EXPLAIN QUERY PLAN ${sql}`)
+      .all(digestNow - 3600000, 1, null, null, null, null, 50) as Array<{ detail: string }>;
+    const details = plan.map((row) => row.detail).join("\n");
+    expect(details).toContain("SEARCH m USING INDEX");
+    expect(details).not.toContain("SCAN m");
+    expect(details).not.toContain("TEMP B-TREE");
   });
 });
 
@@ -142,5 +156,21 @@ describe("recent activity privacy in prompts", () => {
     expect(prompt).not.toContain("ESCALATION_DONE");
     expect(prompt).not.toContain("PRIVATE_DM");
     expect(prompt).toContain("## Process lifetime");
+  });
+
+  it("excludes suppressed and reaction-only bodies while keeping only public disposition text", () => {
+    const sentinel = (payload: object) =>
+      `<!--RYOKO-DISPOSITION:v1:${Buffer.from(JSON.stringify(payload)).toString("base64url")}-->`;
+    seed("slack:CDISPOSITION:normal", `PUBLIC_BODY\n${sentinel({ internal: "PRIVATE_PAYLOAD" })}`);
+    seed("slack:CDISPOSITION:suppressed", `SUPPRESSED_BODY\n${sentinel({ suppressPublic: true })}`);
+    seed("slack:CDISPOSITION:reaction", `REACT_ONLY_BODY\n${sentinel({ suppressPublic: true, react: "eyes" })}`);
+    seed("slack:CDISPOSITION:internal", sentinel({ internal: "INTERNAL_ONLY", react: "eyes" }));
+    const digest = buildRecentActivityContext({ source: "slack", channel: "CDISPOSITION", config });
+    expect(digest).toContain("PUBLIC_BODY");
+    for (const privateText of ["PRIVATE_PAYLOAD", "SUPPRESSED_BODY", "REACT_ONLY_BODY", "INTERNAL_ONLY", "RYOKO-DISPOSITION"]) {
+      expect(digest).not.toContain(privateText);
+    }
+    seed("slack:CHIDDEN:only", `HIDDEN_ONLY\n${sentinel({ suppressPublic: true })}`);
+    expect(buildRecentActivityContext({ source: "slack", channel: "CHIDDEN", config })).toBeNull();
   });
 });
