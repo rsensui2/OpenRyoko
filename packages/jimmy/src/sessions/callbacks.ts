@@ -1,6 +1,8 @@
 import { getSession } from "./registry.js";
 import { loadConfig } from "../shared/config.js";
 import { logger } from "../shared/logger.js";
+import { readGatewayAuthToken } from "../gateway/auth.js";
+import { JINN_HOME } from "../shared/paths.js";
 import type { Session } from "../shared/types.js";
 
 /**
@@ -14,7 +16,12 @@ export function notifyParentSession(
   options?: { alwaysNotify?: boolean },
 ): void {
   if (!childSession.parentSessionId) return;
-  if (options?.alwaysNotify === false) return;
+  if (options?.alwaysNotify === false) {
+    // The parent may be waiting on this notification. Suppression is a valid choice, but it
+    // must not be invisible — a parent that ends its turn expecting a wake-up stops silently.
+    logger.info(`[callbacks] Suppressed parent notification for child ${childSession.id} (alwaysNotify=false). Parent ${childSession.parentSessionId} will NOT be woken.`);
+    return;
+  }
 
   // Run asynchronously — do not await in the caller
   _sendNotification(childSession, result).catch((err) => {
@@ -60,8 +67,14 @@ async function _sendNotification(
   result: { result?: string | null; error?: string | null; cost?: number; durationMs?: number },
 ): Promise<void> {
   const parent = getSession(childSession.parentSessionId!);
-  if (!parent) return; // Parent gone or expired
-  if (parent.status === "error") return; // Parent already in error — skip
+  if (!parent) {
+    logger.info(`[callbacks] Parent ${childSession.parentSessionId} not found for child ${childSession.id} — no notification sent.`);
+    return; // Parent gone or expired
+  }
+  if (parent.status === "error") {
+    logger.info(`[callbacks] Parent ${parent.id} is in error — skipping notification for child ${childSession.id}. The child's result will not reach it.`);
+    return; // Parent already in error — skip
+  }
 
   const employeeName = childSession.employee || "Unknown";
   const childId = childSession.id;
@@ -108,11 +121,7 @@ async function _sendDiscordNotification(message: string): Promise<void> {
     return;
   }
 
-  await fetch(`http://127.0.0.1:${port}/api/connectors/${connector}/send`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ channel, text: message }),
-  });
+  await _postToGateway(port, `/api/connectors/${connector}/send`, { channel, text: message }, `sending a ${connector} notification`);
 }
 
 async function _sendRaw(parentSessionId: string, message: string): Promise<void> {
@@ -124,9 +133,34 @@ async function _sendRaw(parentSessionId: string, message: string): Promise<void>
     // Use default port if config is unavailable
   }
 
-  await fetch(`http://127.0.0.1:${port}/api/sessions/${parentSessionId}/message`, {
+  await _postToGateway(port, `/api/sessions/${parentSessionId}/message`, { message, role: "notification" }, `notifying parent ${parentSessionId}`);
+}
+
+/**
+ * POST to this instance's own gateway API.
+ *
+ * The gateway requires a bearer token on every /api/ route except /api/health, so an
+ * unauthenticated call is rejected with 401. fetch() resolves on a 4xx rather than
+ * rejecting, so a call that ignores the response discards that rejection with no trace —
+ * the notification is simply lost and nothing records it. Both notification paths here
+ * did exactly that. `jobs/notify.ts` is the model: send the token, check the status.
+ */
+async function _postToGateway(port: number, path: string, body: unknown, what: string): Promise<void> {
+  const token = readGatewayAuthToken(JINN_HOME);
+  const res = await fetch(`http://127.0.0.1:${port}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, role: "notification" }),
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
   });
+
+  // The body is irrelevant, but undici keeps the socket (and the buffered body) tied up until it
+  // is consumed or cancelled — release it before acting on the status.
+  await res.body?.cancel().catch(() => undefined);
+
+  if (!res.ok) {
+    throw new Error(`gateway responded ${res.status} when ${what}`);
+  }
 }

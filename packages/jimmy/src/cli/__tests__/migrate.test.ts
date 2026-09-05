@@ -105,6 +105,8 @@ describe("migrate: AI session launcher", () => {
     const fileEntry = {
       name: "CLAUDE.md",
       isDirectory: () => false,
+      isFile: () => true,
+      isSymbolicLink: () => false,
     };
     mockReaddirSync.mockReturnValue([fileEntry] as any);
 

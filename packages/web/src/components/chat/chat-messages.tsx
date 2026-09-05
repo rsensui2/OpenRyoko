@@ -391,17 +391,35 @@ interface ChatMessagesProps {
   messages: Message[]
   loading: boolean
   streamingText?: string
+  hasOlder?: boolean
+  loadingOlder?: boolean
+  onLoadOlder?: () => void
+  focusMessageId?: string | null
+  hasNewer?: boolean
+  onJumpToLatest?: () => void
 }
 
-export function ChatMessages({ messages, loading, streamingText }: ChatMessagesProps) {
+export function ChatMessages({
+  messages,
+  loading,
+  streamingText,
+  hasOlder,
+  loadingOlder,
+  onLoadOlder,
+  focusMessageId,
+  hasNewer,
+  onJumpToLatest,
+}: ChatMessagesProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   const prevMsgIdRef = useRef<string | null>(null)
   const prevMsgCount = useRef(0)
+  const prevScrollHeightRef = useRef(0)
   const isAtBottomRef = useRef(true)
   const [showScrollButton, setShowScrollButton] = useState(false)
   const scrollButtonTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const focusedMessageRef = useRef<string | null>(null)
 
   // IntersectionObserver: track whether the bottom sentinel is visible
   useEffect(() => {
@@ -456,10 +474,16 @@ export function ChatMessages({ messages, loading, streamingText }: ChatMessagesP
     }
 
     const currentFirstId = messages[0]?.id || null
-    const isSessionSwitch = prevMsgIdRef.current !== null && currentFirstId !== prevMsgIdRef.current
+    const previousFirstId = prevMsgIdRef.current
+    const previousFirstStillPresent = previousFirstId !== null && messages.some((message) => message.id === previousFirstId)
+    const isPrepend = previousFirstId !== null && currentFirstId !== previousFirstId && previousFirstStillPresent
+    const isSessionSwitch = previousFirstId !== null && currentFirstId !== previousFirstId && !isPrepend
     const isInitialLoad = prevMsgCount.current === 0 && messages.length > 0
 
-    if (isInitialLoad || isSessionSwitch) {
+    if (isPrepend && scrollContainerRef.current) {
+      const heightDelta = scrollContainerRef.current.scrollHeight - prevScrollHeightRef.current
+      scrollContainerRef.current.scrollTop += heightDelta
+    } else if (isInitialLoad || isSessionSwitch) {
       if (scrollContainerRef.current) {
         scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight
       }
@@ -469,7 +493,16 @@ export function ChatMessages({ messages, loading, streamingText }: ChatMessagesP
 
     prevMsgCount.current = messages.length
     prevMsgIdRef.current = currentFirstId
+    prevScrollHeightRef.current = scrollContainerRef.current?.scrollHeight ?? 0
   }, [messages])
+
+  useLayoutEffect(() => {
+    if (!focusMessageId || focusedMessageRef.current === focusMessageId) return
+    const element = document.getElementById(`chat-message-${encodeURIComponent(focusMessageId)}`)
+    if (!element) return
+    element.scrollIntoView({ block: 'center', behavior: 'auto' })
+    focusedMessageRef.current = focusMessageId
+  }, [focusMessageId, messages])
 
   const scrollToBottom = useCallback(() => {
     if (scrollContainerRef.current) {
@@ -495,8 +528,20 @@ export function ChatMessages({ messages, loading, streamingText }: ChatMessagesP
   }
 
   return (
-    <div ref={scrollContainerRef} className="chat-messages-scroll relative flex-1 overflow-y-auto overflow-x-hidden bg-[var(--bg)] min-h-0">
+    <div ref={scrollContainerRef} className="chat-messages-scroll relative flex-1 overflow-y-auto overflow-x-hidden [overflow-anchor:none] bg-[var(--bg)] min-h-0">
       <div ref={contentRef} className="py-[var(--space-3)] pb-[var(--space-6)]">
+      {hasOlder && onLoadOlder ? (
+        <div className="flex justify-center px-4 pb-3">
+          <button
+            type="button"
+            disabled={loadingOlder}
+            onClick={onLoadOlder}
+            className="rounded-full border border-[var(--separator)] bg-[var(--fill-secondary)] px-3 py-1.5 text-[length:var(--text-caption1)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--fill-tertiary)] disabled:opacity-60"
+          >
+            {loadingOlder ? 'Loading older messages…' : 'Load older messages'}
+          </button>
+        </div>
+      ) : null}
       {groupMessages(messages).map((item) => {
         if (item.kind === 'tool-group') {
           const firstMsg = item.msgs[0]
@@ -504,7 +549,7 @@ export function ChatMessages({ messages, loading, streamingText }: ChatMessagesP
           const prevMsg = item.startIndex > 0 ? messages[item.startIndex - 1] : null
           const isActive = loading && item.startIndex + item.msgs.length === messages.length
           return (
-            <div key={`tg-${item.startIndex}`}>
+            <div key={`tg-${item.startIndex}`} className="[content-visibility:auto] [contain-intrinsic-size:auto_48px]">
               {showTimestamp && (
                 <div className="text-center py-[var(--space-3)] text-[length:var(--text-caption2)] text-[var(--text-tertiary)]">
                   {formatTimestamp(firstMsg.timestamp)}
@@ -540,7 +585,11 @@ export function ChatMessages({ messages, loading, streamingText }: ChatMessagesP
         }
 
         return (
-          <div key={msg.id || i}>
+          <div
+            id={msg.id ? `chat-message-${encodeURIComponent(msg.id)}` : undefined}
+            key={msg.id || i}
+            className={`rounded-[var(--radius-md)] [content-visibility:auto] [contain-intrinsic-size:auto_120px] ${focusMessageId === msg.id ? 'ring-2 ring-[var(--accent)] ring-offset-2 ring-offset-[var(--bg)]' : ''}`}
+          >
             {/* Timestamp divider */}
             {showTimestamp && (
               <div className="text-center py-[var(--space-3)] text-[length:var(--text-caption2)] text-[var(--text-tertiary)]">
@@ -622,6 +671,18 @@ export function ChatMessages({ messages, loading, streamingText }: ChatMessagesP
           </span>
         </div>
       )}
+
+      {hasNewer && onJumpToLatest ? (
+        <div className="flex justify-center px-4 pt-3">
+          <button
+            type="button"
+            onClick={onJumpToLatest}
+            className="rounded-full border border-[var(--separator)] bg-[var(--fill-secondary)] px-3 py-1.5 text-[length:var(--text-caption1)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--fill-tertiary)]"
+          >
+            Jump to latest messages
+          </button>
+        </div>
+      ) : null}
 
       <div ref={bottomRef} />
       </div>

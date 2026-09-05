@@ -4,22 +4,38 @@ jinn:
 gateway:
   port: 7777
   host: "127.0.0.1"
+  # host は「どこで待ち受けるか」であって「どこへ接続するか」ではない。
+  # 0.0.0.0 / :: で公開しても、ローカルからの接続先は http://127.0.0.1:7777 を使う
+  # （接続可能なURLは $RYOKO_GATEWAY_URL として全プロセスに渡される）。
+  # リバースプロキシ等で実NICのIP以外のHost名を使う場合は明示許可する
+  # allowedHosts: ["ryoko.example.com"]
+  # 信頼できるHTTPSリバースプロキシの直後でのみ有効化する
+  # trustProxyHeaders: false
+  # trustedProxyAddresses: ["127.0.0.1"]  # ヘッダーを受理するプロキシの接続元IP
 
 engines:
   default: claude
   claude:
     bin: claude
-    model: opus
-    effortLevel: medium
+    # Opus 5 の明示 ID。裸の "opus" エイリアスはインストール済み Claude CLI が
+    # 知っている最新 Opus に解決されるため、CLI が古いと旧世代（4.8 等）に留まる。
+    # 明示 ID は API パススルーなので CLI バージョンに関係なく Opus 5 が使われる。
+    model: claude-opus-5
+    effortLevel: xhigh
     # Interactive PTY mode (opt-in). When true, Claude work turns run as an
     # interactive PTY (cc_entrypoint=cli) which bills against the Max subscription
     # instead of metered API usage. Turns resolve via Claude Code Stop hooks.
     # Default false = headless `claude -p`. sshHost employees keep using `-p`.
     # interactive: false
     # maxLivePtys: 8   # max simultaneously-live PTYs (LRU-evicted) when interactive
+    # DANGEROUS: approves every unambiguous Claude safety prompt, including
+    # destructive shell commands. Keep false unless the instance is isolated.
+    # autoApproveSafetyPrompts: false
   codex:
     bin: codex
-    model: gpt-5.5
+    # GPT-5.6 の3ティア: gpt-5.6-sol(上) / gpt-5.6-terra(中) / gpt-5.6-luna(小)
+    # 注意: 裸の "gpt-5.6" エイリアスは ChatGPT アカウントの Codex では 400 になる。明示 ID を使うこと
+    model: gpt-5.6-sol
     effortLevel: high
 
 connectors:
@@ -32,7 +48,7 @@ connectors:
     # triage:
     #   enabled: true
     #   engine: codex        # claude | codex
-    #   model: gpt-5-nano    # 軽量モデル推奨
+    #   model: gpt-5-nano    # 軽量モデル推奨（gpt-5.6-luna / claude-haiku-4-5 も可）
     #   timeoutMs: 20000
     #   threadContextLimit: 10
     #
@@ -66,16 +82,39 @@ mcp:
   #     env:
   #       API_KEY: ${MY_API_KEY}
 
-# セッション上限（従業員ごとにYAMLで上書き可）
-sessions:
-  maxDurationMinutes: 30
-  maxCostUsd: 10.00
+# セッション上限（予約済みキー: 現行ランタイムはまだ参照しない。有効化しても効かない点に注意）
+# sessions:
+#   maxDurationMinutes: 30
+#   maxCostUsd: 10.00
 
 # Cron設定
 cron:
   # alertConnector: slack
   # alertChannel: "#alerts"
 
+# portal.operatorSlackId / portal.operatorDiscordId = オペレータ本人の Slack ID と
+# Discord ユーザー ID（スノーフレーク。プロフィール右クリック → ユーザーIDをコピー）。
+# どちらか一つでも設定すると本人確認が「発話元プラットフォームの ID の厳密一致」に
+# なり、表示名の一致では「オペレータ本人」と扱われなくなる（表示名は誰でも変更
+# できるため、信頼できないメンバーがいる場では必ず設定する）。ID 未設定の
+# プラットフォームから話しかけた場合はオペレータ扱いされない（そのプラットフォームの
+# ID を追加すること）。Discord ID は YAML では**必ず引用符で囲む**こと — スノーフレークは
+# 数値として読むと精度が落ちるため、引用符なしの数値は警告つきで無視される
+# （厳密モード自体は維持され、誰にも一致しなくなる）。trustedSpeakers の ID も同様。
+#   operatorSlackId: U0XXXXXXX
+#   operatorDiscordId: "123456789012345678"
+#
+# portal.trustedSpeakers = MEMORY.md（長期記憶）を DM で注入してよい「信頼話者」の
+# プラットフォーム ID リスト（Slack の U… ID と Discord のスノーフレークを混在可）。
+# オペレータ本人の ID も必ずここに入れる（表示名は偽装できるため、
+# 名前ではなく不変の ID だけがゲートを通る）。
+# 注入されるのは private web セッションと、ここに載る相手との DM のみ。
+# 共有チャンネルでは誰が話していても注入されない（スレッドのセッションは参加者を
+# またいで再利用されるため、一度注入した記憶が履歴に残るのを防ぐ）。記入例:
+#   trustedSpeakers:
+#     - U0XXXXXXX   # 表示名（所属・関係のメモ）
+# 注意: portal ブロックの内側にはコメントを書かない（Web オンボーディングの
+# 部分書き換えがブロックを再生成するため、内側のコメントは保持されない）。
 portal:
   portalName: Ryoko
   language: Japanese

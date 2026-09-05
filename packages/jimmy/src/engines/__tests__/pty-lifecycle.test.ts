@@ -64,6 +64,42 @@ describe("PtyLifecycleManager", () => {
     expect(m.isAtCapacity()).toBe(true);
   });
 
+  it("sweep does not release a PTY the isBusy probe reports as working", () => {
+    let busy = true;
+    const m = new PtyLifecycleManager({ maxLivePtys: 8, isBusy: () => busy });
+    const h = fakeHandle();
+    m.adopt("busy-1", h);
+    // Freshly adopted, no turn/viewer → shouldStayAlive is false, so only the
+    // busy probe keeps it alive.
+    (m as any).sweep();
+    expect(h.killed).toBe(false);
+    busy = false;
+    (m as any).sweep();
+    expect(h.killed).toBe(true);
+  });
+
+  it("touch restarts the keep-warm grace window for out-of-turn activity", () => {
+    const m = new PtyLifecycleManager({ maxLivePtys: 8 });
+    const h = fakeHandle();
+    m.adopt("touch-1", h);
+    // Without touch, a fresh adopt (no turn, no viewer) is sweep-eligible.
+    m.touch("touch-1");
+    (m as any).sweep();
+    expect(h.killed).toBe(false); // touched → inside the grace window
+  });
+
+  it("LRU eviction at capacity skips a busy PTY", () => {
+    const busyIds = new Set(["victim-candidate"]);
+    const m = new PtyLifecycleManager({ maxLivePtys: 2, isBusy: (id) => busyIds.has(id) });
+    const a = fakeHandle(), b = fakeHandle(), c = fakeHandle();
+    m.adopt("victim-candidate", a); // busy — must survive
+    m.adopt("idle-one", b);         // idle — must be evicted instead
+    m.adopt("newcomer", c);
+    expect(a.killed).toBe(false);
+    expect(b.killed).toBe(true);
+    expect(m.getWarm("newcomer")).toBe(c);
+  });
+
   it("killAll kills every live PTY", () => {
     const m = new PtyLifecycleManager({ maxLivePtys: 8 });
     const a = fakeHandle(), b = fakeHandle();

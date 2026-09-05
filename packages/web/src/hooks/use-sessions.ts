@@ -1,12 +1,18 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { queryKeys } from '@/lib/query-keys'
 import { api } from '@/lib/api'
 
 export function useSessions() {
-  return useQuery({
+  const query = useInfiniteQuery({
     queryKey: queryKeys.sessions.all,
-    queryFn: () => api.getSessions(),
+    queryFn: ({ pageParam }) => api.getSessionPage(pageParam, 100),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
   })
+  return {
+    ...query,
+    data: query.data?.pages.flatMap((page) => page.sessions),
+  }
 }
 
 export function useSession(id: string | null) {

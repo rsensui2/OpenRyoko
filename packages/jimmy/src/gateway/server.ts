@@ -8,8 +8,9 @@ import { randomUUID, randomBytes } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { JinnConfig, Connector, Employee } from "../shared/types.js";
 import { loadConfig } from "../shared/config.js";
+import { invalidateModelRegistry } from "../shared/models.js";
 import { configureLogger, logger } from "../shared/logger.js";
-import { initDb, recoverStaleSessions, recoverStaleQueueItems, getInterruptedSessions, listSessions, updateSession, getSession } from "../sessions/registry.js";
+import { initDb, scheduleFtsBackfill, recoverStaleSessions, recoverStaleWorkflowAttemptSessions, recoverStaleQueueItems, getInterruptedSessions, listSessions, updateSession, getSession } from "../sessions/registry.js";
 import { SessionManager, type RouteOptions } from "../sessions/manager.js";
 import { ClaudeEngine } from "../engines/claude.js";
 import { CodexEngine } from "../engines/codex.js";
@@ -19,11 +20,27 @@ import { PtyLifecycleManager } from "../engines/pty-lifecycle.js";
 import type { PtyViewEngine } from "../engines/pty-view-engine.js";
 import { attachPtyWebSocket } from "./pty-ws.js";
 import { HookRegistry } from "./hook-registry.js";
+import { startStatusReconciler } from "./status-reconciler.js";
 import { writeGatewayInfo } from "./gateway-info.js";
 import { cleanupSessionSettings, seedTrust } from "../shared/claude-settings.js";
 import { GATEWAY_INFO_FILE, HOOK_RELAY_SCRIPT, CLAUDE_SETTINGS_DIR, JINN_HOME } from "../shared/paths.js";
 import { handleApiRequest, resumePendingWebQueueItems, type ApiContext } from "./api.js";
+import { openWorkflowDatabase } from "../workflows/repository-migrations.js";
+import { WorkflowRepository } from "../workflows/repository.js";
+import { WorkflowService } from "../workflows/service.js";
+import { WorkflowSessionExecutor } from "../workflows/session-executor.js";
+import { getMessages } from "../sessions/registry.js";
+import { getModelRegistry } from "../shared/models.js";
 import { ensureFilesDir } from "./files.js";
+import { ensureOwnerOnlyDirectory } from "../shared/owner-only.js";
+import {
+  ensureGatewayAuthToken,
+  gatewayRequestNeedsAuth,
+  isNetworkHost,
+  shouldRequireGatewayAuth,
+  validateGatewayExposure,
+  verifyGatewayAuth,
+} from "./auth.js";
 import { initStt } from "../stt/stt.js";
 import { startWatchers, stopWatchers, syncSkillSymlinks } from "./watcher.js";
 import { SlackConnector } from "../connectors/slack/index.js";
@@ -34,6 +51,12 @@ import { TelegramConnector } from "../connectors/telegram/index.js";
 import { loadJobs } from "../cron/jobs.js";
 import { startScheduler, reloadScheduler, stopScheduler } from "../cron/scheduler.js";
 import { scanOrg } from "./org.js";
+import { createDailyDatabaseBackup } from "../sessions/backup.js";
+import { getDiskSpaceStatus } from "../shared/storage-health.js";
+import { requestOriginAllowed } from "./request-origin.js";
+import { hostHeaderAllowed, localInterfaceHosts } from "./host-guard.js";
+import { isWildcardBindHost, localGatewayUrl } from "../shared/gateway-url.js";
+import { staticPathWithinRoot } from "./static-path.js";
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -87,7 +110,7 @@ function serveStatic(
 
   // Prevent directory traversal
   const resolved = path.resolve(filePath);
-  if (!resolved.startsWith(path.resolve(webDir))) {
+  if (!staticPathWithinRoot(webDir, resolved)) {
     res.writeHead(403);
     res.end("Forbidden");
     return true;
@@ -129,6 +152,24 @@ export async function startGateway(
 ): Promise<GatewayCleanup> {
   const bootId = randomUUID().slice(0, 8);
 
+  const exposure = validateGatewayExposure(config);
+  if (!exposure.ok) throw new Error(exposure.error);
+
+  // Heal legacy instances before opening config, database, hook settings or logs.
+  const homePermission = ensureOwnerOnlyDirectory(JINN_HOME);
+  if (homePermission.warning) {
+    console.warn(`[openryoko] could not restrict ${JINN_HOME} to the current user: ${homePermission.warning}`);
+  }
+  const authToken = ensureGatewayAuthToken(JINN_HOME);
+  const authRequired = shouldRequireGatewayAuth(config);
+  const hasTrustedProxy = config.gateway.trustProxyHeaders === true && Boolean(config.gateway.trustedProxyAddresses?.length);
+  if (isNetworkHost(config.gateway.host) && config.gateway.authDisabled !== true && !hasTrustedProxy) {
+    console.warn("[openryoko] Network gateway authentication is enabled, but HTTP is not encrypted. Use a VPN/Tailscale tunnel or a trusted HTTPS reverse proxy; set gateway.trustProxyHeaders=true only behind that proxy.");
+  }
+  if (config.gateway.trustProxyHeaders === true && !(config.gateway.trustedProxyAddresses?.length)) {
+    console.warn("[openryoko] gateway.trustProxyHeaders is enabled without gateway.trustedProxyAddresses; forwarded headers will be ignored.");
+  }
+
   // Configure logging
   configureLogger({
     level: config.logging.level,
@@ -140,11 +181,31 @@ export async function startGateway(
   logger.info(`Starting ${gatewayName} gateway (boot ${bootId}, pid ${process.pid})...`);
 
   // Initialize database and recover any sessions stuck from a previous run
-  initDb();
+  const database = initDb();
+  void scheduleFtsBackfill();
+  const disk = getDiskSpaceStatus();
+  if (disk.level === "warning" || disk.level === "critical") {
+    const freeMiB = disk.freeBytes === null ? "unknown" : Math.floor(disk.freeBytes / 1024 ** 2);
+    logger.warn(`Low disk space: ${freeMiB} MiB free (${disk.freePercent?.toFixed(1) ?? "unknown"}%)`);
+  }
+  try {
+    const backup = await createDailyDatabaseBackup(database);
+    if (backup.created) logger.info(`Created daily database backup: ${backup.file}`);
+  } catch (error) {
+    logger.warn(`Database backup failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
   ensureFilesDir();
   const recovered = recoverStaleSessions();
   if (recovered > 0) {
     logger.info(`Recovered ${recovered} stale session(s) — marked as "interrupted" for resume`);
+  }
+  // Workflow attempt sessions get their own sweep: it stamps the durable
+  // `gateway-restart` receipt the runtime needs to REPLACE the attempt instead
+  // of spending its retry budget. recoverStaleSessions() above deliberately
+  // skips workflow_kind rows so this sweep still finds them running.
+  const recoveredWorkflowAttempts = recoverStaleWorkflowAttemptSessions();
+  if (recoveredWorkflowAttempts > 0) {
+    logger.info(`Recovered ${recoveredWorkflowAttempts} stale workflow attempt(s) — stamped gateway-restart receipts`);
   }
 
   // Log resumable sessions so operators know what can be picked up
@@ -184,6 +245,10 @@ export async function startGateway(
         hookRegistry?.unregister(id);
         cleanupSessionSettings(CLAUDE_SETTINGS_DIR, id);
       },
+      // Never reap/evict a PTY whose claude is mid-API-call (background
+      // sub-agents keep streaming after the managed turn settles). Lazily bound:
+      // the engine is constructed a few lines below.
+      isBusy: (id) => interactiveClaudeEngine?.isEngineBusy(id) ?? false,
     });
     // Pass the headless engine as a remote fallback so sshHost employees still run
     // over SSH (the local PTY can't), while local turns get the Max-subsidized PTY.
@@ -192,6 +257,7 @@ export async function startGateway(
       hookRegistry,
       claudeEngine,
       config.engines?.claude?.interactiveTurnTimeoutMs ?? 90 * 60 * 1000,
+      config.engines?.claude?.autoApproveSafetyPrompts === true,
     );
     copyHookRelayAsset();
     // Pre-trust JINN_HOME in the real ~/.claude.json so PTY-spawned Claude (cwd =
@@ -233,6 +299,15 @@ export async function startGateway(
 
   // Session manager
   const sessionManager = new SessionManager(config, engines, connectorNames);
+
+  // Orphan hooks = engine activity AFTER a turn settled (background sub-agents /
+  // tasks still running in the PTY). Any orphan event keeps the PTY alive; a
+  // terminal Stop orphan is the final output of that background work and gets
+  // delivered to the session's conversation instead of being dropped.
+  hookRegistry?.setOrphanHandler((sid, hook) => {
+    interactiveClaudeEngine?.noteBackgroundActivity(sid);
+    void sessionManager.handleOrphanHook(sid, hook);
+  });
 
   // Build employee registry
   let employeeRegistry = scanOrg();
@@ -302,6 +377,7 @@ export async function startGateway(
           {
             portalName: cfg.portal?.portalName,
             operatorName: cfg.portal?.operatorName,
+            operatorAliases: cfg.portal?.operatorAliases,
             goalInjectionEnabled: (cfg.connectors.slack.employee
               ? employeeRegistry.get(cfg.connectors.slack.employee)?.engine
               : cfg.engines.default) === "claude",
@@ -332,7 +408,9 @@ export async function startGateway(
       try {
         const discord = new RemoteDiscordConnector({
           proxyVia: cfg.connectors.discord.proxyVia,
+          proxyViaToken: cfg.connectors.discord.proxyViaToken,
           channelId: cfg.connectors.discord.channelId,
+          respondTo: cfg.connectors.discord.respondTo,
         });
         discord.onMessage((msg) => {
           const routeOpts: RouteOptions = {};
@@ -476,6 +554,7 @@ export async function startGateway(
             const slack = new SlackConnector(slackConfig, {
               portalName: config.portal?.portalName,
               operatorName: config.portal?.operatorName,
+              operatorAliases: config.portal?.operatorAliases,
               goalInjectionEnabled: (employee ? employeeRegistry.get(employee)?.engine : config.engines.default) === "claude",
             });
             slack.onMessage((msg) => {
@@ -611,6 +690,7 @@ export async function startGateway(
               const slack = new SlackConnector(slackConfig, {
                 portalName: freshConfig.portal?.portalName,
                 operatorName: freshConfig.portal?.operatorName,
+                operatorAliases: freshConfig.portal?.operatorAliases,
                 goalInjectionEnabled: (employee ? employeeRegistry.get(employee)?.engine : freshConfig.engines.default) === "claude",
               });
               slack.onMessage((msg) => {
@@ -713,6 +793,7 @@ export async function startGateway(
     // engines.default / portal.* / bin paths. Callers (watcher / API) are
     // responsible for updating apiContext.config too.
     currentConfig = fresh;
+    invalidateModelRegistry(); // rebuild the model/capability registry from the new config
     sessionManager.setConfig(fresh);
 
     // Order:
@@ -794,26 +875,32 @@ export async function startGateway(
   let reloadInFlight: Promise<{ started: string[]; stopped: string[]; errors: string[] }> | null = null;
   let pendingReload = false;
 
-  // Coordination flag between the API config-save path and the file watcher.
-  // PUT /api/config eagerly reloads connectors for snappy UX, then sets this
-  // flag so the chokidar event for the same file write doesn't double-reload
-  // and race against the in-flight reload.
-  let suppressNextWatcherConnectorReload = false;
+  // Coordination between the API config-write paths and the file watcher.
+  // A writer that reloads connectors itself (PUT /api/config, the onboarding
+  // Slack connect and its rollback) arms one suppression per file write, and
+  // the watcher consumes one per event it skips. A COUNTER rather than a flag,
+  // so two writers in flight cannot clear each other's suppression: each
+  // arms and clears only its own. A safety timer drains everything in case a
+  // watcher event never arrives (chokidar coalesced two writes into one
+  // event, or missed it), so legitimate external edits are never suppressed
+  // for long. Known limit: when chokidar coalesces N writes into one event,
+  // N-1 suppressions remain until the timer drains them.
+  let suppressedWatcherConnectorReloads = 0;
   let suppressTimer: ReturnType<typeof setTimeout> | null = null;
-  function suppressNextConnectorReload(): void {
-    suppressNextWatcherConnectorReload = true;
+  function armSuppressDrainTimer(): void {
     if (suppressTimer) clearTimeout(suppressTimer);
-    // Auto-clear after 3s in case the watcher event never arrives (the file
-    // write was rolled back, chokidar missed it, etc.) — we don't want to
-    // permanently suppress legitimate future reloads.
     suppressTimer = setTimeout(() => {
-      suppressNextWatcherConnectorReload = false;
+      suppressedWatcherConnectorReloads = 0;
       suppressTimer = null;
     }, 3000);
   }
+  function suppressNextConnectorReload(): void {
+    suppressedWatcherConnectorReloads += 1;
+    armSuppressDrainTimer();
+  }
   function clearSuppressNextConnectorReload(): void {
-    suppressNextWatcherConnectorReload = false;
-    if (suppressTimer) {
+    if (suppressedWatcherConnectorReloads > 0) suppressedWatcherConnectorReloads -= 1;
+    if (suppressedWatcherConnectorReloads === 0 && suppressTimer) {
       clearTimeout(suppressTimer);
       suppressTimer = null;
     }
@@ -837,6 +924,18 @@ export async function startGateway(
     }
   };
 
+  // Backstop for lost completion events: unstick sessions stuck at
+  // status:"running" with no live turn (see status-reconciler.ts).
+  const stopStatusReconciler = startStatusReconciler({ engines, emit });
+
+  // --- Workflow engine (upstream port). Opt-in via config.workflows.enabled;
+  // absent flag = no workflow DB, no trigger arming, no /api/workflows routes.
+  // Constructed AFTER the server is listening (see below): the WorkflowService
+  // constructor arms schedule triggers and a wake timer that can run recovery
+  // immediately, and a recovered attempt may spawn an interactive PTY turn
+  // whose Stop hook needs the gateway listening and gateway.json written.
+  let workflowService: WorkflowService | undefined;
+
   // API context
   const apiContext: ApiContext = {
     config: currentConfig,
@@ -851,7 +950,11 @@ export async function startGateway(
     clearSuppressNextConnectorReload,
     hookRegistry,
     hookSecret: useInteractiveClaude ? hookSecret : undefined,
+    authToken,
+    authHome: JINN_HOME,
   };
+
+
 
   // NOTE: replaying pending web queue items is deferred until AFTER the server is
   // listening and gateway.json (port + hook secret) has been written — otherwise an
@@ -864,32 +967,42 @@ export async function startGateway(
 
   // Loopback Host header guard.
   //
-  // The gateway binds to 127.0.0.1 by default but every API route is
-  // unauthenticated, which makes the daemon vulnerable to classic DNS
-  // rebinding from any browser tab on the same machine: an attacker page
-  // can resolve a hostile DNS name to 127.0.0.1 and then `fetch()` against
-  // our endpoints. We reject any request whose `Host` header isn't a
-  // loopback / explicit-bind value the operator has configured.
+  // The gateway binds to 127.0.0.1 by default. A hostile browser tab can still
+  // target local services through DNS rebinding, so reject requests whose
+  // `Host` is not loopback, a local interface, or explicitly configured.
   const configuredHost = config.gateway.host || "127.0.0.1";
-  const LOOPBACK_HOSTNAMES = new Set([
-    "127.0.0.1",
-    "[::1]",
-    "::1",
-    "localhost",
-  ]);
-  function hostIsAllowed(hostHeader: string | undefined): boolean {
-    if (!hostHeader) return false;
-    // Strip port for comparison; "host:port" or "[::1]:port".
-    const lastColon = hostHeader.lastIndexOf(":");
-    const closingBracket = hostHeader.lastIndexOf("]");
-    const hostname = lastColon > closingBracket
-      ? hostHeader.slice(0, lastColon)
-      : hostHeader;
-    if (LOOPBACK_HOSTNAMES.has(hostname)) return true;
-    if (hostname === configuredHost) return true;
-    // Bare-IP case where the operator pinned to a LAN address.
-    if (configuredHost === "0.0.0.0") return true; // explicit opt-in: any host
-    return false;
+  const interfaceHosts = localInterfaceHosts();
+  const connectUrl = localGatewayUrl(configuredHost, config.gateway.port || 7777);
+  const configuredAllowedHosts = Array.isArray(currentConfig.gateway.allowedHosts) ? currentConfig.gateway.allowedHosts : [];
+  const ignoredWildcardAllowedHosts = configuredAllowedHosts.filter((host) => isWildcardBindHost(host));
+  if (ignoredWildcardAllowedHosts.length > 0) {
+    logger.warn(
+      `Ignoring wildcard value(s) in gateway.allowedHosts (${ignoredWildcardAllowedHosts.join(", ")}). `
+        + `Wildcard bind addresses are never safe Host allowlist entries; connect to ${connectUrl} instead.`,
+    );
+  }
+  // Publish the *connectable* URL to every child process we spawn (engine CLIs
+  // inherit process.env via buildChildEnv). Skills and scripts should read
+  // $RYOKO_GATEWAY_URL rather than hard-coding a host they can get wrong.
+  process.env.RYOKO_GATEWAY_URL = connectUrl;
+  function hostIsAllowed(req: http.IncomingMessage): boolean {
+    return hostHeaderAllowed(req.headers.host, configuredHost, currentConfig.gateway.allowedHosts, interfaceHosts);
+  }
+
+  // A silent 421 is how this guard bites: a cron script gets an empty body, the
+  // run is still recorded "success", and the Slack post just never happens. Say
+  // out loud what was rejected and what to use instead — but only once per
+  // distinct Host, so a hostile tab in a retry loop can't flood the log.
+  const warnedRejectedHosts = new Set<string>();
+  function warnHostRejected(hostHeader: string | undefined): void {
+    const key = (hostHeader || "<missing>").toLowerCase().replace(/[^\x20-\x7e]/g, "?").slice(0, 200);
+    if (warnedRejectedHosts.has(key)) return;
+    if (warnedRejectedHosts.size >= 50) return;
+    warnedRejectedHosts.add(key);
+    logger.warn(
+      `host_not_allowed: rejected Host="${key}". `
+        + `Connect to ${connectUrl} instead. Real proxy hostnames may be added to gateway.allowedHosts; wildcard bind addresses cannot.`,
+    );
   }
 
   // Create HTTP server
@@ -899,35 +1012,50 @@ export async function startGateway(
     // Host header check before anything else — applies to both API and
     // static asset paths so a malicious cross-origin browser tab can't
     // pull session JSON either.
-    if (!hostIsAllowed(req.headers.host)) {
+    if (!hostIsAllowed(req)) {
+      warnHostRejected(req.headers.host);
       res.writeHead(421, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "host_not_allowed" }));
+      res.end(JSON.stringify({
+        error: "host_not_allowed",
+        host: req.headers.host ?? null,
+        hint: `Use ${connectUrl} — "${configuredHost}" is the bind address, not a connectable host. `
+          + `Real proxy hostnames may be added to gateway.allowedHosts; wildcard bind addresses cannot.`,
+      }));
       return;
     }
 
-    // CORS: restrict to localhost-style origins by default. The operator
-    // can broaden via `gateway.host = 0.0.0.0`, in which case we mirror
-    // the request's Origin header (still safer than a blanket `*`).
     const origin = req.headers.origin as string | undefined;
-    if (origin && configuredHost !== "0.0.0.0") {
-      try {
-        const u = new URL(origin);
-        if (LOOPBACK_HOSTNAMES.has(u.hostname)) {
-          res.setHeader("Access-Control-Allow-Origin", origin);
-          res.setHeader("Vary", "Origin");
-        }
-      } catch { /* invalid Origin header — leave CORS unset */ }
-    } else if (origin && configuredHost === "0.0.0.0") {
-      // explicit opt-in: reflect the origin (subject to operator policy)
+    if (!requestOriginAllowed(origin, req.headers.host, configuredHost)) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "origin_not_allowed" }));
+      return;
+    }
+
+    // The request has already passed the active Origin guard above. Reflecting
+    // here enables legitimate same-origin/cross-spelling loopback clients.
+    if (origin) {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Vary", "Origin");
     }
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
     if (req.method === "OPTIONS") {
       res.writeHead(204);
       res.end();
+      return;
+    }
+
+    const pathname = url.split("?")[0];
+    if (
+      gatewayRequestNeedsAuth(authRequired, req.method, pathname)
+      && !verifyGatewayAuth(req.headers, authToken, JINN_HOME)
+    ) {
+      res.writeHead(401, {
+        "Content-Type": "application/json",
+        "WWW-Authenticate": 'Bearer realm="OpenRyoko"',
+      });
+      res.end(JSON.stringify({ error: "Missing or invalid gateway authentication" }));
       return;
     }
 
@@ -971,31 +1099,13 @@ export async function startGateway(
     });
   });
 
-  // Origin guard for WS upgrades. WebSocket isn't covered by CORS preflight, so a
-  // cross-site browser page could otherwise open /ws/pty and inject stdin into the
-  // Claude PTY. Allow only same-host / loopback / configured-host origins; a non-
-  // browser client (no Origin header) is allowed. Mirrors the HTTP CORS intent.
-  function wsOriginAllowed(originHeader: string | undefined, hostHeader: string | undefined): boolean {
-    if (!originHeader) return true; // non-browser client
-    let originHost: string;
-    try { originHost = new URL(originHeader).hostname; } catch { return false; }
-    if (LOOPBACK_HOSTNAMES.has(originHost)) return true;
-    if (originHost === configuredHost) return true;
-    // Same-origin as the request's Host (strip port) — the gateway-served UI.
-    if (hostHeader) {
-      const lastColon = hostHeader.lastIndexOf(":");
-      const closingBracket = hostHeader.lastIndexOf("]");
-      const hostname = lastColon > closingBracket ? hostHeader.slice(0, lastColon) : hostHeader;
-      if (originHost === hostname) return true;
-    }
-    return false;
-  }
-
   server.on("upgrade", (req, socket, head) => {
     const reqUrl = req.url || "";
     // DNS-rebinding / cross-host guard — mirror the HTTP request path so a WS
     // upgrade can't bypass it. Applies to both /ws and /ws/pty.
-    if (!hostIsAllowed(req.headers.host)) { socket.destroy(); return; }
+    if (!hostIsAllowed(req)) { warnHostRejected(req.headers.host); socket.destroy(); return; }
+    if (!requestOriginAllowed(req.headers.origin, req.headers.host, configuredHost)) { socket.destroy(); return; }
+    if (authRequired && !verifyGatewayAuth(req.headers, authToken, JINN_HOME)) { socket.destroy(); return; }
     if (reqUrl === "/ws") {
       wss.handleUpgrade(req, socket, head, (ws) => {
         wss.emit("connection", ws, req);
@@ -1008,7 +1118,6 @@ export async function startGateway(
     const ptyMatch = reqUrl.split("?")[0].match(/^\/ws\/pty\/([^/]+)$/);
     if (ptyMatch) {
       // /ws/pty forwards stdin to the PTY — reject cross-site browser origins.
-      if (!wsOriginAllowed(req.headers.origin, req.headers.host)) { socket.destroy(); return; }
       let sessionId: string;
       try { sessionId = decodeURIComponent(ptyMatch[1]); } catch { socket.destroy(); return; }
       const ptySession = getSession(sessionId);
@@ -1038,8 +1147,25 @@ export async function startGateway(
     onConfigReload: () => {
       try {
         const previous = currentConfig;
+        const previousWorkflowsEnabled = Boolean(currentConfig.workflows?.enabled);
         currentConfig = loadConfig();
+        invalidateModelRegistry(); // rebuild the model/capability registry from the reloaded config
         apiContext.config = currentConfig;
+        // Workflow engine is boot-time wiring. Disable takes effect immediately
+        // (dispose stops schedule triggers and the runner; routes disappear with
+        // the context entry); enable requires a restart.
+        const workflowsEnabled = Boolean(currentConfig.workflows?.enabled);
+        if (previousWorkflowsEnabled && !workflowsEnabled && workflowService) {
+          try { workflowService.dispose(); } catch { /* best effort */ }
+          try { apiContext.workflowDatabase?.close(); } catch { /* best effort */ }
+          workflowService = undefined;
+          apiContext.workflowService = undefined;
+          apiContext.workflowDatabase = undefined;
+          apiContext.workflowRepository = undefined;
+          logger.info("Workflow engine disabled via config reload");
+        } else if (!previousWorkflowsEnabled && workflowsEnabled && !workflowService) {
+          logger.warn("config.workflows.enabled was turned on — restart the gateway to start the Workflow engine");
+        }
         // Propagate the fresh config into SessionManager so new sessions
         // pick up edits to engines.default / portal.* / engine bin paths
         // even when the connectors block didn't change.
@@ -1051,13 +1177,13 @@ export async function startGateway(
         // triggered reloadAllConnectors itself and may still be mid-reconnect.
         // Skip our reload to avoid stop→start→stop→start churn and the
         // race that comes with two overlapping reloads.
-        if (suppressNextWatcherConnectorReload) {
-          suppressNextWatcherConnectorReload = false;
-          if (suppressTimer) {
+        if (suppressedWatcherConnectorReloads > 0) {
+          suppressedWatcherConnectorReloads -= 1;
+          if (suppressedWatcherConnectorReloads === 0 && suppressTimer) {
             clearTimeout(suppressTimer);
             suppressTimer = null;
           }
-          logger.debug("Skipping watcher-triggered connector reload (API just wrote config and reloaded)");
+          logger.debug("Skipping watcher-triggered connector reload (an API write just reloaded connectors itself)");
           return;
         }
 
@@ -1133,7 +1259,12 @@ export async function startGateway(
       reject(err);
     });
     server.listen(port, host, () => {
-      logger.info(`${gatewayName} gateway listening on http://${host}:${port} (boot ${bootId})`);
+      logger.info(`${gatewayName} gateway listening on ${host}:${port} (boot ${bootId})`);
+      if (isWildcardBindHost(host)) {
+        // Wildcard/network binds are the case people get wrong: they copy the
+        // bind address into a client URL and get 421'd by the guard above.
+        logger.info(`Local clients must connect to ${localGatewayUrl(host, port)} — not http://${host}:${port}`);
+      }
       resolve();
     });
   });
@@ -1152,6 +1283,45 @@ export async function startGateway(
   // here so the server is listening and gateway.json exists before any interactive
   // recovery turn spawns — so hook-relay.mjs can deliver its Stop hook.
   resumePendingWebQueueItems(apiContext);
+
+  // Workflow engine start, deferred to gateway readiness: constructing the
+  // service arms schedule triggers and its wake timer, and both recovery paths
+  // below can spawn engine turns — including interactive PTY turns whose Stop
+  // hook needs the gateway listening and gateway.json written (same reason
+  // resumePendingWebQueueItems above is deferred). The employee provider must
+  // be wired before the first dispatch, and recover() must see the
+  // redispatched sessions, so the order inside this block matters.
+  if (currentConfig.workflows?.enabled) {
+    sessionManager.setEmployeeProvider((id) => employeeRegistry.get(id));
+    const workflowDatabase = openWorkflowDatabase();
+    const workflowRepository = new WorkflowRepository(workflowDatabase);
+    apiContext.workflowDatabase = workflowDatabase;
+    apiContext.workflowRepository = workflowRepository;
+    workflowService = new WorkflowService({
+      repository: workflowRepository,
+      executor: new WorkflowSessionExecutor(sessionManager, (id) => {
+        const session = getSession(id);
+        if (!session) return null;
+        const finalText = [...getMessages(id)].reverse().find((message) => message.role === "assistant")?.content;
+        return { session, ...(finalText ? { finalText } : {}) };
+      }),
+      employees: () => employeeRegistry,
+      models: () => getModelRegistry(currentConfig),
+      engineFallback: { chainFor: (engine) => (currentConfig.engines as unknown as Record<string, { fallback?: string[] } | undefined>)[engine]?.fallback ?? [] },
+      sessionSpend: (sessionIds) => sessionIds.reduce((sum, id) => sum + (getSession(id)?.totalCost ?? 0), 0),
+      readTranscript: (id) => getMessages(id).map(({ id: messageId, role, content, timestamp }) => ({ id: messageId, role, content, timestamp })),
+      onChange: ({ workflowId, runId }) => emit("workflow:changed", { entity: "workflow-run", workflowId, runId }),
+      onDefinitionChange: ({ workflowId, revision }) => emit("workflow:changed", { entity: "workflow-definition", id: workflowId, revision }),
+    });
+    apiContext.workflowService = workflowService;
+    logger.info("Workflow engine enabled (config.workflows.enabled)");
+    sessionManager.redispatchPendingWorkflowAttempts();
+    try {
+      await workflowService.recover(new Date().toISOString());
+    } catch (error) {
+      logger.error(`Workflow recovery failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
 
   // Notify connected WebSocket clients about interrupted sessions available for resume
   if (resumable.length > 0) {
@@ -1197,8 +1367,19 @@ export async function startGateway(
 
     // Mark all running sessions as "interrupted" before killing engine processes.
     // This preserves their engine_session_id so they can be resumed on next startup.
+    // Workflow attempts get the SAME sweep the next boot would run: it cancels
+    // their internal queue rows and stamps the durable `gateway-restart`
+    // receipt in one transaction. A plain interrupt receipt would classify as
+    // `attempt-stop` on the next boot (workflowAttemptInterruptionCause's
+    // fallback) — an operator stop, which is not retryable — and a graceful
+    // shutdown would fail the runs it merely paused.
+    const stoppedWorkflowAttempts = recoverStaleWorkflowAttemptSessions();
+    if (stoppedWorkflowAttempts > 0) {
+      logger.info(`Marked ${stoppedWorkflowAttempts} workflow attempt(s) with gateway-restart receipts for replacement on next boot`);
+    }
     const runningSessions = listSessions({ status: "running" });
     for (const session of runningSessions) {
+      if (session.workflowProvenance?.kind === "phase") continue; // handled by the sweep above
       updateSession(session.id, {
         status: "interrupted",
         lastActivity: new Date().toISOString(),
@@ -1213,12 +1394,16 @@ export async function startGateway(
     if (interactiveClaudeEngine) {
       interactiveClaudeEngine.killAll();
       claudeLifecycle?.dispose();
+      try { stopStatusReconciler(); } catch { /* best effort */ }
       try { hookRegistry?.dispose(); } catch { /* best effort */ }
       try { fs.rmSync(GATEWAY_INFO_FILE, { force: true }); } catch { /* best effort */ }
     } else {
       claudeEngine.killAll();
     }
     codexEngine.killAll();
+
+    // Stop workflow triggers/runner before cron
+    try { workflowService?.dispose(); } catch { /* best effort */ }
 
     // Stop cron scheduler
     stopScheduler();

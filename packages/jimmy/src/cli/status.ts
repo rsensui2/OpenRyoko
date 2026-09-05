@@ -1,7 +1,9 @@
 import { getStatus } from "../gateway/lifecycle.js";
 import { loadConfig } from "../shared/config.js";
+import { gatewayUrlFromConfig } from "../shared/gateway-url.js";
 import { JINN_HOME, PID_FILE } from "../shared/paths.js";
 import fs from "node:fs";
+import { readGatewayAuthToken } from "../gateway/auth.js";
 
 export async function runStatus(): Promise<void> {
   if (!fs.existsSync(JINN_HOME)) {
@@ -38,8 +40,12 @@ export async function runStatus(): Promise<void> {
   // ゲートウェイからライブ統計を取得
   try {
     const config = loadConfig();
-    const url = `http://${config.gateway.host}:${config.gateway.port}/api/status`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
+    const url = `${gatewayUrlFromConfig(config)}/api/status`;
+    const token = readGatewayAuthToken(JINN_HOME);
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(3000),
+      headers: token ? { authorization: `Bearer ${token}` } : undefined,
+    });
     if (res.ok) {
       const data = await res.json();
       console.log(`  ポート: ${config.gateway.port}`);
@@ -57,12 +63,20 @@ export async function runStatus(): Promise<void> {
       if (data.uptime !== undefined) {
         console.log(`  サーバー稼働時間: ${data.uptime}秒`);
       }
+    } else {
+      let detail = "";
+      try {
+        const payload = await res.json() as { error?: unknown; hint?: unknown };
+        const message = typeof payload.hint === "string" ? payload.hint : payload.error;
+        if (typeof message === "string") detail = `: ${message}`;
+      } catch { /* non-JSON error body */ }
+      console.log(`  ポート: ${config.gateway.port}（HTTP ${res.status}${detail}）`);
     }
-  } catch {
-    // HTTPに応答しない場合はスキップ
+  } catch (error) {
     try {
       const config = loadConfig();
-      console.log(`  ポート: ${config.gateway.port}（HTTPに応答なし）`);
+      const reason = error instanceof Error ? `: ${error.message}` : "";
+      console.log(`  ポート: ${config.gateway.port}（HTTPに応答なし${reason}）`);
     } catch {
       // no config
     }

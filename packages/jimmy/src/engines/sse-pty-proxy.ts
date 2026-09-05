@@ -3,11 +3,11 @@ import https from "node:https";
 import { createHash } from "node:crypto";
 import { logger } from "../shared/logger.js";
 
-/** Shared keep-alive agent so concurrent turns (and sub-agent fan-out) reuse a
- *  small TLS socket pool instead of opening a fresh handshake per request — the
- *  per-request TLS churn was the likely source of intermittent "bad record mac"
- *  errors under sub-agent concurrency. */
-const upstreamAgent = new https.Agent({ keepAlive: true, maxSockets: 64 });
+const MAX_UPSTREAM_ATTEMPTS = 3;
+
+function retryBackoffMs(attempt: number): number {
+  return attempt === 0 ? 100 : 300;
+}
 
 /** Kill an upstream connection that goes silent this long (no bytes). Generous so
  *  long extended-thinking pauses and slow first-token never trip it; only a truly
@@ -131,11 +131,18 @@ export class SsePtyProxy {
   /** Fingerprint of the top-level (main) agent's system prompt, captured from the
    *  first classifiable request. Streams whose system prompt differs are sub-agents. */
   private mainSystemFp: string | null = null;
+  /** Upstream requests currently streaming through this proxy. Non-zero means the
+   *  claude behind this PTY is mid-API-call (main agent OR a sub-agent). */
+  private inflightCount = 0;
+  /** Epoch ms of the most recent upstream activity (request start, response
+   *  bytes, or completion). 0 until the first request. */
+  private lastUpstreamActivityAt = 0;
 
   private readonly requestFn: UpstreamRequestFn;
   private readonly upstreamHost: string;
   private readonly upstreamPort: number;
   private readonly primaryAgent: https.Agent | http.Agent | false;
+  private readonly ownsPool: boolean;
 
   constructor(
     private readonly label: string,
@@ -145,7 +152,8 @@ export class SsePtyProxy {
     this.requestFn = opts.requestFn ?? https.request;
     this.upstreamHost = opts.upstream?.hostname ?? "api.anthropic.com";
     this.upstreamPort = opts.upstream?.port ?? 443;
-    this.primaryAgent = opts.primaryAgent ?? upstreamAgent;
+    this.ownsPool = opts.primaryAgent === undefined;
+    this.primaryAgent = opts.primaryAgent ?? new https.Agent({ keepAlive: true, maxSockets: 64 });
     this.server = http.createServer((req, res) => this.handle(req, res));
     // node http servers throw on unhandled 'clientError'; swallow so a flaky
     // client socket can never crash the daemon.
@@ -172,6 +180,23 @@ export class SsePtyProxy {
   /** Tear down the proxy. Safe to call multiple times. */
   stop(): void {
     try { this.server.close(); } catch { /* already closed */ }
+    if (this.ownsPool && this.primaryAgent !== false) this.primaryAgent.destroy();
+  }
+
+  /** True while the claude behind this PTY is demonstrably working: an upstream
+   *  request is in flight, or one finished within `recentMs`. Used by the PTY
+   *  lifecycle so the keep-warm reaper never kills a PTY mid-background-work
+   *  (tool executions between API calls produce short gaps — `recentMs` bridges
+   *  them). */
+  isBusy(recentMs: number): boolean {
+    if (this.inflightCount > 0) return true;
+    return this.lastUpstreamActivityAt > 0 && Date.now() - this.lastUpstreamActivityAt < recentMs;
+  }
+
+  /** Strictly in-flight (no recency window): an upstream request is streaming
+   *  through this proxy right now. */
+  hasInflight(): boolean {
+    return this.inflightCount > 0;
   }
 
   private handle(req: http.IncomingMessage, res: http.ServerResponse): void {
@@ -179,6 +204,8 @@ export class SsePtyProxy {
     // Holder (not a plain `let`) so the req-close handler always destroys the
     // CURRENT in-flight upstream even after a retry swapped it out.
     const inflight: { current?: http.ClientRequest } = {};
+    // True from req 'end' (in-flight count incremented) until res 'close'.
+    let counted = false;
     req.on("data", (c: Buffer) => chunks.push(c));
     req.on("error", () => { try { res.destroy(); } catch { /* ignore */ } });
     // Client (the claude CLI) hung up mid-turn — abort the in-flight upstream so
@@ -190,8 +217,18 @@ export class SsePtyProxy {
     // "client went away before we finished" signal.
     res.on("close", () => {
       if (!res.writableFinished) { try { inflight.current?.destroy(); } catch { /* ignore */ } }
+      // 'close' fires exactly once per response (finished or aborted) — the
+      // symmetric end of the in-flight window opened at req 'end'.
+      if (counted) {
+        counted = false;
+        this.inflightCount = Math.max(0, this.inflightCount - 1);
+        this.lastUpstreamActivityAt = Date.now();
+      }
     });
     req.on("end", () => {
+      counted = true;
+      this.inflightCount += 1;
+      this.lastUpstreamActivityAt = Date.now();
       const body = Buffer.concat(chunks);
       // Classify once per request: main agent (untagged) vs Task sub-agent (tagged
       // with a stable id so the chat pane routes it into a card). Decided from the
@@ -207,11 +244,9 @@ export class SsePtyProxy {
   }
 
   /** Forward one buffered request upstream and stream the response back. On a
-   *  "stale pooled socket" error before any response bytes, retry ONCE on a
-   *  guaranteed-fresh socket (agent:false) — the keep-alive pool occasionally
-   *  hands us a connection the server already half-closed, which surfaced to the
-   *  CLI as a bare `502`. Anything else (or any error after streaming started)
-   *  ends as 502 exactly as before. */
+   *  "stale pooled socket" error before any response bytes, retry on a
+   *  guaranteed-fresh socket (agent:false). A short backoff avoids landing every
+   *  retry in the same transient reset burst. */
   private sendUpstream(
     req: http.IncomingMessage,
     res: http.ServerResponse,
@@ -221,8 +256,7 @@ export class SsePtyProxy {
     inflight: { current?: http.ClientRequest },
     attempt: number,
   ): void {
-    // First try over the shared keep-alive pool; the retry forces a brand-new
-    // socket so we can't be handed the same dead one again.
+    // First try over this PTY's pool; retries force brand-new sockets.
     const agent = attempt === 0 ? this.primaryAgent : false;
     const upstream = this.requestFn(
       {
@@ -234,10 +268,15 @@ export class SsePtyProxy {
         agent,
       },
       (uRes) => {
+        if (inflight.current !== upstream || res.destroyed) {
+          uRes.resume();
+          return;
+        }
         res.writeHead(uRes.statusCode || 502, uRes.headers);
         const isSSE = String(uRes.headers["content-type"] || "").includes("text/event-stream");
         let sseBuf = "";
         uRes.on("data", (chunk: Buffer) => {
+          this.lastUpstreamActivityAt = Date.now();
           // Forward UNCHANGED to the client first (never let parsing affect the stream).
           try { res.write(chunk); } catch { /* client gone */ }
           if (isSSE) sseBuf = this.parseSse(sseBuf + chunk.toString("utf-8"), ctx);
@@ -247,12 +286,17 @@ export class SsePtyProxy {
       },
     );
     inflight.current = upstream;
+    let terminal = false;
     upstream.on("error", (err: NodeJS.ErrnoException) => {
-      // Retry only a connection that died before we committed any response, and
-      // only once — a fresh socket can't fix a genuinely-down upstream.
-      if (attempt === 0 && !res.headersSent && isRetriableUpstreamError(err)) {
-        logger.warn(`SsePtyProxy[${this.label}] upstream ${err.message} — retrying on fresh socket`);
-        this.sendUpstream(req, res, body, ctx, headers, inflight, attempt + 1);
+      if (terminal || inflight.current !== upstream || res.destroyed) return;
+      terminal = true;
+      if (attempt + 1 < MAX_UPSTREAM_ATTEMPTS && !res.headersSent && isRetriableUpstreamError(err)) {
+        logger.warn(`SsePtyProxy[${this.label}] upstream ${err.message} — retrying on fresh socket (attempt ${attempt + 2}/${MAX_UPSTREAM_ATTEMPTS})`);
+        const timer = setTimeout(() => {
+          if (inflight.current !== upstream || res.destroyed || res.headersSent) return;
+          this.sendUpstream(req, res, body, ctx, headers, inflight, attempt + 1);
+        }, retryBackoffMs(attempt));
+        timer.unref?.();
         return;
       }
       logger.warn(`SsePtyProxy[${this.label}] upstream error: ${err.message}`);

@@ -1,4 +1,14 @@
 import type { EngineResult } from "./types.js";
+import { classifyEngineFailureText, hasEngineFailureClass } from "./engine-failure.js";
+
+/** Whether error text reads as a quota window rather than a fault. Engine
+ *  results are one caller; a settled attempt's stored error is the other, and
+ *  both have to reach the same verdict or the same outage reads two ways.
+ *
+ *  Throttling and allowance are one verdict here: the caller waits either way. */
+export function isRateLimitMessage(text: string | null | undefined): boolean {
+  return hasEngineFailureClass(classifyEngineFailureText(text), "rate-limit", "quota");
+}
 
 const RATE_LIMIT_ERROR_RE =
   /rate.?limit|too many requests|429|overloaded|usage.*limit|exceeded.*limit|out of extra usage/i;
@@ -70,6 +80,23 @@ export function isDeadSessionError(result: EngineResult): boolean {
   if (zeroCost && DEAD_SESSION_PATTERNS.some((p) => p.test(result.error!))) return true;
 
   return false;
+}
+
+/**
+ * Transient upstream failure: the interactive engine's Stop hook reported
+ * `server_error` — Anthropic returned 5xx/529 and the CLI exhausted its own
+ * in-process retries (~minutes). Unlike a rate limit there is no reset time and
+ * unlike a dead session the conversation history is intact, so the correct
+ * recovery is to wait briefly and re-drive the SAME engine session with a
+ * continuation prompt. Scoped narrowly to the interactive marker so headless
+ * engine error handling is unchanged.
+ */
+const TRANSIENT_SERVER_ERROR_RE = /Interactive turn failed: server_error/i;
+
+export function isTransientServerError(result: EngineResult): boolean {
+  if (!result.error) return false;
+  if (result.rateLimit?.status) return false;
+  return TRANSIENT_SERVER_ERROR_RE.test(result.error);
 }
 
 export function detectRateLimit(result: EngineResult): RateLimitDetection {

@@ -27,41 +27,112 @@ export interface SkillManifestEntry {
   installedAt: string;
 }
 
-export function readManifest(): SkillManifestEntry[] {
-  if (!fs.existsSync(SKILLS_JSON)) return [];
+/** skills.json is written freely by the agent (see find-and-install), so
+ *  `source` is untrusted input that later reaches `npx skills add`. Only
+ *  accept the "owner/repo" / "owner/repo@skill" shapes — each segment must
+ *  start alphanumeric, so `./x`, `../x`, and `.hidden/x` (local-path forms
+ *  the skills CLI would resolve) are rejected. */
+const SOURCE_RE = /^[A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*(@[\w.-]+)?$/;
+
+/** POSIX spawns npx directly (argv is never shell-parsed — that is the
+ *  injection boundary for agent-written sources). Windows needs a shell to
+ *  resolve npx.cmd; safe there because every source is SOURCE_RE-validated. */
+const NPX_SPAWN_OPTS = process.platform === "win32" ? { shell: true as const } : {};
+
+function sanitizeSource(v: unknown): string {
+  return typeof v === "string" && SOURCE_RE.test(v) ? v : "";
+}
+
+export function isValidSource(pkg: string): boolean {
+  return SOURCE_RE.test(pkg);
+}
+
+/** Free-text search terms may still cross the win32 shell:true path — strip
+ *  anything cmd.exe could reinterpret. Harmless for search relevance. */
+export function sanitizeFindQuery(query: string): string {
+  // \p{L}\p{N} keeps every script (Japanese queries included) while still
+  // stripping shell metacharacters for the win32 shell:true path.
+  return query.replace(/[^\p{L}\p{N}_ .@/-]+/gu, " ").replace(/\s+/g, " ").trim();
+}
+
+interface RawManifest {
+  installed: Record<string, Record<string, unknown>>;
+  [key: string]: unknown;
+}
+
+/** Canonical skills.json shape — must match template/skills.json and the
+ *  find-and-install skill, which write `{"installed": {<name>: {...}}}`.
+ *  The legacy flat-array form is still accepted on read. Fields this CLI
+ *  doesn't know about (per entry or top-level) are preserved on write. */
+function readRawManifest(): RawManifest {
+  if (!fs.existsSync(SKILLS_JSON)) return { installed: {} };
   try {
-    return JSON.parse(fs.readFileSync(SKILLS_JSON, "utf-8"));
+    const parsed = JSON.parse(fs.readFileSync(SKILLS_JSON, "utf-8"));
+    if (Array.isArray(parsed)) {
+      const installed = Object.fromEntries(
+        parsed
+          .filter((e) => !!e && typeof e.name === "string")
+          .map(({ name, ...rest }) => [name, rest as Record<string, unknown>]),
+      );
+      return { installed };
+    }
+    if (
+      parsed && typeof parsed === "object" &&
+      parsed.installed && typeof parsed.installed === "object" &&
+      !Array.isArray(parsed.installed)
+    ) {
+      return parsed as RawManifest;
+    }
+    return { installed: {} };
   } catch {
-    return [];
+    return { installed: {} };
   }
 }
 
+function writeRawManifest(raw: RawManifest): void {
+  fs.writeFileSync(SKILLS_JSON, JSON.stringify(raw, null, 2) + "\n");
+}
+
+export function readManifest(): SkillManifestEntry[] {
+  return Object.entries(readRawManifest().installed).map(([name, meta]) => {
+    const m = (meta ?? {}) as Record<string, unknown>;
+    return {
+      name,
+      source: sanitizeSource(m.source),
+      installedAt: typeof m.installedAt === "string" ? m.installedAt : "",
+    };
+  });
+}
+
+/** Full replace in canonical form. Prefer upsertManifest/removeFromManifest,
+ *  which preserve fields other writers may have added. */
 export function writeManifest(entries: SkillManifestEntry[]): void {
-  fs.writeFileSync(SKILLS_JSON, JSON.stringify(entries, null, 2) + "\n");
+  const installed = Object.fromEntries(
+    entries.map((e) => [e.name, { source: e.source, installedAt: e.installedAt }]),
+  );
+  writeRawManifest({ installed });
 }
 
 export function upsertManifest(name: string, source: string): void {
-  const manifest = readManifest();
-  const idx = manifest.findIndex((e) => e.name === name);
-  const entry: SkillManifestEntry = {
-    name,
-    source,
-    installedAt: new Date().toISOString(),
-  };
-  if (idx >= 0) {
-    manifest[idx] = entry;
-  } else {
-    manifest.push(entry);
-  }
-  writeManifest(manifest);
+  const raw = readRawManifest();
+  writeRawManifest({
+    ...raw,
+    installed: {
+      ...raw.installed,
+      [name]: {
+        ...(raw.installed[name] ?? {}),
+        source,
+        installedAt: new Date().toISOString(),
+      },
+    },
+  });
 }
 
 export function removeFromManifest(name: string): boolean {
-  const manifest = readManifest();
-  const idx = manifest.findIndex((e) => e.name === name);
-  if (idx < 0) return false;
-  manifest.splice(idx, 1);
-  writeManifest(manifest);
+  const raw = readRawManifest();
+  if (!(name in raw.installed)) return false;
+  const { [name]: _removed, ...rest } = raw.installed;
+  writeRawManifest({ ...raw, installed: rest });
   return true;
 }
 
@@ -142,15 +213,21 @@ function copyDirRecursive(src: string, dest: string): void {
 
 export function skillsFind(query?: string): void {
   const args = ["skills", "find"];
-  if (query) args.push(query);
+  const cleaned = query ? sanitizeFindQuery(query) : "";
+  if (cleaned) args.push(cleaned);
   const result = spawnSync("npx", args, {
     stdio: "inherit",
-    shell: true,
+    ...NPX_SPAWN_OPTS,
   });
   process.exitCode = result.status ?? 1;
 }
 
 export function skillsAdd(pkg: string): void {
+  if (!isValidSource(pkg)) {
+    console.error(`${RED}source は owner/repo または owner/repo@skill 形式で指定してください: ${pkg}${RESET}`);
+    process.exitCode = 1;
+    return;
+  }
   console.log(`\nスキルをインストール中: ${pkg}\n`);
 
   // Snapshot before
@@ -159,7 +236,7 @@ export function skillsAdd(pkg: string): void {
   // Run npx skills add
   const result = spawnSync("npx", ["skills", "add", pkg, "-g", "-y"], {
     stdio: "inherit",
-    shell: true,
+    ...NPX_SPAWN_OPTS,
   });
 
   if (result.status !== 0) {
@@ -251,11 +328,15 @@ export function skillsUpdate(): void {
 
   console.log(`\n${manifest.length} 件のスキルを更新中...\n`);
   for (const entry of manifest) {
+    if (!entry.source) {
+      console.log(`  ${YELLOW}${entry.name}: source が不正または未記録のためスキップ${RESET}`);
+      continue;
+    }
     console.log(`  ${entry.name} を ${entry.source} から更新中...`);
     const before = snapshotDirs();
     const result = spawnSync("npx", ["skills", "add", entry.source, "-g", "-y"], {
       stdio: "pipe",
-      shell: true,
+      ...NPX_SPAWN_OPTS,
     });
 
     if (result.status !== 0) {
@@ -294,11 +375,15 @@ export function skillsRestore(): void {
       continue;
     }
 
+    if (!entry.source) {
+      console.log(`  ${YELLOW}${entry.name}: source が不正または未記録のためスキップ${RESET}`);
+      continue;
+    }
     console.log(`  Installing ${entry.name} from ${entry.source}...`);
     const before = snapshotDirs();
     const result = spawnSync("npx", ["skills", "add", entry.source, "-g", "-y"], {
       stdio: "pipe",
-      shell: true,
+      ...NPX_SPAWN_OPTS,
     });
 
     if (result.status !== 0) {

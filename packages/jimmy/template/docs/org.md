@@ -4,7 +4,7 @@
 
 ## Employee Personas
 
-Employee files live at `~/.jinn/org/<department>/<name>.yaml`.
+Employee files live at `~/.ryoko/org/<department>/<name>.yaml`.
 
 ```yaml
 name: alice
@@ -33,10 +33,10 @@ persona: |
 
 ## Departments
 
-Each department is a directory under `~/.jinn/org/` containing:
+Each department is a directory under `~/.ryoko/org/` containing:
 
 ```
-~/.jinn/org/engineering/
+~/.ryoko/org/engineering/
   department.yaml     # Department metadata
   board.json          # Shared task board
   alice.yaml          # Employee persona
@@ -90,16 +90,22 @@ Task fields: `id`, `title`, `assignee`, `status` (open, in-progress, done, block
 
 ## Default Organization
 
-{{portalName}} ships with a single executive employee:
+`org/` starts empty. {{portalName}} itself is the executive (COO) and is not
+defined as an org employee — employees are the workers {{portalName}} delegates to.
+
+The onboarding skill proposes a starter scaffold matched to the user's profile
+(e.g. an `engineering/` department with a `dev-assistant` employee for a solo
+developer), and the management skill handles hiring from there. An employee
+file looks like:
 
 ```yaml
-name: {{portalSlug}}
-displayName: {{portalName}}
-department: executive
-rank: executive
+name: dev-assistant
+displayName: Dev Assistant
+department: engineering
+rank: employee
 engine: claude
-model: opus
+model: claude-opus-5
 persona: |
-  You are {{portalName}}, the executive AI assistant and gateway administrator.
-  You manage the organization, delegate tasks, and handle direct requests.
+  You are a careful software engineer. You implement tasks assigned by
+  {{portalName}}, report progress on the board, and escalate blockers.
 ```

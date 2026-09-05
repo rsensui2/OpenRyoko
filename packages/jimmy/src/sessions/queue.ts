@@ -1,4 +1,4 @@
-import { markQueueItemRunning, markQueueItemCompleted } from "./registry.js";
+import { getQueueItem, markQueueItemRunning, markQueueItemCompleted } from "./registry.js";
 
 export class SessionQueue {
   private queues = new Map<string, Promise<void>>();
@@ -75,7 +75,7 @@ export class SessionQueue {
   /**
    * Enqueue a task for a session. Tasks are serialized per session key.
    */
-  async enqueue(sessionKey: string, fn: () => Promise<void>, queueItemId?: string): Promise<void> {
+  async enqueue(sessionKey: string, fn: () => Promise<void>, queueItemId?: string, claimed = false): Promise<void> {
     this.pending.set(sessionKey, (this.pending.get(sessionKey) || 0) + 1);
     // Snapshot the cancellation generation at enqueue time. A later clearQueue()
     // bumps it and skips this task; tasks enqueued after that clearQueue capture the
@@ -84,17 +84,30 @@ export class SessionQueue {
     const prev = this.queues.get(sessionKey) || Promise.resolve();
     const runTask = async () => {
       this.running.add(sessionKey);
+      let queueItemStarted = false;
       try {
         // Wait while paused (500ms poll)
         while (this.paused.has(sessionKey)) {
           await new Promise(resolve => setTimeout(resolve, 500));
         }
-        if (queueItemId) markQueueItemRunning(queueItemId);
+        // pending→running is a CAS: only the winner runs the prompt, so two
+        // dispatchers holding the same durable row id can never both execute
+        // it. A `claimed` caller already holds the row as 'running' (a boot
+        // redispatch of a row recoverStaleQueueItems put back) and only
+        // verifies it is still theirs.
+        if (queueItemId) {
+          const item = getQueueItem(queueItemId);
+          if (!item || (claimed ? item.status !== "running" && !markQueueItemRunning(queueItemId)
+            : item.status !== "pending" || !markQueueItemRunning(queueItemId))) return;
+          queueItemStarted = true;
+        }
         if ((this.cancelGeneration.get(sessionKey) ?? 0) === taskGeneration) {
           await fn();
         }
-        if (queueItemId) markQueueItemCompleted(queueItemId);
       } finally {
+        // Mark the DB row done in finally so an errored/cancelled task can't
+        // leave the item stuck as 'running'.
+        if (queueItemId && queueItemStarted) markQueueItemCompleted(queueItemId);
         this.running.delete(sessionKey);
         this.decrementPending(sessionKey);
       }

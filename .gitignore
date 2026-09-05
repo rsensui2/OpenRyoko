@@ -1,4 +1,4 @@
-node_modules/
+node_modules
 dist/
 .next/
 .turbo/
@@ -11,3 +11,6 @@ dist/
 
 # Jinn runtime dir (safety: never commit tokens)
 .jinn/
+/docs
+# npm pack artifacts
+*.tgz

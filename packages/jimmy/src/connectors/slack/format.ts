@@ -4,6 +4,80 @@ import { randomUUID } from "node:crypto";
 
 const SLACK_MAX_LENGTH = 3000;
 
+export interface SlackFileLike {
+  id?: string;
+  name?: string;
+  title?: string;
+  mimetype?: string;
+  file_access?: string;
+  url_private?: string;
+  url_private_download?: string;
+}
+
+export interface ResolvedSlackFileAttachment {
+  id?: string;
+  name: string;
+  mimeType: string;
+  url: string;
+}
+
+type FilesInfo = (args: { file: string }) => Promise<{
+  ok?: boolean;
+  error?: string;
+  file?: SlackFileLike;
+}>;
+
+/**
+ * Slack Events API may send an ID-only file object with
+ * `file_access: "check_file_info"`. Hydrate those events before downloading.
+ */
+export async function resolveSlackFileAttachment(
+  eventFile: SlackFileLike,
+  filesInfo: FilesInfo,
+): Promise<ResolvedSlackFileAttachment> {
+  let file = eventFile;
+  let url = file.url_private_download || file.url_private;
+
+  if (!url) {
+    if (!file.id) {
+      throw new Error("Slack attachment has neither a download URL nor a file ID");
+    }
+
+    const result = await filesInfo({ file: file.id });
+    if (!result.file) {
+      const detail = result.error ? `: ${result.error}` : "";
+      throw new Error(`Slack files.info returned no metadata for ${file.id}${detail}`);
+    }
+
+    file = { ...eventFile, ...result.file };
+    url = file.url_private_download || file.url_private;
+    if (!url) {
+      throw new Error(`Slack file ${file.id} has no private download URL after files.info`);
+    }
+  }
+
+  return {
+    id: file.id,
+    name: file.name || file.title || file.id || "slack-attachment",
+    mimeType: file.mimetype || "application/octet-stream",
+    url,
+  };
+}
+
+/**
+ * Keep attachment failures visible to the engine. Silently dropping a file can
+ * make a content-dependent task continue with invented or unrelated input.
+ */
+export function formatAttachmentFailureNotice(failedAttachments: string[]): string {
+  if (failedAttachments.length === 0) return "";
+
+  return (
+    "\n\n[System attachment notice: The following Slack attachment(s) could not be retrieved: " +
+    `${failedAttachments.join(", ")}. Do not infer or substitute their contents. ` +
+    "Explain that the attachment could not be read before doing any content-dependent work.]"
+  );
+}
+
 /**
  * Convert standard markdown to Slack mrkdwn format.
  * Handles headings, bold, strikethrough, links, and bullet lists.

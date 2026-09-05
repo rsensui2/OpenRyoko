@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import http from "node:http";
 import { AddressInfo } from "node:net";
 import { SsePtyProxy } from "../sse-pty-proxy.js";
@@ -6,7 +6,8 @@ import { SsePtyProxy } from "../sse-pty-proxy.js";
 // These tests target the "stale pooled socket" failure mode: the keep-alive pool
 // occasionally hands the proxy a connection the server already half-closed, which
 // errors with ECONNRESET / "socket hang up" before any response — and surfaced to
-// the CLI as a bare 502. The proxy must retry ONCE on a fresh socket.
+// the CLI as a bare 502. The proxy retries transient pre-response failures on
+// fresh sockets with a bounded attempt count.
 
 interface Upstream {
   port: number;
@@ -91,7 +92,7 @@ describe("SsePtyProxy upstream retry (stale keep-alive socket → 502 fix)", () 
     expect(upstream.attempts()).toBe(2); // one failed attempt + one retry
   });
 
-  it("retries at most once — a persistently dead upstream ends as 502, not an infinite loop", async () => {
+  it("retries at most three total attempts — a persistently dead upstream ends as 502", async () => {
     const upstream = await startUpstream((_n, _req, res) => {
       res.socket?.destroy(); // every attempt resets
     });
@@ -102,7 +103,7 @@ describe("SsePtyProxy upstream retry (stale keep-alive socket → 502 fix)", () 
     const out = await callProxy(port);
 
     expect(out.status).toBe(502);
-    expect(upstream.attempts()).toBe(2); // original + exactly one retry
+    expect(upstream.attempts()).toBe(3); // original + two bounded retries
   });
 
   it("does NOT retry a real HTTP error response — 500 is forwarded unchanged", async () => {
@@ -119,5 +120,14 @@ describe("SsePtyProxy upstream retry (stale keep-alive socket → 502 fix)", () 
     expect(out.status).toBe(500);
     expect(out.body).toBe('{"error":"boom"}');
     expect(upstream.attempts()).toBe(1); // forwarded, never retried
+  });
+
+  it("destroys the keep-alive pool owned by a PTY when the proxy stops", () => {
+    const proxy = new SsePtyProxy("pool-cleanup", () => {});
+    proxies.push(proxy);
+    const pool = (proxy as any).primaryAgent;
+    const destroy = vi.spyOn(pool, "destroy");
+    proxy.stop();
+    expect(destroy).toHaveBeenCalledOnce();
   });
 });

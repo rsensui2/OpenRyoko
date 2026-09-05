@@ -3,10 +3,12 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
+import type { ClaudeUsageResponse } from "@/lib/api";
 import { useGateway } from "@/hooks/use-gateway";
 import { useSettings } from "@/app/settings-provider";
 import { PageLayout } from "@/components/page-layout";
 import { useBreadcrumbs } from "@/context/breadcrumb-context";
+import { UpdateNotice } from "@/components/update-notice";
 import {
   Card,
   CardHeader,
@@ -25,6 +27,7 @@ import {
   Timer,
   DollarSign,
   Activity,
+  Gauge,
 } from "lucide-react";
 
 interface StatusData {
@@ -96,6 +99,7 @@ export default function DashboardPage() {
   const portalName = settings.portalName ?? "Ryoko";
   const [status, setStatus] = useState<StatusData | null>(null);
   const [cronCount, setCronCount] = useState<number | null>(null);
+  const [claudeUsage, setClaudeUsage] = useState<ClaudeUsageResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [initialActivity, setInitialActivity] = useState<Array<{ event: string; payload: unknown }>>([]);
   const { events, connected } = useGateway();
@@ -120,6 +124,8 @@ export default function DashboardPage() {
       .getCronJobs()
       .then((data) => setCronCount(data.length))
       .catch(() => {});
+
+    api.getClaudeUsage().then(setClaudeUsage).catch(() => {});
 
     // Load initial activity from recent sessions
     api
@@ -151,6 +157,8 @@ export default function DashboardPage() {
             Gateway overview and live activity
           </p>
         </div>
+
+        <UpdateNotice />
 
         {error && (
           <div
@@ -258,6 +266,37 @@ export default function DashboardPage() {
             </CardContent>
           </Card>
         </div>
+
+        {claudeUsage?.available && claudeUsage.windows.length > 0 && (
+          <div className="mb-[var(--space-6)]">
+            <div className="flex items-center gap-2 mb-[var(--space-3)]">
+              <Gauge size={17} className="text-[var(--accent)]" />
+              <h3 className="text-[length:var(--text-body)] font-[var(--weight-semibold)] text-[var(--text-primary)]">
+                Claude usage limits
+              </h3>
+            </div>
+            <div className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-[var(--space-3)]">
+              {claudeUsage.windows.map((window) => (
+                <Card key={window.name} className="py-4">
+                  <CardContent>
+                    <div className="flex items-baseline justify-between gap-3 mb-2">
+                      <span className="text-[length:var(--text-body)] font-[var(--weight-semibold)] text-[var(--text-primary)]">{window.name}</span>
+                      <span className="text-[length:var(--text-title3)] font-[var(--weight-bold)] text-[var(--text-primary)]">{window.usedPercent}%</span>
+                    </div>
+                    <div className="h-2 overflow-hidden rounded-full bg-[var(--fill-secondary)]" role="progressbar" aria-label={`${window.name} Claude usage`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.min(100, Math.max(0, window.usedPercent))}>
+                      <div className="h-full rounded-full bg-[var(--accent)]" style={{ width: `${Math.min(100, Math.max(0, window.usedPercent))}%` }} />
+                    </div>
+                    {window.resetsAtIso && (
+                      <p className="mt-2 text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">
+                        Resets {new Date(window.resetsAtIso).toLocaleString()}
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Quick links */}
         <div className="mb-[var(--space-6)]">

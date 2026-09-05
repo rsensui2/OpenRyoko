@@ -24,6 +24,8 @@ import {
   readPortalName,
   buildTemplateReplacements,
 } from "../shared/templateReplacements.js";
+import { parseConfigPatch, applyPatchOps, type PatchOutcome } from "../shared/configPatch.js";
+import { auditGatewayReferences } from "./gateway-audit.js";
 
 const GREEN = "\x1b[32m";
 const YELLOW = "\x1b[33m";
@@ -80,6 +82,60 @@ function stampVersion(version: string): void {
 }
 
 /**
+ * Apply any `config-patch.json` shipped with the pending migrations to the
+ * instance config.yaml. Deterministic and idempotent — evolves shipped default
+ * values without clobbering values the user has customized (see configPatch.ts).
+ * Returns the number of keys actually changed. Logs each outcome.
+ */
+function applyConfigPatches(pending: string[]): number {
+  const patchFiles = pending
+    .map((version) => ({ version, file: path.join(MIGRATIONS_DIR, version, "config-patch.json") }))
+    .filter(({ file }) => fs.existsSync(file));
+
+  if (patchFiles.length === 0 || !fs.existsSync(CONFIG_PATH)) return 0;
+
+  let working: unknown;
+  try {
+    working = yaml.load(fs.readFileSync(CONFIG_PATH, "utf-8"));
+  } catch (err: any) {
+    console.log(`  ${RED}[config-patch: could not read config.yaml: ${err?.message ?? err}]${RESET}`);
+    return 0;
+  }
+
+  const allOutcomes: PatchOutcome[] = [];
+  for (const { version, file } of patchFiles) {
+    let ops;
+    try {
+      ops = parseConfigPatch(fs.readFileSync(file, "utf-8"));
+    } catch (err: any) {
+      console.log(`  ${RED}[config-patch ${version}: ${err?.message ?? err}]${RESET}`);
+      continue;
+    }
+    const { config: nextConfig, outcomes } = applyPatchOps(working, ops);
+    working = nextConfig;
+    allOutcomes.push(...outcomes);
+  }
+
+  const changed = allOutcomes.filter((o) => o.action === "set" || o.action === "insert").length;
+  if (changed > 0) {
+    fs.writeFileSync(CONFIG_PATH, yaml.dump(working, { lineWidth: -1 }), "utf-8");
+  }
+
+  for (const o of allOutcomes) {
+    if (o.action === "set") {
+      console.log(`  ${GREEN}[config]${RESET} ${o.path}: ${JSON.stringify(o.from)} → ${JSON.stringify(o.to)}`);
+    } else if (o.action === "insert") {
+      console.log(`  ${GREEN}[config]${RESET} ${o.path}: (added) ${JSON.stringify(o.to)}`);
+    } else if (o.action === "skip" && o.reason === "customized") {
+      console.log(`  ${YELLOW}[config skip]${RESET} ${o.path} (customized: ${JSON.stringify(o.current)})`);
+    }
+    // reason "already" → silent no-op
+  }
+
+  return changed;
+}
+
+/**
  * Build engine-specific CLI args for running a one-shot migration prompt.
  * Each engine CLI uses different flags for prompt input.
  */
@@ -95,11 +151,29 @@ function buildMigrateArgs(engine: string, prompt: string): string[] {
   }
 }
 
-export async function runMigrate(opts: { check?: boolean; auto?: boolean }): Promise<void> {
+export async function runMigrate(opts: { check?: boolean; auto?: boolean; fix?: boolean }): Promise<void> {
   // Ensure instance exists
   if (!fs.existsSync(JINN_HOME)) {
     console.error(`${RED}エラー:${RESET} ${JINN_HOME} が存在しません。"ryoko setup" を実行してください。`);
     process.exit(1);
+  }
+
+  const shouldFixGatewayUrls = opts.fix === true || opts.auto === true;
+  const gatewayAudit = auditGatewayReferences(JINN_HOME, { fix: shouldFixGatewayUrls });
+  if (gatewayAudit.legacyOccurrences > 0) {
+    if (shouldFixGatewayUrls) {
+      console.log(`${GREEN}[gateway URL]${RESET} ${gatewayAudit.legacyOccurrences}箇所 / ${gatewayAudit.fixedFiles.length}ファイルをloopback URLへ修正しました。`);
+      if (gatewayAudit.backupDir) console.log(`${DIM}バックアップ: ${gatewayAudit.backupDir}${RESET}`);
+    } else {
+      console.log(`${YELLOW}[gateway URL warning]${RESET} ${gatewayAudit.legacyOccurrences}箇所 / ${gatewayAudit.legacyFiles.length}ファイルに http://0.0.0.0 または http://[::] が残っています。`);
+      console.log(`${YELLOW}ryoko migrate --fix${RESET} でバックアップ後にloopback URLへ置換できます。`);
+    }
+  }
+  if (gatewayAudit.unauthenticatedCurlCandidates.length > 0) {
+    console.log(`${YELLOW}[gateway auth warning]${RESET} 認証なしで保護APIを呼ぶ可能性があるcurlを ${gatewayAudit.unauthenticatedCurlCandidates.length}ファイルで検出しました。`);
+    for (const file of gatewayAudit.unauthenticatedCurlCandidates.slice(0, 10)) console.log(`  - ${file}`);
+    if (gatewayAudit.unauthenticatedCurlCandidates.length > 10) console.log(`  ...ほか ${gatewayAudit.unauthenticatedCurlCandidates.length - 10}ファイル`);
+    console.log(`${YELLOW}直接curlする代わりに ryoko api METHOD /api/... を使用してください。${RESET}`);
   }
 
   const packageVersion = getPackageVersion();
@@ -272,8 +346,12 @@ async function applyAutoMigrations(
     }
   }
 
+  // Deterministic config.yaml value updates (respects user customizations).
+  // Idempotent, so it is safe to run even when files are skipped below.
+  const configChanges = applyConfigPatches(pending);
+
   if (skippedExisting > 0) {
-    console.log(`\n${YELLOW}Auto-migration partially applied.${RESET} ${applied} file(s) added, ${skippedExisting} existing file(s) need AI merge.`);
+    console.log(`\n${YELLOW}Auto-migration partially applied.${RESET} ${applied} file(s) added, ${configChanges} config value(s) updated, ${skippedExisting} existing file(s) need AI merge.`);
     console.log(`${YELLOW}Version was not updated.${RESET} Run ${RESET}ryoko migrate${YELLOW} (without --auto) to merge the skipped files and complete the migration.${RESET}`);
     console.log(`${DIM}Staged migration files remain in ${MIGRATIONS_DIR}.${RESET}\n`);
     return;
@@ -281,7 +359,7 @@ async function applyAutoMigrations(
 
   stampVersion(packageVersion);
   console.log(`\n  ${GREEN}[version]${RESET} ${instanceVersion} → ${packageVersion}`);
-  console.log(`\n${GREEN}Auto-migration complete.${RESET} ${applied} file(s) added.`);
+  console.log(`\n${GREEN}Auto-migration complete.${RESET} ${applied} file(s) added, ${configChanges} config value(s) updated.`);
 
   fs.rmSync(MIGRATIONS_DIR, { recursive: true, force: true });
 }

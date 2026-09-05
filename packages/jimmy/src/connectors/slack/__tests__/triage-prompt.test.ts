@@ -2,6 +2,10 @@ import { describe, it, expect } from "vitest";
 import {
   buildTriagePrompt,
   parseTriageDecision,
+  isShortAckCandidate,
+  isTaskContinuationCandidate,
+  shouldForceTaskContinuationReply,
+  shouldRunReactOnlyTriage,
   type TriagePromptInput,
 } from "../triage-prompt.js";
 
@@ -120,5 +124,105 @@ describe("parseTriageDecision", () => {
     const longReason = "x".repeat(500);
     const d = parseTriageDecision(`{"action":"silent","reason":"${longReason}"}`);
     expect(d?.reason?.length).toBeLessThanOrEqual(120);
+  });
+});
+
+describe("dmEquivalent mode (short-ack exception)", () => {
+  it("switches to 1:1 react-vs-reply rules and forbids silent", () => {
+    const prompt = buildTriagePrompt(baseInput({ dmEquivalent: true, messageText: "ありがとう" }));
+    expect(prompt).toContain("Established 1:1 conversation: YES");
+    expect(prompt).toContain('NEVER choose "silent"');
+    expect(prompt).toContain("go-ahead");
+    // The ambient-mode principles must be gone — they contradict 1:1 mode.
+    expect(prompt).not.toContain('CONSERVATIVE with "reply"');
+  });
+
+  it("keeps the ambient rules when dmEquivalent is not set", () => {
+    const prompt = buildTriagePrompt(baseInput());
+    expect(prompt).toContain('CONSERVATIVE with "reply"');
+    expect(prompt).not.toContain("Established 1:1 conversation");
+  });
+
+  it("prioritizes task continuation over ambient reactions", () => {
+    const prompt = buildTriagePrompt(baseInput());
+    const continuationRule = prompt.indexOf("approves, authorizes, or continues work");
+    const appreciationRule = prompt.indexOf("pure appreciation");
+    expect(continuationRule).toBeGreaterThan(-1);
+    expect(appreciationRule).toBeGreaterThan(continuationRule);
+    expect(prompt).toContain('"👌", "✅") → "reply"');
+  });
+});
+
+describe("isShortAckCandidate", () => {
+  it("accepts only acknowledgments that unambiguously close the exchange", () => {
+    for (const t of ["ありがとう", "ありがとうございます！", "ありがとう！！🙏", "thanks!", "ｔｈａｎｋｓ！", "thx.", "なるほど", "助かりました🙏", "🙏", ":pray:"]) {
+      expect(isShortAckCandidate(t), t).toBe(true);
+    }
+  });
+
+  it("routes assents, go-aheads, and short instructions to the session engine", () => {
+    for (const t of ["はい", "OK", "ＯＫ", "了解", "了解🙏", "GO", "続けて", "お願いします", "やって", "進めて", "公開して", "👍", "👌", "✅", ":thumbsup:"]) {
+      expect(isShortAckCandidate(t), t).toBe(false);
+      expect(isTaskContinuationCandidate(t), t).toBe(true);
+    }
+  });
+
+  it("rejects questions, links, mentions, slash commands, long or empty text", () => {
+    const cases = [
+      "これどう思う？",
+      "why though?",
+      "https://example.com を見て",
+      "<@U123> ありがとう",
+      "<#C123> でお願い",
+      "/status",
+      "",
+      "   ",
+      "この件について詳しく調査して、レポートにまとめてもらえると助かります",
+    ];
+    for (const t of cases) {
+      expect(isShortAckCandidate(t), JSON.stringify(t)).toBe(false);
+    }
+  });
+
+  it("counts code points, not UTF-16 units (30-char boundary)", () => {
+    expect(isShortAckCandidate("🙏".repeat(30))).toBe(true);
+    expect(isShortAckCandidate("🙏".repeat(31))).toBe(false);
+  });
+});
+
+describe("Slack triage routing", () => {
+  it("bypasses react-only triage for continuations in an active conversation", () => {
+    expect(shouldRunReactOnlyTriage({
+      channelType: "channel",
+      isDmEquivalent: true,
+      wasMentioned: false,
+      attachmentCount: 0,
+      text: "GO",
+    })).toBe(false);
+    expect(shouldRunReactOnlyTriage({
+      channelType: "channel",
+      isDmEquivalent: true,
+      wasMentioned: false,
+      attachmentCount: 0,
+      text: "ありがとう",
+    })).toBe(true);
+  });
+
+  it("overrides a react decision for continuations after a bot message", () => {
+    expect(shouldForceTaskContinuationReply({
+      text: "✅",
+      dmEquivalent: false,
+      previousWasBot: true,
+    })).toBe(true);
+    expect(shouldForceTaskContinuationReply({
+      text: "ありがとう",
+      dmEquivalent: true,
+      previousWasBot: true,
+    })).toBe(false);
+    expect(shouldForceTaskContinuationReply({
+      text: "GO",
+      dmEquivalent: false,
+      previousWasBot: false,
+    })).toBe(false);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { deepMerge } from "../api.js";
+import { deepMerge, sanitizeChannelRouting } from "../api.js";
 
 /**
  * PUT /api/config deep-merges the incoming partial config into the on-disk one
@@ -44,5 +44,59 @@ describe("deepMerge (PUT /api/config)", () => {
     };
     expect(off.engines.claude.interactive).toBe(false);
     expect((off as typeof existing).connectors.slack.botToken).toBe("xoxb-secret");
+  });
+
+  it("removes an optional key when the update explicitly sends null", () => {
+    const withTriageModel = {
+      ...existing,
+      connectors: {
+        slack: {
+          ...existing.connectors.slack,
+          triage: { enabled: true, engine: "codex", model: "gpt-5-nano" },
+        },
+      },
+    };
+
+    const merged = deepMerge(withTriageModel as Record<string, unknown>, {
+      connectors: { slack: { triage: { model: null } } },
+    }) as typeof withTriageModel;
+
+    expect(merged.connectors.slack.triage).toEqual({ enabled: true, engine: "codex" });
+  });
+});
+
+describe("cross-instance token redaction", () => {
+  it("masks channelRouting tokens and proxyViaToken for GET /api/config", () => {
+    expect(
+      sanitizeChannelRouting({
+        C1: { url: "http://remote:7777", token: "sekret" },
+        C2: "http://other:7777",
+      }),
+    ).toEqual({
+      C1: { url: "http://remote:7777", token: "***" },
+      C2: "http://other:7777",
+    });
+  });
+
+  it("round-trips '***' placeholders through PUT /api/config without losing the stored token", () => {
+    const stored = {
+      connectors: {
+        discord: {
+          proxyViaToken: "primary-secret",
+          channelRouting: { C1: { url: "http://remote:7777", token: "sekret" } },
+        },
+      },
+    };
+    const put = {
+      connectors: {
+        discord: {
+          proxyViaToken: "***",
+          channelRouting: { C1: { url: "http://remote:7777", token: "***" } },
+        },
+      },
+    };
+    const merged = deepMerge(stored, put) as typeof stored;
+    expect(merged.connectors.discord.proxyViaToken).toBe("primary-secret");
+    expect(merged.connectors.discord.channelRouting.C1.token).toBe("sekret");
   });
 });

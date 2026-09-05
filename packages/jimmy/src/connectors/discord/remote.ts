@@ -2,15 +2,58 @@ import type {
   Connector,
   ConnectorCapabilities,
   ConnectorHealth,
+  DiscordRespondToConfig,
   IncomingMessage,
   Target,
 } from "../../shared/types.js";
 import { logger } from "../../shared/logger.js";
+import {
+  evaluateRespondPolicy,
+  parseForwardedAddressing,
+  resolveRespondMode,
+  scopeForChannel,
+} from "./respond-policy.js";
 
 export interface RemoteDiscordConfig {
   /** URL of the primary Jinn instance that holds the Discord WebSocket connection */
   proxyVia: string;
+  /** Bearer token for the primary's gateway — required when its /api/* auth is enabled. */
+  proxyViaToken?: string;
   channelId?: string;
+  /** Deterministic per-scope response gate, applied to proxied messages. */
+  respondTo?: DiscordRespondToConfig;
+}
+
+/** The transportMeta fields a Discord primary legitimately sends — everything
+ *  else (cross-platform identity like speakerSlackId, Slack-only fields,
+ *  internal session metadata) is dropped at the boundary. */
+const INCOMING_DISCORD_META_ALLOWLIST = [
+  "channelName",
+  "guildId",
+  "isDM",
+  "isGroupDM",
+  "speakerName",
+  "speakerDisplayName",
+  "speakerHandle",
+  "speakerDiscordId",
+  "speakerIsBot",
+  "wasBotAddressed",
+  "addressesOnlyOthers",
+  "isEngagedThread",
+] as const;
+
+/**
+ * Allowlist a routed Discord payload's transportMeta at the receiving
+ * boundary. This endpoint carries Discord traffic, so only the fields the
+ * Discord primary actually produces pass through — a forged Slack identity
+ * (or any future field we haven't reasoned about) must never reach the
+ * platform-bound operator check or the MEMORY.md gate.
+ */
+export function sanitizeIncomingDiscordMeta(meta: unknown): Record<string, unknown> {
+  const raw = (meta && typeof meta === "object" ? meta : {}) as Record<string, unknown>;
+  return Object.fromEntries(
+    INCOMING_DISCORD_META_ALLOWLIST.flatMap((key) => (key in raw ? [[key, raw[key]] as const] : [])),
+  );
 }
 
 /**
@@ -22,9 +65,14 @@ export class RemoteDiscordConnector implements Connector {
   name = "discord";
   private handler: ((msg: IncomingMessage) => void) | null = null;
   private baseUrl: string;
+  private readonly proxyToken: string | undefined;
+  private readonly respondTo: DiscordRespondToConfig | undefined;
+  private warnedMissingAddressing = false;
 
   constructor(config: RemoteDiscordConfig) {
     this.baseUrl = config.proxyVia.replace(/\/+$/, "");
+    this.proxyToken = config.proxyViaToken;
+    this.respondTo = config.respondTo;
   }
 
   onMessage(handler: (msg: IncomingMessage) => void): void {
@@ -33,6 +81,45 @@ export class RemoteDiscordConnector implements Connector {
 
   /** Called by the /api/connectors/discord/incoming endpoint to deliver proxied messages */
   deliverMessage(msg: IncomingMessage): void {
+    const meta = (msg.transportMeta ?? {}) as Record<string, unknown>;
+    const isDM = meta.isDM === true;
+    // Addressing (ForwardedAddressing) is resolved by the primary instance:
+    // only it sees the Discord gateway, and it also tracks thread engagement
+    // — proxied sends run through its connector. When the flags are absent —
+    // a primary too old to send them — mention scopes fail closed (Slack
+    // precedent for unresolvable identity) and the sibling rule stays off
+    // (never drop an "always" message on missing metadata). Warn once, and
+    // only when a message actually lands in a mention-gated scope, so the
+    // required upgrade order is visible instead of a silent blackhole.
+    const { present, flags } = parseForwardedAddressing(meta);
+    if (
+      !present &&
+      resolveRespondMode(this.respondTo, scopeForChannel(isDM)) === "mention" &&
+      !this.warnedMissingAddressing
+    ) {
+      this.warnedMissingAddressing = true;
+      logger.warn(
+        "[discord-remote] primary instance does not forward addressing metadata (its version predates respondTo) — routed messages in mention scopes are dropped until the primary is upgraded",
+      );
+    }
+    const respondDecision = evaluateRespondPolicy({
+      config: this.respondTo,
+      isDM,
+      wasMentioned: flags.wasBotAddressed,
+      isEngagedThread: flags.isEngagedThread,
+    });
+    if (!respondDecision.allow) {
+      logger.info(
+        `[discord-remote] respondTo gate → silent (${respondDecision.reason}) for message ${msg.messageId}`,
+      );
+      return;
+    }
+    if (!isDM && flags.addressesOnlyOthers) {
+      logger.info(
+        `[discord-remote] message addresses other user(s) — staying silent for message ${msg.messageId}`,
+      );
+      return;
+    }
     if (this.handler) {
       this.handler(msg);
     }
@@ -99,7 +186,11 @@ export class RemoteDiscordConnector implements Connector {
     try {
       const res = await fetch(`${this.baseUrl}/api/connectors/discord/proxy`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          // The primary's gateway authenticates /api/* like any client.
+          ...(this.proxyToken ? { Authorization: `Bearer ${this.proxyToken}` } : {}),
+        },
         body: JSON.stringify({ action, ...params }),
       });
       if (!res.ok) {

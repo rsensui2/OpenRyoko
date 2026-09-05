@@ -6,13 +6,32 @@ import type {
   IncomingMessage,
   ReplyContext,
   SlackConnectorConfig,
+  SlackRespondToConfig,
   Target,
   SlackGoalExtractionConfig,
 } from "../../shared/types.js";
 import { buildReplyContext, deriveSessionKey, isOldSlackMessage } from "./threads.js";
-import { formatResponse, downloadAttachment } from "./format.js";
+import {
+  downloadAttachment,
+  formatAttachmentFailureNotice,
+  formatResponse,
+  resolveSlackFileAttachment,
+} from "./format.js";
 import { normalizeSpeakerInfo, type SpeakerInfo } from "./speaker.js";
 import { runTriage } from "./triage.js";
+import {
+  shouldForceTaskContinuationReply,
+  shouldRunReactOnlyTriage,
+} from "./triage-prompt.js";
+import {
+  evaluateRespondPolicy,
+  hasMentionScope,
+  resolveRespondMode,
+  respondPolicyNeedsTracking,
+  shouldHandleReaction,
+} from "./respond-policy.js";
+import { isOperatorSpeaker } from "../../shared/operator-match.js";
+import { explicitThread } from "../../shared/threading.js";
 import { ConversationTracker } from "./conversation-tracker.js";
 import { AgentsCanvasUpdater } from "./agents-canvas.js";
 import { extractGoalCondition, shouldExtractGoal } from "./goal-extractor.js";
@@ -26,6 +45,8 @@ export interface SlackConnectorContext {
   portalName?: string;
   /** Configured operator name — used to identify operator vs third party */
   operatorName?: string;
+  /** Additional operator names/handles (portal.operatorAliases) — see operator-match.ts. */
+  operatorAliases?: string[];
   /** Whether this connector's routed sessions can consume Claude-only /goal prompts. */
   goalInjectionEnabled?: boolean;
 }
@@ -39,14 +60,16 @@ export class SlackConnector implements Connector {
   private readonly bootTimeMs = Date.now();
   private started = false;
   private lastError: string | null = null;
-  private channelNameCache = new Map<string, { name: string; cachedAt: number }>();
+  private channelNameCache = new Map<string, { name?: string; isExtShared: boolean; cachedAt: number }>();
   private userInfoCache = new Map<string, { info: SpeakerInfo; cachedAt: number }>();
   private botUserId: string | null = null;
   private typingIntervals = new Map<string, ReturnType<typeof setInterval>>();
   private readonly triageConfig: SlackTriageConfig | undefined;
+  private readonly respondTo: SlackRespondToConfig | undefined;
   private readonly goalExtractionConfig: SlackGoalExtractionConfig | undefined;
   private readonly portalName: string | undefined;
   private readonly operatorName: string | undefined;
+  private readonly operatorAliases: string[] | undefined;
   private readonly goalInjectionEnabled: boolean;
   private readonly conversations: ConversationTracker;
   private readonly agentsCanvas: AgentsCanvasUpdater | null;
@@ -126,14 +149,26 @@ export class SlackConnector implements Connector {
         : [];
     this.allowedUsers = allowFrom.length > 0 ? new Set(allowFrom) : null;
     this.triageConfig = config.triage;
+    this.respondTo = config.respondTo;
     this.goalExtractionConfig = config.goalExtraction;
     this.portalName = context.portalName;
     this.operatorName = context.operatorName;
+    this.operatorAliases = context.operatorAliases;
     this.goalInjectionEnabled = context.goalInjectionEnabled === true;
     this.conversations = new ConversationTracker();
     this.agentsCanvas = config.agentsCanvas?.enabled
       ? new AgentsCanvasUpdater(this.app, config.agentsCanvas)
       : null;
+  }
+
+  /**
+   * Conversation tracking feeds two consumers: triage DM-equivalence and the
+   * respondTo engaged-thread exception. When neither is active, tracking is
+   * skipped entirely — engaged entries can't be evicted, so tracking in the
+   * default configuration would just leak memory.
+   */
+  private conversationTrackingEnabled(): boolean {
+    return this.triageConfig?.enabled === true || respondPolicyNeedsTracking(this.respondTo);
   }
 
   private async resolveSpeakerInfo(userId: string | undefined): Promise<SpeakerInfo | null> {
@@ -173,6 +208,8 @@ export class SlackConnector implements Connector {
       channelName?: string;
       wasMentioned: boolean;
       messageText: string;
+      /** Short-ack in an established 1:1 conversation — triage runs in react-vs-reply mode. */
+      dmEquivalent?: boolean;
     },
   ): Promise<{ action: "silent" | "react" | "reply"; emoji?: string; reason?: string }> {
     const threadLimit = this.triageConfig?.threadContextLimit ?? 10;
@@ -184,16 +221,18 @@ export class SlackConnector implements Connector {
     );
 
     const speakerName = ctx.speaker?.name ?? "unknown";
-    const speakerIsOperator = !!this.operatorName && !!ctx.speaker && [
-      ctx.speaker.name,
-      ctx.speaker.realName,
-      ctx.speaker.displayName,
-      ctx.speaker.handle,
-    ].filter((v): v is string => !!v).includes(this.operatorName);
+    // Shared normalized matcher — the old exact `includes(operatorName)` never
+    // matched a nickname operatorName against profile names, so triage saw the
+    // operator as a third party (see operator-match.ts).
+    const speakerIsOperator = !!ctx.speaker && isOperatorSpeaker(
+      [ctx.speaker.name, ctx.speaker.realName, ctx.speaker.displayName, ctx.speaker.handle],
+      this.operatorName,
+      this.operatorAliases,
+    );
 
     const channelDescription = ctx.channelName ? `#${ctx.channelName}` : event.channel;
 
-    return runTriage(
+    const decision = await runTriage(
       {
         botName: this.portalName || "Ryoko",
         persona: this.triageConfig?.persona,
@@ -205,20 +244,38 @@ export class SlackConnector implements Connector {
         wasMentioned: ctx.wasMentioned,
         recentThread,
         messageText: ctx.messageText,
+        dmEquivalent: ctx.dmEquivalent,
       },
       {
         bin: this.triageConfig?.bin,
         engine: this.triageConfig?.engine,
         model: this.triageConfig?.model,
         timeoutMs: this.triageConfig?.timeoutMs,
-        // Triage only runs for ambient messages (not DM, not @-mention, not
-        // active thread). When we know our own ID, a fail-open *reply* there
-        // is a guaranteed barge-in, so stay silent. Keep the legacy reply
-        // fallback only as a safety net for the startup-race case where
-        // auth.test never resolved our botUserId.
-        failOpenAction: this.botUserId ? "silent" : "reply",
+        // Ambient messages (not DM, not @-mention, not active thread): when we
+        // know our own ID, a fail-open *reply* is a guaranteed barge-in, so stay
+        // silent; the legacy reply fallback only covers the startup race where
+        // auth.test never resolved our botUserId. DM-equivalent short-acks are
+        // the opposite — the message IS addressed to us, so a triage failure
+        // must fall back to the full reply, never to ghosting.
+        failOpenAction: ctx.dmEquivalent || !this.botUserId ? "reply" : "silent",
       },
     );
+
+    if (
+      decision.action === "react" &&
+      shouldForceTaskContinuationReply({
+        text: ctx.messageText,
+        dmEquivalent: ctx.dmEquivalent === true,
+        previousWasBot: recentThread.at(-1)?.isBot,
+      })
+    ) {
+      logger.info(
+        `[slack] triage react overridden — task continuation must reach session for ts=${event.ts}`,
+      );
+      return { action: "reply", reason: "task_continuation" };
+    }
+
+    return decision;
   }
 
   private async fetchRecentThreadForTriage(
@@ -226,7 +283,7 @@ export class SlackConnector implements Connector {
     threadTs: string | undefined,
     messageTs: string | undefined,
     limit: number,
-  ): Promise<Array<{ speaker: string; text: string }>> {
+  ): Promise<Array<{ speaker: string; text: string; isBot: boolean }>> {
     try {
       const messages = threadTs
         ? (await this.app.client.conversations.replies({
@@ -243,18 +300,22 @@ export class SlackConnector implements Connector {
 
       if (!messages) return [];
       const chronological = threadTs ? messages : [...messages].reverse();
-      const result: Array<{ speaker: string; text: string }> = [];
+      const result: Array<{ speaker: string; text: string; isBot: boolean }> = [];
       for (const m of chronological) {
+        // conversations.replies may include the event currently being triaged.
+        // Exclude it so the last item really is the preceding speaker/message.
+        if (messageTs && (m as any).ts === messageTs) continue;
         const text = (m as any).text as string | undefined;
         if (!text) continue;
         const userId = (m as any).user as string | undefined;
         const botId = (m as any).bot_id as string | undefined;
-        const speakerLabel = userId
-          ? (await this.resolveSpeakerInfo(userId))?.name ?? userId
-          : botId
-            ? `bot:${botId}`
+        const isBot = !!botId || (!!userId && userId === this.botUserId);
+        const speakerLabel = isBot
+          ? `bot:${botId ?? userId}`
+          : userId
+            ? (await this.resolveSpeakerInfo(userId))?.name ?? userId
             : "unknown";
-        result.push({ speaker: speakerLabel, text });
+        result.push({ speaker: speakerLabel, text, isBot });
       }
       return result;
     } catch (err) {
@@ -263,22 +324,33 @@ export class SlackConnector implements Connector {
     }
   }
 
-  private async resolveChannelName(channelId: string): Promise<string | undefined> {
+  /**
+   * Resolve channel name and external-shared status in one cached call.
+   * `isExtShared` is true for Slack Connect (externally/org shared) channels —
+   * the delivery layer treats these (and unknowns) as "external" so the model's
+   * operator-facing notes are never posted there. See reply-disposition.ts.
+   */
+  private async resolveChannelInfo(channelId: string): Promise<{ name?: string; isExtShared: boolean }> {
     const cached = this.channelNameCache.get(channelId);
     if (cached && Date.now() - cached.cachedAt < SlackConnector.CHANNEL_CACHE_TTL_MS) {
-      return cached.name;
+      return { name: cached.name, isExtShared: cached.isExtShared };
     }
     try {
       const result = await this.app.client.conversations.info({ channel: channelId });
-      const name = result.channel?.name;
-      if (name) {
-        this.channelNameCache.set(channelId, { name, cachedAt: Date.now() });
-        return name;
-      }
+      const channel = result.channel as { name?: string; is_ext_shared?: boolean; is_org_shared?: boolean; is_shared?: boolean } | undefined;
+      const name = channel?.name;
+      const isExtShared = !!(channel?.is_ext_shared || channel?.is_org_shared || channel?.is_shared);
+      this.channelNameCache.set(channelId, { name, isExtShared, cachedAt: Date.now() });
+      return { name, isExtShared };
     } catch (err) {
-      logger.debug(`Failed to resolve channel name for ${channelId}: ${err}`);
+      logger.debug(`Failed to resolve channel info for ${channelId}: ${err}`);
     }
-    return undefined;
+    // Unknown → treat as external (safe): never assume a channel is private.
+    return { name: undefined, isExtShared: true };
+  }
+
+  private async resolveChannelName(channelId: string): Promise<string | undefined> {
+    return (await this.resolveChannelInfo(channelId)).name;
   }
 
   async start() {
@@ -307,60 +379,44 @@ export class SlackConnector implements Connector {
         return;
       }
 
-      const sessionKey = deriveSessionKey(event as any);
-      const replyContext = buildReplyContext(event as any);
-
-      // Fetch parent message for thread replies so the session has full context
-      let parentContext = "";
-      const threadTs = (event as any).thread_ts;
-      if (threadTs && threadTs !== (event as any).ts) {
-        try {
-          const parentResult = await this.app.client.conversations.replies({
-            channel: (event as any).channel,
-            ts: threadTs,
-            limit: 1,
-            inclusive: true,
-          });
-          const parentMsg = parentResult.messages?.[0];
-          if (parentMsg?.text) {
-            parentContext = `[Thread context — parent message: "${parentMsg.text}"]\n\n`;
-          }
-        } catch (err) {
-          logger.debug(`Failed to fetch parent message: ${err}`);
-        }
-      }
-
-      // Download attachments if present
-      const attachments = [];
-      if ((event as any).files) {
-        for (const file of (event as any).files) {
-          try {
-            const localPath = await downloadAttachment(
-              file.url_private,
-              this.app.client.token!,
-              TMP_DIR,
-            );
-            attachments.push({
-              name: file.name,
-              url: file.url_private,
-              mimeType: file.mimetype,
-              localPath,
-            });
-          } catch (err) {
-            logger.warn(`Failed to download attachment: ${err}`);
-          }
-        }
-      }
-
       const slackUserId = (event as any).user as string;
-      const [channelName, speaker] = await Promise.all([
-        this.resolveChannelName((event as any).channel),
-        this.resolveSpeakerInfo(slackUserId),
-      ]);
-
-      const channelType = ((event as any).channel_type as string) || "channel";
       const rawText = ((event as any).text || "") as string;
+      const channelType = ((event as any).channel_type as string) || "channel";
+      const threadTs = (event as any).thread_ts as string | undefined;
       const wasMentioned = !!this.botUserId && rawText.includes(`<@${this.botUserId}>`);
+
+      const triageEnabled = this.triageConfig?.enabled === true;
+      const conversationKey = {
+        channel: (event as any).channel as string,
+        threadTs,
+        ts: (event as any).ts as string | undefined,
+        userId: slackUserId,
+      };
+      // Record the human speaker even for messages the gates below drop:
+      // a third human joining a thread must invalidate DM-equivalence
+      // whether or not we end up responding to their message.
+      if (this.conversationTrackingEnabled()) {
+        this.conversations.recordHumanMessage(conversationKey);
+      }
+
+      // Deterministic respondTo gate — evaluated before any network fetches
+      // and before LLM triage, so gated scopes cost nothing for dropped
+      // messages. "mention" scopes drop un-mentioned messages outright,
+      // except inside threads the bot has already engaged.
+      const respondDecision = evaluateRespondPolicy({
+        config: this.respondTo,
+        channelType,
+        wasMentioned,
+        isEngagedThread:
+          !!threadTs &&
+          this.conversations.isBotEngagedThread((event as any).channel, threadTs),
+      });
+      if (!respondDecision.allow) {
+        logger.info(
+          `[slack] respondTo gate → silent (${respondDecision.reason}) for ts=${(event as any).ts}`,
+        );
+        return;
+      }
 
       // Early silent for cross-bot / cross-user traffic in shared channels.
       // If the message @-mentions specific user(s), none of whom are us, and
@@ -381,12 +437,77 @@ export class SlackConnector implements Connector {
         }
       }
 
+      const sessionKey = deriveSessionKey(event as any);
+      const replyContext = buildReplyContext(event as any);
+
+      // Fetch parent message for thread replies so the session has full context
+      let parentContext = "";
+      if (threadTs && threadTs !== (event as any).ts) {
+        try {
+          const parentResult = await this.app.client.conversations.replies({
+            channel: (event as any).channel,
+            ts: threadTs,
+            limit: 1,
+            inclusive: true,
+          });
+          const parentMsg = parentResult.messages?.[0];
+          if (parentMsg?.text) {
+            parentContext = `[Thread context — parent message: "${parentMsg.text}"]\n\n`;
+          }
+        } catch (err) {
+          logger.debug(`Failed to fetch parent message: ${err}`);
+        }
+      }
+
+      // Download attachments if present
+      const attachments = [];
+      const failedAttachments: string[] = [];
+      if ((event as any).files) {
+        for (const file of (event as any).files) {
+          try {
+            const resolved = await resolveSlackFileAttachment(
+              file,
+              (args) => this.app.client.files.info(args),
+            );
+            const localPath = await downloadAttachment(
+              resolved.url,
+              this.app.client.token!,
+              TMP_DIR,
+            );
+            attachments.push({
+              name: resolved.name,
+              url: resolved.url,
+              mimeType: resolved.mimeType,
+              localPath,
+            });
+          } catch (err) {
+            // File names are user-controlled. Keep the injected failure notice
+            // limited to Slack's opaque ID so it cannot become prompt content.
+            const label = file.id ? `Slack file ${file.id}` : "Slack attachment";
+            failedAttachments.push(label);
+            logger.warn(`[slack] Failed to retrieve attachment ${label}: ${err}`);
+          }
+        }
+      }
+
+      const [channelInfo, speaker] = await Promise.all([
+        this.resolveChannelInfo((event as any).channel),
+        this.resolveSpeakerInfo(slackUserId),
+      ]);
+      const channelName = channelInfo.name;
+
+      // DM is never "external"; otherwise trust the Slack Connect flag.
+      const channelExternal = channelType !== "im" && channelInfo.isExtShared;
+
       // Slash commands (/new, /status, …) are control directives the session
       // manager parses by exact string match. Wrapping them in the
       // "[Thread context — …]" preamble below silently breaks that parsing,
       // so a command typed inside a Slack thread would never be intercepted.
       // Commands don't need conversation context anyway — pass them verbatim.
-      const text = startsWithSlashCommand(rawText) ? rawText : parentContext + rawText;
+      const attachmentFailureNotice = formatAttachmentFailureNotice(failedAttachments);
+      const text = startsWithSlashCommand(rawText)
+        ? rawText + attachmentFailureNotice
+        : parentContext + rawText + attachmentFailureNotice;
 
       const msg: IncomingMessage = {
         connector: this.name,
@@ -403,6 +524,7 @@ export class SlackConnector implements Connector {
         raw: event,
         transportMeta: {
           channelType,
+          channelExternal,
           team: ((event as any).team as string) || null,
           channelName: channelName || null,
           wasMentioned,
@@ -417,31 +539,31 @@ export class SlackConnector implements Connector {
       //   - DM-equivalent conversation: bot has engaged AND only this user has
       //     spoken in the conversation (thread or channel-user scope). Permanent
       //     until a third human joins.
-      const triageEnabled = this.triageConfig?.enabled === true;
-      const conversationKey = {
-        channel: (event as any).channel as string,
-        threadTs: (event as any).thread_ts as string | undefined,
-        ts: (event as any).ts as string | undefined,
-        userId: slackUserId,
-      };
-      // Skip conversation tracking entirely when triage is disabled — it
-      // serves no purpose (skipTriage is unconditionally true) and engaged
-      // entries can't be evicted, so doing it would leak memory in the
-      // default no-triage configuration.
-      if (triageEnabled) {
-        this.conversations.recordHumanMessage(conversationKey);
-      }
       const isDmEquivalent =
         triageEnabled && channelType !== "im" && !wasMentioned
           ? this.conversations.isDmEquivalent(conversationKey)
           : false;
+      // Short-ack exception: the always-reply fast paths (real DMs and
+      // DM-equivalent conversations) otherwise swallow the one situation
+      // react-triage is FOR — pure appreciation right after the bot replied
+      // (the bot having replied is what makes a conversation DM-equivalent).
+      // Send lexical short-ack candidates through triage in a 1:1-aware mode
+      // (react vs reply, never silent) so a bare thanks can get an emoji
+      // instead of a full engine turn. Everything else keeps the fast-path
+      // full reply. @-mentions always get a real reply, even short ones.
+      const shortAckTriage = shouldRunReactOnlyTriage({
+        channelType,
+        isDmEquivalent,
+        wasMentioned,
+        attachmentCount: attachments.length,
+        text: rawText,
+      });
       const skipTriage =
         !triageEnabled ||
-        channelType === "im" ||
         wasMentioned ||
-        isDmEquivalent;
+        ((channelType === "im" || isDmEquivalent) && !shortAckTriage);
 
-      if (triageEnabled && isDmEquivalent) {
+      if (triageEnabled && isDmEquivalent && !shortAckTriage) {
         logger.info(`[slack] skipping triage — DM-equivalent conversation in ${(event as any).channel}`);
       }
 
@@ -452,11 +574,18 @@ export class SlackConnector implements Connector {
           channelName: channelName ?? undefined,
           wasMentioned,
           messageText: rawText,
+          dmEquivalent: shortAckTriage,
         });
 
         if (decision.action === "silent") {
-          logger.info(`[slack] triage → silent (${decision.reason ?? "no reason"}) for ts=${(event as any).ts}`);
-          return;
+          if (shortAckTriage) {
+            // 1:1 conversation — the message IS addressed to the bot; ghosting is
+            // not acceptable. Treat a stray "silent" as the pre-exception behavior.
+            logger.info(`[slack] triage → silent in DM-equivalent short-ack path — upgrading to reply for ts=${(event as any).ts}`);
+          } else {
+            logger.info(`[slack] triage → silent (${decision.reason ?? "no reason"}) for ts=${(event as any).ts}`);
+            return;
+          }
         }
         if (decision.action === "react") {
           const emoji = decision.emoji || "eyes";
@@ -476,7 +605,7 @@ export class SlackConnector implements Connector {
         logger.info(`[slack] triage → reply (${decision.reason ?? "no reason"}) for ts=${(event as any).ts}`);
       }
 
-      if (triageEnabled) {
+      if (this.conversationTrackingEnabled()) {
         this.conversations.recordBotEngaged(conversationKey);
       }
 
@@ -519,6 +648,15 @@ export class SlackConnector implements Connector {
     } catch (err) {
       logger.warn(`[slack] Failed to get bot user ID: ${err}`);
     }
+    // Fail closed: without our own user ID, mention detection is impossible,
+    // so mention-gated scopes will drop everything (except engaged threads).
+    // That honors "never barge in un-mentioned" at the cost of missed
+    // mentions until the next successful start — surface it loudly.
+    if (!this.botUserId && hasMentionScope(this.respondTo)) {
+      logger.warn(
+        "[slack] respondTo mention gate is configured but the bot user ID could not be resolved — un-mentioned messages in mention scopes will be dropped",
+      );
+    }
 
     this.app.event("reaction_added", async ({ event }) => {
       // Only handle reactions on messages (not files, etc.)
@@ -526,6 +664,15 @@ export class SlackConnector implements Connector {
 
       // Skip bot's own reactions
       if (this.botUserId && event.user === this.botUserId) return;
+
+      // A mention-gated channel scope cannot be satisfied by a reaction, which
+      // carries no @-mention; see shouldHandleReaction.
+      if (!shouldHandleReaction(this.respondTo, event.item.channel)) {
+        logger.debug(
+          `[slack] respondTo.channel=${resolveRespondMode(this.respondTo, "channel")} — ignoring channel reaction on ${event.item.channel}:${event.item.ts}`,
+        );
+        return;
+      }
 
       if (!this.handler) return;
 
@@ -591,11 +738,12 @@ export class SlackConnector implements Connector {
         return;
       }
 
-      // Resolve channel name and reactor (speaker) in parallel
-      const [channelName, speaker] = await Promise.all([
-        this.resolveChannelName(channelId),
+      // Resolve channel name/external status and reactor (speaker) in parallel
+      const [channelInfo, speaker] = await Promise.all([
+        this.resolveChannelInfo(channelId),
         this.resolveSpeakerInfo(event.user),
       ]);
+      const channelName = channelInfo.name;
       const channelDisplay = channelName ? `#${channelName}` : channelId;
 
       // Build the prompt with reaction context
@@ -622,6 +770,7 @@ export class SlackConnector implements Connector {
         raw: event,
         transportMeta: {
           channelType: "channel",
+          channelExternal: channelInfo.isExtShared,
           team: null,
           channelName: channelName || null,
           ...this.speakerTransportFields(speaker, event.user),
@@ -712,6 +861,14 @@ export class SlackConnector implements Connector {
 
   async sendMessage(target: Target, text: string): Promise<string | undefined> {
     if (!text || !text.trim()) return undefined;
+    // An explicit thread target must never be dropped: posting a "thread
+    // reply" without thread_ts lands it bare in the channel. Callers that
+    // reach sendMessage with a thread (proxy endpoint, MCP tool) get the
+    // same behavior as replyMessage.
+    const thread = explicitThread(target.thread);
+    if (thread) {
+      return this.replyMessage({ ...target, thread }, text);
+    }
     const chunks = formatResponse(text);
     let lastTs: string | undefined;
     for (const chunk of chunks) {
@@ -723,8 +880,8 @@ export class SlackConnector implements Connector {
       lastTs = res.ts;
     }
     // A newly-posted root message will be the thread_ts for any follow-up replies,
-    // so mark its future thread as bot-engaged. Only relevant when triage is on.
-    if (lastTs && this.triageConfig?.enabled === true) {
+    // so mark its future thread as bot-engaged. Only relevant when tracking is on.
+    if (lastTs && this.conversationTrackingEnabled()) {
       this.conversations.recordBotInitiatedThread(target.channel, lastTs);
     }
     return lastTs;
@@ -745,9 +902,9 @@ export class SlackConnector implements Connector {
       lastTs = res.ts;
     }
     // Record the thread the bot just replied in. Subsequent user replies in
-    // this same thread will carry thread_ts === threadTs and bypass triage.
-    // Only relevant when triage is on.
-    if (threadTs && this.triageConfig?.enabled === true) {
+    // this same thread will carry thread_ts === threadTs and bypass triage
+    // and the respondTo mention gate. Only relevant when tracking is on.
+    if (threadTs && this.conversationTrackingEnabled()) {
       this.conversations.recordBotInitiatedThread(target.channel, threadTs);
     }
     return lastTs;
@@ -766,9 +923,9 @@ export class SlackConnector implements Connector {
     }
     // A reaction on a message also counts as engagement; mark the target's
     // thread anchor so follow-ups in that thread are treated as bot-engaged.
-    // Only relevant when triage is on.
+    // Only relevant when tracking is on.
     const anchor = target.thread || target.messageTs;
-    if (anchor && this.triageConfig?.enabled === true) {
+    if (anchor && this.conversationTrackingEnabled()) {
       this.conversations.recordBotInitiatedThread(target.channel, anchor);
     }
   }

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { EngineResult } from "../types.js";
-import { isDeadSessionError, detectRateLimit, isPoisonedTranscriptError } from "../rateLimit.js";
+import { isDeadSessionError, detectRateLimit, isPoisonedTranscriptError, isTransientServerError } from "../rateLimit.js";
 
 function makeResult(overrides: Partial<EngineResult> = {}): EngineResult {
   return {
@@ -158,5 +158,29 @@ describe("isPoisonedTranscriptError", () => {
       rateLimit: { status: "rejected", resetsAt: 9999999999 },
     });
     expect(isPoisonedTranscriptError(result)).toBe(false);
+  });
+});
+
+describe("isTransientServerError", () => {
+  it("matches the interactive engine's StopFailure server_error marker", () => {
+    expect(isTransientServerError(makeResult({ error: "Interactive turn failed: server_error", numTurns: 1 }))).toBe(true);
+  });
+
+  it("does not match other StopFailure kinds", () => {
+    expect(isTransientServerError(makeResult({ error: "Interactive turn failed: authentication_failed" }))).toBe(false);
+    expect(isTransientServerError(makeResult({ error: "Interactive turn failed: rate_limit" }))).toBe(false);
+    expect(isTransientServerError(makeResult({ error: "Interactive turn failed: unknown" }))).toBe(false);
+  });
+
+  it("does not match headless engine errors or success", () => {
+    expect(isTransientServerError(makeResult({ error: "API Error: 529 Overloaded" }))).toBe(false);
+    expect(isTransientServerError(makeResult({}))).toBe(false);
+  });
+
+  it("defers to the rate-limit machinery when rateLimit status is present", () => {
+    expect(isTransientServerError(makeResult({
+      error: "Interactive turn failed: server_error",
+      rateLimit: { status: "rejected" },
+    }))).toBe(false);
   });
 });

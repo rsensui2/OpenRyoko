@@ -48,7 +48,7 @@ export default function OrgPage() {
           department: "",
           rank: "executive",
           engine: "claude",
-          model: "opus",
+          model: "claude-opus-5",
           persona: "COO and AI gateway daemon",
         };
         setEmployees([coo, ...data.employees]);

@@ -24,6 +24,11 @@ export interface PtyLifecycleOpts {
   onAdopt?: (sessionId: string) => void;
   /** Called after a PTY is killed/removed — used to clean the --settings file, hook registry, gateway.json pids. */
   onCleanup?: (sessionId: string) => void;
+  /** Extra liveness probe consulted by the sweep/eviction: return true while the
+   *  PTY's engine is still doing work the lifecycle can't see as a "turn" (e.g.
+   *  an autonomous background continuation streaming API requests). A busy PTY
+   *  is never reaped or LRU-evicted — killing it would abort in-flight work. */
+  isBusy?: (sessionId: string) => boolean;
 }
 
 interface Entry {
@@ -105,6 +110,15 @@ export class PtyLifecycleManager {
     this.reevaluate(sessionId);
   }
 
+  /** Signal out-of-turn engine activity (e.g. an orphan hook from a background
+   *  continuation). Restarts the keep-warm grace window so an actively-working
+   *  PTY isn't reaped between activity signals. No-op while a turn is running. */
+  touch(sessionId: string): void {
+    const e = this.entries.get(sessionId);
+    if (!e || e.turnRunning) return;
+    e.lastTurnEndedAt = Date.now();
+  }
+
   releaseSession(sessionId: string): void {
     const e = this.entries.get(sessionId);
     if (!e) return;
@@ -120,6 +134,7 @@ export class PtyLifecycleManager {
   private reevaluate(sessionId: string): void {
     const e = this.entries.get(sessionId);
     if (!e) return;
+    if (this.opts.isBusy?.(sessionId)) return;
     if (!shouldStayAlive(e, Date.now())) this.releaseSession(sessionId);
   }
 
@@ -134,6 +149,7 @@ export class PtyLifecycleManager {
     let oldest = Infinity;
     for (const [id, e] of this.entries.entries()) {
       if (e.turnRunning || e.viewerCount > 0) continue;
+      if (this.opts.isBusy?.(id)) continue;
       const since = Math.max(e.viewingEndedAt, e.lastTurnEndedAt);
       if (since < oldest) {
         oldest = since;

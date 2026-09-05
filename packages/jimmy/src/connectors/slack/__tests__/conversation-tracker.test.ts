@@ -162,3 +162,35 @@ describe("ConversationTracker — robustness", () => {
     expect(t.isDmEquivalent({ channel: "C1", ts: "T3", userId: "U1" })).toBe(false);
   });
 });
+
+describe("ConversationTracker.isBotEngagedThread", () => {
+  it("is true after the bot replies in the thread (recordBotInitiatedThread)", () => {
+    const t = new ConversationTracker();
+    t.recordBotInitiatedThread("C1", "T1");
+    expect(t.isBotEngagedThread("C1", "T1")).toBe(true);
+  });
+
+  it("is true after recordBotEngaged on a threaded message", () => {
+    const t = new ConversationTracker();
+    t.recordBotEngaged({ channel: "C1", threadTs: "T1", ts: "T2", userId: "U1" });
+    expect(t.isBotEngagedThread("C1", "T1")).toBe(true);
+  });
+
+  it("is false for threads the bot never engaged", () => {
+    const t = new ConversationTracker();
+    t.recordHumanMessage({ channel: "C1", threadTs: "T1", ts: "T2", userId: "U1" });
+    expect(t.isBotEngagedThread("C1", "T1")).toBe(false);
+  });
+
+  it("is false for user-key engagement (top-level messages, no thread)", () => {
+    const t = new ConversationTracker();
+    t.recordBotEngaged({ channel: "C1", ts: "T1", userId: "U1" });
+    expect(t.isBotEngagedThread("C1", "T1")).toBe(false);
+  });
+
+  it("tolerates missing fields", () => {
+    const t = new ConversationTracker();
+    expect(t.isBotEngagedThread("", "T1")).toBe(false);
+    expect(t.isBotEngagedThread("C1", "")).toBe(false);
+  });
+});

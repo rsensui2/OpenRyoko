@@ -242,7 +242,7 @@ export class CodexEngine implements InterruptibleEngine {
     args.push("--json", "--color", "never", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check");
     if (opts.cwd) args.push("-C", opts.cwd);
     if (opts.cliFlags?.length) args.push(...opts.cliFlags);
-    args.push(prompt);
+    args.push("--", prompt);
     return args;
   }
 
@@ -252,8 +252,7 @@ export class CodexEngine implements InterruptibleEngine {
     if (opts.effortLevel && opts.effortLevel !== "default") args.push("-c", `model_reasoning_effort="${opts.effortLevel}"`);
     args.push("--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check");
     if (opts.cliFlags?.length) args.push(...opts.cliFlags);
-    args.push(opts.resumeSessionId!);
-    args.push(prompt);
+    args.push("--", opts.resumeSessionId!, prompt);
     return args;
   }
 

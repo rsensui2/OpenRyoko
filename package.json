@@ -6,6 +6,7 @@
     "node": ">=22"
   },
   "scripts": {
+    "postinstall": "node scripts/fix-prebuild-permissions.mjs",
     "build": "turbo build && rm -rf packages/jimmy/dist/web && cp -r packages/web/out packages/jimmy/dist/web",
     "dev": "turbo dev",
     "lint": "turbo lint",

@@ -35,6 +35,18 @@ describe("HookRegistry", () => {
     expect(seen).toEqual(["SessionStart"]);
   });
 
+  it("marks drained hooks as buffered and live hooks as current delivery", () => {
+    const reg = make();
+    const deliveries: Array<{ event: string; buffered: boolean }> = [];
+    reg.deliver("meta", { hook_event_name: "PreToolUse" });
+    reg.register("meta", (hook, delivery) => deliveries.push({ event: hook.hook_event_name, buffered: delivery.buffered }));
+    reg.deliver("meta", { hook_event_name: "PostToolUse" });
+    expect(deliveries).toEqual([
+      { event: "PreToolUse", buffered: true },
+      { event: "PostToolUse", buffered: false },
+    ]);
+  });
+
   it("unregister stops delivery and clears buffer", () => {
     const reg = make();
     const seen: string[] = [];
@@ -50,6 +62,61 @@ describe("HookRegistry", () => {
     await new Promise((r) => setTimeout(r, 40));
     const seen: string[] = [];
     reg.register("s4", (h) => seen.push(h.hook_event_name));
+    expect(seen).toEqual([]);
+  });
+
+  it("routes a Stop with no listener to the orphan handler and does NOT buffer it", () => {
+    const reg = make();
+    const orphans: string[] = [];
+    reg.setOrphanHandler((sid, h) => orphans.push(`${sid}:${h.hook_event_name}`));
+    reg.deliver("s6", { hook_event_name: "Stop", last_assistant_message: "done" } as any);
+    expect(orphans).toEqual(["s6:Stop"]);
+    // A later register must NOT drain the consumed Stop into the new resolver —
+    // that would settle the next turn instantly with the previous turn's text.
+    const seen: string[] = [];
+    reg.register("s6", (h) => seen.push(h.hook_event_name));
+    expect(seen).toEqual([]);
+  });
+
+  it("routes a StopFailure orphan to the handler and does not buffer it", () => {
+    const reg = make();
+    const orphans: string[] = [];
+    reg.setOrphanHandler((sid, h) => orphans.push(h.hook_event_name));
+    reg.deliver("s7", { hook_event_name: "StopFailure", error: "server_error" } as any);
+    expect(orphans).toEqual(["StopFailure"]);
+    const seen: string[] = [];
+    reg.register("s7", (h) => seen.push(h.hook_event_name));
+    expect(seen).toEqual([]);
+  });
+
+  it("still buffers non-terminal orphans (and surfaces them as activity)", () => {
+    const reg = make();
+    const orphans: string[] = [];
+    reg.setOrphanHandler((_sid, h) => orphans.push(h.hook_event_name));
+    reg.deliver("s8", { hook_event_name: "PostToolUse" } as any);
+    expect(orphans).toEqual(["PostToolUse"]); // activity signal fired
+    const seen: string[] = [];
+    reg.register("s8", (h) => seen.push(h.hook_event_name));
+    expect(seen).toEqual(["PostToolUse"]); // and it still drains on register
+  });
+
+  it("does not invoke the orphan handler when a listener is registered", () => {
+    const reg = make();
+    const orphans: string[] = [];
+    reg.setOrphanHandler((_sid, h) => orphans.push(h.hook_event_name));
+    const seen: string[] = [];
+    reg.register("s9", (h) => seen.push(h.hook_event_name));
+    reg.deliver("s9", { hook_event_name: "Stop" } as any);
+    expect(seen).toEqual(["Stop"]);
+    expect(orphans).toEqual([]);
+  });
+
+  it("swallows orphan-handler exceptions (terminal orphans stay consumed)", () => {
+    const reg = make();
+    reg.setOrphanHandler(() => { throw new Error("boom"); });
+    expect(() => reg.deliver("s10", { hook_event_name: "Stop" } as any)).not.toThrow();
+    const seen: string[] = [];
+    reg.register("s10", (h) => seen.push(h.hook_event_name));
     expect(seen).toEqual([]);
   });
 

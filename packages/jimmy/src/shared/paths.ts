@@ -52,21 +52,49 @@ function resolveHome(): string {
  * installs and after the one-time migration above.
  */
 export const JINN_HOME = resolveHome();
+
+// Fail closed if a test run resolves into the user's home directory at all —
+// that covers ~/.ryoko, ~/.jinn, and every custom instance home (TBCare-style
+// installs included). Vitest sets VITEST in every worker; a legitimate test
+// home always lives under the OS temp directory.
+if (process.env.VITEST && (JINN_HOME === os.homedir() || JINN_HOME.startsWith(os.homedir() + path.sep))) {
+  throw new Error(
+    `Test run resolved JINN_HOME inside the real home directory (${JINN_HOME}). `
+    + "The vitest globalSetup must redirect JINN_HOME to a temp directory before any import.",
+  );
+}
+
+/** Upstream-parity alias: resolve the (possibly overridden) home directory. */
+export function resolveJinnHome(): string {
+  return resolveHome();
+}
 export const CONFIG_PATH = path.join(JINN_HOME, "config.yaml");
 export const SESSIONS_DB = path.join(JINN_HOME, "sessions", "registry.db");
+export const WORKFLOWS_DIR = path.join(JINN_HOME, "workflows");
+export const WORKFLOWS_DB_PATH = path.join(WORKFLOWS_DIR, "workflows.db");
 export const CRON_JOBS = path.join(JINN_HOME, "cron", "jobs.json");
 export const CRON_RUNS = path.join(JINN_HOME, "cron", "runs");
+export const UPDATE_STATE = path.join(JINN_HOME, "updates", "state.json");
 export const ORG_DIR = path.join(JINN_HOME, "org");
 export const SKILLS_DIR = path.join(JINN_HOME, "skills");
 export const DOCS_DIR = path.join(JINN_HOME, "docs");
 export const LOGS_DIR = path.join(JINN_HOME, "logs");
 export const TMP_DIR = path.join(JINN_HOME, "tmp");
+export const JOBS_DIR = path.join(JINN_HOME, "jobs");
 export const MODELS_DIR = path.join(JINN_HOME, "models");
 export const STT_MODELS_DIR = path.join(JINN_HOME, "models", "whisper");
 export const PID_FILE = path.join(JINN_HOME, "gateway.pid");
 export const CLAUDE_SKILLS_DIR = path.join(JINN_HOME, ".claude", "skills");
 export const AGENTS_SKILLS_DIR = path.join(JINN_HOME, ".agents", "skills");
-export const TEMPLATE_DIR = path.join(__dirname, "..", "..", "..", "template");
+/** Resolves for both layouts: dist/src/shared/ (built package) and
+ *  src/shared/ (vitest / ts-node running from source). */
+export const TEMPLATE_DIR = (() => {
+  const candidates = [
+    path.join(__dirname, "..", "..", "..", "template"),
+    path.join(__dirname, "..", "..", "template"),
+  ];
+  return candidates.find((c) => fs.existsSync(c)) ?? candidates[0];
+})();
 export const FILES_DIR = path.join(JINN_HOME, "files");
 export const MIGRATIONS_DIR = path.join(JINN_HOME, "migrations");
 export const TEMPLATE_MIGRATIONS_DIR = path.join(TEMPLATE_DIR, "migrations");
@@ -76,6 +104,8 @@ export const TEMPLATE_MIGRATIONS_DIR = path.join(TEMPLATE_DIR, "migrations");
 export const GATEWAY_INFO_FILE = path.join(JINN_HOME, "gateway.json");
 /** Per-session Claude Code --settings files written for PTY turns. */
 export const CLAUDE_SETTINGS_DIR = path.join(JINN_HOME, "tmp", "settings");
+/** Durable, bounded reconnect scrollback for interactive PTYs. */
+export const PTY_SNAPSHOTS_DIR = path.join(JINN_HOME, "tmp", "pty-snapshots");
 /** The hook-relay script copied next to JINN_HOME at boot; PTY-spawned Claude
  *  invokes it from its hook config to POST turn events back to the gateway. */
 export const HOOK_RELAY_SCRIPT = path.join(JINN_HOME, "hook-relay.mjs");
