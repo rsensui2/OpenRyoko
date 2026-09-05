@@ -766,6 +766,10 @@ export interface JinnConfig {
   context?: {
     /** Max characters for the built system prompt. Defaults to 100000. */
     maxChars?: number;
+    /** Recent cross-session reply window in hours. Default 6; 0 disables it. */
+    crossSessionWindowHours?: number;
+    /** Max digest replies (capped at 100). Default 15; 0 disables it. */
+    crossSessionLimit?: number;
   };
   stt?: {
     enabled?: boolean;
