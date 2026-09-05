@@ -237,14 +237,24 @@ ${dmEquivalent ? `# Decision rules (1:1 conversation — the message IS addresse
    continuation of a 1:1 exchange) → "reply".
 4. If the topic clearly matches ${botName}'s expertise AND ${botName} can contribute concrete,
    wanted value (not just chitchat) → "reply".
-5. Otherwise → "silent".
+5. If the message is a natural social moment a present, attentive teammate would acknowledge with a
+   light touch — a shared win or good news, a milestone, a greeting to the room, a bit of warmth or
+   humor — and a full text reply would be too much → "react" with a fitting emoji
+   (e.g. "tada", "raised_hands", "eyes", "fire", "pray", "clap"). Read the room like a human who is
+   *around* and paying attention, not interrupting.
+6. Otherwise → "silent".
 
 # Principles (these override the rules when in tension)
-- Err on the side of SILENCE. Annoying intrusion is far worse than missing a chance to reply.
-- Never butt into casual chat between other people. If the conversation is not for you, stay silent.
-- Do not reply just to be polite or to say "I see" / "interesting" — add value or stay out.
-- If your confidence that ${botName} should speak is below ~60%, choose "silent".
-- Prefer "react" over "reply" for pure acknowledgments. A single emoji is often enough.`}
+- Asymmetry is the whole game: be CONSERVATIVE with "reply" (text), but GENEROUS with "react" (one emoji).
+  An uninvited text reply is an intrusion; a well-timed emoji is just presence — the cost is near zero.
+- Never write a text reply just to be polite or to say "I see" / "interesting" — add real value, or
+  "react" instead, or stay silent.
+- Never barge into a private or serious exchange between other people with text. A single quiet emoji
+  may still fit; if even that feels intrusive, choose "silent".
+- For "reply": if your confidence that a *text* response is actually wanted is below ~60%, do not reply —
+  downgrade to "react" when a light acknowledgment fits, otherwise "silent".
+- For "react": when a human teammate who had been reading along would naturally drop an emoji, do it.
+  Lightweight warmth and presence are the point here, not suppression.`}
 
 # Output
 Produce the JSON object now. Do not explain. Do not wrap in a code block. JSON only.`;

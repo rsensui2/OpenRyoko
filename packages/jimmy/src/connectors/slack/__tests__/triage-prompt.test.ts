@@ -76,10 +76,13 @@ describe("buildTriagePrompt", () => {
     expect(prompt).toContain("Ryoko is a helpful AI assistant");
   });
 
-  it("biases strongly toward silence in the principles block", () => {
+  it("keeps replies conservative while staying generous with reactions", () => {
     const prompt = buildTriagePrompt(baseInput());
-    expect(prompt).toContain("Err on the side of SILENCE");
+    // text replies stay gated at the ~60% confidence bar
     expect(prompt).toContain("below ~60%");
+    // but a light emoji presence is explicitly encouraged (the moltbot-style air-read)
+    expect(prompt).toContain('CONSERVATIVE with "reply"');
+    expect(prompt).toContain('GENEROUS with "react"');
   });
 });
 
@@ -131,12 +134,12 @@ describe("dmEquivalent mode (short-ack exception)", () => {
     expect(prompt).toContain('NEVER choose "silent"');
     expect(prompt).toContain("go-ahead");
     // The ambient-mode principles must be gone — they contradict 1:1 mode.
-    expect(prompt).not.toContain("Err on the side of SILENCE");
+    expect(prompt).not.toContain('CONSERVATIVE with "reply"');
   });
 
   it("keeps the ambient rules when dmEquivalent is not set", () => {
     const prompt = buildTriagePrompt(baseInput());
-    expect(prompt).toContain("Err on the side of SILENCE");
+    expect(prompt).toContain('CONSERVATIVE with "reply"');
     expect(prompt).not.toContain("Established 1:1 conversation");
   });
 
