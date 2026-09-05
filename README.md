@@ -68,6 +68,7 @@ WebUI の onboarding wizard が `/goal` / Canvas / triage を案内するので�
 ### エンジン / コスト最適化系（全て OpenRyoko 独自）
 
 - **GPT-6 Astra** — 設定画面で OpenAI（Codex）→ GPT-6 Astra を選択。推論強度は `low / medium / high / xhigh / max`。既定の GPT-5.6 Sol を保ち、利用するアカウントでAstraへのアクセス権が必要です。[公式モデル情報](https://developers.openai.com/api/docs/models/gpt-6-astra)
+- **Claude Fable 5.1** — 設定画面で Anthropic（Claude）→ Fable 5.1 を選択。推論強度 `low / medium / high / xhigh / max` と100万トークンのコンテキスト表示に対応。Claude Code 2.1.255以降とアカウントのアクセス権が必要です。既存の既定モデルは維持します。[公式モデル情報](https://platform.claude.com/docs/en/models/fable-5-1/overview)
 - 💸 **Interactive PTY エンジン** — Claude を「対話モード」で PTY 起動（`cc_entrypoint=cli`）。2026/6/15 の Claude 改定後も自動化を**通常のサブスク利用枠**で動かし、Agent SDK クレジットの消費・追加課金を回避（オプトイン。SSH 実行は `claude -p` に自動フォールバック、ターンタイムアウト等で堅牢化）
 - 📊 **コンテキストメーター** — codex / claude 両エンジンで直近ターンの入力コンテキスト量を計測・可視化。コンテキスト枯渇の予兆が一目で分かる
 - 🖥️ **ライブ xterm CLI ビュー** — ダッシュボードで Claude の PTY セッションをそのままターミナル表示（`/ws/pty`、Origin/host ガード付き）

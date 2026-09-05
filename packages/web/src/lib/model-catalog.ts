@@ -7,8 +7,8 @@
 // Values are the exact ids passed to each engine's CLI:
 //   - Claude: Opus は明示 ID `claude-opus-5` を既定にする。裸の `opus`
 //     エイリアスは「インストール済み Claude CLI が知っている最新 Opus」に
-//     解決されるため、CLI が古いと旧世代（4.8 等）に留まる。明示 ID なら
-//     CLI バージョンに関係なく Opus 5 が使われる（ID は API パススルー）。
+//     解決されるため、CLI が古いと旧世代（4.8 等）に留まる。
+//     明示 ID で世代を固定する。各モデルに対応する CLI バージョンが必要。
 //     `sonnet`/`haiku` の裸エイリアスは従来どおり最新ティアに解決。
 //   - OpenAI (Codex): GPT-5.6 ships three durable capability tiers —
 //     Sol (上 / flagship), Terra (中 / balanced), Luna (小 / fastest & cheapest).
@@ -47,15 +47,29 @@ export const DEFAULT_GEMINI_MODEL = "gemini-2.5-pro"
 export const DEFAULT_TRIAGE_CLAUDE_MODEL = "claude-haiku-4-5"
 export const DEFAULT_TRIAGE_CODEX_MODEL = "gpt-5-nano"
 
-/** Anthropic tiers. Opus は明示 ID（CLI 版数に依存しない）、他は裸エイリアス。 */
+/** Anthropic models. Fable 5.1 is opt-in and requires Claude Code >=2.1.255.
+ * https://code.claude.com/docs/en/model-config#work-with-fable */
 export const CLAUDE_MODELS: ModelOption[] = [
-  { value: "claude-opus-5", label: "Opus 5 — 上（最上位 / 既定 / claude-opus-5）" },
+  { value: "claude-opus-5", label: "Opus 5 — 上（既定 / claude-opus-5）" },
+  { value: "claude-fable-5-1", label: "Fable 5.1 — 高度な推論・長時間のエージェント作業" },
   { value: "claude-opus-4-8", label: "Opus 4.8 — 旧世代（ピン留め用 / claude-opus-4-8）" },
   { value: "opus", label: "Opus — CLI が解決する最新 Opus に自動追従" },
   { value: "sonnet", label: "Sonnet 5 — 中（バランス / claude-sonnet-5）" },
   { value: "claude-haiku-4-5", label: "Haiku 4.5 — 小（明示ID / トリアージ既定）" },
   { value: "haiku", label: "Haiku 4.5 — 小（軽量・高速 / claude-haiku-4-5）" },
 ]
+
+/** Fable's max is passed as --effort for each run, not saved in Claude settings. */
+export function claudeEffortOptionsForModel(model: string | undefined): ModelOption[] {
+  return [
+    { value: "default", label: "Default" },
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High" },
+    { value: "xhigh", label: "Extra High" },
+    ...(model === "claude-fable-5-1" ? [{ value: "max", label: "Max" }] : []),
+  ]
+}
 
 /**
  * OpenAI models. GPT-6 Astra is opt-in; GPT-5.6 Sol remains the default.

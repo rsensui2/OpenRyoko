@@ -9,3 +9,12 @@ describe("GPT-6 Astra context meter", () => {
     expect(contextLevel(contextFraction(945_000, "gpt-6-astra"))).toBe("critical")
   })
 })
+
+describe("Claude Fable 5.1 context meter", () => {
+  it("uses Fable's 1M window so a half-full session does not trigger a false critical warning", () => {
+    expect(contextWindowFor("claude-fable-5-1")).toBe(1_000_000)
+    expect(contextFraction(500_000, "claude-fable-5-1")).toBe(0.5)
+    expect(contextLevel(contextFraction(500_000, "claude-fable-5-1"))).toBe("ok")
+    expect(contextLevel(contextFraction(900_000, "claude-fable-5-1"))).toBe("critical")
+  })
+})

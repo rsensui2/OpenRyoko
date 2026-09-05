@@ -11,6 +11,7 @@ import {
   MODEL_VENDORS,
   TRIAGE_MODEL_VENDORS,
   defaultModelForEngine,
+  claudeEffortOptionsForModel,
   codexEffortOptionsForModel,
   defaultTriageModelForEngine,
   isCatalogModel,
@@ -41,6 +42,16 @@ describe("model-catalog", () => {
   it("keeps Opus 4.8 pin and the bare opus alias selectable", () => {
     const ids = CLAUDE_MODELS.map((m) => m.value)
     expect(ids).toEqual(expect.arrayContaining(["claude-opus-4-8", "opus"]))
+  })
+
+  it("offers Fable 5.1 by its explicit id with max effort without changing the Claude default", () => {
+    expect(isCatalogModel("claude", "claude-fable-5-1")).toBe(true)
+    expect(DEFAULT_CLAUDE_MODEL).toBe("claude-opus-5")
+    expect(claudeEffortOptionsForModel("claude-fable-5-1").map((option) => option.value))
+      .toEqual(["default", "low", "medium", "high", "xhigh", "max"])
+    for (const model of ["claude-opus-5", "claude-haiku-4-5", undefined, "claude-private-preview"]) {
+      expect(claudeEffortOptionsForModel(model).map((option) => option.value)).not.toContain("max")
+    }
   })
 
   it("exposes the GPT-5.6 松竹梅 tiers (Sol / Terra / Luna)", () => {

@@ -47,6 +47,8 @@ function resolveClaudeModelId(model: string | undefined): string | undefined {
 // $/million tokens. Conservative defaults. Older model ids kept so cost can still
 // be reconstructed when resuming historical transcripts.
 const MODEL_PRICES: Record<string, { in: number; out: number }> = {
+  // https://platform.claude.com/docs/en/models/fable-5-1/overview
+  "claude-fable-5-1": { in: 10, out: 50 },
   "claude-opus-4-8": { in: 15, out: 75 },
   "claude-opus-4-7": { in: 15, out: 75 },
   "claude-sonnet-5": { in: 3, out: 15 },
