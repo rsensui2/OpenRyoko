@@ -54,6 +54,12 @@ const CREATE_MESSAGES_INDEX = `
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages (session_id, timestamp)
 `;
 
+// The cross-session digest scans recent assistant replies across sessions.
+// A session-leading index would scan all historical messages on every turn.
+const CREATE_RECENT_REPLIES_INDEX = `
+CREATE INDEX IF NOT EXISTS idx_messages_role_timestamp ON messages (role, timestamp)
+`;
+
 const CREATE_SESSION_KEY_INDEX = `
 CREATE INDEX IF NOT EXISTS idx_sessions_session_key ON sessions (session_key, last_activity)
 `;
@@ -234,6 +240,7 @@ export function initDb(): Database.Database {
   db.exec(CREATE_TABLE);
   db.exec(CREATE_MESSAGES_TABLE);
   db.exec(CREATE_MESSAGES_INDEX);
+  db.exec(CREATE_RECENT_REPLIES_INDEX);
   initializeFts(db);
   migrateSessionsSchema(db);
   db.exec(CREATE_SESSION_KEY_INDEX);
@@ -775,6 +782,57 @@ export function insertMessage(sessionId: string, role: string, content: string):
 export function getMessages(sessionId: string): SessionMessage[] {
   const db = initDb();
   return db.prepare('SELECT id, role, content, timestamp FROM messages WHERE session_id = ? ORDER BY timestamp ASC').all(sessionId) as SessionMessage[];
+}
+
+export interface RecentReply {
+  sessionId: string;
+  sourceRef: string;
+  transportMeta: string | null;
+  content: string;
+  timestamp: number;
+}
+
+/** Recent portal replies; cron and employee sessions never count as its work. */
+export function getRecentRepliesAcrossSessions(opts: {
+  sinceMs: number;
+  limit: number;
+  excludeSessionId?: string;
+  /** Defaults to excluding DMs. Only the privacy gate may opt in. */
+  excludeDirectMessages?: boolean;
+  /** Restrict shared-thread context to this exact Slack channel. */
+  channelId?: string;
+}): RecentReply[] {
+  if (!Number.isFinite(opts.sinceMs) || !Number.isFinite(opts.limit) || opts.limit < 1) return [];
+  if (opts.channelId !== undefined && !/^[CG][A-Z0-9]+$/.test(opts.channelId)) return [];
+  const database = initDb();
+  const rows = database.prepare(`
+    SELECT m.session_id AS sessionId,
+           s.source_ref AS sourceRef,
+           s.transport_meta AS transportMeta,
+           m.content AS content,
+           m.timestamp AS timestamp
+    FROM messages m
+    JOIN sessions s ON s.id = m.session_id
+    WHERE m.role = 'assistant'
+      AND m.timestamp >= ?
+      AND s.source = 'slack'
+      AND s.source_ref LIKE 'slack:%'
+      AND s.employee IS NULL
+      AND (? = 0 OR s.source_ref NOT LIKE 'slack:dm:%')
+      AND (? IS NULL OR s.source_ref LIKE ?)
+      AND (? IS NULL OR m.session_id != ?)
+    ORDER BY m.timestamp DESC, m.rowid DESC
+    LIMIT ?
+  `).all(
+    opts.sinceMs,
+    opts.excludeDirectMessages !== false ? 1 : 0,
+    opts.channelId ?? null,
+    opts.channelId ? `slack:${opts.channelId}:%` : null,
+    opts.excludeSessionId ?? null,
+    opts.excludeSessionId ?? null,
+    Math.min(Math.floor(opts.limit), 100),
+  ) as RecentReply[];
+  return rows.reverse();
 }
 
 export function getMessagePage(sessionId: string, options: { before?: string; limit?: number } = {}): MessagePage {
