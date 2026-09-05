@@ -4,6 +4,19 @@ import { ModelSelector } from "../model-selector"
 import { CUSTOM_MODEL_VALUE } from "@/lib/model-catalog"
 
 describe("ModelSelector", () => {
+  it("selects Fable 5.1 without custom input and explains its minimum Claude Code version", () => {
+    const onChange = vi.fn()
+    const { rerender } = render(
+      <ModelSelector id="model" engine="claude" model="claude-opus-5" onChange={onChange} />,
+    )
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "claude-fable-5-1" } })
+    expect(onChange).toHaveBeenCalledWith("claude-fable-5-1")
+    rerender(<ModelSelector id="model" engine="claude" model="claude-fable-5-1" onChange={onChange} />)
+    expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("claude-fable-5-1")
+    expect(screen.queryByRole("textbox")).toBeNull()
+    expect(screen.getByText(/Claude Code 2\.1\.255 以降/)).toBeDefined()
+  })
+
   it("selects Astra without custom input and explains account access when selected", () => {
     const onChange = vi.fn()
     const { rerender } = render(

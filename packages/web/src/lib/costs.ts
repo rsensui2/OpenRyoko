@@ -85,6 +85,8 @@ export interface CostSummary {
 // ── Pricing table (per 1M tokens) ────────────────────────────
 
 const PRICING: Record<string, ModelPricing> = {
+  // https://platform.claude.com/docs/en/models/fable-5-1/overview
+  'claude-fable-5-1':    { inputPer1M: 10, outputPer1M: 50 },
   // Opus 5 / 4.8 / 4.7 / 4.6 はいずれも $5/$25 per MTok（Anthropic 公式 docs、
   // 2026-07-25 確認。旧値 $15/$75 は Opus 4.1 世代の価格で誤りだった）。
   'claude-opus-5':       { inputPer1M: 5, outputPer1M: 25 },

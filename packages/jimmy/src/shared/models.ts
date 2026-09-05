@@ -38,8 +38,17 @@ const SYNTH_DEFAULTS: Record<EngineName, { supportsEffort: boolean; effortLevels
 };
 
 /** Published capabilities, not a guarantee of access on the connected account.
- * https://developers.openai.com/api/docs/models/gpt-6-astra */
+ * https://developers.openai.com/api/docs/models/gpt-6-astra
+ * https://platform.claude.com/docs/en/models/fable-5-1/overview
+ * https://code.claude.com/docs/en/model-config#adjust-effort-level */
 const BUILTIN_MODELS: Partial<Record<EngineName, ModelInfo[]>> = {
+  claude: [{
+    id: "claude-fable-5-1",
+    label: "Claude Fable 5.1",
+    supportsEffort: true,
+    effortLevels: ["low", "medium", "high", "xhigh", "max"],
+    contextWindow: 1_000_000,
+  }],
   codex: [{
     id: "gpt-6-astra",
     label: "GPT-6 Astra",

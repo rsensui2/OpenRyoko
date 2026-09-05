@@ -15,6 +15,7 @@ import { UpdateNotificationSettings } from "@/components/settings/update-notific
 import {
   MODEL_VENDORS,
   TRIAGE_MODEL_VENDORS,
+  claudeEffortOptionsForModel,
   codexEffortOptionsForModel,
   defaultModelForEngine,
   defaultTriageModelForEngine,
@@ -819,11 +820,13 @@ export default function SettingsPage() {
         obj = obj[path[i]] as Record<string, unknown>
       }
       obj[path[path.length - 1]] = value
-      // Both the default-model and Codex-specific pickers use this path.
-      // Leaving Astra must not leave an invisible, unsupported max selected.
+      // Both the default-model and engine-specific pickers use this path.
+      // Changing models must not leave an invisible max effort selected.
       if (
-        path.join(".") === "engines.codex.model" &&
-        value !== "gpt-6-astra" && obj.effortLevel === "max"
+        obj.effortLevel === "max" && (
+          (path.join(".") === "engines.codex.model" && value !== "gpt-6-astra") ||
+          (path.join(".") === "engines.claude.model" && value !== "claude-fable-5-1")
+        )
       ) {
         obj.effortLevel = "default"
       }
@@ -1300,13 +1303,7 @@ export default function SettingsPage() {
                     onChange={(v) =>
                       updateConfig(["engines", "claude", "effortLevel"], v)
                     }
-                    options={[
-                      { value: "default", label: "Default" },
-                      { value: "low", label: "Low" },
-                      { value: "medium", label: "Medium" },
-                      { value: "high", label: "High" },
-                      { value: "xhigh", label: "Extra High" },
-                    ]}
+                    options={claudeEffortOptionsForModel(config.engines?.claude?.model)}
                   />
                 </FieldRow>
                 <FieldRow label="インタラクティブPTY（Max定額）">

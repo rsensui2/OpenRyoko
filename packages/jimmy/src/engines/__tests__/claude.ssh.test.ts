@@ -186,6 +186,21 @@ describe("ClaudeEngine — local execution unchanged", () => {
   beforeEach(() => { engine = new ClaudeEngine(); });
   afterEach(() => { vi.restoreAllMocks(); mockSpawn.mockReset(); });
 
+  it.each([undefined, "resume-fable"])("passes the exact Fable 5.1 model and max effort to fresh and resumed runs (%s)", async (resumeSessionId) => {
+    const proc = createMockProcess();
+    mockSpawn.mockReturnValue(proc as any);
+    const p = engine.run({
+      prompt: "hello", cwd: "/tmp", sessionId: "fable", model: "claude-fable-5-1",
+      effortLevel: "max", resumeSessionId,
+    });
+    const args = mockSpawn.mock.calls[0][1] as string[];
+    expect(args[args.indexOf("--model") + 1]).toBe("claude-fable-5-1");
+    expect(args[args.indexOf("--effort") + 1]).toBe("max");
+    if (resumeSessionId) expect(args[args.indexOf("--resume") + 1]).toBe(resumeSessionId);
+    finishOk(proc);
+    await p;
+  });
+
   it("passes the prompt as an argv element and does not write to stdin", async () => {
     const proc = createMockProcess();
     mockSpawn.mockReturnValue(proc as any);

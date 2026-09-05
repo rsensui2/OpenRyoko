@@ -140,6 +140,9 @@ export function ModelSelector({
         {engine === "codex" && model === "gpt-6-astra" && (
           <> GPT-6 Astra の利用には、対応する Codex CLI とアカウントのアクセス権が必要です。</>
         )}
+        {engine === "claude" && model === "claude-fable-5-1" && (
+          <> Fable 5.1 の利用には、Claude Code 2.1.255 以降とアカウントのアクセス権が必要です。</>
+        )}
       </p>
     </div>
   )

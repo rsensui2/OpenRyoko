@@ -52,6 +52,30 @@ describe("synthesizeFromEngineConfig (backward-compat fallback)", () => {
     expect(contextWindowForModel(config, "codex", "gpt-6-astra")).toBe(1_050_000);
   });
 
+  it("makes Fable 5.1 available without changing either engine's configured default", () => {
+    const config = cfg({
+      default: "codex",
+      claude: { bin: "claude", model: "claude-opus-5" },
+      codex: { bin: "codex", model: "gpt-6-astra" },
+    });
+    const reg = getModelRegistry(config);
+    expect(reg.claude.defaultModel).toBe("claude-opus-5");
+    expect(reg.codex.defaultModel).toBe("gpt-6-astra");
+    expect(reg.claude.models.find((model) => model.id === "claude-fable-5-1")).toMatchObject({
+      label: "Claude Fable 5.1", supportsEffort: true, contextWindow: 1_000_000,
+      effortLevels: ["low", "medium", "high", "xhigh", "max"],
+    });
+    expect(effortLevelsForModel(config, "claude", "claude-fable-5-1")).toContain("max");
+    expect(effortLevelsForModel(config, "claude", "claude-haiku-4-5")).not.toContain("max");
+    expect(contextWindowForModel(config, "claude", "claude-fable-5-1")).toBe(1_000_000);
+  });
+
+  it("does not duplicate Fable 5.1 when it is already the configured default", () => {
+    const reg = synthesizeFromEngineConfig(cfg({ claude: { bin: "claude", model: "claude-fable-5-1" } }));
+    expect(reg.claude.models.map((model) => model.id)).toEqual(["claude-fable-5-1"]);
+    expect(reg.claude.models[0].effortLevels).toContain("max");
+  });
+
   it("does not duplicate Astra when it is already the configured default", () => {
     const reg = synthesizeFromEngineConfig(cfg({ codex: { bin: "codex", model: "gpt-6-astra" } }));
     expect(reg.codex.models.map((model) => model.id)).toEqual(["gpt-6-astra"]);
@@ -116,6 +140,18 @@ describe("getModelRegistry with a models: block", () => {
   it("preserves an explicit model list instead of widening the user's allowlist", () => {
     const reg = getModelRegistry(cfg({}, models));
     expect(reg.codex.models.map((model) => model.id)).toEqual(["gpt-5.3-codex"]);
+    expect(reg.claude.models.map((model) => model.id)).not.toContain("claude-fable-5-1");
+  });
+
+  it("honors explicit Fable capabilities, including restricted effort settings", () => {
+    const config = cfg({}, {
+      claude: {
+        default: "claude-fable-5-1",
+        models: [{ id: "claude-fable-5-1", supportsEffort: true, effortLevels: ["high"], contextWindow: 200_000 }],
+      },
+    });
+    expect(effortLevelsForModel(config, "claude", "claude-fable-5-1")).toEqual(["high"]);
+    expect(contextWindowForModel(config, "claude", "claude-fable-5-1")).toBe(200_000);
   });
 
   it("honors explicit Astra capabilities, including restricted effort settings", () => {
