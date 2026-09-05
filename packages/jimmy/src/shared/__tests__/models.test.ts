@@ -38,6 +38,27 @@ describe("synthesizeFromEngineConfig (backward-compat fallback)", () => {
     expect(reg.gemini.models[0].effortLevels).toEqual([]);
   });
 
+  it("makes Astra available alongside the configured Codex default with its own capabilities", () => {
+    const config = cfg({ codex: { bin: "codex", model: "gpt-5.6-sol" } });
+    const reg = getModelRegistry(config);
+    expect(reg.codex.defaultModel).toBe("gpt-5.6-sol");
+    expect(reg.codex.models[0].id).toBe("gpt-5.6-sol");
+    expect(reg.codex.models.find((model) => model.id === "gpt-6-astra")).toMatchObject({
+      label: "GPT-6 Astra", supportsEffort: true, contextWindow: 1_050_000,
+      effortLevels: ["low", "medium", "high", "xhigh", "max"],
+    });
+    expect(effortLevelsForModel(config, "codex", "gpt-6-astra")).toContain("max");
+    expect(effortLevelsForModel(config, "codex", "gpt-5.6-sol")).not.toContain("max");
+    expect(contextWindowForModel(config, "codex", "gpt-6-astra")).toBe(1_050_000);
+  });
+
+  it("does not duplicate Astra when it is already the configured default", () => {
+    const reg = synthesizeFromEngineConfig(cfg({ codex: { bin: "codex", model: "gpt-6-astra" } }));
+    expect(reg.codex.models.map((model) => model.id)).toEqual(["gpt-6-astra"]);
+    expect(reg.codex.models[0].effortLevels).toContain("max");
+    expect(reg.codex.models[0].effortLevels).not.toContain("none");
+  });
+
   it("grants xhigh only to xhigh-capable claude models", () => {
     const levelsFor = (model: string) =>
       synthesizeFromEngineConfig(cfg({ claude: { bin: "claude", model } })).claude.models[0].effortLevels;
@@ -90,6 +111,22 @@ describe("getModelRegistry with a models: block", () => {
     const reg = getModelRegistry(cfg({}, models));
     expect(reg.claude.defaultModel).toBe("claude-opus-4-8");
     expect(reg.gemini.defaultModel).toBe("gemini-2.5-pro"); // no default → first
+  });
+
+  it("preserves an explicit model list instead of widening the user's allowlist", () => {
+    const reg = getModelRegistry(cfg({}, models));
+    expect(reg.codex.models.map((model) => model.id)).toEqual(["gpt-5.3-codex"]);
+  });
+
+  it("honors explicit Astra capabilities, including restricted effort settings", () => {
+    const config = cfg({}, {
+      codex: {
+        default: "gpt-6-astra",
+        models: [{ id: "gpt-6-astra", supportsEffort: true, effortLevels: ["high"], contextWindow: 900_000 }],
+      },
+    });
+    expect(effortLevelsForModel(config, "codex", "gpt-6-astra")).toEqual(["high"]);
+    expect(contextWindowForModel(config, "codex", "gpt-6-astra")).toBe(900_000);
   });
 });
 

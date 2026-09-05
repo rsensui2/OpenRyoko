@@ -52,7 +52,7 @@ function bindingWithFixed<T extends z.ZodType>(fixedValueSchema: T) {
 
 export const bindingSchema = bindingWithFixed(jsonValueSchema);
 const stringBindingSchema = bindingWithFixed(z.string());
-const effortBindingSchema = bindingWithFixed(z.enum(['low', 'medium', 'high', 'xhigh']));
+const effortBindingSchema = bindingWithFixed(z.enum(['low', 'medium', 'high', 'xhigh', 'max']));
 const concurrencySchema = finiteNumberSchema.int().min(1).max(16);
 type InferredBinding = z.infer<typeof bindingSchema>;
 export type Binding<T extends JsonValue = JsonValue> =

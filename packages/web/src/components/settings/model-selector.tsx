@@ -137,6 +137,9 @@ export function ModelSelector({
         className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)]"
       >
         一覧にないモデルは「カスタムモデルID」を選び、入力後に確定できます。
+        {engine === "codex" && model === "gpt-6-astra" && (
+          <> GPT-6 Astra の利用には、対応する Codex CLI とアカウントのアクセス権が必要です。</>
+        )}
       </p>
     </div>
   )

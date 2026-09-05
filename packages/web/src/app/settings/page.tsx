@@ -15,6 +15,7 @@ import { UpdateNotificationSettings } from "@/components/settings/update-notific
 import {
   MODEL_VENDORS,
   TRIAGE_MODEL_VENDORS,
+  codexEffortOptionsForModel,
   defaultModelForEngine,
   defaultTriageModelForEngine,
   type SupportedModelEngine,
@@ -818,6 +819,14 @@ export default function SettingsPage() {
         obj = obj[path[i]] as Record<string, unknown>
       }
       obj[path[path.length - 1]] = value
+      // Both the default-model and Codex-specific pickers use this path.
+      // Leaving Astra must not leave an invisible, unsupported max selected.
+      if (
+        path.join(".") === "engines.codex.model" &&
+        value !== "gpt-6-astra" && obj.effortLevel === "max"
+      ) {
+        obj.effortLevel = "default"
+      }
       return next
     })
   }
@@ -1356,13 +1365,7 @@ export default function SettingsPage() {
                     onChange={(v) =>
                       updateConfig(["engines", "codex", "effortLevel"], v)
                     }
-                    options={[
-                      { value: "default", label: "Default" },
-                      { value: "low", label: "Low" },
-                      { value: "medium", label: "Medium" },
-                      { value: "high", label: "High" },
-                      { value: "xhigh", label: "Extra High" },
-                    ]}
+                    options={codexEffortOptionsForModel(config.engines?.codex?.model)}
                   />
                 </FieldRow>
 

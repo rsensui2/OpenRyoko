@@ -18,19 +18,26 @@ const DEFAULT_EFFORT = "medium";
  *   3. employee.effortLevel — employee YAML default
  *   4. config.engines.<engine>.effortLevel — engine fallback
  *
- * For non-child sessions (COO's own), use engine effortLevel directly.
+ * Workflow attempts carry their already-resolved effort in the session even
+ * though they have no parent session. Honor that value before engine defaults.
+ * For other non-child sessions (COO's own), use engine effortLevel directly.
  *
  * When the engine/model has no effort concept (validLevels empty, e.g.
  * Gemini), returns the default without warnings — effort is just ignored.
  */
 export function resolveEffort(
   engineConfig: { effortLevel?: string; childEffortOverride?: string },
-  session: Pick<Session, "parentSessionId" | "effortLevel">,
+  session: Pick<Session, "parentSessionId" | "effortLevel"> & Partial<Pick<Session, "workflowProvenance">>,
   employee: Pick<Employee, "effortLevel"> | null | undefined,
   validLevels: string[],
 ): string {
   if (validLevels.length === 0) return DEFAULT_EFFORT;
   const isValid = (level: string) => validLevels.includes(level);
+
+  if (session.workflowProvenance?.kind === "phase" && session.effortLevel) {
+    if (isValid(session.effortLevel)) return session.effortLevel;
+    logger.warn(`Invalid workflow effortLevel "${session.effortLevel}" (valid: ${validLevels.join(", ")}), skipping`);
+  }
 
   if (session.parentSessionId) {
     const override = engineConfig.childEffortOverride;

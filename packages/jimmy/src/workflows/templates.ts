@@ -44,7 +44,7 @@ export class TemplateError extends Error {}
 const COMMON_MODEL_VARS: TemplateVariableSpec[] = [
   { key: "engine", label: "エンジン", hint: "claude / codex / gemini", required: false, default: "claude", options: ["claude", "codex", "gemini"] },
   { key: "model", label: "モデル", hint: "例: opus, sonnet, gpt-5.6-sol", required: false, default: "opus" },
-  { key: "effort", label: "effort", hint: "low / medium / high / xhigh", required: false, default: "high", options: ["low", "medium", "high", "xhigh"] },
+  { key: "effort", label: "effort", hint: "low / medium / high / xhigh / max", required: false, default: "high", options: ["low", "medium", "high", "xhigh", "max"] },
 ];
 
 export const AUTOMATION_TEMPLATES: AutomationTemplate[] = [
@@ -62,7 +62,7 @@ export const AUTOMATION_TEMPLATES: AutomationTemplate[] = [
       { key: "lightModel", label: "判定モデル", hint: "判定に使う安いモデル（例: sonnet）", required: false, default: "sonnet" },
       { key: "heavyEngine", label: "実行エンジン", hint: "本処理のエンジン", required: false, default: "claude", options: ["claude", "codex", "gemini"] },
       { key: "heavyModel", label: "実行モデル", hint: "本処理のモデル（例: opus）", required: false, default: "opus" },
-      { key: "heavyEffort", label: "実行 effort", hint: "low / medium / high / xhigh", required: false, default: "high", options: ["low", "medium", "high", "xhigh"] },
+      { key: "heavyEffort", label: "実行 effort", hint: "low / medium / high / xhigh / max", required: false, default: "high", options: ["low", "medium", "high", "xhigh", "max"] },
       { key: "approval", label: "実行前の承認", hint: "yes = 重いモデルが動く前に人間の承認を挟む（推奨・既定）。no = 判定が通れば即実行", required: false, default: "yes", options: ["yes", "no"] },
       { key: "timezone", label: "タイムゾーン", hint: "IANA 名", required: false, default: "Asia/Tokyo" },
     ],
@@ -239,7 +239,7 @@ export function buildTemplateBody(templateId: string, vars: Record<string, strin
           employee: fixed(v.employee!),
           engine: fixed(v.heavyEngine!),
           model: fixed(v.heavyModel!),
-          effort: fixed(v.heavyEffort!) as { source: "fixed"; value: "low" | "medium" | "high" | "xhigh" },
+          effort: fixed(v.heavyEffort!) as { source: "fixed"; value: "low" | "medium" | "high" | "xhigh" | "max" },
           // Instructions FIRST, external data LAST, and the data block is
           // deliberately never closed: a summary containing "</external-report>"
           // opens nothing, because the prompt has already declared that
@@ -284,7 +284,7 @@ export function buildTemplateBody(templateId: string, vars: Record<string, strin
           employee: fixed(v.employee!),
           engine: fixed(v.engine!),
           model: fixed(v.model!),
-          effort: fixed(v.effort!) as { source: "fixed"; value: "low" | "medium" | "high" | "xhigh" },
+          effort: fixed(v.effort!) as { source: "fixed"; value: "low" | "medium" | "high" | "xhigh" | "max" },
           prompt: v.prompt!,
           output: { fields: {}, allowAdditionalFields: true },
         },
@@ -312,7 +312,7 @@ export function buildTemplateBody(templateId: string, vars: Record<string, strin
         employee: fixed(v.employee!),
         engine: fixed(v.engine!),
         model: fixed(v.model!),
-        effort: fixed(v.effort!) as { source: "fixed"; value: "low" | "medium" | "high" | "xhigh" },
+        effort: fixed(v.effort!) as { source: "fixed"; value: "low" | "medium" | "high" | "xhigh" | "max" },
         prompt: v.prompt!,
         output: { fields: {}, allowAdditionalFields: true },
       },

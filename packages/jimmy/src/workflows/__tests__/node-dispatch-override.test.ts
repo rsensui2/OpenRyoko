@@ -3,7 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { Employee, ModelRegistry } from '../../shared/types.js';
+import type { Employee, JinnConfig, ModelRegistry } from '../../shared/types.js';
+import { buildRegistry } from '../../shared/models.js';
 import type { EmployeeNode, WorkflowDefinition, WorkflowNode } from '../model.js';
 import { resolveDispatch, type DispatchResolutionDeps } from '../node-dispatch.js';
 import { openWorkflowDatabase } from '../repository-migrations.js';
@@ -21,6 +22,10 @@ const WORKER: Employee = {
   name: 'worker', displayName: 'Worker', department: 'platform', rank: 'employee',
   engine: 'codex', model: 'gpt-5.6-sol', persona: 'works',
 } as unknown as Employee;
+
+const BUILTIN_REGISTRY = buildRegistry({ engines: {
+  default: 'codex', codex: { bin: 'codex', model: 'gpt-5.6-sol' },
+} } as JinnConfig);
 
 const MODELS: ModelRegistry = {
   codex: {
@@ -75,6 +80,19 @@ beforeEach(() => {
   process.env.JINN_HOME = root;
   database = openWorkflowDatabase();
   repository = new WorkflowRepository(database);
+});
+
+it('dispatches Astra with max effort from the built-in registry and rejects max on older models', () => {
+  const config: Partial<EmployeeNode['config']> = {
+    model: { source: 'fixed', value: 'gpt-6-astra' },
+    effort: { source: 'fixed', value: 'max' },
+  };
+  const dependencies = { ...deps(), models: () => BUILTIN_REGISTRY };
+  expect(resolveDispatch(run(undefined, config), employeeNode(config), dependencies))
+    .toMatchObject({ engine: 'codex', model: 'gpt-6-astra', effort: 'max' });
+  config.model = { source: 'fixed', value: 'gpt-5.6-sol' };
+  expect(() => resolveDispatch(run(undefined, config), employeeNode(config), dependencies))
+    .toThrow(/effort "max" is not available/);
 });
 
 afterEach(() => {

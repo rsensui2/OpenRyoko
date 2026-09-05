@@ -37,6 +37,20 @@ describe("CodexEngine", () => {
   });
 
   describe("run() — agent_message handling", () => {
+    it.each([undefined, "thread-astra"])("passes Astra and max effort to Codex (resume=%s)", async (resumeSessionId) => {
+      const proc = createMockProcess();
+      mockSpawn.mockReturnValue(proc as any);
+      const resultPromise = engine.run({
+        prompt: "hello", cwd: "/tmp", model: "gpt-6-astra", effortLevel: "max", resumeSessionId,
+      });
+      const args = mockSpawn.mock.calls.at(-1)?.[1] as string[];
+      expect(args[args.indexOf("--model") + 1]).toBe("gpt-6-astra");
+      expect(args).toContain('model_reasoning_effort="max"');
+      proc.exitCode = 0;
+      proc.emit("close", 0);
+      await resultPromise;
+    });
+
     it("uses a positional fence so dash-prefixed prompts are never parsed as CLI flags", async () => {
       const proc = createMockProcess();
       mockSpawn.mockReturnValue(proc as any);

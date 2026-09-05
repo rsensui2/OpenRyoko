@@ -124,6 +124,22 @@ function decodeCursor(value: string): Record<string, unknown> {
 }
 
 describe('WorkflowRepository Task 11 contract', () => {
+  it('persists and reloads an Astra attempt using max effort', () => {
+    authoredDefinition();
+    const run = createRun();
+    repository.mutateRun(run.id, 1, (tx) => {
+      tx.setRunStatus('running');
+      tx.setNodeStatus('draft', 'dispatching', { activated: true, startedAt: START });
+      tx.createAttempt({
+        nodeId: 'draft', input: {},
+        resolvedConfig: { ...resolved(), model: 'gpt-6-astra', effort: 'max' },
+      });
+    });
+    expect(repository.getAttempt(run.id, 'draft', 1)?.resolvedConfig)
+      .toMatchObject({ engine: 'codex', model: 'gpt-6-astra', effort: 'max' });
+    expect(repository.getRun(run.workflowId, run.id)?.attempts[0].resolvedConfig.effort).toBe('max');
+  });
+
   it('exposes the ten run methods and exact public contract shapes', () => {
     expectTypeOf(repository.createRun).parameter(0).toEqualTypeOf<CreateRunInput>();
     expectTypeOf(repository.createRun).returns.toEqualTypeOf<WorkflowRunRecord>();

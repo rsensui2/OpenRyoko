@@ -11,8 +11,9 @@ import type {
  * Model + capability registry — the single source of truth for which engines and
  * models exist and what they support (effort levels). Built from the
  * optional `models:` block in config.yaml; when that block is absent (or an engine
- * is missing from it) the entry is synthesized from `engines.<name>.model` so
- * existing configs keep working. Adding a NEW model is a config edit, no code change.
+ * is missing from it) the entry combines `engines.<name>.model` with built-in
+ * model capabilities so existing configs keep working. An explicit `models:`
+ * block remains authoritative; custom models can be added without code changes.
  */
 
 /** Engines registered in this build (mirrors server.ts engine map). */
@@ -34,6 +35,18 @@ const SYNTH_DEFAULTS: Record<EngineName, { supportsEffort: boolean; effortLevels
   claude: { supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh"], fallbackModel: "claude-opus-5" },
   codex: { supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh"], fallbackModel: "gpt-5.6-sol" },
   gemini: { supportsEffort: false, effortLevels: [], fallbackModel: "gemini-2.5-pro" },
+};
+
+/** Published capabilities, not a guarantee of access on the connected account.
+ * https://developers.openai.com/api/docs/models/gpt-6-astra */
+const BUILTIN_MODELS: Partial<Record<EngineName, ModelInfo[]>> = {
+  codex: [{
+    id: "gpt-6-astra",
+    label: "GPT-6 Astra",
+    supportsEffort: true,
+    effortLevels: ["low", "medium", "high", "xhigh", "max"],
+    contextWindow: 1_050_000,
+  }],
 };
 
 /**
@@ -66,6 +79,8 @@ function claudeEffortLevels(modelId: string): string[] {
 
 /** Effort levels a synthesized (no `models:` block) entry gives a specific model. */
 function synthEffortLevels(engine: EngineName, modelId: string): string[] {
+  const known = BUILTIN_MODELS[engine]?.find((model) => model.id === modelId);
+  if (known) return [...known.effortLevels];
   const d = SYNTH_DEFAULTS[engine];
   if (!d.supportsEffort) return [];
   return engine === "claude" ? claudeEffortLevels(modelId) : [...d.effortLevels];
@@ -142,25 +157,29 @@ export function buildRegistry(config: JinnConfig): ModelRegistry {
   return registry;
 }
 
-/** Backward-compat: synthesize a minimal registry from engines.<name>.model. */
+/** Keep the configured default first and add built-in models without duplicates. */
 export function synthesizeFromEngineConfig(config: JinnConfig): ModelRegistry {
   const registry: ModelRegistry = {};
   for (const name of ENGINE_NAMES) {
     const defaults = SYNTH_DEFAULTS[name];
     const engineCfg = (config.engines as unknown as Record<string, { model?: string } | undefined>)[name];
     const modelId = engineCfg?.model || defaults.fallbackModel;
+    const builtins = BUILTIN_MODELS[name] ?? [];
+    const known = builtins.find((model) => model.id === modelId);
     const model: ModelInfo = {
       id: modelId,
-      label: modelId,
-      supportsEffort: defaults.supportsEffort,
+      label: known?.label ?? modelId,
+      supportsEffort: known?.supportsEffort ?? defaults.supportsEffort,
       effortLevels: synthEffortLevels(name, modelId),
+      ...(known?.contextWindow !== undefined ? { contextWindow: known.contextWindow } : {}),
     };
     registry[name] = {
       name,
       available: true,
       defaultModel: modelId,
       effortMechanism: EFFORT_MECHANISM[name],
-      models: [model],
+      models: [model, ...builtins.filter((candidate) => candidate.id !== modelId)
+        .map((candidate) => ({ ...candidate, effortLevels: [...candidate.effortLevels] }))],
     };
   }
   return registry;

@@ -4,6 +4,19 @@ import { ModelSelector } from "../model-selector"
 import { CUSTOM_MODEL_VALUE } from "@/lib/model-catalog"
 
 describe("ModelSelector", () => {
+  it("selects Astra without custom input and explains account access when selected", () => {
+    const onChange = vi.fn()
+    const { rerender } = render(
+      <ModelSelector id="model" engine="codex" model="gpt-5.6-sol" onChange={onChange} />,
+    )
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "gpt-6-astra" } })
+    expect(onChange).toHaveBeenCalledWith("gpt-6-astra")
+    rerender(<ModelSelector id="model" engine="codex" model="gpt-6-astra" onChange={onChange} />)
+    expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("gpt-6-astra")
+    expect(screen.queryByRole("textbox")).toBeNull()
+    expect(screen.getByText(/アカウントのアクセス権/)).toBeDefined()
+  })
+
   it("shows models for the selected vendor and emits a curated model id", () => {
     const onChange = vi.fn()
     render(

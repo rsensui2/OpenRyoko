@@ -392,6 +392,9 @@ describe('employee Binding and output declarations', () => {
     fixed.config.model = { source: 'fixed', value: 'model-name' };
     fixed.config.effort = { source: 'fixed', value: 'xhigh' };
     expect(workflowNodeSchema.safeParse(fixed).success).toBe(true);
+    fixed.config.model = { source: 'fixed', value: 'gpt-6-astra' };
+    fixed.config.effort = { source: 'fixed', value: 'max' };
+    expect(workflowNodeSchema.safeParse(fixed).success).toBe(true);
 
     for (const [field, binding] of [
       ['employee', { source: 'fixed', value: 1 }],
