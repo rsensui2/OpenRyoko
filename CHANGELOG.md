@@ -21,6 +21,12 @@
 - [OpenAI公式モデル情報](https://developers.openai.com/api/docs/models/gpt-6-astra): 最大出力 128,000 トークン。API標準料金は100万トークンあたり入力 $10 / キャッシュ入力 $1 / 出力 $50（長文入力には別倍率）。Codexのサブスクリプション利用枠とは異なります。
 - Astraは段階提供です。OpenRyokoへの候補追加とは別に、利用するOpenAIアカウントでのアクセス権が必要です。[提供状況・移行ガイド](https://developers.openai.com/api/docs/guides/latest-model)
 
+### 検証
+
+- Backend: 161ファイル・1,891テスト成功。Web: 13ファイル・88テスト成功。両パッケージの型チェック、本番ビルド、tarball同梱検査成功。
+- Codex CLI 0.153.4の使い捨てコンテナで、既存認証によるAstraの `low` / `max` 応答を確認。
+- 既存PR #22・#32・#37は競合解消と独立レビュー後、GitHub Actionsの全チェックを通過してマージ。
+
 ## [2026.9.3] - 2026-09-01
 
 > 従業員に委譲した親セッションが「二度と起きない」問題の修正。8/18 の gateway 認証強化以降、子セッションの完了通知が自分の gateway に未認証で POST され、401 で無音のまま捨てられていた。
