@@ -251,9 +251,13 @@ export interface CronJob {
   name: string;
   enabled: boolean;
   schedule: string;
-  /** Normal jobs always invoke the AI. Update notifications first perform a
-   * deterministic npm registry check and invoke the AI only for a new release. */
-  kind?: "prompt" | "update-notification";
+  /** Prompt jobs invoke AI. Command jobs bypass AI. Update notifications
+   * check npm first and invoke AI only for a new, undelivered release. */
+  kind?: "prompt" | "update-notification" | "command";
+  /** Direct process execution. Never routes through an AI session. */
+  command?: CronCommand;
+  failureDelivery?: CronDelivery | null;
+  effortLevel?: string;
   timezone?: string;
   engine?: string;
   model?: string;
@@ -265,6 +269,13 @@ export interface CronJob {
 export interface CronDelivery {
   connector: string;
   channel: string;
+}
+
+export interface CronCommand {
+  executable: string;
+  args?: string[];
+  cwd?: string;
+  timeoutSeconds?: number;
 }
 
 export interface Employee {

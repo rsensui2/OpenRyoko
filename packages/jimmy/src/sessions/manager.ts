@@ -70,6 +70,7 @@ const WORKFLOW_CONNECTOR: Connector = {
 };
 
 export interface RouteOptions {
+  effortLevel?: string;
   employee?: Employee;
   engine?: string;
   model?: string;
@@ -422,6 +423,7 @@ export class SessionManager {
         employee: opts.employee?.name ?? undefined,
         model: opts.model ?? opts.employee?.model ?? undefined,
         title: opts.title,
+        effortLevel: opts.effortLevel,
         prompt: msg.text,
         portalName: this.config.portal?.portalName,
       });

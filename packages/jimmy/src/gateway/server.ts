@@ -50,6 +50,7 @@ import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
 import { TelegramConnector } from "../connectors/telegram/index.js";
 import { loadJobs } from "../cron/jobs.js";
 import { startScheduler, reloadScheduler, stopScheduler } from "../cron/scheduler.js";
+import { stopCommandJobs } from "../cron/command.js";
 import { scanOrg } from "./org.js";
 import { createDailyDatabaseBackup } from "../sessions/backup.js";
 import { getDiskSpaceStatus } from "../shared/storage-health.js";
@@ -1358,6 +1359,8 @@ export async function startGateway(
   // Return cleanup function
   return async () => {
     logger.info("Gateway cleanup starting...");
+    stopScheduler();
+    await stopCommandJobs();
 
     // Stop caffeinate
     if (caffeinate && caffeinate.exitCode === null) {
