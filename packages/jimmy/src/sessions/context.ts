@@ -755,7 +755,9 @@ function buildCronContext(): string | null {
 
     const lines: string[] = [`## Scheduled cron jobs (${enabled.length} active, ${disabledCount} disabled)`];
     for (const job of enabled) {
-      lines.push(`- **${job.name}**: \`${job.schedule}\`${job.employee ? ` → ${job.employee}` : ""}`);
+      const execution = job.kind === "command" ? " [command: no AI]"
+        : ` [${job.kind ?? "prompt"}${job.model ? `; ${job.model}` : ""}${job.effortLevel ? `/${job.effortLevel}` : ""}]`;
+      lines.push(`- **${job.name}**: \`${job.schedule}\`${execution}${job.kind !== "command" && job.employee ? ` → ${job.employee}` : ""}`);
     }
     if (disabledCount > 0) {
       lines.push(`\n_${disabledCount} disabled jobs not shown. See \`${CRON_JOBS}\` for the full list._`);
@@ -1327,6 +1329,7 @@ You can call these endpoints with \`ryoko api\` to inspect and manage the gatewa
 | \`/api/sessions/:id/message\` | POST | Send follow-up message to existing session (\`{message}\`) |
 | \`/api/sessions/:id/children\` | GET | List child sessions of a parent |
 | \`/api/cron\` | GET | List cron jobs |
+| \`/api/cron\` | POST | Create a prompt job or \`kind: "command"\` job with an absolute executable and literal args |
 | \`/api/cron/:id\` | PUT | Update cron job (toggle enabled, etc.) |
 | \`/api/cron/:id/runs\` | GET | Cron run history |
 | \`/api/org\` | GET | Organization structure |
@@ -1337,7 +1340,13 @@ You can call these endpoints with \`ryoko api\` to inspect and manage the gatewa
 | \`/api/config\` | PUT | Update config |
 | \`/api/connectors\` | GET | List connectors |
 | \`/api/connectors/:name/send\` | POST | Proactively send to a different connector conversation; never use it to reply to the current conversation |
-| \`/api/logs\` | GET | Recent log lines |`;
+| \`/api/logs\` | GET | Recent log lines |
+
+For scripts that already complete the work, use \`kind: "command"\` with
+\`command: {executable, args?, cwd?, timeoutSeconds?}\`: no AI session is created.
+Prompt cron jobs accept per-job \`model\` and \`effortLevel\`. Preserve those fields
+when editing schedules. See \`docs/cron-commands.md\` and the cron-manager skill.
+Use the API for cron mutations so the scheduler reloads immediately.`;
 }
 
 /**

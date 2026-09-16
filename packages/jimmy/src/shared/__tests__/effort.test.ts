@@ -101,3 +101,8 @@ describe("effortLevelsForModel (registry lookup)", () => {
     expect(effortLevelsForModel(cfg(), "claude")).toEqual(CLAUDE);
   });
 });
+
+
+it("honors an explicit cron effort independently of the engine default", () => {
+  expect(resolveEffort({ effortLevel: "medium" }, { parentSessionId: null, effortLevel: "high", source: "cron" }, null, ["low", "medium", "high"])).toBe("high");
+});

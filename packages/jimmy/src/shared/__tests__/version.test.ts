@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import { compareSemver, isDottedNumericVersion } from "../version.js";
 
 describe("version utilities", () => {
+  it("does not advertise an older stable package to a local prerelease", () => {
+    expect(compareSemver("2026.9.11-local.1", "2026.9.8")).toBeGreaterThan(0);
+    expect(compareSemver("2026.9.11-local.1", "2026.9.11")).toBeLessThan(0);
+    expect(compareSemver("2026.9.11-beta.2", "2026.9.11-beta.10")).toBeLessThan(0);
+    expect(compareSemver("2026.9.11+build.1", "2026.9.11+build.2")).toBe(0);
+  });
   it("accepts historical semver-like versions and OpenRyoko CalVer versions", () => {
     expect(isDottedNumericVersion("0.9.0")).toBe(true);
     expect(isDottedNumericVersion("2026.5.7")).toBe(true);

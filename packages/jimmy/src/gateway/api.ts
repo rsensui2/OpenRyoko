@@ -1,3 +1,5 @@
+import { validateCommandJob } from "../cron/command.js";
+import { validateCronSchedule } from "../cron/validation.js";
 import type { IncomingMessage as HttpRequest, ServerResponse } from "node:http";
 import http from "node:http";
 import crypto from "node:crypto";
@@ -1424,7 +1426,10 @@ export async function handleApiRequest(
         name: body.name || "untitled",
         enabled: body.enabled ?? true,
         schedule: body.schedule || "0 * * * *",
-        kind: body.kind === "update-notification" ? "update-notification" : "prompt",
+        kind: body.kind ?? "prompt",
+        command: body.command,
+        failureDelivery: body.failureDelivery,
+        effortLevel: body.effortLevel,
         timezone: body.timezone,
         engine: body.engine,
         model: body.model,
@@ -1432,6 +1437,11 @@ export async function handleApiRequest(
         prompt: body.prompt || "",
         delivery: body.delivery,
       };
+      if (!["prompt", "update-notification", "command"].includes(newJob.kind!)) return badRequest(res, "Invalid cron job kind");
+      if (newJob.kind === "command") {
+        const error = validateCommandJob(newJob) ?? validateCronSchedule(newJob)[0]?.message;
+        if (error) return badRequest(res, error);
+      }
       if (newJob.kind === "update-notification") {
         if (!cron.validate(newJob.schedule)) return badRequest(res, "Invalid cron schedule");
         if (newJob.enabled && (
@@ -1459,8 +1469,12 @@ export async function handleApiRequest(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const body = _parsed.body as any;
       const updated = { ...jobs[idx], ...body, id: params.id } as CronJob;
-      if (updated.kind !== undefined && updated.kind !== "prompt" && updated.kind !== "update-notification") {
+      if (updated.kind !== undefined && updated.kind !== "prompt" && updated.kind !== "update-notification" && updated.kind !== "command") {
         return badRequest(res, "Invalid cron job kind");
+      }
+      if (updated.kind === "command") {
+        const error = validateCommandJob(updated) ?? validateCronSchedule(updated)[0]?.message;
+        if (error) return badRequest(res, error);
       }
       if (updated.kind === "update-notification") {
         if (!cron.validate(updated.schedule)) return badRequest(res, "Invalid cron schedule");

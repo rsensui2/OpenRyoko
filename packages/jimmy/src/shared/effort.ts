@@ -27,14 +27,14 @@ const DEFAULT_EFFORT = "medium";
  */
 export function resolveEffort(
   engineConfig: { effortLevel?: string; childEffortOverride?: string },
-  session: Pick<Session, "parentSessionId" | "effortLevel"> & Partial<Pick<Session, "workflowProvenance">>,
+  session: Pick<Session, "parentSessionId" | "effortLevel"> & Partial<Pick<Session, "workflowProvenance" | "source">>,
   employee: Pick<Employee, "effortLevel"> | null | undefined,
   validLevels: string[],
 ): string {
   if (validLevels.length === 0) return DEFAULT_EFFORT;
   const isValid = (level: string) => validLevels.includes(level);
 
-  if (session.workflowProvenance?.kind === "phase" && session.effortLevel) {
+  if ((session.workflowProvenance?.kind === "phase" || session.source === "cron") && session.effortLevel) {
     if (isValid(session.effortLevel)) return session.effortLevel;
     logger.warn(`Invalid workflow effortLevel "${session.effortLevel}" (valid: ${validLevels.join(", ")}), skipping`);
   }
