@@ -51,6 +51,7 @@ const POISONED_TRANSCRIPT_RE =
  * session id and retry with a fresh session, identically to a dead session.
  */
 export function isPoisonedTranscriptError(result: EngineResult): boolean {
+  if (result.retryable === false) return false;
   if (!result.error) return false;
   if (result.rateLimit?.status) return false;
   return POISONED_TRANSCRIPT_RE.test(result.error);
@@ -63,6 +64,7 @@ export function isPoisonedTranscriptError(result: EngineResult): boolean {
  * signal — meaning the --resume ID is stale and should not be retried.
  */
 export function isDeadSessionError(result: EngineResult): boolean {
+  if (result.retryable === false) return false;
   if (!result.error) return false;
 
   // If rate limit info is present, this is a rate limit, not a dead session
@@ -94,12 +96,14 @@ export function isDeadSessionError(result: EngineResult): boolean {
 const TRANSIENT_SERVER_ERROR_RE = /Interactive turn failed: server_error/i;
 
 export function isTransientServerError(result: EngineResult): boolean {
+  if (result.retryable === false) return false;
   if (!result.error) return false;
   if (result.rateLimit?.status) return false;
   return TRANSIENT_SERVER_ERROR_RE.test(result.error);
 }
 
 export function detectRateLimit(result: EngineResult): RateLimitDetection {
+  if (result.retryable === false) return { limited: false };
   const resetsAt = typeof result.rateLimit?.resetsAt === "number"
     ? result.rateLimit.resetsAt
     : undefined;
@@ -132,4 +136,3 @@ export function computeNextRetryDelayMs(resetsAtSeconds?: number): { delayMs: nu
   }
   return { delayMs: 60_000 };
 }
-

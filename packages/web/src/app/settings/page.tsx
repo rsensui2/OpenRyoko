@@ -1668,17 +1668,11 @@ export default function SettingsPage() {
                 </div>
                 <FieldRow label="有効化">
                   <ToggleSwitch
-                    checked={config.connectors?.slack?.goalExtraction?.enabled ?? false}
+                    checked={config.connectors?.slack?.goalExtraction?.enabled ?? true}
                     onChange={(v) => {
                       updateConfig(["connectors", "slack", "goalExtraction", "enabled"], v)
                       if (v && !config.connectors?.slack?.goalExtraction?.engine) {
                         updateConfig(["connectors", "slack", "goalExtraction", "engine"], "codex")
-                      }
-                      if (v && !config.connectors?.slack?.goalExtraction?.model) {
-                        updateConfig(
-                          ["connectors", "slack", "goalExtraction", "model"],
-                          defaultTriageModelForEngine("codex"),
-                        )
                       }
                     }}
                   />
@@ -1695,7 +1689,7 @@ export default function SettingsPage() {
                       )
                       updateConfig(
                         ["connectors", "slack", "goalExtraction", "model"],
-                        defaultTriageModelForEngine(engine),
+                        null,
                       )
                     }}
                     options={TRIAGE_MODEL_VENDORS}

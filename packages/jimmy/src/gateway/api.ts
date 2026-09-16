@@ -8,6 +8,7 @@ import yaml from "js-yaml";
 import cron from "node-cron";
 import type { CronJob, Engine, IncomingMessage, JinnConfig, Session, Target } from "../shared/types.js";
 import { isInterruptibleEngine } from "../shared/types.js";
+import { runWithSessionGoal, sessionGoalOptions } from "../sessions/goal-execution.js";
 import type { SessionManager } from "../sessions/manager.js";
 import { buildContext } from "../sessions/context.js";
 import {
@@ -2754,6 +2755,10 @@ async function runWebSession(
   }
   logger.info(`Web session ${currentSession.id} running engine "${currentSession.engine}" (model: ${currentSession.model || "default"})`);
 
+  const goalOptions = sessionGoalOptions(config, currentSession, context.sessionManager.getQueue(), prompt);
+  // System wake-ups may resume a tracked task but are never a new user goal.
+  if (deliverToConnector) goalOptions.extraction = { ...goalOptions.extraction, enabled: false };
+
   // Ensure status is "running" (may already be set by the POST handler)
   const currentStatus = getSession(currentSession.id);
   if (currentStatus && currentStatus.status !== "running") {
@@ -2833,7 +2838,7 @@ async function runWebSession(
       })()
       : prompt;
 
-    const result = await engine.run({
+    const result = await runWithSessionGoal(engine, {
       prompt: promptToRun,
       resumeSessionId: currentSession.engineSessionId ?? undefined,
       systemPrompt,
@@ -2868,7 +2873,7 @@ async function runWebSession(
           logger.warn(`Failed to emit stream delta for session ${currentSession.id}: ${err instanceof Error ? err.message : err}`);
         }
       },
-    }).finally(() => {
+    }, goalOptions).finally(() => {
       clearInterval(runHeartbeat);
     });
     if (!getSession(currentSession.id)) {
@@ -2941,7 +2946,7 @@ async function runWebSession(
           const fallbackPrompt = codexResume
             ? prompt
             : `Continue this conversation and respond to the last USER message.\n\nConversation so far:\n\n${historyText}`;
-          const fallbackResult = await fallbackEngine.run({
+          const fallbackResult = await runWithSessionGoal(fallbackEngine, {
             prompt: fallbackPrompt,
             resumeSessionId: codexResume,
             systemPrompt,
@@ -2963,7 +2968,7 @@ async function runWebSession(
                 subAgent: delta.subAgent,
               });
             },
-          });
+          }, goalOptions);
           recordTurnAccounting(currentSession.id, fallbackResult);
 
           if (fallbackResult.result) {
@@ -2988,7 +2993,7 @@ async function runWebSession(
           });
           if (completedFallback) {
             notifyParentSession(completedFallback, { result: fallbackResult.result, error: fallbackResult.error ?? null, cost: fallbackResult.cost, durationMs: fallbackResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
-            if (deliverToConnector && fallbackResult.result && !fallbackResult.error) {
+            if (deliverToConnector && fallbackResult.result && (!fallbackResult.error || fallbackResult.retryable === false)) {
               const delivery = await deliverToOriginConnector(completedFallback, fallbackResult.result, context.connectors);
               if (isUndeliveredToOrigin(delivery, completedFallback)) recordFailedOriginDelivery(completedFallback, context.emit);
             }
@@ -3079,7 +3084,7 @@ async function runWebSession(
 
           logger.info(`Web session ${currentSession.id} retrying after usage limit (attempt ${attempt})`);
 
-          const retryResult = await engine.run({
+          const retryResult = await runWithSessionGoal(engine, {
             prompt,
             resumeSessionId: current.engineSessionId ?? undefined,
             systemPrompt,
@@ -3101,7 +3106,7 @@ async function runWebSession(
                 subAgent: delta.subAgent,
               });
             },
-          });
+          }, goalOptions);
           const retryInterrupted = retryResult.error?.startsWith("Interrupted");
           const retryRateLimit = !retryInterrupted ? detectRateLimit(retryResult) : { limited: false as const };
 
@@ -3144,7 +3149,7 @@ async function runWebSession(
               `✅ Claude usage limit cleared. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} resumed.`,
             );
             notifyParentSession(completedAfterRetry, { result: retryResult.result, error: retryResult.error ?? null, cost: retryResult.cost, durationMs: retryResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
-            if (deliverToConnector && retryResult.result && !retryResult.error) {
+            if (deliverToConnector && retryResult.result && (!retryResult.error || retryResult.retryable === false)) {
               const delivery = await deliverToOriginConnector(completedAfterRetry, retryResult.result, context.connectors);
               if (isUndeliveredToOrigin(delivery, completedAfterRetry)) recordFailedOriginDelivery(completedAfterRetry, context.emit);
             }
@@ -3223,7 +3228,7 @@ async function runWebSession(
     }
     if (completedSession) {
       notifyParentSession(completedSession, { result: result.result, error: result.error ?? null, cost: result.cost, durationMs: result.durationMs }, { alwaysNotify: employee?.alwaysNotify });
-      if (deliverToConnector && result.result && !result.error) {
+      if (deliverToConnector && result.result && (!result.error || result.retryable === false)) {
         const delivery = await deliverToOriginConnector(completedSession, result.result, context.connectors);
         if (isUndeliveredToOrigin(delivery, completedSession)) recordFailedOriginDelivery(completedSession, context.emit);
       }

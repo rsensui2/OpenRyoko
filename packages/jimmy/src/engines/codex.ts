@@ -202,7 +202,7 @@ export class CodexEngine implements InterruptibleEngine {
           return;
         }
 
-        if (code === 0 || (code !== null && threadId)) {
+        if (code === 0) {
           resolve({
             sessionId: threadId || opts.resumeSessionId || "",
             result: resultText,
@@ -280,6 +280,22 @@ export class CodexEngine implements InterruptibleEngine {
 
     const eventType = String(msg.type || "");
 
+    if (eventType === "item.started" || eventType === "item.completed") {
+      const item = msg.item as Record<string, unknown> | undefined;
+      if (item?.type === "mcp_tool_call") {
+        const completed = eventType === "item.completed";
+        return { type: completed ? "tool_end" : "tool_start", delta: {
+          type: completed ? "tool_result" : "tool_use", toolId: String(item.id ?? ""),
+          toolName: `${item.server ?? "mcp"}/${item.tool ?? "tool"}`,
+          content: JSON.stringify(completed ? { status: item.status, result: item.result, error: item.error } : item.arguments ?? null).slice(0, 8000),
+        } };
+      }
+      if (item?.type === "file_change" && eventType === "item.completed") {
+        return { type: "tool_end", delta: { type: "tool_result", toolId: String(item.id ?? ""), toolName: "file_change",
+          content: JSON.stringify({ status: item.status, changes: item.changes }).slice(0, 8000) } };
+      }
+    }
+
     if (eventType === "thread.started") {
       return { type: "thread_id", threadId: String(msg.thread_id || "") };
     }
@@ -352,8 +368,10 @@ export class CodexEngine implements InterruptibleEngine {
           delta: {
             type: "tool_result",
             content: output
-              ? `${command} (exit ${exitCode}): ${output.slice(0, 500)}`
+              ? `${command} (exit ${exitCode}): ${output.slice(-8000)}`
               : `${command} (exit ${exitCode})`,
+            toolName: "command_execution",
+            toolId: String(item.id || ""),
           },
         };
       }

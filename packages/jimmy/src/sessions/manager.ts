@@ -3,6 +3,7 @@ import type {
   Connector,
   Employee,
   Engine,
+  EngineRunOpts,
   IncomingMessage,
   JinnConfig,
   SessionAttemptOutcome,
@@ -34,6 +35,7 @@ import { isInterruptibleEngine } from "../shared/types.js";
 import { continueWorkflowAttemptSession } from "./attempt-continuation.js";
 import { workflowAttemptInterruptionCause } from "./workflow-interruptions.js";
 import { recordTurnAccounting } from "./accounting.js";
+import { runWithSessionGoal, sessionGoalOptions } from "./goal-execution.js";
 import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "./callbacks.js";
 import { buildContext } from "./context.js";
 import { normalizeDelivery, normalizeTurns, deliverPublic, type DeliveryContext } from "./reply-disposition.js";
@@ -82,12 +84,12 @@ export interface RouteOptions {
  * command and NOT wrap it with conversation context — handleCommand() matches
  * them by exact string / prefix, so any preamble breaks the parsing.
  */
-export const SLASH_COMMANDS = ["/new", "/status", "/model", "/doctor", "/cron"] as const;
+export const SLASH_COMMANDS = ["/new", "/status", "/model", "/doctor", "/cron", "/goal"] as const;
 
 /** True when `text` begins with a control slash command (see {@link SLASH_COMMANDS}). */
 export function startsWithSlashCommand(text: string): boolean {
   const t = text.trimStart();
-  return SLASH_COMMANDS.some((cmd) => t === cmd || t.startsWith(`${cmd} `));
+  return SLASH_COMMANDS.some((cmd) => t === cmd || t.startsWith(`${cmd} `) || t.startsWith(`${cmd}\n`));
 }
 
 /**
@@ -572,19 +574,25 @@ export class SessionManager {
     target: Target,
     employee?: Employee,
   ): Promise<void> {
+    const current = getSession(session.id);
+    if (!current) return;
+    session = current;
     const engine = this.engines.get(session.engine);
     if (!engine) {
       logger.error(`Engine "${session.engine}" not found for session ${session.id}`);
       await connector.replyMessage(target, `Error: engine "${session.engine}" not available.`);
       return;
     }
-    if (session.engine !== "claude" && /^\/goal(?:\s|$)/i.test(msg.text.trim())) {
+    if (!["claude", "codex"].includes(session.engine) && /^\/goal(?:\s|$)/i.test(msg.text.trim())) {
       await connector.replyMessage(
         target,
-        `/goal is only supported by the Claude engine. Current engine: ${session.engine}. Switch this session to Claude to use goal-mode execution.`,
+        `/goal requires Claude or Codex. Current engine: ${session.engine}.`,
       );
       return;
     }
+
+    const goalOptions = sessionGoalOptions(this.config, session, this.queue, msg.text);
+    const runEngine = (targetEngine: Engine, opts: EngineRunOpts) => runWithSessionGoal(targetEngine, opts, goalOptions);
 
     insertMessage(session.id, "user", msg.text);
 
@@ -751,7 +759,7 @@ export class SessionManager {
         }
       }
 
-      let result = await engine.run({
+      let result = await runEngine(engine, {
         prompt: promptToRun,
         resumeSessionId: session.engineSessionId ?? undefined,
         systemPrompt,
@@ -767,6 +775,8 @@ export class SessionManager {
         sessionId: session.id,
       });
 
+      // A /new/reset during goal assessment must not append an orphan reply.
+      if (!getSession(session.id)) return;
       let wasInterrupted = result.error?.startsWith("Interrupted");
 
       // Poisoned transcript: the persisted engine history is corrupted (e.g.
@@ -823,7 +833,7 @@ export class SessionManager {
         // message that happens to land on a stale resume ID is silently lost
         // (the raw engine error propagates back instead of a real answer).
         logger.info(`Retrying session ${session.id} with fresh engine session after dead-session`);
-        result = await engine.run({
+        result = await runEngine(engine, {
           prompt: promptToRun,
           resumeSessionId: undefined,
           systemPrompt,
@@ -876,7 +886,7 @@ export class SessionManager {
             await new Promise((r) => setTimeout(r, Math.min(20_000, delayMs - waited)));
           }
           const resumeId = result.sessionId?.trim() || session.engineSessionId || undefined;
-          result = await engine.run({
+          result = await runEngine(engine, {
             prompt:
               "The previous response was interrupted by a temporary Anthropic API server error. " +
               "The conversation history up to that point is intact. Continue and complete the original request now. " +
@@ -981,7 +991,7 @@ export class SessionManager {
             const fallbackPrompt = codexResume
               ? msg.text
               : `Continue this conversation and respond to the last USER message.\n\nConversation so far:\n\n${historyText}`;
-            const fallbackResult = await fallbackEngine.run({
+            const fallbackResult = await runEngine(fallbackEngine, {
               prompt: fallbackPrompt,
               resumeSessionId: codexResume,
               systemPrompt,
@@ -1124,7 +1134,7 @@ export class SessionManager {
             }
 
             logger.info(`Session ${session.id} retrying after usage limit (attempt ${attempt})`);
-            const retryResult = await engine.run({
+            const retryResult = await runEngine(engine, {
               prompt: msg.text,
               resumeSessionId: currentSession.engineSessionId ?? undefined,
               systemPrompt,

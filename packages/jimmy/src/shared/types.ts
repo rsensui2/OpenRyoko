@@ -64,6 +64,8 @@ export interface EngineResult {
    */
   contextTokens?: number;
   error?: string;
+  /** False for an application-level stop that must not enter engine retry heuristics. */
+  retryable?: false;
   /**
    * Optional rate limit metadata returned by an engine.
    * `resetsAt` is a Unix timestamp in seconds.
@@ -192,6 +194,17 @@ export interface WorkflowSessionProvenance {
   };
 }
 
+export interface SessionGoal {
+  id: string;
+  condition: string;
+  request: string;
+  status: "active" | "complete" | "waiting" | "blocked" | "cancelled" | "incomplete";
+  reason?: string;
+  /** Bounded tool evidence retained across approval/input waits. */
+  tools?: string[];
+  updatedAt: string;
+}
+
 export interface Session {
   id: string;
   engine: string;
@@ -210,6 +223,8 @@ export interface Session {
   /** Explicit workflow/run/phase attribution for grouping and filtered reads. */
   workflowProvenance?: WorkflowSessionProvenance | null;
   status: "idle" | "running" | "error" | "waiting" | "interrupted";
+  /** Task completion is separate from the engine's running/idle lifecycle. */
+  goal?: SessionGoal | null;
   /** Durable terminal receipt for the latest execution attempt. Conversational
    * `idle` alone is never proof that work completed successfully. */
   attemptOutcome?: SessionAttemptOutcome | null;
@@ -413,13 +428,13 @@ export interface SlackTriageConfig {
 }
 
 export interface SlackGoalExtractionConfig {
-  /** Enable natural-language /goal injection. Default: false due to latency. */
+  /** Track natural-language completion conditions. Default: true for Slack. */
   enabled?: boolean;
-  /** CLI engine used for the extraction decision. Defaults to "codex". The injected /goal itself only works with Claude sessions. */
+  /** CLI for extraction and Codex completion checks. Defaults to "codex". */
   engine?: "claude" | "codex";
   /** Binary to invoke. Defaults to the selected engine's CLI. */
   bin?: string;
-  /** Model to use for goal extraction. Defaults to claude-haiku-4-5 or gpt-5-nano. */
+  /** Model for extraction/completion checks. Defaults to the configured engine model. */
   model?: string;
   /** Hard timeout before skipping /goal injection. Default: 30000ms. */
   timeoutMs?: number;

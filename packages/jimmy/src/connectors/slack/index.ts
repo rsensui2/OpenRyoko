@@ -8,7 +8,6 @@ import type {
   SlackConnectorConfig,
   SlackRespondToConfig,
   Target,
-  SlackGoalExtractionConfig,
 } from "../../shared/types.js";
 import { buildReplyContext, deriveSessionKey, isOldSlackMessage } from "./threads.js";
 import {
@@ -34,7 +33,6 @@ import { isOperatorSpeaker } from "../../shared/operator-match.js";
 import { explicitThread } from "../../shared/threading.js";
 import { ConversationTracker } from "./conversation-tracker.js";
 import { AgentsCanvasUpdater } from "./agents-canvas.js";
-import { extractGoalCondition, shouldExtractGoal } from "./goal-extractor.js";
 import { startsWithSlashCommand } from "../../sessions/manager.js";
 import type { SlackTriageConfig } from "../../shared/types.js";
 import { TMP_DIR } from "../../shared/paths.js";
@@ -47,8 +45,6 @@ export interface SlackConnectorContext {
   operatorName?: string;
   /** Additional operator names/handles (portal.operatorAliases) — see operator-match.ts. */
   operatorAliases?: string[];
-  /** Whether this connector's routed sessions can consume Claude-only /goal prompts. */
-  goalInjectionEnabled?: boolean;
 }
 
 export class SlackConnector implements Connector {
@@ -66,11 +62,9 @@ export class SlackConnector implements Connector {
   private typingIntervals = new Map<string, ReturnType<typeof setInterval>>();
   private readonly triageConfig: SlackTriageConfig | undefined;
   private readonly respondTo: SlackRespondToConfig | undefined;
-  private readonly goalExtractionConfig: SlackGoalExtractionConfig | undefined;
   private readonly portalName: string | undefined;
   private readonly operatorName: string | undefined;
   private readonly operatorAliases: string[] | undefined;
-  private readonly goalInjectionEnabled: boolean;
   private readonly conversations: ConversationTracker;
   private readonly agentsCanvas: AgentsCanvasUpdater | null;
   private static CHANNEL_CACHE_TTL_MS = 3600_000; // 1 hour
@@ -150,11 +144,9 @@ export class SlackConnector implements Connector {
     this.allowedUsers = allowFrom.length > 0 ? new Set(allowFrom) : null;
     this.triageConfig = config.triage;
     this.respondTo = config.respondTo;
-    this.goalExtractionConfig = config.goalExtraction;
     this.portalName = context.portalName;
     this.operatorName = context.operatorName;
     this.operatorAliases = context.operatorAliases;
-    this.goalInjectionEnabled = context.goalInjectionEnabled === true;
     this.conversations = new ConversationTracker();
     this.agentsCanvas = config.agentsCanvas?.enabled
       ? new AgentsCanvasUpdater(this.app, config.agentsCanvas)
@@ -609,34 +601,7 @@ export class SlackConnector implements Connector {
         this.conversations.recordBotEngaged(conversationKey);
       }
 
-      // Natural-language `/goal` injection.
-      //
-      // This is intentionally OUTSIDE the triage path. Triage decides
-      // "should we even respond"; goal extraction decides "if we respond,
-      // should the session run autonomously until a condition holds".
-      // The two questions are independent — DM / @-mention / DM-equivalent
-      // messages skip triage but still benefit from /goal — so we apply
-      // the extractor here, at the single point every reply-bound message
-      // passes through.
-      //
-      // The earlier keyword-regex approach missed natural Japanese phrasings
-      // ("完了と書いたら止まる" without "最後までやって" etc.) so we now
-      // always defer to a Haiku call gated only by a cheap length check.
-      // Haiku returns null fast for non-goal messages; sanitisation in the
-      // parser blocks slash-prefix injection and sentinel placeholders.
-      if (this.goalInjectionEnabled && this.goalExtractionConfig?.enabled === true && shouldExtractGoal(msg.text)) {
-        try {
-          const condition = await extractGoalCondition(msg.text, this.goalExtractionConfig);
-          if (condition) {
-            logger.info(`[slack] /goal injected: ${condition.slice(0, 100)}`);
-            msg.text = `/goal ${condition}\n\n${msg.text}`;
-          }
-        } catch (err) {
-          // extractGoalCondition already catches its own errors; defensive.
-          logger.debug(`[slack] goal-extractor unexpected error: ${err}`);
-        }
-      }
-
+      // Completion tracking runs inside the session queue, after engine routing.
       this.handler(msg);
     });
 
