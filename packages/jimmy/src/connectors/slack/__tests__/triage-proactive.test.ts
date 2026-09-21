@@ -10,7 +10,9 @@ const input: TriagePromptInput = {
   capabilities: { skills: [{ name: "spreadsheets", description: "表の集計と自動化を行う" }] },
 };
 
-function response(message = input, proactive = true, overrides: Record<string, string | number> = {}) {
+type AnswerOverrides = Record<string, string | number>;
+
+function response(message = input, proactive = true, overrides: AnswerOverrides = {}) {
   const selected: Record<string, string | number> = {
     recipient: "unknown", intent: "statement", relation: "unrelated", acknowledgment: "none",
     response_value: 0, contribution: "not_needed", proactive: "useful_now", ...overrides,
@@ -58,7 +60,7 @@ describe("unsolicited useful participation", () => {
     expect(JSON.parse(opts.fetchImpl.mock.calls[0][1]!.body as string).questions.proactive).toBeUndefined();
   });
 
-  it.each([
+  it.each<AnswerOverrides>([
     { recipient: "other_human", intent: "request" },
     { intent: "social", acknowledgment: "celebration" },
     { intent: "acknowledgment", acknowledgment: "thanks" },
@@ -103,12 +105,13 @@ describe("unsolicited useful participation", () => {
   });
 
   it("never samples away direct calls, open requests, or own-task continuation", async () => {
+    const ordinaryReplies: AnswerOverrides[] = [
+      { recipient: "bot", intent: "request", response_value: 1 },
+      { recipient: "group", intent: "request", response_value: 1, contribution: "useful_now" },
+      { recipient: "bot", intent: "continuation", relation: "bot_followup", response_value: 1 },
+    ];
     for (const percent of [0, 1, 100]) {
-      for (const overrides of [
-        { recipient: "bot", intent: "request", response_value: 1 },
-        { recipient: "group", intent: "request", response_value: 1, contribution: "useful_now" },
-        { recipient: "bot", intent: "continuation", relation: "bot_followup", response_value: 1 },
-      ]) {
+      for (const overrides of ordinaryReplies) {
         const result = await evaluateJevTriage(input, options(response(input, percent > 0, overrides), percent));
         expect(result).toMatchObject({ status: "accepted", decision: { action: "reply" } });
         expect(result.metadata.proactive?.selected).toBeUndefined();
