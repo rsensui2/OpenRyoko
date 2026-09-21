@@ -282,6 +282,7 @@ provides:                    # オプション — この従業員が組織に�
 ```
 
 - `schedule` は標準cron式（分 時 日 月 曜日）
+- `kind: "command"` は既存スクリプトをAIなしで定期実行する。AIジョブは `model` と `effortLevel` を個別指定できる。登録・変更は認証付き `/api/cron` APIを使う。詳しくは `docs/cron-commands.md`。
 - `kind: "update-notification"` は更新・導入済み機能をコードで点検し、新リリースや未点検の改善候補がある時だけAIを起動する。運用点検は `maintenance.mode: review` が既定、`apply` はローカル修正も許可、`off` は点検を無効化
 - `delivery` はオプション。指定時は指定コネクタ経由で出力を送信
 - 実行ログは `~/.ryoko/cron/runs/` に保存される

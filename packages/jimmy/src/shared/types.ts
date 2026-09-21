@@ -14,6 +14,8 @@ export interface StreamDelta {
 export interface Engine {
   name: string;
   run(opts: EngineRunOpts): Promise<EngineResult>;
+  /** Last observed upstream bytes/request activity, not merely an open connection. */
+  getLastActivityAt?(sessionId: string): number;
 }
 
 export interface InterruptibleEngine extends Engine {
@@ -64,6 +66,12 @@ export interface EngineResult {
    */
   contextTokens?: number;
   error?: string;
+  /** False for an application-level stop that must not enter engine retry heuristics. */
+  retryable?: false;
+  /** Native local commands can complete intentionally without assistant text. */
+  responseExpected?: false;
+  /** Bounded failed-attempt context for another engine; never a public reply or log. */
+  handoffContext?: string;
   /**
    * Optional rate limit metadata returned by an engine.
    * `resetsAt` is a Unix timestamp in seconds.
@@ -123,6 +131,8 @@ export interface Connector {
   removeReaction(target: Target, emoji: string): Promise<void>;
   editMessage(target: Target, text: string): Promise<void>;
   setTypingStatus?(channelId: string, threadTs: string | undefined, status: string): Promise<void>;
+  /** Reliable task outcome after a successful public reply; never inferred from prose. */
+  setConversationState?(target: Target, state: "awaiting_input" | "completed", userId?: string): void;
   onMessage(handler: (msg: IncomingMessage) => void): void;
   /** Return the bound employee name, if any */
   getEmployee?(): string | undefined;
@@ -192,6 +202,19 @@ export interface WorkflowSessionProvenance {
   };
 }
 
+export interface SessionGoal {
+  id: string;
+  condition: string;
+  request: string;
+  status: "active" | "complete" | "waiting" | "blocked" | "cancelled" | "incomplete";
+  /** Explicit assessment of what must happen next; only user means input/approval is requested. */
+  waitingFor?: "user" | "background" | "external" | "unknown";
+  reason?: string;
+  /** Bounded tool evidence retained across approval/input waits. */
+  tools?: string[];
+  updatedAt: string;
+}
+
 export interface Session {
   id: string;
   engine: string;
@@ -210,6 +233,8 @@ export interface Session {
   /** Explicit workflow/run/phase attribution for grouping and filtered reads. */
   workflowProvenance?: WorkflowSessionProvenance | null;
   status: "idle" | "running" | "error" | "waiting" | "interrupted";
+  /** Task completion is separate from the engine's running/idle lifecycle. */
+  goal?: SessionGoal | null;
   /** Durable terminal receipt for the latest execution attempt. Conversational
    * `idle` alone is never proof that work completed successfully. */
   attemptOutcome?: SessionAttemptOutcome | null;
@@ -251,9 +276,13 @@ export interface CronJob {
   name: string;
   enabled: boolean;
   schedule: string;
-  /** Normal jobs always invoke the AI. Update notifications first perform a
-   * deterministic npm registry check and invoke the AI only for a new release. */
-  kind?: "prompt" | "update-notification";
+  /** Prompt jobs invoke AI. Command jobs bypass AI. Update notifications
+   * use AI only for a new release or unreviewed maintenance findings. */
+  kind?: "prompt" | "update-notification" | "command";
+  /** Direct process execution. Never routes through an AI session. */
+  command?: CronCommand;
+  failureDelivery?: CronDelivery | null;
+  effortLevel?: string;
   /** Installed-feature maintenance during update checks. Default: review.
    * apply explicitly authorizes bounded local changes; off disables inspection. */
   maintenance?: { mode: "off" | "review" | "apply" };
@@ -268,6 +297,13 @@ export interface CronJob {
 export interface CronDelivery {
   connector: string;
   channel: string;
+}
+
+export interface CronCommand {
+  executable: string;
+  args?: string[];
+  cwd?: string;
+  timeoutSeconds?: number;
 }
 
 export interface Employee {
@@ -394,35 +430,64 @@ export interface WebConnectorConfig {}
 export interface SlackTriageConfig {
   /** Enable the air-reading triage layer. Default: false (legacy behavior). */
   enabled?: boolean;
+  /** Default: cli. Shadow observes Jev while the existing CLI still chooses the action. */
+  backend?: "cli" | "jev-shadow" | "jev";
+  /** Native TypeSafe API settings. Credentials are read from private storage/environment, never config. */
+  jev?: {
+    /** On uncertainty/error: none uses bounded routing rules without a CLI; cli explicitly opts into legacy classification. Default: none. */
+    fallback?: "none" | "cli";
+    /** Use bounded role/skill metadata to assess useful help for open requests. Default: true. */
+    useCapabilities?: boolean;
+    /** Chance of joining an unsolicited but useful opportunity, 0–100. Default: 0. Direct requests are unaffected. */
+    proactiveParticipationPercent?: number;
+    /** Pin an evaluated model. Default: jev-1.13.0. */
+    model?: string;
+    /** Environment variable containing the TypeSafe API key. Default: TYPESAFE_API_KEY. */
+    apiKeyEnv?: string;
+    /** Total HTTP/body-read budget, then apply the chosen fallback policy. Default: 3000ms; maximum: 10000ms. */
+    timeoutMs?: number;
+    /** Concurrent Jev requests in this gateway process. Default: 4; maximum: 16. */
+    maxConcurrent?: number;
+    /**
+     * Factors required for each action must meet its threshold; irrelevant
+     * questions do not veto it. Probabilities are not multiplied and the
+     * provider's confidence summary is not treated as correctness.
+     * Initial conservative defaults, to be calibrated against Japanese data:
+     * reply 0.80, react 0.90, silent 0.97.
+     */
+    minProbability?: { reply?: number; react?: number; silent?: number };
+  };
   /** CLI engine to invoke for triage. Default: "codex"; "claude" is supported. */
   engine?: "claude" | "codex";
   /** Binary to invoke for triage. Defaults to the selected engine's CLI. */
   bin?: string;
   /** Model to use for triage calls. Defaults to claude-haiku-4-5 or gpt-5-nano. */
   model?: string;
-  /** Soft timeout before falling back to "silent". Default: 30000ms. */
+  /** CLI timeout before the caller's context-specific fallback. Default: 30000ms. */
   timeoutMs?: number;
   /** How many recent thread messages to include as context. Default: 10. */
   threadContextLimit?: number;
   /** Optional persona override for the triage prompt. Defaults to the bot's configured persona. */
   persona?: string;
+  /** Idle lifetime of conversation state. Default: 30 minutes. Reactions alone do not establish a conversation. */
+  conversationIdleTimeoutMs?: number;
+  /** Maximum in-memory conversation entries. Default: 5000. */
+  conversationMaxEntries?: number;
   /**
-   * @deprecated No longer used. Conversation engagement is now tracked
-   * permanently per-thread / per-(channel, user), invalidated only when a
-   * third human joins. This field is accepted for backwards compatibility
-   * with existing config files but has no effect.
+   * @deprecated No longer used. Use conversationIdleTimeoutMs instead.
+   * Accepted for backwards compatibility with existing config files; ignored.
    */
   activeThreadTtlMs?: number;
 }
 
 export interface SlackGoalExtractionConfig {
-  /** Enable natural-language /goal injection. Default: false due to latency. */
+  /** Track natural-language completion conditions. Default: true for Slack. */
   enabled?: boolean;
-  /** CLI engine used for the extraction decision. Defaults to "codex". The injected /goal itself only works with Claude sessions. */
+  /** CLI for extraction and Codex completion checks. Defaults to "codex". */
   engine?: "claude" | "codex";
   /** Binary to invoke. Defaults to the selected engine's CLI. */
   bin?: string;
-  /** Model to use for goal extraction. Defaults to claude-haiku-4-5 or gpt-5-nano. */
+  /** Model for extraction/completion checks. Defaults to the configured engine model. */
   model?: string;
   /** Hard timeout before skipping /goal injection. Default: 30000ms. */
   timeoutMs?: number;
@@ -739,6 +804,8 @@ export interface JinnConfig {
   logging: { file: boolean; stdout: boolean; level: string };
   mcp?: McpGlobalConfig;
   sessions?: {
+    /** Engine inactivity deadline in milliseconds, reset by streamed activity. Default: 300000; 0 disables. */
+    engineNoResponseTimeoutMs?: number;
     maxDurationMinutes?: number;
     maxCostUsd?: number;
     interruptOnNewMessage?: boolean;

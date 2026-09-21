@@ -31,7 +31,7 @@ OpenRyoko はこの3つを**Slack側のメカニズムごと用意**して解決
 | 問題 | OpenRyoko の解 | 実装 |
 |---|---|---|
 | ① うざい | **空気読みトリアージ** — メッセージ毎に Haiku が silent/react/reply を判定。返信は慎重に、自然な場面では絵文字で反応 | `slack/triage.ts` |
-| ② 中途半端 | **自然言語 `/goal`** — 「最後までやって」等を Haiku が検出 → Claude Code の Stop hook を自動起動 → 各ターンの応答が個別 Slack メッセージで届く | `slack/goal-extractor.ts` + `engines/claude.ts` |
+| ② 中途半端 | **自然言語 `/goal`** — 完了条件を抽出し、Claude の Stop hook または Codex の完了判定・再開で作業を継続 | `slack/goal-extractor.ts` + `sessions/goal-execution.ts` |
 | ③ 見えない | **Agents View Canvas** — running/waiting/errored/idle の全セッションを Slack チャンネルのタブとして30秒毎ライブ同期 | `slack/agents-canvas.ts` |
 
 ---
@@ -58,7 +58,7 @@ WebUI の onboarding wizard が `/goal` / Canvas / triage を案内するので�
 ### Slack 振る舞い系（全て OpenRyoko 独自）
 
 - 🌸 **空気読みトリアージ** — Haiku で `silent / react / reply` を判定。テキスト返信は慎重に、挨拶や成果共有には軽い絵文字で反応
-- 🎯 **自然言語 `/goal`** — 「最後までやって」「完成するまで止まらないで」「終わったら教えて」等の意図を Haiku が拾い、Claude Code の Stop hook を起動
+- 🎯 **自然言語 `/goal`** — 依頼から完了条件を抽出し、Claude の Stop hook または Codex の完了判定・再開で追跡
 - 🖼️ **Agents View Canvas** — 全 Ryoko セッションを Slack の Canvas タブにライブ同期。設定 UI から channel picker でワンクリック有効化
 - 💬 **ターン毎の個別投稿** — `/goal` で多ターン回した時、Claude の各ターンの応答が個別の Slack メッセージとして到着（進捗が見える）
 - 👤 **発言者認識** — Slack ID から display name を解決し、operator と他者を system prompt 上で明示区別
@@ -131,11 +131,11 @@ OpenRyoko は Claude Code CLI を子プロセスとして起動するため、An
 > - 既定は従来の headless `claude -p`。**`ryoko config interactive on`**、または **設定画面 → エンジン設定 → 「インタラクティブPTY」トグル**、もしくは `ryoko setup` / `ryoko update` の対話プロンプトで有効化（反映にはゲートウェイ再起動）。
 > - SSH リモート実行の従業員は PTY を使えないため、自動で headless `claude -p` にフォールバックします。
 
-空気読みトリアージと `/goal` 抽出は軽量 Haiku を使いますが、これも Claude Code CLI 経由です。
+空気読みトリアージと `/goal` の抽出・完了判定にも、設定した Claude / Codex CLI を使います。
 
 ### 🧠 「バス、脳ではない」哲学
 
-OpenRyoko は独自のプロンプトエンジニアリング層を持ちません。Claude Code が既にツール利用・ファイル編集・マルチステップ推論・記憶・**`/goal` の Stop hook** を担当しているので、OpenRyoko はそれを外の世界（Slack、cron、WebUI、Canvas）に接続するだけ。Claude Code が進化すれば、OpenRyoko も自動的に強くなります。
+ツール利用・ファイル編集・推論は各エンジンが担当し、OpenRyoko は Slack、cron、WebUI、Canvas へ接続します。Claude の自律継続はネイティブの `/goal` に任せ、Codex の非対話実行には完了条件の保持・終了後の判定・回数を制限した再開を補います。
 
 ### 🌸 空気読みの判断フロー
 
@@ -369,26 +369,37 @@ Settings → エンジン設定 には **「インタラクティブPTY（Max定
 
 ## 🎯 自然言語 `/goal` — 自律完遂タスク
 
-Claude Code v2.1.139+ で追加された `/goal` コマンドを、Slackの自然な日本語/英語から
-自動起動できます。
+Slack の依頼から完了条件を抽出し、実際に使うエンジンに合わせて継続します。
+Claude はネイティブの `/goal`、Codex はゲートウェイの完了判定と同じスレッドの再開を使います。
 
-例えば DM や @メンションで：
+例えば「参加者が日程に合意したら、候補の予定を整理して正式な招待を送って」と依頼すると、
+最初の依頼と完了条件を保持します。Codex が「反映します」と返して終了しても、
+別の判定処理が回答・会話・ツール結果を確認し、承認済みの作業が残っていれば再開します。
+外部サービスの更新は、操作結果と更新後の状態の読み返しを完了の根拠にします。
 
-> 5社の人事SaaSの料金/機能を比較した表をこのスレッドに投げて、**最後までやって**
+- Codex の自動再開は1回のユーザー発言につき最大2回です。最後の結果を返します。
+- 承認待ち、入力待ち、実行中の子タスクがある場合は再開せず、状態を保持します。
+- 中止や新しいメッセージを優先します。再開時には既存の結果を確認し、実行済みの操作を繰り返さないよう指示します。
+- 判定失敗や回数上限では成功扱いにせず「未完了」と返します。判定はモデルによるため、外部状態の正しさを決定的に保証するものではありません。
+- cron と workflow はそれぞれ既存の実行制御を使います。
 
-と頼むと、OpenRyoko は内部で Haiku を呼んで完了条件を一文に蒸留し、Claude Code への
-プロンプトに `/goal X` を前置します。Claude は `/goal` の Stop hook を立て、**条件が
-満たされるまで複数ターンに渡って自律的に作業**を続けます。各ターンの応答はそれぞれ
-独立した Slack メッセージとして投稿されるので、進捗が見える形で届きます。
+Slack の自然言語判定は既定で有効です。既存の `enabled: false` は尊重します。
+設定の「Goal 判定」または次の設定で変更できます。抽出・判定の分だけ待ち時間とモデル利用が増えます。
 
-トリガーは決定論的なフレーズ（「最後まで」「止まらないで」「完成するまで」「終わったら
-教えて」「keep going」「until done」等）に加え、文中に **埋め込まれた停止条件**
-（「完了と書いたら止まる」「Xになるまで」「別々のターンで」等）にも反応します。
-意味判定は Haiku が行うので、対応フレーズを覚える必要はありません。
+```yaml
+connectors:
+  slack:
+    goalExtraction:
+      enabled: true
+      engine: codex
+      # model: 利用可能な軽量モデルを指定可能。省略時は engines.codex.model
+      timeoutMs: 30000
+```
 
-> 💡 Claude Code は **v2.1.139 以降が必須** です（古いバージョンだと `/goal isn't available
-> in this environment` になります）。`npm install -g @anthropic-ai/claude-code@latest`
-> で最新化してください。
+明示的な `/goal <完了条件>` は Slack と Web の両方で使えます。
+Codex では `/goal` で状態を確認し、`/goal cancel` で追跡を終了します。
+Claude では各コマンドをネイティブの `/goal` に渡し、複数ターンの返答も従来どおり配信します。
+Claude の自然言語連携には `/goal` に対応した Claude Code v2.1.139 以降が必要です。
 
 ## 🖼️ Agents View Canvas — Slack でいつでも状況把握
 

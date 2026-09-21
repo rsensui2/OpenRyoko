@@ -399,7 +399,7 @@ export class TurnResolver {
 
   /** Settle a native local command (no Stop hook fires for context mutators). */
   completeNativeCommand(): void {
-    this.settle({ sessionId: this.claudeSessionId ?? this.opts.fallbackSessionId ?? "", result: "", numTurns: 1 });
+    this.settle({ sessionId: this.claudeSessionId ?? this.opts.fallbackSessionId ?? "", result: "", numTurns: 1, responseExpected: false });
   }
 
   /** Settle with text recovered from the transcript (the Stop hook was lost). */
@@ -1336,6 +1336,13 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
     if (!handle) return false;
     const proxy = (handle as any)._proxy as SsePtyProxy | undefined;
     return proxy?.isBusy(InteractiveClaudeEngine.BUSY_ACTIVITY_WINDOW_MS) ?? false;
+  }
+
+  /** Inactivity watchdogs need actual progress; inflight alone can be a stalled SSE connection. */
+  getLastActivityAt(sessionId: string): number {
+    const handle = this.lifecycle.getWarm(sessionId);
+    const proxy = handle ? (handle as any)._proxy as SsePtyProxy | undefined : undefined;
+    return proxy?.getLastActivityAt() ?? 0;
   }
 
   /** True while an upstream API request is streaming through the session's SSE

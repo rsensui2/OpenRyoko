@@ -20,11 +20,30 @@ export function isDottedNumericVersion(v: string): boolean {
  * OpenRyoko CalVer versions such as 2026.10.1.
  */
 export function compareSemver(a: string, b: string): number {
-  const pa = isDottedNumericVersion(a) ? a.split(".").map(Number) : [0, 0, 0];
-  const pb = isDottedNumericVersion(b) ? b.split(".").map(Number) : [0, 0, 0];
+  // Local prereleases must retain their numeric version: treating them as
+  // 0.0.0 advertises older stable packages as upgrades.
+  const parse = (value: string) => {
+    const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(value);
+    return { core: match ? match.slice(1, 4).map(Number) : [0, 0, 0], pre: match?.[4]?.split(".") };
+  };
+  const va = parse(a), vb = parse(b);
+  const pa = va.core, pb = vb.core;
   for (let i = 0; i < 3; i++) {
     const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
     if (diff !== 0) return diff;
+  }
+  if (!va.pre && !vb.pre) return 0;
+  if (!va.pre) return 1;
+  if (!vb.pre) return -1;
+  for (let i = 0; i < Math.max(va.pre.length, vb.pre.length); i++) {
+    const left = va.pre[i], right = vb.pre[i];
+    if (left === right) continue;
+    if (left === undefined) return -1;
+    if (right === undefined) return 1;
+    const ln = /^\d+$/.test(left), rn = /^\d+$/.test(right);
+    if (ln && rn) { const diff = Number(left) - Number(right); if (diff) return diff; continue; }
+    if (ln !== rn) return ln ? -1 : 1;
+    return left < right ? -1 : 1;
   }
   return 0;
 }

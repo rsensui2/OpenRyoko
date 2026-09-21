@@ -28,6 +28,12 @@ export class SessionQueue {
     return this.running.has(sessionKey) ? Math.max(0, total - 1) : total;
   }
 
+  /** Detect a stop even when no engine process exists between turns. */
+  cancellationGuard(sessionKey: string): () => boolean {
+    const generation = this.cancelGeneration.get(sessionKey) ?? 0;
+    return () => (this.cancelGeneration.get(sessionKey) ?? 0) !== generation;
+  }
+
   getTransportState(sessionKey: string, status?: "idle" | "running" | "error" | "waiting" | "interrupted"): "idle" | "queued" | "running" | "error" | "interrupted" {
     if (status === "error") return "error";
     if (status === "interrupted") return "interrupted";

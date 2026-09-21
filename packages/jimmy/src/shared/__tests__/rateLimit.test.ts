@@ -10,6 +10,14 @@ function makeResult(overrides: Partial<EngineResult> = {}): EngineResult {
   };
 }
 
+it("never turns a supervisor stop into a fresh-session or transport retry", () => {
+  const result = makeResult({ error: "Goal incomplete: server_error 429 session not found", numTurns: 0, retryable: false });
+  expect(isDeadSessionError(result)).toBe(false);
+  expect(isTransientServerError(result)).toBe(false);
+  expect(isPoisonedTranscriptError(result)).toBe(false);
+  expect(detectRateLimit(result).limited).toBe(false);
+});
+
 describe("isDeadSessionError", () => {
   it("returns true for error with zero cost and no rate limit", () => {
     const result = makeResult({

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Employee, JinnConfig } from "../shared/types.js";
 import { gatewayUrlFromConfig } from "../shared/gateway-url.js";
+import { resolveAssistantName } from "../shared/assistant-identity.js";
 import { JINN_HOME, ORG_DIR, CRON_JOBS, DOCS_DIR } from "../shared/paths.js";
 import { isOperatorSpeaker } from "../shared/operator-match.js";
 import { logger } from "../shared/logger.js";
@@ -101,7 +102,7 @@ export function buildContext(opts: {
   const gatewayUrl = gatewayUrlFromConfig(opts.config);
 
   // Resolve personalized names from config
-  const portalName = opts.portalName || opts.config?.portal?.portalName || "Ryoko";
+  const portalName = resolveAssistantName(opts.portalName || opts.config?.portal?.portalName);
   const operatorName = opts.operatorName || opts.config?.portal?.operatorName;
   const language = opts.language || opts.config?.portal?.language || "English";
   // Single operator-identity decision for the whole prompt (identity block +
@@ -127,7 +128,7 @@ export function buildContext(opts: {
         opts.hierarchy?.nodes[opts.employee.name],
         opts.hierarchy,
       ),
-      summary: `# You are ${opts.employee.displayName}\nEmployee: ${opts.employee.name}, ${opts.employee.department}, ${opts.employee.rank}`,
+      summary: `# You are ${resolveAssistantName(portalName, opts.employee)}\nEmployee: ${opts.employee.name}, ${opts.employee.department}, ${opts.employee.rank}`,
     });
   } else {
     sections.push({
@@ -338,7 +339,7 @@ function buildEmployeeIdentity(
 
   const chainOfCommand = buildChainOfCommand(employee, portalName, node, hierarchy);
 
-  return `# You are ${employee.displayName}
+  return `# You are ${resolveAssistantName(portalName, employee)}
 
 You are an AI employee in the ${portalName} gateway system.
 
@@ -347,7 +348,7 @@ ${employee.persona}
 ${languageInstruction}
 ## Your role
 - **Name**: ${employee.name}
-- **Display name**: ${employee.displayName}
+- **Display name**: ${resolveAssistantName(portalName, employee)}
 - **Department**: ${employee.department}
 - **Rank**: ${employee.rank}
 - **Engine**: ${employee.engine}
@@ -755,7 +756,9 @@ function buildCronContext(): string | null {
 
     const lines: string[] = [`## Scheduled cron jobs (${enabled.length} active, ${disabledCount} disabled)`];
     for (const job of enabled) {
-      lines.push(`- **${job.name}**: \`${job.schedule}\`${job.employee ? ` → ${job.employee}` : ""}`);
+      const execution = job.kind === "command" ? " [command: no AI]"
+        : ` [${job.kind ?? "prompt"}${job.model ? `; ${job.model}` : ""}${job.effortLevel ? `/${job.effortLevel}` : ""}]`;
+      lines.push(`- **${job.name}**: \`${job.schedule}\`${execution}${job.kind !== "command" && job.employee ? ` → ${job.employee}` : ""}`);
     }
     if (disabledCount > 0) {
       lines.push(`\n_${disabledCount} disabled jobs not shown. See \`${CRON_JOBS}\` for the full list._`);
@@ -1327,6 +1330,7 @@ You can call these endpoints with \`ryoko api\` to inspect and manage the gatewa
 | \`/api/sessions/:id/message\` | POST | Send follow-up message to existing session (\`{message}\`) |
 | \`/api/sessions/:id/children\` | GET | List child sessions of a parent |
 | \`/api/cron\` | GET | List cron jobs |
+| \`/api/cron\` | POST | Create a prompt job or \`kind: "command"\` job with an absolute executable and literal args |
 | \`/api/cron/:id\` | PUT | Update cron job (toggle enabled, etc.) |
 | \`/api/cron/:id/runs\` | GET | Cron run history |
 | \`/api/org\` | GET | Organization structure |
@@ -1337,7 +1341,13 @@ You can call these endpoints with \`ryoko api\` to inspect and manage the gatewa
 | \`/api/config\` | PUT | Update config |
 | \`/api/connectors\` | GET | List connectors |
 | \`/api/connectors/:name/send\` | POST | Proactively send to a different connector conversation; never use it to reply to the current conversation |
-| \`/api/logs\` | GET | Recent log lines |`;
+| \`/api/logs\` | GET | Recent log lines |
+
+For scripts that already complete the work, use \`kind: "command"\` with
+\`command: {executable, args?, cwd?, timeoutSeconds?}\`: no AI session is created.
+Prompt cron jobs accept per-job \`model\` and \`effortLevel\`. Preserve those fields
+when editing schedules. See \`docs/cron-commands.md\` and the cron-manager skill.
+Use the API for cron mutations so the scheduler reloads immediately.`;
 }
 
 /**

@@ -195,4 +195,31 @@ describe("CodexEngine", () => {
       expect(result.result).toBe("single answer");
     });
   });
+  it("exposes command and MCP read-back evidence to completion supervision", async () => {
+    const proc = createMockProcess();
+    mockSpawn.mockReturnValue(proc);
+    const deltas: StreamDelta[] = [];
+    const promise = engine.run({ prompt: "verify", cwd: "/tmp", onStream: (d) => deltas.push(d) });
+    const events = [
+      { type: "item.completed", item: { id: "c1", type: "command_execution", command: "calendar get e81", exit_code: 0, aggregated_output: "attendees: confirmed" } },
+      { type: "item.started", item: { id: "m1", type: "mcp_tool_call", server: "calendar", tool: "get", arguments: { id: "e81" } } },
+      { type: "item.completed", item: { id: "m1", type: "mcp_tool_call", server: "calendar", tool: "get", status: "completed", result: { content: [{ type: "text", text: "e81 verified" }] } } },
+    ];
+    proc.stdout.emit("data", Buffer.from(events.map((e) => JSON.stringify(e)).join("\n") + "\n"));
+    proc.emit("close", 0);
+    await promise;
+    expect(deltas[0]).toMatchObject({ type: "tool_result", toolId: "c1", toolName: "command_execution" });
+    expect(deltas[1]).toMatchObject({ type: "tool_use", toolId: "m1", toolName: "calendar/get" });
+    expect(deltas[2]).toMatchObject({ type: "tool_result", toolId: "m1", content: expect.stringContaining("e81 verified") });
+  });
+
+  it("does not count an abnormal exit as success just because a thread started", async () => {
+    const proc = createMockProcess();
+    mockSpawn.mockReturnValue(proc);
+    const promise = engine.run({ prompt: "run", cwd: "/tmp" });
+    proc.stdout.emit("data", Buffer.from(JSON.stringify({ type: "thread.started", thread_id: "failed" }) + "\n"));
+    proc.emit("close", 1);
+    expect((await promise).error).toContain("code 1");
+  });
+
 });

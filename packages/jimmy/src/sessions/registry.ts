@@ -218,6 +218,7 @@ function rowToSession(row: Record<string, unknown>): Session {
       : null,
     effortLevel: (row.effort_level as string) ?? null,
     status: row.status as Session['status'],
+    goal: parseJsonObject(row.goal_state) as unknown as Session['goal'],
     attemptOutcome: (row.attempt_outcome as SessionAttemptOutcome) ?? null,
     attemptTerminalVersion: (row.attempt_terminal_version as number) ?? 0,
     attemptTurn: (row.attempt_turn as number) ?? 0,
@@ -310,6 +311,7 @@ export function migrateSessionsSchema(database: Database.Database): void {
     ['total_turns', 'INTEGER', '0'],
     ['effort_level', 'TEXT'],
     ['last_context_tokens', 'INTEGER'],
+    ['goal_state', 'TEXT'],
     // Workflow attempt attribution + terminal receipts (upstream port)
     ['workflow_provenance', 'TEXT'],
     ['workflow_kind', 'TEXT'],
@@ -487,8 +489,10 @@ export function getSessionBySessionKey(sessionKey: string): Session | undefined 
 
 export interface UpdateSessionFields {
   engine?: string;
+  effortLevel?: string | null;
   engineSessionId?: string | null;
   status?: Session['status'];
+  goal?: Session['goal'];
   model?: string | null;
   replyContext?: ReplyContext | null;
   messageId?: string | null;
@@ -517,6 +521,10 @@ export function updateSession(id: string, updates: UpdateSessionFields): Session
     sets.push('engine_session_id = ?');
     values.push(updates.engineSessionId);
   }
+  if (updates.effortLevel !== undefined) {
+    sets.push('effort_level = ?');
+    values.push(updates.effortLevel);
+  }
   if (updates.attemptOutcome !== undefined) {
     sets.push('attempt_outcome = ?');
     values.push(updates.attemptOutcome);
@@ -540,6 +548,10 @@ export function updateSession(id: string, updates: UpdateSessionFields): Session
   if (updates.status !== undefined) {
     sets.push('status = ?');
     values.push(updates.status);
+  }
+  if (updates.goal !== undefined) {
+    sets.push('goal_state = ?');
+    values.push(updates.goal ? JSON.stringify(updates.goal) : null);
   }
   if (updates.model !== undefined) {
     sets.push('model = ?');

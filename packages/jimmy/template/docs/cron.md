@@ -1,6 +1,6 @@
 # Cron
 
-{{portalName}} supports scheduled AI jobs defined in `~/.ryoko/cron/jobs.json`.
+{{portalName}} supports scheduled AI jobs and direct command jobs defined in `~/.ryoko/cron/jobs.json`.
 
 ## Job Schema
 
@@ -10,10 +10,13 @@ interface CronJob {
   name: string;          // Human-readable name
   enabled: boolean;      // Whether the job is active
   schedule: string;      // Cron expression (standard 5-field)
-  kind?: "prompt" | "update-notification"; // Default: prompt
+  kind?: "prompt" | "update-notification" | "command"; // Default: prompt
   maintenance?: { mode: "off" | "review" | "apply" }; // Update notifications; default review
   timezone?: string;     // IANA timezone (default: system timezone)
   engine: string;        // "claude" or "codex"
+  effortLevel?: string; // Per-job reasoning effort for prompt jobs
+  command?: { executable: string; args?: string[]; cwd?: string; timeoutSeconds?: number };
+  failureDelivery?: { connector: string; channel: string } | null;
   model?: string;        // Override default model
   employee?: string;     // Employee persona to use
   prompt: string;        // The prompt to send to the engine
@@ -63,7 +66,9 @@ The gateway watches `cron/jobs.json` with chokidar. When the file changes:
 2. The new file is parsed and validated
 3. Enabled jobs are rescheduled with the updated definitions
 
-No restart required. Engines can edit `jobs.json` directly to create or modify scheduled jobs.
+No restart is required. Create and update through the authenticated `/api/cron` API so the running scheduler is reloaded immediately. Direct file edits are for offline recovery, with a backup.
+
+For `kind: "command"`, the gateway executes `command` without creating an AI session. Legacy prompt/model fields are ignored by this kind. See [Direct command jobs](cron-commands.md) for timeout, output, failure delivery, and lock recovery.
 
 ## Run Logs
 

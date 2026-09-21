@@ -136,4 +136,35 @@ describe("cron API validation", () => {
     expect((await post({ jobId: "maintenance-review", mode: "apply" })).status).toBe(400);
     expect((await post({ jobId: "existing-job", mode: "review" })).status).toBe(404);
   });
+
+  it("persists a command job and preserves its command when toggled", async () => {
+    const command = { executable: "/bin/echo", args: ["hello"], timeoutSeconds: 20 };
+    const response = await createJob({ id: "direct-command", kind: "command", enabled: false,
+      schedule: "0 9 * * *", command });
+    expect(response.status).toBe(201);
+    expect((await response.json()).command).toEqual(command);
+    const updated = await fetch(`${baseUrl}/api/cron/direct-command`, { method: "PUT",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: false }) });
+    expect(updated.status).toBe(200);
+    expect((await updated.json()).kind).toBe("command");
+    const before = fs.readFileSync(jobsPath, "utf8");
+    const invalid = await fetch(`${baseUrl}/api/cron/direct-command`, { method: "PUT",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ command: { executable: "echo" } }) });
+    expect(invalid.status).toBe(400);
+    expect(fs.readFileSync(jobsPath, "utf8")).toBe(before);
+  });
+
+  it("rejects invalid commands and unknown kinds without silently invoking AI", async () => {
+    for (const body of [
+      { kind: "command", command: { executable: "echo" } },
+      { kind: "command", command: { executable: "/bin/echo", args: "hello" } },
+      { kind: "command", command: { executable: "/bin/echo" }, schedule: "bad" },
+      { kind: "typo" },
+    ]) {
+      const before = fs.readFileSync(jobsPath, "utf8");
+      const response = await createJob({ enabled: false, ...body });
+      expect(response.status).toBe(400);
+      expect(fs.readFileSync(jobsPath, "utf8")).toBe(before);
+    }
+  });
 });

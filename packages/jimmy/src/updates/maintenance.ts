@@ -131,7 +131,7 @@ export async function runUpdateMaintenance(
         transportMeta: { maintenanceJobId: job.id, maintenanceMode: mode },
       }, buffer, {
         employee, engine: job.engine || employee?.engine || config.engines.default,
-        model: job.model || employee?.model, title: `OpenRyoko運用点検 (${mode})`,
+        model: job.model || employee?.model, effortLevel: job.effortLevel, title: `OpenRyoko運用点検 (${mode})`,
       });
       const session = routed && getSession(routed.sessionId);
       if (routed) receipt.sessionId = routed.sessionId;
