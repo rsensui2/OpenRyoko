@@ -100,6 +100,29 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+it('dispatches a Terra cron worker with an Astra engine default and no models block', () => {
+  const registry = buildRegistry({ engines: {
+    default: 'codex', codex: { bin: 'codex', model: 'gpt-6-astra' },
+  } } as JinnConfig);
+  const worker = { ...WORKER, model: 'gpt-5.6-terra', effortLevel: 'medium' } as Employee;
+  const dependencies = { ...deps(), models: () => registry, employees: () => new Map([['worker', worker]]) };
+  expect(resolveDispatch(run(), employeeNode(), dependencies))
+    .toMatchObject({ engine: 'codex', model: 'gpt-5.6-terra', effort: 'medium' });
+  const config: Partial<EmployeeNode['config']> = {
+    engine: { source: 'fixed', value: 'codex' },
+    model: { source: 'fixed', value: 'gpt-5.6-terra' },
+    effort: { source: 'fixed', value: 'medium' },
+  };
+  expect(resolveDispatch(run(undefined, config), employeeNode(config), dependencies))
+    .toMatchObject({ engine: 'codex', model: 'gpt-5.6-terra', effort: 'medium' });
+});
+
+it('still honors an explicit model allowlist that excludes Terra', () => {
+  const config: Partial<EmployeeNode['config']> = { model: { source: 'fixed', value: 'gpt-5.6-terra' } };
+  expect(() => resolveDispatch(run(undefined, config), employeeNode(config), deps()))
+    .toThrow(/model "gpt-5.6-terra" is not available/);
+});
+
 function deps(override?: { engine: string | null; model: string | null }): DispatchResolutionDeps {
   return {
     employees: () => new Map([['worker', WORKER]]),

@@ -55,6 +55,14 @@ const BUILTIN_MODELS: Partial<Record<EngineName, ModelInfo[]>> = {
     supportsEffort: true,
     effortLevels: ["low", "medium", "high", "xhigh", "max"],
     contextWindow: 1_050_000,
+  }, {
+    // Codex's model catalog also exposes Terra. A non-default employee or
+    // workflow pin must resolve without requiring a local models: override.
+    // Keep only effort levels supported by OpenRyoko's current EffortLevel.
+    id: "gpt-5.6-terra",
+    label: "GPT-5.6 Terra",
+    supportsEffort: true,
+    effortLevels: ["low", "medium", "high", "xhigh", "max"],
   }],
 };
 
