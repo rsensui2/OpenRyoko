@@ -6,6 +6,7 @@ import { CronConnector } from "../connectors/cron/index.js";
 import type { SessionManager } from "../sessions/manager.js";
 import { buildUpdateNotificationPrompt, checkForUpdates } from "../updates/checker.js";
 import { getLastNotifiedVersion, markVersionNotified } from "../updates/notification-state.js";
+import { runCommand } from "./command.js";
 
 const updateNotificationRuns = new Set<string>();
 
@@ -20,6 +21,25 @@ export async function runCronJob(
 
   const delivery = job.delivery || config.cron?.defaultDelivery;
   const startedAt = new Date().toISOString();
+  if (job.kind === "command") {
+    let result;
+    try { result = await runCommand(job); }
+    catch (error) { result = { status: "error" as const, error: error instanceof Error ? error.message : String(error) }; }
+    appendRunLog(job.id, { timestamp: startedAt, kind: "command", durationMs: Date.now() - startTime, ...result });
+    logger.info(`Cron command "${job.name}" ${result.status} in ${Date.now() - startTime}ms`);
+    if (result.status === "error") {
+      const target = job.failureDelivery === null ? undefined : job.failureDelivery ?? (config.cron?.alertConnector && config.cron?.alertChannel
+        ? { connector: config.cron.alertConnector, channel: config.cron.alertChannel } : undefined);
+      if (target) {
+        const connector = connectors.get(target.connector);
+        if (connector) await connector.sendMessage({ channel: target.channel },
+          `⚠️ Cron job "${job.name}" failed: ${result.error ?? "Command failed"}`)
+          .catch(error => logger.error(`Cron command alert failed: ${String(error)}`));
+        else logger.error(`Cron command alert connector unavailable: ${target.connector}`);
+      }
+    }
+    return;
+  }
 
   if (job.kind === "update-notification") {
     if (updateNotificationRuns.has(job.id)) {
@@ -149,6 +169,7 @@ export async function runCronJob(
         engine: job.engine || employee?.engine || config.engines.default,
         model: job.model || employee?.model || config.engines[(job.engine || config.engines.default) as "claude" | "codex" | "gemini"]?.model,
         title: job.name,
+        effortLevel: job.effortLevel,
       },
     );
 

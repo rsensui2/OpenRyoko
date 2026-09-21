@@ -3,6 +3,9 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { reviewGoal } from "../../sessions/goal-review.js";
+vi.mock("../../sessions/goal-review.js", () => ({ reviewGoal: vi.fn() }));
+
 import type { Connector, Engine, JinnConfig } from "../../shared/types.js";
 
 // Regression pin for issue #38 follow-up: a session woken by a notification
@@ -45,7 +48,8 @@ describe("notification wake-up delivers the reply to the origin connector", () =
       numTurns: 1,
     }));
     const mockEngine = { run: engineRun } as unknown as Engine;
-    const engines = new Map<string, Engine>([["claude", mockEngine]]);
+    const codexEngine: Engine = { name: "codex", run: vi.fn(async () => ({ sessionId: "codex-wake", result: "資料に反映します。", numTurns: 1 })) };
+    const engines = new Map<string, Engine>([["claude", mockEngine], ["codex", codexEngine]]);
     const sessionManager = new SessionManager(STUB_CONFIG, engines, ["slack"]);
 
     replyMessage = vi.fn(async () => "posted-ts");
@@ -160,4 +164,23 @@ describe("notification wake-up delivers the reply to the origin connector", () =
     await new Promise((r) => setTimeout(r, 1500));
     expect(replyMessage).not.toHaveBeenCalled();
   });
+  it("reports an unverified Codex goal back to Slack after a system wake-up", async () => {
+    replyMessage.mockClear();
+    const { createSession, updateSession, getSession } = await import("../../sessions/registry.js");
+    const session = createSession({ engine: "codex", source: "slack", sourceRef: "C_EXTERNAL", connector: "slack",
+      sessionKey: "slack:goal-wake-81", replyContext: { channel: "C_EXTERNAL", thread: "500.81" }, prompt: "資料を更新して" });
+    updateSession(session.id, { goal: { id: "goal-81", condition: "資料の更新を確認済み", request: "資料を更新して確認して", status: "waiting", updatedAt: new Date().toISOString() } });
+    vi.mocked(reviewGoal).mockResolvedValueOnce({ status: "unknown", reason: "更新状態を確認できません" });
+    const res = await fetch(`${baseUrl}/api/sessions/${session.id}/message`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "Background work finished", role: "notification" }),
+    });
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => expect(replyMessage).toHaveBeenCalledTimes(1));
+    expect(replyMessage.mock.calls[0][0]).toMatchObject({ channel: "C_EXTERNAL", thread: "500.81" });
+    expect(replyMessage.mock.calls[0][1]).toContain("未完了");
+    expect(getSession(session.id)?.goal?.status).toBe("incomplete");
+    expect(getSession(session.id)?.lastError).toBe("Goal incomplete");
+  });
+
 });

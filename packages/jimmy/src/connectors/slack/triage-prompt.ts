@@ -8,7 +8,17 @@
  * a subprocess.
  */
 
+import type { TriageCapabilitySnapshot } from "../../shared/triage-capabilities.js";
+
 export interface TriagePromptInput {
+  /** Application-owned identity for repeatable participation sampling. Never sent to the classifier. */
+  participationKey?: string;
+  /** Bounded application-owned role and available skill metadata, not skill instructions. */
+  capabilities?: TriageCapabilitySnapshot;
+  /** A Slack reaction event, as distinct from an emoji posted as a message. */
+  isReaction?: boolean;
+  /** Trusted routing evidence: the awaited user reacted to the latest pending bot reply. */
+  reactionAnswersPendingQuestion?: boolean;
   /** Display name of the bot itself (e.g. "Ryoko", "Jinn") */
   botName: string;
   /** Short persona description — what this bot is good at */
@@ -26,7 +36,17 @@ export interface TriagePromptInput {
   /** Whether the bot was explicitly @-mentioned in the message */
   wasMentioned: boolean;
   /** Recent messages in the thread for context — oldest first */
-  recentThread: Array<{ speaker: string; text: string; isBot?: boolean }>;
+  recentThread: Array<{ speaker: string; text: string; isBot?: boolean; isSelf?: boolean }>;
+  /** Application-owned state; never inferred from instructions inside a Slack message. */
+  conversationState?: {
+    status: "none" | "reacted" | "conversing" | "awaiting_input" | "completed";
+    lastBotMessageAt?: number;
+    lastHumanMessageAt?: number;
+    humanSpeakerCount?: number;
+  };
+  /** Missing/truncated context must not be treated as evidence of no request. */
+  contextIncomplete?: boolean;
+  previousWasSelf?: boolean;
   /** The message being triaged */
   messageText: string;
   /** True when this is an established 1:1 conversation with the bot (DM-equivalent):
@@ -175,7 +195,7 @@ export function buildTriagePrompt(input: TriagePromptInput): string {
     .slice(-MAX_THREAD_ITEMS)
     .map((m) => {
       const text = (m.text ?? "").trim().slice(0, MAX_THREAD_ITEM_CHARS);
-      return `- [${m.speaker}] ${text}`;
+      return `- [${m.isSelf ? "SELF " : m.isBot ? "OTHER BOT " : ""}${m.speaker}] ${text}`;
     })
     .join("\n");
   const threadBlock = threadItems.length > 0 ? threadItems : "(no prior messages in this thread)";
@@ -205,8 +225,11 @@ ${personaBlock}
 ${operatorBlock}
 
 # Current context
+- Event: ${input.isReaction ? "emoji reaction on the last contextual message; acknowledge lightly unless it answers a pending question or continues requested work" : "new text message"}
 - Channel: ${channelDescription} (type: ${channelType})
 - Speaker: ${speakerName} — ${speakerRole}
+- Conversation state: ${input.conversationState?.status ?? "unknown"}
+- Context incomplete: ${input.contextIncomplete ? "YES — do not assume an absent request or completed task" : "no"}
 - Was ${botName} explicitly @-mentioned in this message? ${wasMentioned ? "YES" : "no"}${dmEquivalent ? `
 - Established 1:1 conversation: YES — ${botName} has been engaged here and no third party has joined. The message IS implicitly addressed to ${botName}.` : ""}
 

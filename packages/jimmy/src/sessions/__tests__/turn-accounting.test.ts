@@ -47,10 +47,9 @@ describe("recordTurnAccounting", () => {
 describe("session-runner accounting drift guard", () => {
   const source = (relative: string) => fs.readFileSync(path.join(import.meta.dirname, "..", "..", relative), "utf-8");
 
-  it("keeps main, fallback and retry completion calls in both runners", () => {
-    expect((source("gateway/api.ts").match(/recordTurnAccounting\(/g) ?? [])).toHaveLength(3);
-    expect((source("sessions/manager.ts").match(/recordTurnAccounting\(/g) ?? [])).toHaveLength(3);
-  });
+  // Actual main/fallback accounting is covered through both dispatchers in
+  // manager-engine-fallback.test.ts and engine-fallback-api.test.ts. Counting
+  // source call sites cannot detect missed or double-counted attempts.
 
   it("does not bypass the shared helper", () => {
     expect(source("gateway/api.ts")).not.toMatch(/accumulateSessionCost\(/);

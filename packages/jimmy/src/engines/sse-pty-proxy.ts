@@ -183,6 +183,9 @@ export class SsePtyProxy {
     if (this.ownsPool && this.primaryAgent !== false) this.primaryAgent.destroy();
   }
 
+  /** Most recent upstream request/byte/completion activity, independent of open sockets. */
+  getLastActivityAt(): number { return this.lastUpstreamActivityAt; }
+
   /** True while the claude behind this PTY is demonstrably working: an upstream
    *  request is in flight, or one finished within `recentMs`. Used by the PTY
    *  lifecycle so the keep-warm reaper never kills a PTY mid-background-work

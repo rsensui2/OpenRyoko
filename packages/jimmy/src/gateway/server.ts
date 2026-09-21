@@ -8,6 +8,8 @@ import { randomUUID, randomBytes } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { JinnConfig, Connector, Employee } from "../shared/types.js";
 import { loadConfig } from "../shared/config.js";
+import { resolveAssistantName } from "../shared/assistant-identity.js";
+import { getTriageCapabilities, invalidateTriageCapabilities } from "../shared/triage-capabilities.js";
 import { invalidateModelRegistry } from "../shared/models.js";
 import { configureLogger, logger } from "../shared/logger.js";
 import { initDb, scheduleFtsBackfill, recoverStaleSessions, recoverStaleWorkflowAttemptSessions, recoverStaleQueueItems, getInterruptedSessions, listSessions, updateSession, getSession } from "../sessions/registry.js";
@@ -50,6 +52,7 @@ import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
 import { TelegramConnector } from "../connectors/telegram/index.js";
 import { loadJobs } from "../cron/jobs.js";
 import { startScheduler, reloadScheduler, stopScheduler } from "../cron/scheduler.js";
+import { stopCommandJobs } from "../cron/command.js";
 import { scanOrg } from "./org.js";
 import { createDailyDatabaseBackup } from "../sessions/backup.js";
 import { getDiskSpaceStatus } from "../shared/storage-health.js";
@@ -376,11 +379,16 @@ export async function startGateway(
           },
           {
             portalName: cfg.portal?.portalName,
+            getBotName: () => resolveAssistantName(
+              cfg.portal?.portalName,
+              cfg.connectors.slack?.employee ? employeeRegistry.get(cfg.connectors.slack.employee) : undefined,
+            ),
+            getTriageCapabilities: (messageText) => getTriageCapabilities({
+              employee: cfg.connectors.slack?.employee ? employeeRegistry.get(cfg.connectors.slack.employee) : undefined,
+              personaOverride: cfg.connectors.slack?.triage?.persona, messageText,
+            }),
             operatorName: cfg.portal?.operatorName,
             operatorAliases: cfg.portal?.operatorAliases,
-            goalInjectionEnabled: (cfg.connectors.slack.employee
-              ? employeeRegistry.get(cfg.connectors.slack.employee)?.engine
-              : cfg.engines.default) === "claude",
           },
         );
         slack.onMessage((msg) => {
@@ -553,9 +561,15 @@ export async function startGateway(
             const slackConfig = { ...typeConfig, id } as any;
             const slack = new SlackConnector(slackConfig, {
               portalName: config.portal?.portalName,
+              getBotName: () => resolveAssistantName(
+                config.portal?.portalName, employee ? employeeRegistry.get(employee) : undefined,
+              ),
+              getTriageCapabilities: (messageText) => getTriageCapabilities({
+                employee: employee ? employeeRegistry.get(employee) : undefined,
+                personaOverride: slackConfig.triage?.persona, messageText,
+              }),
               operatorName: config.portal?.operatorName,
               operatorAliases: config.portal?.operatorAliases,
-              goalInjectionEnabled: (employee ? employeeRegistry.get(employee)?.engine : config.engines.default) === "claude",
             });
             slack.onMessage((msg) => {
               const routeOpts: RouteOptions = {};
@@ -689,9 +703,15 @@ export async function startGateway(
               // `config`) so renamed portals show up after a hot-reload.
               const slack = new SlackConnector(slackConfig, {
                 portalName: freshConfig.portal?.portalName,
+                getBotName: () => resolveAssistantName(
+                  freshConfig.portal?.portalName, employee ? employeeRegistry.get(employee) : undefined,
+                ),
+                getTriageCapabilities: (messageText) => getTriageCapabilities({
+                  employee: employee ? employeeRegistry.get(employee) : undefined,
+                  personaOverride: slackConfig.triage?.persona, messageText,
+                }),
                 operatorName: freshConfig.portal?.operatorName,
                 operatorAliases: freshConfig.portal?.operatorAliases,
-                goalInjectionEnabled: (employee ? employeeRegistry.get(employee)?.engine : freshConfig.engines.default) === "claude",
               });
               slack.onMessage((msg) => {
                 const routeOpts: RouteOptions = {};
@@ -1237,6 +1257,7 @@ export async function startGateway(
       emit("org:changed", {});
     },
     onSkillsChange: () => {
+      invalidateTriageCapabilities();
       logger.info("Skills changed, notifying clients");
       emit("skills:changed", {});
     },
@@ -1358,6 +1379,8 @@ export async function startGateway(
   // Return cleanup function
   return async () => {
     logger.info("Gateway cleanup starting...");
+    stopScheduler();
+    await stopCommandJobs();
 
     // Stop caffeinate
     if (caffeinate && caffeinate.exitCode === null) {

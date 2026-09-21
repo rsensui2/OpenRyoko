@@ -1,3 +1,5 @@
+import { validateCommandJob } from "../cron/command.js";
+import { validateCronSchedule } from "../cron/validation.js";
 import type { IncomingMessage as HttpRequest, ServerResponse } from "node:http";
 import http from "node:http";
 import crypto from "node:crypto";
@@ -6,8 +8,11 @@ import os from "node:os";
 import path from "node:path";
 import yaml from "js-yaml";
 import cron from "node-cron";
-import type { CronJob, Engine, IncomingMessage, JinnConfig, Session, Target } from "../shared/types.js";
+import type { CronJob, Engine, EngineRunOpts, IncomingMessage, JinnConfig, Session, Target } from "../shared/types.js";
 import { isInterruptibleEngine } from "../shared/types.js";
+import { runWithSessionGoal, sessionGoalOptions } from "../sessions/goal-execution.js";
+import { buildEngineSyncPrompt, clearEngineSyncMarker, engineSyncSince, maybeRevertEngineOverride, runEngineWithResponseTimeout, runFallbackAttempts, waitForEngineRetry } from "../sessions/engine-fallback.js";
+import { cleanupMcpConfigFile, resolveMcpServers, writeMcpConfigFile } from "../mcp/resolver.js";
 import type { SessionManager } from "../sessions/manager.js";
 import { buildContext } from "../sessions/context.js";
 import {
@@ -82,6 +87,7 @@ import {
   verifyGatewayAuth,
 } from "./auth.js";
 import { handleWorkflowApi } from "./workflow-api.js";
+import { handleTypeSafeIntegrationApi } from "./integrations-typesafe-api.js";
 import type { WorkflowService } from "../workflows/service.js";
 import { shouldRequireGatewayAuth as workflowAuthRequired, verifyGatewayAuth as workflowVerifyAuth } from "./auth.js";
 import { getDiskSpaceStatus } from "../shared/storage-health.js";
@@ -190,49 +196,6 @@ export function resumePendingWebQueueItems(context: ApiContext): void {
   if (resumed > 0) {
     logger.info(`Re-dispatched ${resumed} pending web queue item(s) after gateway restart`);
   }
-}
-
-function maybeRevertEngineOverride(session: Session): Session {
-  const meta = (session.transportMeta || {}) as Record<string, unknown>;
-  const override = meta["engineOverride"] as Record<string, unknown> | undefined;
-  if (!override) return session;
-
-  const originalEngine = typeof override.originalEngine === "string" ? override.originalEngine : null;
-  const originalEngineSessionId = typeof override.originalEngineSessionId === "string"
-    ? override.originalEngineSessionId
-    : null;
-  const syncSince = typeof override.syncSince === "string" ? override.syncSince : null;
-  const untilIso = typeof override.until === "string" ? override.until : null;
-  if (!originalEngine || !untilIso) return session;
-
-  const until = new Date(untilIso);
-  if (Number.isNaN(until.getTime())) return session;
-  if (until.getTime() > Date.now()) return session;
-
-  const engineSessionsRaw = meta["engineSessions"];
-  const engineSessions = (engineSessionsRaw && typeof engineSessionsRaw === "object" && !Array.isArray(engineSessionsRaw))
-    ? { ...(engineSessionsRaw as Record<string, unknown>) }
-    : {};
-
-  // Preserve the current engine session ID under its engine key
-  if (session.engine && session.engineSessionId) {
-    engineSessions[String(session.engine)] = session.engineSessionId;
-  }
-
-  const restoredSessionId = originalEngineSessionId
-    ?? (typeof engineSessions[originalEngine] === "string" ? (engineSessions[originalEngine] as string) : null);
-
-  const nextMeta = { ...meta, engineSessions } as Record<string, unknown>;
-  if (originalEngine === "claude" && syncSince && session.engine !== "claude") {
-    nextMeta["claudeSyncSince"] = syncSince;
-  }
-  delete (nextMeta as Record<string, unknown>)["engineOverride"];
-  return updateSession(session.id, {
-    engine: originalEngine,
-    engineSessionId: restoredSessionId,
-    transportMeta: nextMeta as any,
-    lastError: null,
-  }) ?? session;
 }
 
 // In-memory idempotency keys for notification wake-ups. The persisted-message
@@ -506,6 +469,11 @@ export async function handleApiRequest(
   const method = req.method || "GET";
 
   try {
+    if (pathname === "/api/integrations/typesafe" || pathname === "/api/integrations/typesafe/test") {
+      if (await handleTypeSafeIntegrationApi(req, res, { method, pathname, url }, {
+        config: context.getConfig(), authToken: context.authToken, authHome: context.authHome,
+      })) return;
+    }
     // /api/workflows/** — the Workflow engine (upstream port). Routed before the
     // flat routes below; handleWorkflowApi returns false for everything else.
     if (context.workflowService && pathname.startsWith("/api/workflows")) {
@@ -1016,6 +984,8 @@ export async function handleApiRequest(
       const meta = { ...(session.transportMeta || {}) } as Record<string, unknown>;
       delete meta["engineSessions"];
       delete meta["engineOverride"];
+      delete meta["engineSyncSince"];
+      delete meta["claudeSyncSince"];
       updateSession(params.id, {
         status: "idle",
         engineSessionId: null,
@@ -1260,7 +1230,7 @@ export async function handleApiRequest(
     if (method === "POST" && params) {
       let session = getSession(params.id);
       if (!session) return notFound(res);
-      session = maybeRevertEngineOverride(session);
+      if (session.status !== "running") session = maybeRevertEngineOverride(session);
       const _parsed = await readJsonBody(req, res);
       if (!_parsed.ok) return;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1316,12 +1286,12 @@ export async function handleApiRequest(
       }
 
       if (!isNotification && session.status === "waiting") {
-        const expectedResetAt = getClaudeExpectedResetAt();
+        const expectedResetAt = session.engine === "claude" ? getClaudeExpectedResetAt() : undefined;
         const resumeText = expectedResetAt
           ? expectedResetAt.toLocaleString("en-GB", { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
           : null;
         const queuedText =
-          `⏳ Still paused due to Claude usage limit${resumeText ? ` (resets ${resumeText})` : ""}. Your message is queued and will run automatically.`;
+          `⏳ Still paused due to ${session.engine} usage limit${resumeText ? ` (resets ${resumeText})` : ""}. Your message is queued and will run automatically.`;
         insertMessage(session.id, "notification", queuedText);
         context.emit("session:notification", { sessionId: session.id, message: queuedText });
       }
@@ -1423,7 +1393,10 @@ export async function handleApiRequest(
         name: body.name || "untitled",
         enabled: body.enabled ?? true,
         schedule: body.schedule || "0 * * * *",
-        kind: body.kind === "update-notification" ? "update-notification" : "prompt",
+        kind: body.kind ?? "prompt",
+        command: body.command,
+        failureDelivery: body.failureDelivery,
+        effortLevel: body.effortLevel,
         timezone: body.timezone,
         engine: body.engine,
         model: body.model,
@@ -1431,6 +1404,11 @@ export async function handleApiRequest(
         prompt: body.prompt || "",
         delivery: body.delivery,
       };
+      if (!["prompt", "update-notification", "command"].includes(newJob.kind!)) return badRequest(res, "Invalid cron job kind");
+      if (newJob.kind === "command") {
+        const error = validateCommandJob(newJob) ?? validateCronSchedule(newJob)[0]?.message;
+        if (error) return badRequest(res, error);
+      }
       if (newJob.kind === "update-notification") {
         if (!cron.validate(newJob.schedule)) return badRequest(res, "Invalid cron schedule");
         if (newJob.enabled && (
@@ -1458,8 +1436,12 @@ export async function handleApiRequest(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const body = _parsed.body as any;
       const updated = { ...jobs[idx], ...body, id: params.id } as CronJob;
-      if (updated.kind !== undefined && updated.kind !== "prompt" && updated.kind !== "update-notification") {
+      if (updated.kind !== undefined && updated.kind !== "prompt" && updated.kind !== "update-notification" && updated.kind !== "command") {
         return badRequest(res, "Invalid cron job kind");
+      }
+      if (updated.kind === "command") {
+        const error = validateCommandJob(updated) ?? validateCronSchedule(updated)[0]?.message;
+        if (error) return badRequest(res, error);
       }
       if (updated.kind === "update-notification") {
         if (!cron.validate(updated.schedule)) return badRequest(res, "Invalid cron schedule");
@@ -2747,12 +2729,26 @@ async function runWebSession(
    *  would compute its reply and post it nowhere (issue #38 follow-up). */
   deliverToConnector?: boolean,
 ): Promise<void> {
-  const currentSession = getSession(session.id);
+  const freshSession = getSession(session.id);
+  const currentSession = freshSession ? maybeRevertEngineOverride(freshSession) : undefined;
   if (!currentSession) {
     logger.info(`Skipping deleted web session ${session.id} before run start`);
     return;
   }
+  const registeredEngine = context.sessionManager.getEngine(currentSession.engine);
+  if (!registeredEngine) {
+    const error = `Engine "${currentSession.engine}" not available`;
+    updateSession(currentSession.id, { status: "error", lastError: error });
+    context.emit("session:completed", { sessionId: currentSession.id, result: null, error });
+    return;
+  }
+  engine = registeredEngine;
   logger.info(`Web session ${currentSession.id} running engine "${currentSession.engine}" (model: ${currentSession.model || "default"})`);
+
+  const goalOptions = sessionGoalOptions(config, currentSession, context.sessionManager.getQueue(), prompt);
+  const shouldStop = () => !getSession(currentSession.id) || goalOptions.shouldStop?.() === true;
+  // System wake-ups may resume a tracked task but are never a new user goal.
+  if (deliverToConnector) goalOptions.extraction = { ...goalOptions.extraction, enabled: false };
 
   // Ensure status is "running" (may already be set by the POST handler)
   const currentStatus = getSession(currentSession.id);
@@ -2776,9 +2772,9 @@ async function runWebSession(
   const { resolveOrgHierarchy } = await import("./org-hierarchy.js");
   const orgHierarchy = resolveOrgHierarchy(scanOrgForHierarchy());
 
+  let mcpConfigPath: string | undefined;
   try {
-
-    const systemPrompt = buildContext({
+    const contextForEngine = (engineName: string, sshHost?: string) => buildContext({
       // Preserve the session's true origin — labeling everything "web" here
       // would grant web-level trust (MEMORY injection) to Slack/cron-origin
       // sessions driven through this runner.
@@ -2792,13 +2788,37 @@ async function runWebSession(
       // Interactive PTY survives across turns; everything else is a one-shot
       // process whose background tasks die at turn end (#38).
       processLifetime:
-        currentSession.engine === "claude" &&
+        engineName === "claude" &&
         config.engines.claude?.interactive === true &&
-        !employee?.sshHost
+        !sshHost
           ? "persistent"
           : "one-shot",
       hierarchy: orgHierarchy,
     });
+
+    const prepareOptions = (nextEngine: Engine, opts: EngineRunOpts): EngineRunOpts => {
+      if (nextEngine.name === "claude") {
+        const rc = currentSession.replyContext ?? {};
+        const mcp = resolveMcpServers(config.mcp, employee, {
+          connector: currentSession.connector ?? undefined,
+          channel: typeof rc.channel === "string" ? rc.channel : currentSession.sourceRef,
+          thread: typeof rc.thread === "string" ? rc.thread : typeof rc.messageTs === "string" ? rc.messageTs : undefined,
+        });
+        if (Object.keys(mcp.mcpServers).length) mcpConfigPath = writeMcpConfigFile(mcp, currentSession.id);
+      }
+      return { ...opts, systemPrompt: contextForEngine(nextEngine.name, opts.sshHost),
+        mcpConfigPath: nextEngine.name === "claude" ? mcpConfigPath : undefined };
+    };
+    const runTurn = async (nextEngine: Engine, opts: EngineRunOpts) => {
+      const heartbeat = setInterval(() => {
+        if (!shouldStop()) updateSession(currentSession.id, { status: "running", lastActivity: new Date().toISOString() });
+      }, 5000);
+      try {
+        return await runWithSessionGoal({ name: nextEngine.name,
+          run: (rawOpts) => runEngineWithResponseTimeout(nextEngine, rawOpts, config, shouldStop),
+        }, opts, goalOptions);
+      } finally { clearInterval(heartbeat); }
+    };
 
     const engineConfig = currentSession.engine === "codex"
       ? config.engines.codex
@@ -2813,30 +2833,11 @@ async function runWebSession(
     );
 
     let lastHeartbeatAt = 0;
-    const runHeartbeat = setInterval(() => {
-      updateSession(currentSession.id, {
-        status: "running",
-        lastActivity: new Date().toISOString(),
-      });
-    }, 5000);
-
-    const syncSinceIso = (currentSession.transportMeta as any)?.claudeSyncSince;
-    const syncSinceMs = typeof syncSinceIso === "string" ? new Date(syncSinceIso).getTime() : NaN;
-    const syncRequested = currentSession.engine === "claude" && typeof syncSinceIso === "string" && Number.isFinite(syncSinceMs);
-    const promptToRun = syncRequested
-      ? (() => {
-        const sinceMessages = getMessages(currentSession.id)
-          .filter((m) => (m.role === "user" || m.role === "assistant") && m.timestamp >= syncSinceMs)
-          .map((m) => `${m.role.toUpperCase()}: ${m.content}`);
-        const transcript = sinceMessages.slice(-20).join("\n\n");
-        return `We temporarily switched to GPT due to a Claude usage limit. Sync your context with this transcript (most recent last), then respond to the last USER message.\n\n${transcript}`;
-      })()
-      : prompt;
-
-    const result = await engine.run({
+    const syncRequested = !!engineSyncSince(currentSession);
+    const promptToRun = buildEngineSyncPrompt(currentSession, prompt);
+    const initialOpts = prepareOptions(engine, {
       prompt: promptToRun,
       resumeSessionId: currentSession.engineSessionId ?? undefined,
-      systemPrompt,
       cwd: JINN_HOME,
       bin: engineConfig.bin,
       model: currentSession.model ?? engineConfig.model,
@@ -2847,6 +2848,7 @@ async function runWebSession(
       attachments: attachments?.length ? attachments : undefined,
       sessionId: currentSession.id,
       onStream: (delta) => {
+        if (shouldStop()) return;
         const now = Date.now();
         if (now - lastHeartbeatAt >= 2000) {
           lastHeartbeatAt = now;
@@ -2868,146 +2870,31 @@ async function runWebSession(
           logger.warn(`Failed to emit stream delta for session ${currentSession.id}: ${err instanceof Error ? err.message : err}`);
         }
       },
-    }).finally(() => {
-      clearInterval(runHeartbeat);
     });
-    if (!getSession(currentSession.id)) {
-      logger.info(`Skipping completion for deleted web session ${currentSession.id}`);
-      return;
-    }
-
+    const initialResult = await runTurn(engine, initialOpts);
+    if (shouldStop()) return;
+    const initialRateLimit = detectRateLimit(initialResult);
+    if (engine.name === "claude" && initialRateLimit.limited) recordClaudeRateLimit(initialRateLimit.resetsAt);
+    const fallback = await runFallbackAttempts({
+      config, session: currentSession, initialEngine: engine, initialResult, initialOpts, employee,
+      getEngine: (name) => context.sessionManager.getEngine(name), run: runTurn, shouldStop, prepareOptions,
+      onSwitch: (from, to, reason) => {
+        const problem = reason === "rate_limit" ? "usage limit reached" : reason === "timeout" ? "response timed out" : "returned no response";
+        const notificationText = `⚠️ ${from} ${problem}. Switching to ${to} for now.`;
+        insertMessage(currentSession.id, "notification", notificationText);
+        context.emit("session:notification", { sessionId: currentSession.id, message: notificationText });
+        notifyDiscordChannel(`⚠️ ${from} ${problem}. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} switching to ${to}.`);
+      },
+    });
+    if (shouldStop()) return;
+    const result = fallback.result;
     const wasInterrupted = result.error?.startsWith("Interrupted");
     const rateLimit = !wasInterrupted ? detectRateLimit(result) : { limited: false as const };
 
-    if (rateLimit.limited) {
-      recordClaudeRateLimit(rateLimit.resetsAt);
-      const strategy = config.sessions?.rateLimitStrategy ?? "fallback";
-
-      // Optional fallback: switch to GPT (Codex) while Claude resets
-      if (currentSession.engine === "claude" && strategy === "fallback") {
-        const fallbackName = config.sessions?.fallbackEngine ?? "codex";
-        const fallbackEngine = context.sessionManager.getEngine(fallbackName);
-        if (fallbackEngine) {
-          const { resumeAt } = computeNextRetryDelayMs(rateLimit.resetsAt);
-          const until = resumeAt ?? new Date(Date.now() + 6 * 60 * 60_000);
-          const syncSince = new Date().toISOString();
-
-          const resumeText = resumeAt
-            ? resumeAt.toLocaleString("en-GB", { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
-            : null;
-
-          const notificationText =
-            `⚠️ Claude usage limit reached${resumeText ? `. Resets ${resumeText}` : ""}. Switching to GPT for now.`;
-          insertMessage(currentSession.id, "notification", notificationText);
-          context.emit("session:notification", { sessionId: currentSession.id, message: notificationText });
-
-          const nextMeta = { ...(currentSession.transportMeta || {}) } as Record<string, unknown>;
-          const engineSessionsRaw = nextMeta.engineSessions;
-          const engineSessions = (engineSessionsRaw && typeof engineSessionsRaw === "object" && !Array.isArray(engineSessionsRaw))
-            ? { ...(engineSessionsRaw as Record<string, unknown>) }
-            : {};
-          if (currentSession.engineSessionId) {
-            engineSessions.claude = currentSession.engineSessionId;
-          }
-          nextMeta.engineSessions = engineSessions;
-          nextMeta.engineOverride = { originalEngine: "claude", originalEngineSessionId: currentSession.engineSessionId, until: until.toISOString(), syncSince };
-
-          updateSession(currentSession.id, {
-            engine: fallbackName,
-            transportMeta: nextMeta as any,
-            status: "running",
-            lastActivity: new Date().toISOString(),
-            lastError: resumeAt
-              ? `Claude usage limit — using GPT until ${resumeAt.toISOString()}`
-              : "Claude usage limit — using GPT temporarily",
-          });
-
-          notifyDiscordChannel(
-            `⚠️ Claude usage limit reached. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} switching to GPT.`,
-          );
-
-          const fallbackConfig = config.engines.codex;
-          const fallbackEffort = resolveEffort(
-            fallbackConfig,
-            currentSession,
-            employee,
-            effortLevelsForModel(config, "codex", currentSession.model ?? fallbackConfig.model),
-          );
-          const codexResume = typeof engineSessions.codex === "string" ? (engineSessions.codex as string) : undefined;
-          const history = getMessages(currentSession.id)
-            .filter((m) => m.role === "user" || m.role === "assistant")
-            .map((m) => `${m.role.toUpperCase()}: ${m.content}`);
-          const historyText = history.slice(-12).join("\n\n");
-          const fallbackPrompt = codexResume
-            ? prompt
-            : `Continue this conversation and respond to the last USER message.\n\nConversation so far:\n\n${historyText}`;
-          const fallbackResult = await fallbackEngine.run({
-            prompt: fallbackPrompt,
-            resumeSessionId: codexResume,
-            systemPrompt,
-            cwd: JINN_HOME,
-            bin: fallbackConfig.bin,
-            model: currentSession.model ?? fallbackConfig.model,
-            effortLevel: fallbackEffort,
-            cliFlags: employee?.cliFlags,
-            sshHost: employee?.sshHost,
-            remoteCwd: employee?.remoteCwd,
-            sessionId: currentSession.id,
-            onStream: (delta) => {
-              context.emit("session:delta", {
-                sessionId: currentSession.id,
-                type: delta.type,
-                content: delta.content,
-                toolName: delta.toolName,
-                toolId: delta.toolId,
-                subAgent: delta.subAgent,
-              });
-            },
-          });
-          recordTurnAccounting(currentSession.id, fallbackResult);
-
-          if (fallbackResult.result) {
-            insertMessage(currentSession.id, "assistant", fallbackResult.result);
-          }
-
-          // Persist Codex thread id so future fallbacks can resume it
-          const nextEngineSessions = { ...engineSessions };
-          if (fallbackResult.sessionId) {
-            nextEngineSessions.codex = fallbackResult.sessionId;
-          }
-          const metaAfter = { ...(getSession(currentSession.id)?.transportMeta || nextMeta) } as Record<string, unknown>;
-          metaAfter.engineSessions = nextEngineSessions;
-          updateSession(currentSession.id, { transportMeta: metaAfter as any });
-
-          const completedFallback = updateSession(currentSession.id, {
-            engineSessionId: fallbackResult.sessionId,
-            status: fallbackResult.error ? "error" : "idle",
-            lastActivity: new Date().toISOString(),
-            lastError: fallbackResult.error ?? null,
-            ...(typeof fallbackResult.contextTokens === "number" ? { lastContextTokens: fallbackResult.contextTokens } : {}),
-          });
-          if (completedFallback) {
-            notifyParentSession(completedFallback, { result: fallbackResult.result, error: fallbackResult.error ?? null, cost: fallbackResult.cost, durationMs: fallbackResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
-            if (deliverToConnector && fallbackResult.result && !fallbackResult.error) {
-              const delivery = await deliverToOriginConnector(completedFallback, fallbackResult.result, context.connectors);
-              if (isUndeliveredToOrigin(delivery, completedFallback)) recordFailedOriginDelivery(completedFallback, context.emit);
-            }
-          }
-
-          context.emit("session:completed", {
-            sessionId: currentSession.id,
-            employee: currentSession.employee || config.portal?.portalName || "Ryoko",
-            title: currentSession.title,
-            result: fallbackResult.result,
-            error: fallbackResult.error || null,
-            cost: fallbackResult.cost,
-            durationMs: fallbackResult.durationMs,
-          });
-
-          return;
-        }
-      }
-
+    if (rateLimit.limited && fallback.engine.name === "claude") recordClaudeRateLimit(rateLimit.resetsAt);
+    if (rateLimit.limited && !fallback.attempted) {
+      recordTurnAccounting(currentSession.id, result);
+      const engineLabel = fallback.engine.name;
       // Otherwise: wait until reset and retry automatically
       const { delayMs, resumeAt } = computeNextRetryDelayMs(rateLimit.resetsAt);
       const deadlineMs = computeRateLimitDeadlineMs(
@@ -3020,16 +2907,16 @@ async function runWebSession(
         : null;
 
       logger.info(
-        `Web session ${currentSession.id} hit Claude usage limit — will auto-retry ${resumeAt ? `at ${resumeAt.toISOString()}` : `in ${Math.round(delayMs / 1000)}s`}`,
+        `Web session ${currentSession.id} hit ${engineLabel} usage limit — will auto-retry ${resumeAt ? `at ${resumeAt.toISOString()}` : `in ${Math.round(delayMs / 1000)}s`}`,
       );
 
       // Send hardcoded Discord notification — does not depend on the LLM
       notifyDiscordChannel(
-        `⚠️ Claude usage limit reached. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} paused${resumeText ? ` until ${resumeText}` : ""}.`,
+        `⚠️ ${engineLabel} usage limit reached. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} paused${resumeText ? ` until ${resumeText}` : ""}.`,
       );
 
       const notificationText =
-        `⏳ Claude usage limit reached${resumeText ? `. Resets ${resumeText}` : ""} — I'll continue automatically.`;
+        `⏳ ${engineLabel} usage limit reached${resumeText ? `. Resets ${resumeText}` : ""} — I'll continue automatically.`;
       insertMessage(currentSession.id, "notification", notificationText);
       context.emit("session:notification", { sessionId: currentSession.id, message: notificationText });
 
@@ -3038,8 +2925,8 @@ async function runWebSession(
         status: "waiting",
         lastActivity: new Date().toISOString(),
         lastError: resumeAt
-          ? `Claude usage limit — resumes ${resumeAt.toISOString()}`
-          : "Claude usage limit — waiting for reset",
+          ? `${engineLabel} usage limit — resumes ${resumeAt.toISOString()}`
+          : `${engineLabel} usage limit — waiting for reset`,
       });
 
       // Notify parent session about rate limit (fire-and-forget)
@@ -3059,7 +2946,7 @@ async function runWebSession(
 
       // Keep lastActivity fresh while waiting (UI / status endpoints)
       const heartbeat = setInterval(() => {
-        updateSession(currentSession.id, { status: "waiting", lastActivity: new Date().toISOString() });
+        if (!shouldStop()) updateSession(currentSession.id, { status: "waiting", lastActivity: new Date().toISOString() });
       }, 60_000);
 
       try {
@@ -3067,46 +2954,28 @@ async function runWebSession(
         let nextDelayMs = delayMs;
 
         while (Date.now() < deadlineMs) {
-          await new Promise<void>((r) => setTimeout(r, nextDelayMs));
+          if (!await waitForEngineRetry(nextDelayMs, shouldStop)) return;
           attempt++;
 
           // Check session still exists and hasn't been cancelled
           const current = getSession(currentSession.id);
-          if (!current || current.status === "error") {
+          if (!current || shouldStop() || current.status === "error") {
             logger.info(`Web session ${currentSession.id} stopped while waiting for usage reset`);
             return;
           }
 
           logger.info(`Web session ${currentSession.id} retrying after usage limit (attempt ${attempt})`);
 
-          const retryResult = await engine.run({
-            prompt,
+          const retryResult = await runTurn(engine, { ...initialOpts, prompt,
             resumeSessionId: current.engineSessionId ?? undefined,
-            systemPrompt,
-            cwd: JINN_HOME,
-            bin: engineConfig.bin,
-            model: current.model ?? engineConfig.model,
-            effortLevel,
-            cliFlags: employee?.cliFlags,
-            sshHost: employee?.sshHost,
-            remoteCwd: employee?.remoteCwd,
-            sessionId: currentSession.id,
-            onStream: (delta) => {
-              context.emit("session:delta", {
-                sessionId: currentSession.id,
-                type: delta.type,
-                content: delta.content,
-                toolName: delta.toolName,
-                toolId: delta.toolId,
-                subAgent: delta.subAgent,
-              });
-            },
           });
+          if (shouldStop()) return;
           const retryInterrupted = retryResult.error?.startsWith("Interrupted");
           const retryRateLimit = !retryInterrupted ? detectRateLimit(retryResult) : { limited: false as const };
 
           if (retryRateLimit.limited) {
-            recordClaudeRateLimit(retryRateLimit.resetsAt);
+            recordTurnAccounting(currentSession.id, retryResult);
+            if (engine.name === "claude") recordClaudeRateLimit(retryRateLimit.resetsAt);
             logger.info(`Web session ${currentSession.id} still rate limited (attempt ${attempt})`);
 
             const next = computeNextRetryDelayMs(retryRateLimit.resetsAt);
@@ -3117,8 +2986,8 @@ async function runWebSession(
               status: "waiting",
               lastActivity: new Date().toISOString(),
               lastError: next.resumeAt
-                ? `Claude usage limit — resumes ${next.resumeAt.toISOString()}`
-                : "Claude usage limit — waiting for reset",
+                ? `${engineLabel} usage limit — resumes ${next.resumeAt.toISOString()}`
+                : `${engineLabel} usage limit — waiting for reset`,
             });
 
             continue;
@@ -3141,10 +3010,10 @@ async function runWebSession(
           if (completedAfterRetry) {
             notifyRateLimitResumed(completedAfterRetry);
             notifyDiscordChannel(
-              `✅ Claude usage limit cleared. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} resumed.`,
+              `✅ ${engineLabel} usage limit cleared. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} resumed.`,
             );
             notifyParentSession(completedAfterRetry, { result: retryResult.result, error: retryResult.error ?? null, cost: retryResult.cost, durationMs: retryResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
-            if (deliverToConnector && retryResult.result && !retryResult.error) {
+            if (deliverToConnector && retryResult.result && (!retryResult.error || retryResult.retryable === false)) {
               const delivery = await deliverToOriginConnector(completedAfterRetry, retryResult.result, context.connectors);
               if (isUndeliveredToOrigin(delivery, completedAfterRetry)) recordFailedOriginDelivery(completedAfterRetry, context.emit);
             }
@@ -3166,20 +3035,20 @@ async function runWebSession(
 
         // Exhausted waiting window
         notifyDiscordChannel(
-          `❌ Claude usage limit did not clear in time. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} has been stopped.`,
+          `❌ ${engineLabel} usage limit did not clear in time. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} has been stopped.`,
         );
         const erroredSession = updateSession(currentSession.id, {
           status: "error",
           lastActivity: new Date().toISOString(),
-          lastError: "Claude usage limit did not clear in time",
+          lastError: `${engineLabel} usage limit did not clear in time`,
         });
         if (erroredSession) {
-          notifyParentSession(erroredSession, { error: "Claude usage limit did not clear in time" }, { alwaysNotify: employee?.alwaysNotify });
+          notifyParentSession(erroredSession, { error: `${engineLabel} usage limit did not clear in time` }, { alwaysNotify: employee?.alwaysNotify });
         }
         context.emit("session:completed", {
           sessionId: currentSession.id,
           result: null,
-          error: "Claude usage limit did not clear in time",
+          error: `${engineLabel} usage limit did not clear in time`,
         });
         logger.warn(`Web session ${currentSession.id} exhausted usage limit retries`);
         return;
@@ -3213,17 +3082,12 @@ async function runWebSession(
       lastError: result.error ?? null,
       ...(typeof result.contextTokens === "number" ? { lastContextTokens: result.contextTokens } : {}),
     });
-    if (syncRequested && !rateLimit.limited && !wasInterrupted) {
-      const meta = (getSession(currentSession.id)?.transportMeta || currentSession.transportMeta || {}) as Record<string, unknown>;
-      if (meta && typeof meta === "object" && !Array.isArray(meta)) {
-        const nextMeta = { ...meta } as Record<string, unknown>;
-        delete nextMeta["claudeSyncSince"];
-        updateSession(currentSession.id, { transportMeta: nextMeta as any });
-      }
+    if (syncRequested && !result.error && fallback.engine.name === currentSession.engine) {
+      updateSession(currentSession.id, { transportMeta: clearEngineSyncMarker(getSession(currentSession.id)?.transportMeta ?? null, currentSession.engine) });
     }
     if (completedSession) {
       notifyParentSession(completedSession, { result: result.result, error: result.error ?? null, cost: result.cost, durationMs: result.durationMs }, { alwaysNotify: employee?.alwaysNotify });
-      if (deliverToConnector && result.result && !result.error) {
+      if (deliverToConnector && result.result && (!result.error || result.retryable === false)) {
         const delivery = await deliverToOriginConnector(completedSession, result.result, context.connectors);
         if (isUndeliveredToOrigin(delivery, completedSession)) recordFailedOriginDelivery(completedSession, context.emit);
       }
@@ -3264,6 +3128,8 @@ async function runWebSession(
       error: errMsg,
     });
     logger.error(`Web session ${currentSession.id} error: ${errMsg}`);
+  } finally {
+    if (mcpConfigPath) cleanupMcpConfigFile(currentSession.id);
   }
 }
 

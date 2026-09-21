@@ -11,6 +11,8 @@ import type { ThemeId } from "@/lib/themes"
 import { api } from "@/lib/api"
 import { EmojiPicker } from "@/components/ui/emoji-picker"
 import { ModelSelector } from "@/components/settings/model-selector"
+import { JevSettings } from "@/components/settings/jev-settings"
+import type { SlackTriageSettings } from "@/lib/triage-settings"
 import { UpdateNotificationSettings } from "@/components/settings/update-notification-settings"
 import {
   MODEL_VENDORS,
@@ -148,7 +150,8 @@ interface Config {
     maxCostUsd?: number
     interruptOnNewMessage?: boolean
     rateLimitStrategy?: "wait" | "fallback"
-    fallbackEngine?: "codex"
+    fallbackEngine?: "claude" | "codex"
+    engineNoResponseTimeoutMs?: number
   }
   connectors?: {
     slack?: {
@@ -163,15 +166,7 @@ interface Config {
         channel?: "always" | "mention" | "never"
         engagedThreads?: boolean
       }
-      triage?: {
-        enabled?: boolean
-        engine?: "claude" | "codex"
-        bin?: string
-        model?: string
-        timeoutMs?: number
-        threadContextLimit?: number
-        persona?: string
-      }
+      triage?: SlackTriageSettings
       goalExtraction?: {
         enabled?: boolean
         engine?: "claude" | "codex"
@@ -220,6 +215,7 @@ interface Config {
       appToken?: string
       authDir?: string
       ignoreOldMessagesOnBoot?: boolean
+      triage?: SlackTriageSettings
       [key: string]: unknown
     }>
   }
@@ -1425,23 +1421,24 @@ export default function SettingsPage() {
                   className="border-t border-[var(--separator)] mt-[var(--space-3)] pt-[var(--space-3)]"
                 />
 
-                <FieldRow label="Claude が利用上限に達した時">
+                <FieldRow label="利用上限・無応答時の動作">
                   <SettingsSelect
                     value={config.sessions?.rateLimitStrategy ?? "fallback"}
                     onChange={(v) =>
                       updateConfig(["sessions", "rateLimitStrategy"], v)
                     }
                     options={[
-                      { value: "wait", label: "待機して自動再開" },
-                      { value: "fallback", label: "GPT (Codex) に切り替え" },
+                      { value: "wait", label: "切り替えず、利用上限の解除を待つ" },
+                      { value: "fallback", label: "もう一方のエンジンに切り替え" },
                     ]}
                   />
                 </FieldRow>
                 <div
                   className="text-[length:var(--text-caption1)] text-[var(--label-secondary)] mt-[4px]"
                 >
-                  「待機」は Claude のリセットを待ってからセッションを自動再開します。
-                  「切り替え」は即座に GPT で応答し、リセット後に Claude へ戻します。
+                  「切り替え」は Claude または Codex が利用上限に達したり応答しなくなった時に、
+                  もう一方で処理を続けます。「待機」は利用上限の解除を待って自動再開し、
+                  無応答時はエラーとして終了します。
                 </div>
               </Section>
 
@@ -1553,113 +1550,10 @@ export default function SettingsPage() {
                 >
                   空気読みトリアージ
                 </div>
-                <FieldRow label="有効化">
-                  <ToggleSwitch
-                    checked={config.connectors?.slack?.triage?.enabled ?? false}
-                    onChange={(v) => {
-                      updateConfig(["connectors", "slack", "triage", "enabled"], v)
-                      if (v && !config.connectors?.slack?.triage?.engine) {
-                        updateConfig(["connectors", "slack", "triage", "engine"], "codex")
-                      }
-                      if (v && !config.connectors?.slack?.triage?.model) {
-                        updateConfig(
-                          ["connectors", "slack", "triage", "model"],
-                          defaultTriageModelForEngine("codex"),
-                        )
-                      }
-                    }}
-                  />
-                </FieldRow>
-                <FieldRow label="モデルのベンダー" htmlFor="triage-model-vendor">
-                  <SettingsSelect
-                    id="triage-model-vendor"
-                    value={config.connectors?.slack?.triage?.engine ?? "codex"}
-                    onChange={(v) => {
-                      const engine = v as TriageModelEngine
-                      updateConfig(
-                        ["connectors", "slack", "triage", "engine"],
-                        engine,
-                      )
-                      updateConfig(
-                        ["connectors", "slack", "triage", "model"],
-                        defaultTriageModelForEngine(engine),
-                      )
-                    }}
-                    options={TRIAGE_MODEL_VENDORS}
-                  />
-                </FieldRow>
-                <FieldRow label="モデル" htmlFor="triage-model">
-                  <ModelSelector
-                    id="triage-model"
-                    engine={config.connectors?.slack?.triage?.engine ?? "codex"}
-                    model={config.connectors?.slack?.triage?.model}
-                    allowAutomatic
-                    onChange={(v) =>
-                      updateConfig(
-                        ["connectors", "slack", "triage", "model"],
-                        v ?? null,
-                      )
-                    }
-                  />
-                </FieldRow>
-                <FieldRow label="タイムアウト (ms)">
-                  <SettingsInput
-                    type="number"
-                    value={
-                      config.connectors?.slack?.triage?.timeoutMs !== undefined
-                        ? String(config.connectors.slack.triage.timeoutMs)
-                        : ""
-                    }
-                    onChange={(v) =>
-                      updateConfig(
-                        ["connectors", "slack", "triage", "timeoutMs"],
-                        v.trim() ? Number(v) : undefined,
-                      )
-                    }
-                    placeholder="20000"
-                  />
-                </FieldRow>
-                <FieldRow label="スレッド文脈の取得件数">
-                  <SettingsInput
-                    type="number"
-                    value={
-                      config.connectors?.slack?.triage?.threadContextLimit !== undefined
-                        ? String(config.connectors.slack.triage.threadContextLimit)
-                        : ""
-                    }
-                    onChange={(v) =>
-                      updateConfig(
-                        ["connectors", "slack", "triage", "threadContextLimit"],
-                        v.trim() ? Number(v) : undefined,
-                      )
-                    }
-                    placeholder="10"
-                  />
-                </FieldRow>
-                <FieldRow label="ペルソナ（任意）">
-                  <SettingsInput
-                    value={config.connectors?.slack?.triage?.persona ?? ""}
-                    onChange={(v) =>
-                      updateConfig(
-                        ["connectors", "slack", "triage", "persona"],
-                        v.trim() || undefined,
-                      )
-                    }
-                    placeholder="Short description of what this bot is good at"
-                  />
-                </FieldRow>
-                <FieldRow label="バイナリパス上書き（任意）">
-                  <SettingsInput
-                    value={config.connectors?.slack?.triage?.bin ?? ""}
-                    onChange={(v) =>
-                      updateConfig(
-                        ["connectors", "slack", "triage", "bin"],
-                        v.trim() || undefined,
-                      )
-                    }
-                    placeholder="codex"
-                  />
-                </FieldRow>
+                <JevSettings
+                  config={config.connectors?.slack?.triage}
+                  onChange={(triage) => updateConfig(["connectors", "slack", "triage"], triage)}
+                />
 
                 <div
                   className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--text-tertiary)] mt-[var(--space-3)] mb-[var(--space-2)]"
@@ -1668,17 +1562,11 @@ export default function SettingsPage() {
                 </div>
                 <FieldRow label="有効化">
                   <ToggleSwitch
-                    checked={config.connectors?.slack?.goalExtraction?.enabled ?? false}
+                    checked={config.connectors?.slack?.goalExtraction?.enabled ?? true}
                     onChange={(v) => {
                       updateConfig(["connectors", "slack", "goalExtraction", "enabled"], v)
                       if (v && !config.connectors?.slack?.goalExtraction?.engine) {
                         updateConfig(["connectors", "slack", "goalExtraction", "engine"], "codex")
-                      }
-                      if (v && !config.connectors?.slack?.goalExtraction?.model) {
-                        updateConfig(
-                          ["connectors", "slack", "goalExtraction", "model"],
-                          defaultTriageModelForEngine("codex"),
-                        )
                       }
                     }}
                   />
@@ -1695,7 +1583,7 @@ export default function SettingsPage() {
                       )
                       updateConfig(
                         ["connectors", "slack", "goalExtraction", "model"],
-                        defaultTriageModelForEngine(engine),
+                        null,
                       )
                     }}
                     options={TRIAGE_MODEL_VENDORS}
@@ -2278,6 +2166,20 @@ export default function SettingsPage() {
                           />
                         </FieldRow>
                       </>
+                    )}
+                    {instance.type === "slack" && (
+                      <div className="border-t border-[var(--separator)] mt-[var(--space-3)] pt-[var(--space-3)]">
+                        <div className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--text-tertiary)] mb-[var(--space-2)]">空気読みトリアージ</div>
+                        <JevSettings
+                          config={instance.triage}
+                          showCredentials={false}
+                          onChange={(triage) => {
+                            const instances = [...(config.connectors?.instances || [])]
+                            instances[idx] = { ...instances[idx], triage }
+                            updateConfig(["connectors", "instances"], instances)
+                          }}
+                        />
+                      </div>
                     )}
                     {instance.type === "whatsapp" && (
                       <>

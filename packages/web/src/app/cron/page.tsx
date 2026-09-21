@@ -21,7 +21,8 @@ interface CronJob {
   name: string
   schedule: string
   enabled: boolean
-  kind?: "prompt" | "update-notification"
+  kind?: "prompt" | "update-notification" | "command"
+  command?: { executable: string; args?: string[]; cwd?: string; timeoutSeconds?: number }
   timezone?: string
   engine?: string
   model?: string
@@ -465,7 +466,7 @@ export default function CronPage() {
 
                                     {/* Metadata badges */}
                                     <div className="flex items-center shrink-0 gap-[var(--space-2)] ml-auto">
-                                      {job.engine && (
+                                      {job.kind !== "command" && job.engine && (
                                         <span className="text-[length:var(--text-caption1)] px-2 py-px rounded-xl bg-[var(--fill-tertiary)] text-[var(--text-tertiary)]">
                                           {job.engine}
                                         </span>
@@ -475,6 +476,8 @@ export default function CronPage() {
                                           update check
                                         </span>
                                       )}
+
+                                      {job.kind === "command" && <span className="text-xs">Command · no AI</span>}
 
                                       {/* Enable/disable toggle */}
                                       <button
@@ -533,14 +536,14 @@ export default function CronPage() {
                                           {job.enabled ? "Enabled" : "Disabled"}
                                         </span>
 
-                                        {job.engine && (
+                                        {job.kind !== "command" && job.engine && (
                                           <>
                                             <span className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">Engine</span>
                                             <span className="text-[length:var(--text-caption1)] text-[var(--text-secondary)]">{job.engine}</span>
                                           </>
                                         )}
 
-                                        {job.model && (
+                                        {job.kind !== "command" && job.model && (
                                           <>
                                             <span className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">Model</span>
                                             <span className="text-[length:var(--text-caption1)] text-[var(--text-secondary)] font-[family-name:var(--font-mono)]">{job.model}</span>
@@ -553,6 +556,8 @@ export default function CronPage() {
                                           </>
                                         )}
                                       </div>
+
+                                      {job.kind === "command" && job.command && <pre className="text-xs whitespace-pre-wrap break-all">{JSON.stringify([job.command.executable, ...(job.command.args ?? [])])}</pre>}
 
                                       {/* Trigger button */}
                                       <div className="mb-[var(--space-3)]">

@@ -116,7 +116,7 @@ describe("buildGoalExtractionPrompt", () => {
   });
 
   it("truncates very long messages", () => {
-    const huge = "x".repeat(5000);
+    const huge = "x".repeat(20000);
     const p = buildGoalExtractionPrompt(huge);
     expect(p).toContain("…(truncated)");
     expect(p.length).toBeLessThan(huge.length + 4000);

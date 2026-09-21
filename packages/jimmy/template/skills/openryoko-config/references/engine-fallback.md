@@ -13,16 +13,16 @@ Jevは回答やファイル操作を担当するエンジンではない。`engi
 
 ## 稼働版を見分ける
 
-2026-09-21調査時点のソース対応表。日付やバージョン番号だけで可否を判定せず、稼働しているファイルと呼び出しを確認する。
+このスキルと同梱する実装はClaude Code／Codexの双方向切替に対応している。スキルだけをコピーした旧環境や、別ホストの稼働版も同じとは限らない。日付やバージョン番号だけで可否を判定せず、稼働しているファイルと呼び出しを確認する。
 
 | 確認した実装 | 実際の動作 |
 |---|---|
-| main `9f184534`（package 2026.9.8） | `sessions/manager` と `gateway/api` にClaude制限時→Codexの旧処理。Codex→Claude、無応答監視はこの経路にない |
-| 開発ブランチ `codex/bidirectional-engine-fallback` の `a3438d6e` | `sessions/engine-fallback` を両経路から呼び、双方向切替、無応答監視、会話引継ぎ、元エンジンへの復帰を共有化 |
+| 旧実装（例：package 2026.9.8） | `sessions/manager` と `gateway/api` にClaude制限時→Codexの旧処理。Codex→Claude、無応答監視はこの経路にない |
+| 同梱する双方向対応実装 | `sessions/engine-fallback` を両経路から呼び、双方向切替、無応答監視、会話引継ぎ、元エンジンへの復帰を共有化 |
 
-`shared/engine-fallback`、`shared/engine-health`、型の `fallbackModelMap` はmainにも存在する。しかし存在するだけでは会話経路への配線を意味しない。開発版の `runFallbackAttempts`、`runEngineWithResponseTimeout` が **`sessions/manager` と `gateway/api` の双方から使われるか**を確認する。npmでは対応する `dist/src/**/*.js` を読む。
+`shared/engine-fallback`、`shared/engine-health`、型の `fallbackModelMap` は旧実装にも存在する。しかし存在するだけでは会話経路への配線を意味しない。`runFallbackAttempts`、`runEngineWithResponseTimeout` が **`sessions/manager` と `gateway/api` の双方から使われるか**を確認する。npmでは対応する `dist/src/**/*.js` を読む。
 
-開発版を前提に設定する前に、上記の共有関数と現在の `fallbackConfig`、ループ条件、復帰条件を読む。将来実装が変わったらこのスナップショットより実装を優先する。healthに基づく事前回避も、helperだけでなく呼び出しを確認してから案内する。
+双方向切替を設定する前に、上記の共有関数と現在の `fallbackConfig`、ループ条件、復帰条件を読む。将来実装が変わったらこの資料より実装を優先する。healthに基づく事前回避も、helperだけでなく呼び出しを確認してから案内する。
 
 ## 双方向対応版での設定
 
@@ -39,7 +39,7 @@ sessions:
   engineNoResponseTimeoutMs: 300000
 ```
 
-この開発版は、未指定のchainをClaude→Codex／Codex→Claudeに補う。明示的な `fallback: []` はそのエンジンからの切替を無効化する。**`sessions.rateLimitStrategy: wait` はこの版では双方向切替ループ全体を止める**ため、旧キーだからと無条件に削除したり無視したりしない。完全停止なら両エンジンのchainを `[]` にする。片方向だけ使う場合は反対側を明示的に `[]` にする。
+双方向対応実装は、未指定のchainをClaude→Codex／Codex→Claudeに補う。明示的な `fallback: []` はそのエンジンからの切替を無効化する。**`sessions.rateLimitStrategy: wait` は双方向切替ループ全体を止める**ため、旧キーだからと無条件に削除したり無視したりしない。完全停止なら両エンジンのchainを `[]` にする。片方向だけ使う場合は反対側を明示的に `[]` にする。
 
 - 既知のエンジン名は `claude/codex/gemini`。対象の設定・CLI・認証が必要。自分自身をchainに入れない。Claude↔Codexの循環は許容され、1回の実行ではvisited集合で同じエンジンを繰り返さない。
 - 対象は利用制限、無応答／空出力、timeout。一般的なエラーすべてを別エンジンへ投げ直すわけではない。

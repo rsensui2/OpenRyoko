@@ -3,6 +3,8 @@ import type {
   Connector,
   Employee,
   Engine,
+  EngineResult,
+  EngineRunOpts,
   IncomingMessage,
   JinnConfig,
   SessionAttemptOutcome,
@@ -28,12 +30,14 @@ import {
   listPendingWorkflowAttemptDispatches,
   settleWorkflowAttemptDispatch,
   updateSession,
-  type UpdateSessionFields,
 } from "./registry.js";
 import { isInterruptibleEngine } from "../shared/types.js";
 import { continueWorkflowAttemptSession } from "./attempt-continuation.js";
 import { workflowAttemptInterruptionCause } from "./workflow-interruptions.js";
 import { recordTurnAccounting } from "./accounting.js";
+import { runWithSessionGoal, sessionGoalOptions } from "./goal-execution.js";
+import { conversationOutcome } from "./conversation-outcome.js";
+import { buildEngineSyncPrompt, clearEngineSyncMarker, engineFallbackFailure, engineSyncSince, maybeRevertEngineOverride, runEngineWithResponseTimeout, runFallbackAttempts, waitForEngineRetry } from "./engine-fallback.js";
 import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "./callbacks.js";
 import { buildContext } from "./context.js";
 import { normalizeDelivery, normalizeTurns, deliverPublic, type DeliveryContext } from "./reply-disposition.js";
@@ -70,6 +74,7 @@ const WORKFLOW_CONNECTOR: Connector = {
 };
 
 export interface RouteOptions {
+  effortLevel?: string;
   employee?: Employee;
   engine?: string;
   model?: string;
@@ -82,74 +87,15 @@ export interface RouteOptions {
  * command and NOT wrap it with conversation context — handleCommand() matches
  * them by exact string / prefix, so any preamble breaks the parsing.
  */
-export const SLASH_COMMANDS = ["/new", "/status", "/model", "/doctor", "/cron"] as const;
+export const SLASH_COMMANDS = ["/new", "/status", "/model", "/doctor", "/cron", "/goal"] as const;
 
 /** True when `text` begins with a control slash command (see {@link SLASH_COMMANDS}). */
 export function startsWithSlashCommand(text: string): boolean {
   const t = text.trimStart();
-  return SLASH_COMMANDS.some((cmd) => t === cmd || t.startsWith(`${cmd} `));
+  return SLASH_COMMANDS.some((cmd) => t === cmd || t.startsWith(`${cmd} `) || t.startsWith(`${cmd}\n`));
 }
 
-/**
- * Pure part of the engine-override revert: decide whether a session whose
- * engine was temporarily switched away (Claude rate-limit fallback) is due to
- * revert, and which fields to restore. Returns null when no revert is due.
- * Exported for tests; the DB write happens in {@link maybeRevertEngineOverride}.
- */
-export function computeEngineOverrideRevert(session: Session, nowMs: number = Date.now()): UpdateSessionFields | null {
-  const meta = (session.transportMeta || {}) as Record<string, unknown>;
-  const override = meta["engineOverride"] as Record<string, unknown> | undefined;
-  if (!override) return null;
-
-  const originalEngine = typeof override.originalEngine === "string" ? override.originalEngine : null;
-  const originalEngineSessionId = typeof override.originalEngineSessionId === "string"
-    ? override.originalEngineSessionId
-    : null;
-  const syncSince = typeof override.syncSince === "string" ? override.syncSince : null;
-  const untilIso = typeof override.until === "string" ? override.until : null;
-  if (!originalEngine || !untilIso) return null;
-
-  const until = new Date(untilIso);
-  if (Number.isNaN(until.getTime())) return null;
-  if (until.getTime() > nowMs) return null;
-
-  const engineSessionsRaw = meta["engineSessions"];
-  const engineSessions = (engineSessionsRaw && typeof engineSessionsRaw === "object" && !Array.isArray(engineSessionsRaw))
-    ? { ...(engineSessionsRaw as Record<string, unknown>) }
-    : {};
-
-  // Preserve the current engine session ID under its engine key
-  if (session.engine && session.engineSessionId) {
-    engineSessions[String(session.engine)] = session.engineSessionId;
-  }
-
-  const restoredSessionId = originalEngineSessionId
-    ?? (typeof engineSessions[originalEngine] === "string" ? (engineSessions[originalEngine] as string) : null);
-
-  const nextMeta = { ...meta, engineSessions } as Record<string, unknown>;
-  if (originalEngine === "claude" && syncSince && session.engine !== "claude") {
-    nextMeta["claudeSyncSince"] = syncSince;
-  }
-  delete (nextMeta as Record<string, unknown>)["engineOverride"];
-  return {
-    engine: originalEngine,
-    engineSessionId: restoredSessionId,
-    transportMeta: nextMeta as any,
-    lastError: null,
-    // Restore the pre-fallback model only when the override stashed one.
-    // Legacy overrides (written before model stashing) leave session.model
-    // untouched, matching the old behavior.
-    ...("originalModel" in override
-      ? { model: typeof override.originalModel === "string" ? override.originalModel : null }
-      : {}),
-  };
-}
-
-function maybeRevertEngineOverride(session: Session): Session {
-  const updates = computeEngineOverrideRevert(session);
-  if (!updates) return session;
-  return updateSession(session.id, updates) ?? session;
-}
+export { computeEngineOverrideRevert } from "./engine-fallback.js";
 
 function mergeTransportMeta(
   existing: Session["transportMeta"],
@@ -165,7 +111,7 @@ function mergeTransportMeta(
   const merged: Record<string, unknown> = { ...baseExisting, ...baseIncoming };
 
   // Preserve Jinn internal keys from being overwritten by transport adapters.
-  for (const key of ["engineOverride", "engineSessions", "claudeSyncSince"]) {
+  for (const key of ["engineOverride", "engineSessions", "claudeSyncSince", "engineSyncSince"]) {
     if (baseExisting[key] !== undefined) merged[key] = baseExisting[key];
   }
 
@@ -422,6 +368,7 @@ export class SessionManager {
         employee: opts.employee?.name ?? undefined,
         model: opts.model ?? opts.employee?.model ?? undefined,
         title: opts.title,
+        effortLevel: opts.effortLevel,
         prompt: msg.text,
         portalName: this.config.portal?.portalName,
       });
@@ -439,7 +386,7 @@ export class SessionManager {
       }) ?? session;
     }
 
-    session = maybeRevertEngineOverride(session);
+    if (!this.queue.isRunning(msg.sessionKey)) session = maybeRevertEngineOverride(session);
 
     const target = connector.reconstructTarget(msg.replyContext);
     target.messageTs ??= msg.messageId;
@@ -455,7 +402,7 @@ export class SessionManager {
         : null;
       await connector.replyMessage(
         target,
-        `⏳ Still paused due to Claude usage limit${resumeText ? ` (resets ${resumeText})` : ""}. I queued this message and will respond automatically.`,
+        `⏳ Still paused due to ${session.engine} usage limit${session.engine === "claude" && resumeText ? ` (resets ${resumeText})` : ""}. I queued this message and will respond automatically.`,
       ).catch(() => {});
     }
 
@@ -468,16 +415,25 @@ export class SessionManager {
     // Queue cancellation is generational (see SessionQueue.clearQueue): this new
     // inbound message enqueues at the current generation and runs even if the session
     // was previously /stop- or watchdog-reset, so no explicit un-cancel is needed here.
-    await this.queue.enqueue(msg.sessionKey, () =>
-      this.runSession(session!, msg, attachmentPaths, connector, target, opts.employee),
-    );
+    let executionStarted = false;
+    try {
+      await this.queue.enqueue(msg.sessionKey, () => {
+        executionStarted = true;
+        return this.runSession(session!, msg, attachmentPaths, connector, target, opts.employee);
+      });
+    } finally {
+      // A cancelled queue item never enters runSession's cleanup. Clear only
+      // that item's pending indicators; a started session may have deliberately
+      // delivered :eyes: as its final response and must retain that reaction.
+      if (!executionStarted) await this.clearPendingReactions(connector, target);
+    }
 
     return { sessionId };
   }
 
   /**
    * Build the audience/routing context used to sanitize engine output before it
-   * is posted. `addressed` is true for any non-cron (human-originated) session:
+   * is posted. `addressed` is true for non-cron, explicitly requested sessions:
    * "read-the-air" silence is handled upstream in triage, so a session that ran
    * at all owes a response. `channelExternal` defaults to true for non-DM when
    * the connector doesn't report it (safe — strips operator notes from any
@@ -496,7 +452,7 @@ export class SessionManager {
         ? true
         : meta.channelExternal === true;
     return {
-      addressed: session.source !== "cron",
+      addressed: session.source !== "cron" && msg.transportMeta?.proactiveContribution !== true,
       channelExternal,
       isDM,
       canReact: capabilities.reactions,
@@ -564,6 +520,14 @@ export class SessionManager {
     }
   }
 
+  private async clearPendingReactions(connector: Connector, target: Target): Promise<void> {
+    if (!connector.getCapabilities().reactions) return;
+    await Promise.all([
+      connector.removeReaction(target, "eyes").catch(() => {}),
+      connector.removeReaction(target, "clock1").catch(() => {}),
+    ]);
+  }
+
   private async runSession(
     session: Session,
     msg: IncomingMessage,
@@ -572,19 +536,58 @@ export class SessionManager {
     target: Target,
     employee?: Employee,
   ): Promise<void> {
-    const engine = this.engines.get(session.engine);
-    if (!engine) {
-      logger.error(`Engine "${session.engine}" not found for session ${session.id}`);
-      await connector.replyMessage(target, `Error: engine "${session.engine}" not available.`);
-      return;
+    let engine: Engine | undefined;
+    let prepared = false;
+    try {
+      const current = getSession(session.id);
+      if (!current) return;
+      session = maybeRevertEngineOverride(current);
+      engine = this.engines.get(session.engine);
+      if (!engine) {
+        logger.error(`Engine "${session.engine}" not found for session ${session.id}`);
+        await connector.replyMessage(target, `Error: engine "${session.engine}" not available.`);
+        return;
+      }
+      if (!["claude", "codex"].includes(session.engine) && /^\/goal(?:\s|$)/i.test(msg.text.trim())) {
+        await connector.replyMessage(
+          target,
+          `/goal requires Claude or Codex. Current engine: ${session.engine}.`,
+        );
+        return;
+      }
+      prepared = true;
+    } finally {
+      // These exits precede the normal engine-delivery cleanup, including a
+      // failed attempt to report an unavailable engine back to the connector.
+      if (!prepared) await this.clearPendingReactions(connector, target);
     }
-    if (session.engine !== "claude" && /^\/goal(?:\s|$)/i.test(msg.text.trim())) {
-      await connector.replyMessage(
-        target,
-        `/goal is only supported by the Claude engine. Current engine: ${session.engine}. Switch this session to Claude to use goal-mode execution.`,
-      );
-      return;
-    }
+
+    const goalOptions = sessionGoalOptions(this.config, session, this.queue, msg.text);
+    let beforeAttemptGoal = session.goal;
+    let attemptEngineName = engine.name;
+    const runEngine = (targetEngine: Engine, opts: EngineRunOpts) => {
+      // Refresh for every retry/fallback: only the finally delivered attempt's
+      // structured assessment is evidence for conversation state.
+      beforeAttemptGoal = getSession(session.id)?.goal;
+      attemptEngineName = targetEngine.name;
+      // Unsolicited helpful observations are a single response. They neither
+      // establish a new autonomous goal nor resume/clear an existing one.
+      if (msg.transportMeta?.proactiveContribution === true) {
+        return runEngineWithResponseTimeout(targetEngine, opts, this.config, goalOptions.shouldStop);
+      }
+      return runWithSessionGoal({ name: targetEngine.name, run: (attemptOpts) => runEngineWithResponseTimeout(targetEngine, attemptOpts, this.config, goalOptions.shouldStop) }, opts, goalOptions);
+    };
+    const recordDeliveredOutcome = (result: EngineResult, deliveredReply: boolean) => {
+      const state = conversationOutcome({
+        engine: attemptEngineName,
+        beforeGoal: beforeAttemptGoal,
+        session: getSession(session.id),
+        result,
+        deliveredReply,
+        interrupted: goalOptions.shouldStop?.(),
+      });
+      if (state) connector.setConversationState?.(target, state, msg.userId);
+    };
 
     insertMessage(session.id, "user", msg.text);
 
@@ -592,6 +595,7 @@ export class SessionManager {
     const decorateMessages = session.source !== "cron";
 
     if (decorateMessages && capabilities.reactions) {
+      await connector.removeReaction(target, "clock1").catch(() => {});
       await connector.addReaction(target, "eyes").catch(() => {});
     }
 
@@ -621,7 +625,7 @@ export class SessionManager {
 
     try {
       const meta = msg.transportMeta ?? {};
-      const systemPrompt = buildContext({
+      const systemPromptFor = (engineName: string, sshHost?: string) => buildContext({
         source: session.source,
         channel: msg.channel,
         thread: msg.thread,
@@ -645,14 +649,15 @@ export class SessionManager {
         // claude -p, codex, gemini, SSH fallback) is a one-shot process whose
         // background tasks die at turn end (#38).
         processLifetime:
-          session.engine === "claude" &&
+          engineName === "claude" &&
           this.config.engines.claude?.interactive === true &&
-          !employee?.sshHost
+          !sshHost
             ? "persistent"
             : "one-shot",
         hierarchy,
       });
 
+      const systemPrompt = systemPromptFor(session.engine, employee?.sshHost);
       const engineConfig = session.engine === "codex"
         ? this.config.engines.codex
         : session.engine === "gemini"
@@ -676,20 +681,8 @@ export class SessionManager {
         effortLevelsForModel(this.config, session.engine, session.model ?? engineConfig.model),
       );
 
-      // If we previously switched to GPT while Claude was rate-limited, inject a sync transcript
-      // so Claude can resume with full context when it comes back online.
-      const syncSinceIso = (session.transportMeta as any)?.claudeSyncSince;
-      let promptToRun = msg.text;
-      const syncSinceMs = typeof syncSinceIso === "string" ? new Date(syncSinceIso).getTime() : NaN;
-      const syncRequested = session.engine === "claude" && typeof syncSinceIso === "string" && Number.isFinite(syncSinceMs);
-      if (syncRequested) {
-        const sinceMessages = getMessages(session.id)
-          .filter((m) => (m.role === "user" || m.role === "assistant") && m.timestamp >= syncSinceMs)
-          .map((m) => `${m.role.toUpperCase()}: ${m.content}`);
-        const transcript = sinceMessages.slice(-20).join("\n\n");
-        promptToRun =
-          `We temporarily switched to GPT due to a Claude usage limit. Sync your context with this transcript (most recent last), then respond to the last USER message.\n\n${transcript}`;
-      }
+      const syncRequested = engineSyncSince(session) !== undefined;
+      let promptToRun = buildEngineSyncPrompt(session, msg.text);
 
       // Per-message speaker attribution for group conversations, so every turn
       // carries an explicit "who is talking now" signal instead of defaulting
@@ -751,7 +744,7 @@ export class SessionManager {
         }
       }
 
-      let result = await engine.run({
+      const initialRunOpts: EngineRunOpts = {
         prompt: promptToRun,
         resumeSessionId: session.engineSessionId ?? undefined,
         systemPrompt,
@@ -765,9 +758,18 @@ export class SessionManager {
         mcpConfigPath,
         attachments: attachments.length > 0 ? attachments : undefined,
         sessionId: session.id,
-      });
+      };
+      let result = await runEngine(engine, initialRunOpts);
 
-      let wasInterrupted = result.error?.startsWith("Interrupted");
+      // A /new/reset during goal assessment must not append an orphan reply.
+      if (!getSession(session.id)) {
+        if (decorateMessages && connector.setTypingStatus) {
+          await connector.setTypingStatus(target.channel, threadTs, "").catch(() => {});
+        }
+        await this.clearPendingReactions(connector, target);
+        return;
+      }
+      let wasInterrupted = result.error?.startsWith("Interrupted") && engineFallbackFailure(result) !== "timeout";
 
       // Poisoned transcript: the persisted engine history is corrupted (e.g.
       // collapsed extended-thinking blocks) so every --resume of this engine
@@ -806,7 +808,7 @@ export class SessionManager {
       // error can contain text like "429" that would otherwise match RATE_LIMIT_ERROR_RE).
       // (Poisoned transcripts are handled above and excluded here — unlike a stale
       // resume id, they must not trigger an automatic prompt replay.)
-      let isDead = !wasInterrupted && !isPoisoned && isDeadSessionError(result);
+      let isDead = !wasInterrupted && !isPoisoned && !engineFallbackFailure(result) && isDeadSessionError(result);
       if (isDead) {
         logger.warn(`Dead session detected for ${session.id} — clearing stale engine IDs`);
         const meta = { ...(session.transportMeta || {}) } as Record<string, unknown>;
@@ -823,7 +825,7 @@ export class SessionManager {
         // message that happens to land on a stale resume ID is silently lost
         // (the raw engine error propagates back instead of a real answer).
         logger.info(`Retrying session ${session.id} with fresh engine session after dead-session`);
-        result = await engine.run({
+        result = await runEngine(engine, {
           prompt: promptToRun,
           resumeSessionId: undefined,
           systemPrompt,
@@ -843,7 +845,7 @@ export class SessionManager {
         // comes back dead, something deeper is wrong — log and fall through to
         // normal error handling (which will post the error to the user).
         wasInterrupted = result.error?.startsWith("Interrupted");
-        isDead = !wasInterrupted && isDeadSessionError(result);
+        isDead = !wasInterrupted && !engineFallbackFailure(result) && isDeadSessionError(result);
         if (isDead) {
           logger.error(`Retry with fresh session for ${session.id} also reported dead-session; giving up`);
         }
@@ -876,7 +878,7 @@ export class SessionManager {
             await new Promise((r) => setTimeout(r, Math.min(20_000, delayMs - waited)));
           }
           const resumeId = result.sessionId?.trim() || session.engineSessionId || undefined;
-          result = await engine.run({
+          result = await runEngine(engine, {
             prompt:
               "The previous response was interrupted by a temporary Anthropic API server error. " +
               "The conversation history up to that point is intact. Continue and complete the original request now. " +
@@ -901,147 +903,39 @@ export class SessionManager {
         }
       }
 
-      // Detect rate limit / usage limit errors and auto-retry.
-      // Skip entirely for dead/poisoned sessions — they are not rate limits.
-      const rateLimit = (!wasInterrupted && !isDead && !isPoisoned) ? detectRateLimit(result) : { limited: false as const };
-      if (rateLimit.limited) {
-        recordClaudeRateLimit(rateLimit.resetsAt);
-
-        const strategy = this.config.sessions?.rateLimitStrategy ?? "fallback";
-
-        // Optional fallback: switch to GPT (Codex) while Claude resets
-        if (session.engine === "claude" && strategy === "fallback") {
-          const fallbackName = this.config.sessions?.fallbackEngine ?? "codex";
-          const fallbackEngine = this.engines.get(fallbackName);
-          if (fallbackEngine) {
-            const { resumeAt } = computeNextRetryDelayMs(rateLimit.resetsAt);
-            const until = resumeAt ?? new Date(Date.now() + 6 * 60 * 60_000);
-            const syncSince = new Date().toISOString();
-            const resumeText = resumeAt
-              ? resumeAt.toLocaleString("en-GB", { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
-              : null;
-
-            notifyDiscordChannel(
-              `⚠️ Claude usage limit reached. Session ${session.id}${session.employee ? ` (${session.employee})` : ""} switching to GPT.`,
-            );
-
-            await connector.replyMessage(
-              target,
-              `⚠️ Claude usage limit reached${resumeText ? `. Resets ${resumeText}` : ""}. Switching to GPT for now.`,
-            ).catch(() => {});
-
-            const nextMeta = { ...(session.transportMeta || {}) } as Record<string, unknown>;
-            const engineSessionsRaw = nextMeta.engineSessions;
-            const engineSessions = (engineSessionsRaw && typeof engineSessionsRaw === "object" && !Array.isArray(engineSessionsRaw))
-              ? { ...(engineSessionsRaw as Record<string, unknown>) }
-              : {};
-            if (session.engineSessionId) {
-              engineSessions.claude = session.engineSessionId;
-            }
-            nextMeta.engineSessions = engineSessions;
-            nextMeta.engineOverride = {
-              originalEngine: "claude",
-              originalEngineSessionId: session.engineSessionId,
-              // Stash the Claude-side model so the revert can restore it —
-              // model ids are engine-specific and must not survive onto Codex.
-              originalModel: session.model ?? null,
-              until: until.toISOString(),
-              syncSince,
-            };
-
-            updateSession(session.id, {
-              engine: fallbackName,
-              // Keep Claude engine_session_id intact for later restore; Codex will return its own thread id.
-              // Clear the model: a Claude model id (e.g. "sonnet" / "claude-opus-5")
-              // on a Codex session makes every subsequent turn exit with a 400.
-              model: null,
-              transportMeta: nextMeta as any,
-              status: "running",
-              lastActivity: new Date().toISOString(),
-              lastError: resumeAt
-                ? `Claude usage limit — using GPT until ${resumeAt.toISOString()}`
-                : "Claude usage limit — using GPT temporarily",
+      const fallback = await runFallbackAttempts({
+        config: this.config, session, initialEngine: engine, initialResult: result, initialOpts: initialRunOpts,
+        employee, getEngine: (name) => this.engines.get(name), run: runEngine,
+        shouldStop: () => goalOptions.shouldStop?.() === true || !getSession(session.id),
+        onSwitch: async (from, to, reason) => {
+          const why = reason === "rate_limit" ? "usage limit reached" : reason === "timeout" ? "stopped responding" : "returned no response";
+          await connector.replyMessage(target, `⚠️ ${from} ${why}. Switching to ${to}.`).catch(() => {});
+        },
+        prepareOptions: (targetEngine, opts) => {
+          if (targetEngine.name === "claude" && !mcpConfigPath) {
+            const mcpConfig = resolveMcpServers(this.config.mcp, employee, {
+              connector: connector.name, channel: target.channel, thread: target.thread || target.messageTs,
             });
-
-            const fallbackConfig = this.config.engines.codex;
-            // Never carry the Claude session's model id onto Codex — ids are
-            // engine-specific ("sonnet" / "claude-opus-5" → codex exec exits 1).
-            const fallbackModel = fallbackConfig.model;
-            const fallbackEffort = resolveEffort(
-              fallbackConfig,
-              session,
-              employee,
-              effortLevelsForModel(this.config, "codex", fallbackModel),
-            );
-            const codexResume = typeof engineSessions.codex === "string" ? (engineSessions.codex as string) : undefined;
-            const history = getMessages(session.id)
-              .filter((m) => m.role === "user" || m.role === "assistant")
-              .map((m) => `${m.role.toUpperCase()}: ${m.content}`);
-            const historyText = history.slice(-12).join("\n\n");
-            const fallbackPrompt = codexResume
-              ? msg.text
-              : `Continue this conversation and respond to the last USER message.\n\nConversation so far:\n\n${historyText}`;
-            const fallbackResult = await fallbackEngine.run({
-              prompt: fallbackPrompt,
-              resumeSessionId: codexResume,
-              systemPrompt,
-              cwd: JINN_HOME,
-              bin: fallbackConfig.bin,
-              model: fallbackModel,
-              effortLevel: fallbackEffort,
-              cliFlags: employee?.cliFlags,
-              sshHost: employee?.sshHost,
-              remoteCwd: employee?.remoteCwd,
-              attachments: attachments.length > 0 ? attachments : undefined,
-              sessionId: session.id,
-            });
-
-            const fallbackText = fallbackResult.result?.trim()
-              ? fallbackResult.result
-              : fallbackResult.error || "(No response from engine)";
-
-            insertMessage(session.id, "assistant", fallbackText);
-            if (fallbackResult.cost || fallbackResult.numTurns) {
-              recordTurnAccounting(session.id, fallbackResult);
-            }
-
-            // Persist Codex thread id so future fallbacks can resume it
-            const nextEngineSessions = { ...engineSessions };
-            if (fallbackResult.sessionId) {
-              nextEngineSessions.codex = fallbackResult.sessionId;
-            }
-            const metaAfter = { ...(getSessionBySessionKey(msg.sessionKey)?.transportMeta || nextMeta) } as Record<string, unknown>;
-            metaAfter.engineSessions = nextEngineSessions;
-            updateSession(session.id, { transportMeta: metaAfter as any });
-
-            if (decorateMessages && connector.setTypingStatus) {
-              await connector.setTypingStatus(target.channel, threadTs, "").catch(() => {});
-            }
-            // Clear "eyes" before delivery so a react-only ":eyes:" reply survives.
-            if (decorateMessages && capabilities.reactions) {
-              await connector.removeReaction(target, "eyes").catch(() => {});
-            }
-            {
-              const { publicAction } = normalizeDelivery(fallbackText, this.buildDeliveryContext(session, msg, capabilities));
-              await deliverPublic(connector, target, publicAction).catch(() => {});
-            }
-
-            const updated = updateSession(session.id, {
-              engineSessionId: fallbackResult.sessionId,
-              status: fallbackResult.error ? "error" : "idle",
-              replyContext: msg.replyContext,
-              messageId: msg.messageId ?? null,
-              transportMeta: mergeTransportMeta(getSessionBySessionKey(msg.sessionKey)?.transportMeta ?? session.transportMeta, msg.transportMeta),
-              lastActivity: new Date().toISOString(),
-              lastError: fallbackResult.error ?? null,
-              ...(typeof fallbackResult.contextTokens === "number" ? { lastContextTokens: fallbackResult.contextTokens } : {}),
-            });
-            if (updated) {
-              notifyParentSession(updated, { result: fallbackResult.result, error: fallbackResult.error ?? null, cost: fallbackResult.cost, durationMs: fallbackResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
-            }
-            return;
+            if (Object.keys(mcpConfig.mcpServers).length) mcpConfigPath = writeMcpConfigFile(mcpConfig, session.id);
           }
-        }
+          return { ...opts, systemPrompt: systemPromptFor(targetEngine.name, opts.sshHost),
+            mcpConfigPath: targetEngine.name === "claude" ? mcpConfigPath : undefined };
+        },
+      });
+      result = fallback.result;
+      session = fallback.session;
+      engine = fallback.engine;
+      if (!getSession(session.id)) {
+        if (decorateMessages && connector.setTypingStatus) await connector.setTypingStatus(target.channel, threadTs, "").catch(() => {});
+        await this.clearPendingReactions(connector, target);
+        return;
+      }
+      wasInterrupted = (result.error?.startsWith("Interrupted") && engineFallbackFailure(result) !== "timeout") || goalOptions.shouldStop?.() === true;
+      // A failed fallback chain has already tried every eligible provider. Do
+      // not enter a hours-long retry wait or ping-pong between them this turn.
+      const rateLimit = (!wasInterrupted && !isDead && !isPoisoned) ? detectRateLimit(result) : { limited: false as const };
+      if (rateLimit.limited && !fallback.attempted) {
+        if (session.engine === "claude") recordClaudeRateLimit(rateLimit.resetsAt);
 
         const waitEmoji = "hourglass_flowing_sand";
 
@@ -1056,12 +950,12 @@ export class SessionManager {
           : null;
 
         logger.info(
-          `Session ${session.id} hit Claude usage limit — will auto-retry ${resumeAt ? `at ${resumeAt.toISOString()}` : `in ${Math.round(delayMs / 1000)}s`}`,
+          `Session ${session.id} hit ${session.engine} usage limit — will auto-retry ${resumeAt ? `at ${resumeAt.toISOString()}` : `in ${Math.round(delayMs / 1000)}s`}`,
         );
 
         // Send hardcoded Discord notification — does not depend on LLM
         notifyDiscordChannel(
-          `⚠️ Claude usage limit reached. Session ${session.id}${session.employee ? ` (${session.employee})` : ""} paused${resumeText ? ` until ${resumeText}` : ""}.`,
+          `⚠️ ${session.engine} usage limit reached. Session ${session.id}${session.employee ? ` (${session.employee})` : ""} paused${resumeText ? ` until ${resumeText}` : ""}.`,
         );
 
         // Clear "thinking" UI and show waiting state
@@ -1078,8 +972,8 @@ export class SessionManager {
           status: "waiting",
           lastActivity: new Date().toISOString(),
           lastError: resumeAt
-            ? `Claude usage limit — resumes ${resumeAt.toISOString()}`
-            : "Claude usage limit — waiting for reset",
+            ? `${session.engine} usage limit — resumes ${resumeAt.toISOString()}`
+            : `${session.engine} usage limit — waiting for reset`,
         }) ?? session;
 
         notifyRateLimited(
@@ -1091,7 +985,7 @@ export class SessionManager {
 
         await connector.replyMessage(
           target,
-          `⏳ Claude usage limit reached${resumeText ? `. Resets ${resumeText}` : ""} — I'll continue automatically.`,
+          `⏳ ${session.engine} usage limit reached${resumeText ? `. Resets ${resumeText}` : ""} — I'll continue automatically.`,
         ).catch(() => {});
 
         // Keep lastActivity fresh while waiting (UI / status endpoints)
@@ -1104,7 +998,7 @@ export class SessionManager {
           let nextDelayMs = delayMs;
 
           while (Date.now() < deadlineMs) {
-            await new Promise(r => setTimeout(r, nextDelayMs));
+            if (!await waitForEngineRetry(nextDelayMs, () => goalOptions.shouldStop?.() === true || !getSession(session.id))) return;
             attempt++;
 
             // Check if session was stopped while waiting
@@ -1124,7 +1018,7 @@ export class SessionManager {
             }
 
             logger.info(`Session ${session.id} retrying after usage limit (attempt ${attempt})`);
-            const retryResult = await engine.run({
+            const retryResult = await runEngine(engine, {
               prompt: msg.text,
               resumeSessionId: currentSession.engineSessionId ?? undefined,
               systemPrompt,
@@ -1143,7 +1037,7 @@ export class SessionManager {
             const retryInterrupted = retryResult.error?.startsWith("Interrupted");
             const retryRateLimit = !retryInterrupted ? detectRateLimit(retryResult) : { limited: false as const };
             if (retryRateLimit.limited) {
-              recordClaudeRateLimit(retryRateLimit.resetsAt);
+              if (session.engine === "claude") recordClaudeRateLimit(retryRateLimit.resetsAt);
               logger.info(`Session ${session.id} still rate limited (attempt ${attempt})`);
 
               const next = computeNextRetryDelayMs(retryRateLimit.resetsAt);
@@ -1163,8 +1057,8 @@ export class SessionManager {
                 status: "waiting",
                 lastActivity: new Date().toISOString(),
                 lastError: next.resumeAt
-                  ? `Claude usage limit — resumes ${next.resumeAt.toISOString()}`
-                  : "Claude usage limit — waiting for reset",
+                  ? `${session.engine} usage limit — resumes ${next.resumeAt.toISOString()}`
+                  : `${session.engine} usage limit — waiting for reset`,
               });
 
               continue;
@@ -1191,7 +1085,9 @@ export class SessionManager {
 
             {
               const { publicAction } = normalizeDelivery(retryText, this.buildDeliveryContext(session, msg, capabilities));
-              await deliverPublic(connector, target, publicAction).catch(() => {});
+              const deliveredReply = await deliverPublic(connector, target, publicAction)
+                .then(() => publicAction.kind === "reply", () => false);
+              recordDeliveredOutcome(retryResult, deliveredReply);
             }
             const retryUpdated = updateSession(session.id, {
               ...(retryResult.sessionId?.trim() ? { engineSessionId: retryResult.sessionId } : {}),
@@ -1206,7 +1102,7 @@ export class SessionManager {
             if (retryUpdated) {
               notifyRateLimitResumed(retryUpdated);
               notifyDiscordChannel(
-                `✅ Claude usage limit cleared. Session ${session.id}${session.employee ? ` (${session.employee})` : ""} resumed.`,
+                `✅ ${session.engine} usage limit cleared. Session ${session.id}${session.employee ? ` (${session.employee})` : ""} resumed.`,
               );
               notifyParentSession(retryUpdated, { result: retryResult.result, error: retryResult.error ?? null, cost: retryResult.cost, durationMs: retryResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
             }
@@ -1216,13 +1112,13 @@ export class SessionManager {
 
           // Exhausted waiting window
           notifyDiscordChannel(
-            `❌ Claude usage limit did not clear in time. Session ${session.id}${session.employee ? ` (${session.employee})` : ""} has been stopped.`,
+            `❌ ${session.engine} usage limit did not clear in time. Session ${session.id}${session.employee ? ` (${session.employee})` : ""} has been stopped.`,
           );
           await connector.replyMessage(target, "Usage limit didn't reset in time. Please try again later.").catch(() => {});
           updateSession(session.id, {
             status: "error",
             lastActivity: new Date().toISOString(),
-            lastError: "Claude usage limit did not clear in time",
+            lastError: `${session.engine} usage limit did not clear in time`,
           });
 
           // Clear reactions on failure
@@ -1233,14 +1129,22 @@ export class SessionManager {
           return;
         } finally {
           clearInterval(heartbeat);
+          if (goalOptions.shouldStop?.() || !getSession(session.id)) {
+            if (decorateMessages && connector.setTypingStatus) await connector.setTypingStatus(target.channel, threadTs, "").catch(() => {});
+            if (decorateMessages && capabilities.reactions) {
+              await connector.removeReaction(target, "eyes").catch(() => {});
+              await connector.removeReaction(target, waitEmoji).catch(() => {});
+            }
+            if (getSession(session.id)?.status === "waiting") updateSession(session.id, { status: "idle", lastError: null });
+          }
         }
       }
 
-      const responseText = result.result?.trim()
+      const responseText = result.responseExpected === false && !result.error ? "" : result.result?.trim()
         ? result.result
         : result.error || "(No response from engine)";
 
-      insertMessage(session.id, "assistant", responseText);
+      if (responseText) insertMessage(session.id, "assistant", responseText);
       recordTurnAccounting(session.id, result);
       if (decorateMessages && connector.setTypingStatus) {
         await connector.setTypingStatus(target.channel, threadTs, "").catch(() => {});
@@ -1250,7 +1154,7 @@ export class SessionManager {
       if (decorateMessages && capabilities.reactions) {
         await connector.removeReaction(target, "eyes").catch(() => {});
       }
-      if (!wasInterrupted) {
+      if (!wasInterrupted && responseText) {
         // Sanitize engine output before posting: strip operator-facing notes
         // (reply-disposition trailer) so they never reach an external channel,
         // and enforce "addressed ⇒ never silent". See the 2026-06-18 design doc.
@@ -1265,9 +1169,11 @@ export class SessionManager {
           for (const action of actions) {
             await deliverPublic(connector, target, action);
           }
+          recordDeliveredOutcome(result, actions.at(-1)?.kind === "reply");
         } else {
           const { publicAction } = normalizeDelivery(responseText, deliveryCtx);
           await deliverPublic(connector, target, publicAction);
+          recordDeliveredOutcome(result, publicAction.kind === "reply");
         }
       }
       const updatedSession = updateSession(session.id, {
@@ -1277,10 +1183,8 @@ export class SessionManager {
         messageId: msg.messageId ?? null,
         transportMeta: (() => {
           const merged = mergeTransportMeta(getSessionBySessionKey(msg.sessionKey)?.transportMeta ?? session.transportMeta, msg.transportMeta) as Record<string, unknown>;
-          if (syncRequested && !rateLimit.limited && !wasInterrupted) {
-            delete merged["claudeSyncSince"];
-          }
-          return merged as any;
+          return syncRequested && !result.error && !wasInterrupted
+            ? clearEngineSyncMarker(merged as any, session.engine) : merged as any;
         })(),
         lastActivity: new Date().toISOString(),
         lastError: wasInterrupted ? null : (result.error ?? null),
@@ -1420,6 +1324,9 @@ export class SessionManager {
   resetSession(sessionKey: string): void {
     const session = getSessionBySessionKey(sessionKey);
     if (session) {
+      this.queue.clearQueue(sessionKey);
+      const engine = this.engines.get(session.engine);
+      if (engine && isInterruptibleEngine(engine)) engine.kill(session.id, "Interrupted: session was reset");
       deleteSession(session.id);
       logger.info(`Deleted session ${session.id}`);
     }

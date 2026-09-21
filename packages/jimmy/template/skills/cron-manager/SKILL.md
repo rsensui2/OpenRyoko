@@ -1,127 +1,97 @@
 ---
 name: cron-manager
-description: Create, edit, delete, enable, disable, and list scheduled cron jobs
+description: "OpenRyoko の定期ジョブの作成・更新・停止・一覧確認。AIなしのコマンド実行とジョブ別モデル・思考量の設定にも使う。"
 ---
 
-# Cron Manager Skill
+# Cron Manager
 
-## Trigger
+Use this skill to create, edit, enable, disable, delete, or inspect scheduled jobs.
+Direct command cron and per-job effort are available from OpenRyoko 2026.9.11. Read `docs/cron-commands.md` and any operator-specific cost policy before choosing execution settings.
 
-This skill activates when the user wants to create, edit, delete, enable, disable, or list scheduled cron jobs.
+## Inspect and choose the execution kind
 
-## Data File
+Use authenticated `GET /api/cron` for current definitions. The backing file is `~/.ryoko/cron/jobs.json`; read it for diagnostics or backup. Use the API for normal mutations so the running scheduler is reloaded immediately.
 
-All cron jobs are stored in `cron/jobs.json` (relative to the {{portalName}} home directory, which is always your working directory) as a JSON array of job objects. If the file does not exist, create it with an empty array `[]`.
+- `kind: "command"`: an existing program performs the work. OpenRyoko creates no AI session. A program that itself calls AI can still consume AI usage.
+- `kind: "prompt"` or omitted kind: the job starts an AI session. Select the model and effort for the actual work.
+- For a deterministic detector followed by AI judgment, use command cron to emit an existing Workflow event only when new work exists. Keep stable event IDs and durable receipts.
+- Preserve internal kinds such as `update-notification`; do not convert them while editing unrelated fields.
 
-## CronJob Schema
+Use existing authorization, schedule, timezone, and delivery requirements. Ask only for information or external-action authorization that is still missing. The command migration does not authorize new recipients or publication actions.
+
+## API and authentication
+
+On this instance, connect to `http://127.0.0.1:7777`. All `/api/*` requests require `Authorization: Bearer <token>` using the token read from `~/.ryoko/gateway-auth.json`. Never print or embed the token in examples, prompts, or logs. For another installation, verify its loopback URL first.
+
+| Action | Endpoint |
+|---|---|
+| List definitions | `GET /api/cron` |
+| Create | `POST /api/cron` |
+| Update or enable/disable | `PUT /api/cron/<id>` |
+| Delete | `DELETE /api/cron/<id>` |
+| Inspect history | `GET /api/cron/<id>/runs` |
+| Run now | `POST /api/cron/<id>/trigger` |
+
+Before mutation, retain the affected definitions in a private backup. Identify a job by ID after matching its name; IDs may be UUIDs or descriptive strings. Send only the intended fields on update. Preserve unrelated command, model, effort, schedule, delivery, and state settings. Read the saved definition back through the API, then inspect the next authorized run and its actual result.
+
+Manual trigger can execute even a disabled job. Do not use it merely to test a job that publishes, sends, invites, charges, or deletes. Use an existing read-only dry-run option in a separate probe when appropriate, or inspect its next authorized scheduled run.
+
+## Command job schema
+
+This harmless example is disabled until intentionally registered and tested:
 
 ```json
 {
-  "id": "uuid-v4",
-  "name": "daily-standup-summary",
-  "enabled": true,
-  "schedule": "0 9 * * 1-5",
-  "timezone": "America/New_York",
-  "engine": "claude",
-  "model": "sonnet",
-  "employee": "project-manager",
-  "prompt": "Review all department boards and summarize progress since yesterday. Highlight blockers and upcoming deadlines.",
-  "delivery": {
-    "connector": "slack",
-    "channel": "#engineering-standup"
-  }
+  "id": "native-command-probe",
+  "name": "native-command-probe",
+  "enabled": false,
+  "kind": "command",
+  "schedule": "0 0 1 1 *",
+  "timezone": "Asia/Tokyo",
+  "command": {
+    "executable": "/usr/bin/true",
+    "args": [],
+    "cwd": "/tmp",
+    "timeoutSeconds": 30
+  },
+  "failureDelivery": null
 }
 ```
 
-Field details:
-- `id` — UUID v4, generated when creating the job
-- `name` — kebab-case human-readable identifier, must be unique across all jobs
-- `enabled` — boolean, whether the job is active
-- `schedule` — standard cron expression (minute hour day month weekday)
-- `timezone` — IANA timezone string (e.g., `America/New_York`, `Europe/London`, `UTC`)
-- `engine` — AI engine to run the job: `claude` or `codex`
-- `model` — model identifier (e.g., `sonnet`, `opus`, `o3`)
-- `employee` — optional, the employee persona to use (must match an employee name in the org)
-- `prompt` — the instruction to execute when the job fires
-- `delivery` — optional object specifying where to send output
-  - `connector` — the connector to use (e.g., `slack`, `discord`)
-  - `channel` — the target channel or destination
+- `command.executable`: absolute executable path.
+- `command.args`: optional array of literal strings; no shell expansion, pipes, `$HOME`, or `~` expansion. Put multi-step behavior in a maintained script.
+- `command.cwd`: optional absolute working directory. Preserve the directory needed by the script's relative paths.
+- `command.timeoutSeconds`: optional integer from 1 to 86400; default 300.
+- `failureDelivery`: optional `{ "connector": "slack", "channel": "approved-destination" }`. Omitted uses the configured cron alert destination; `null` disables cron failure alerts.
 
-## Operations
+Command cron does not use `prompt`, `engine`, `model`, or `employee` to start AI, even if legacy values remain in the saved job. Edit `command` to change execution. Success output stays in the private log and is not delivered by cron. The script may itself send authorized notifications. Cron failure alerts contain the exit reason, not raw command output.
 
-### Creating a Job
+## Prompt job fields
 
-1. Read the current `cron/jobs.json` (or initialize as `[]` if missing).
-2. Ask the user for the required fields: name, schedule, engine, model, and prompt.
-3. Ask about the timezone. Default to `UTC` if not specified.
-4. Ask about the employee persona to use. This is optional.
-5. **Always ask the user about the delivery channel** if they did not specify one. Explain that without delivery, the output will only be logged.
-6. **Delegation check**: If the job has delivery configured AND targets a non-{{portalSlug}} employee, warn the user. The correct pattern for reporting/analytical jobs is: target `{{portalSlug}}`, and include delegation instructions in the prompt (e.g. "Delegate to @employee-name: ..."). {{portalName}} reviews and filters the output before it reaches the delivery channel. Only simple, no-review tasks (e.g. health checks) should target employees directly with delivery.
-7. Generate a UUID for the `id` field.
-8. Set `enabled` to `true` by default.
-9. Append the new job object to the array.
-10. Write the updated array back to `cron/jobs.json`.
-11. Confirm the creation and summarize the schedule in plain English.
+Common fields are `id`, `name`, `enabled`, five-field `schedule`, and IANA `timezone`. For an AI job, add:
 
-### Editing a Job
-
-1. Read `cron/jobs.json`.
-2. Find the job by name or id.
-3. Show the current values to the user.
-4. Apply the requested changes.
-5. Write the updated array back.
-6. Confirm the changes.
-
-### Deleting a Job
-
-1. Read `cron/jobs.json`.
-2. Find the job by name or id.
-3. Confirm deletion with the user (show job details).
-4. Remove the job from the array.
-5. Write the updated array back.
-6. Confirm deletion.
-
-### Enabling / Disabling a Job
-
-1. Read `cron/jobs.json`.
-2. Find the job by name or id.
-3. Set `enabled` to `true` (enable) or `false` (disable).
-4. Write the updated array back.
-5. Confirm the status change.
-
-### Listing Jobs
-
-1. Read `cron/jobs.json`.
-2. Display jobs in a readable format, grouped by enabled/disabled.
-3. Include name, schedule (with plain-English interpretation), timezone, engine, and delivery info.
-
-## Cron Schedule Reference
-
-The schedule field uses standard 5-field cron syntax:
-
-```
-┌───────────── minute (0-59)
-│ ┌───────────── hour (0-23)
-│ │ ┌───────────── day of month (1-31)
-│ │ │ ┌───────────── month (1-12)
-│ │ │ │ ┌───────────── day of week (0-7, 0 and 7 = Sunday)
-│ │ │ │ │
-* * * * *
+```json
+{
+  "kind": "prompt",
+  "engine": "codex",
+  "model": "gpt-5.6-terra",
+  "effortLevel": "medium",
+  "prompt": "Read the approved input and prepare the requested summary."
+}
 ```
 
-Common examples:
-- `0 9 * * 1-5` — Every weekday at 9:00 AM
-- `0 0 * * *` — Every day at midnight
-- `*/15 * * * *` — Every 15 minutes
-- `0 9 * * 1` — Every Monday at 9:00 AM
-- `0 8,17 * * *` — Every day at 8:00 AM and 5:00 PM
-- `0 0 1 * *` — First day of every month at midnight
-- `30 14 * * 5` — Every Friday at 2:30 PM
+The example model must be available to the configured account. Use the installed model registry for supported effort levels. Terra/medium is an example starting point for routine work; preserve the operator's selected model and use a stronger model only where the job needs it. Adjust the affected job when quality requires it; do not reset the global model to a costly default as routine maintenance.
 
-## Error Handling
+`employee` is optional and must match an existing persona. `delivery` is an optional approved destination for prompt output. Reporting and analytical output should follow the established review route. Preserve existing delivery requirements; lack of a destination does not require adding one.
 
-- If `jobs.json` is malformed, attempt to fix it. If unrecoverable, back it up as `jobs.json.bak` and start fresh with `[]`.
-- If a job name already exists when creating, warn the user and ask for a different name.
-- Validate the cron expression format before saving. Warn if the expression looks incorrect.
-- Validate that the timezone is a valid IANA timezone string.
-- If an employee is specified, verify it exists in the org directory.
+The AI instruction is `prompt`. Legacy `payload.message` is ignored. A cron's explicit `effortLevel` now takes precedence over the engine default for that cron session; confirm the resulting session's model and effort when verifying a change.
+
+## Verify results and recover safely
+
+For command success, history should show `kind: "command"`, `status: "success"`, `exitCode: 0`, and no AI `sessionId`. Nonzero exit, spawn failure, or timeout is failure. `logFile`, `signal`, `timedOut`, and `durationMs` provide diagnostic evidence. An exit code is not proof of an external delivery; inspect the actual result as required by the workflow.
+
+Logs live under `~/.ryoko/cron/commands/<job-hash>/`, with up to 100 logs per job and a 1 MiB limit per file. A durable `running.lock` prevents overlap. After abnormal termination, inspect its recorded PIDs, process state, logs, and completed external effects before removing only that lock or retrying. Do not clear all locks or state files.
+
+Malformed `jobs.json` must be backed up and repaired in a separate candidate. Never replace an unreadable existing store with `[]`. Compare all IDs before any recovery and retain execution history. API failure should not cause a silent fallback to writing the live file.
+
+When reporting, distinguish saved configuration, actual scheduler execution, verified output, and runs still waiting for their next scheduled time.
