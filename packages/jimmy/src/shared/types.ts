@@ -14,6 +14,8 @@ export interface StreamDelta {
 export interface Engine {
   name: string;
   run(opts: EngineRunOpts): Promise<EngineResult>;
+  /** Last observed upstream bytes/request activity, not merely an open connection. */
+  getLastActivityAt?(sessionId: string): number;
 }
 
 export interface InterruptibleEngine extends Engine {
@@ -66,6 +68,10 @@ export interface EngineResult {
   error?: string;
   /** False for an application-level stop that must not enter engine retry heuristics. */
   retryable?: false;
+  /** Native local commands can complete intentionally without assistant text. */
+  responseExpected?: false;
+  /** Bounded failed-attempt context for another engine; never a public reply or log. */
+  handoffContext?: string;
   /**
    * Optional rate limit metadata returned by an engine.
    * `resetsAt` is a Unix timestamp in seconds.
@@ -795,6 +801,8 @@ export interface JinnConfig {
   logging: { file: boolean; stdout: boolean; level: string };
   mcp?: McpGlobalConfig;
   sessions?: {
+    /** Engine inactivity deadline in milliseconds, reset by streamed activity. Default: 300000; 0 disables. */
+    engineNoResponseTimeoutMs?: number;
     maxDurationMinutes?: number;
     maxCostUsd?: number;
     interruptOnNewMessage?: boolean;

@@ -489,6 +489,7 @@ export function getSessionBySessionKey(sessionKey: string): Session | undefined 
 
 export interface UpdateSessionFields {
   engine?: string;
+  effortLevel?: string | null;
   engineSessionId?: string | null;
   status?: Session['status'];
   goal?: Session['goal'];
@@ -519,6 +520,10 @@ export function updateSession(id: string, updates: UpdateSessionFields): Session
   if (updates.engineSessionId !== undefined) {
     sets.push('engine_session_id = ?');
     values.push(updates.engineSessionId);
+  }
+  if (updates.effortLevel !== undefined) {
+    sets.push('effort_level = ?');
+    values.push(updates.effortLevel);
   }
   if (updates.attemptOutcome !== undefined) {
     sets.push('attempt_outcome = ?');

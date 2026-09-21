@@ -150,7 +150,8 @@ interface Config {
     maxCostUsd?: number
     interruptOnNewMessage?: boolean
     rateLimitStrategy?: "wait" | "fallback"
-    fallbackEngine?: "codex"
+    fallbackEngine?: "claude" | "codex"
+    engineNoResponseTimeoutMs?: number
   }
   connectors?: {
     slack?: {
@@ -1420,23 +1421,24 @@ export default function SettingsPage() {
                   className="border-t border-[var(--separator)] mt-[var(--space-3)] pt-[var(--space-3)]"
                 />
 
-                <FieldRow label="Claude が利用上限に達した時">
+                <FieldRow label="利用上限・無応答時の動作">
                   <SettingsSelect
                     value={config.sessions?.rateLimitStrategy ?? "fallback"}
                     onChange={(v) =>
                       updateConfig(["sessions", "rateLimitStrategy"], v)
                     }
                     options={[
-                      { value: "wait", label: "待機して自動再開" },
-                      { value: "fallback", label: "GPT (Codex) に切り替え" },
+                      { value: "wait", label: "切り替えず、利用上限の解除を待つ" },
+                      { value: "fallback", label: "もう一方のエンジンに切り替え" },
                     ]}
                   />
                 </FieldRow>
                 <div
                   className="text-[length:var(--text-caption1)] text-[var(--label-secondary)] mt-[4px]"
                 >
-                  「待機」は Claude のリセットを待ってからセッションを自動再開します。
-                  「切り替え」は即座に GPT で応答し、リセット後に Claude へ戻します。
+                  「切り替え」は Claude または Codex が利用上限に達したり応答しなくなった時に、
+                  もう一方で処理を続けます。「待機」は利用上限の解除を待って自動再開し、
+                  無応答時はエラーとして終了します。
                 </div>
               </Section>
 
