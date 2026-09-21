@@ -8,7 +8,6 @@ import { buildUpdateNotificationPrompt, checkForUpdates } from "../updates/check
 import { getLastNotifiedVersion, markVersionNotified } from "../updates/notification-state.js";
 import { runUpdateMaintenance } from "../updates/maintenance.js";
 import type { MaintenanceMode } from "../updates/maintenance-audit.js";
-
 import { runCommand } from "./command.js";
 
 const updateNotificationRuns = new Set<string>();

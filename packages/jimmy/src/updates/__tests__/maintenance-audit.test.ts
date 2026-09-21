@@ -1,6 +1,9 @@
+import fs from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { inspectMaintenance, type MaintenanceCapabilities } from "../maintenance-audit.js";
+import { inspectMaintenance, maintenanceCapabilities, readMaintenanceJobs, type MaintenanceCapabilities } from "../maintenance-audit.js";
 import type { JinnConfig } from "../../shared/types.js";
+import { CRON_JOBS } from "../../shared/paths.js";
 
 const config = {
   engines: { default: "codex", claude: { bin: "claude", model: "opus" }, codex: { bin: "codex", model: "gpt-6-astra" } },
@@ -9,6 +12,22 @@ const config = {
 const capabilities: MaintenanceCapabilities = { commandCron: true, jev: true, workflows: true, terra: true, bidirectionalFallback: true };
 
 describe("deterministic maintenance audit", () => {
+  it("advertises the integrated gateway features and respects an explicit model allowlist", () => {
+    expect(maintenanceCapabilities(config)).toMatchObject({ commandCron: true, jev: true, bidirectionalFallback: true, terra: true });
+    const restricted = { ...config, models: { codex: { models: [{ id: "gpt-6-astra" }] } } } as JinnConfig;
+    expect(maintenanceCapabilities(restricted).terra).toBe(false);
+  });
+
+  it("fails closed for malformed Cron data without echoing its contents", () => {
+    fs.mkdirSync(path.dirname(CRON_JOBS), { recursive: true });
+    try {
+      fs.writeFileSync(CRON_JOBS, "private-invalid-json");
+      expect(() => readMaintenanceJobs()).toThrow("Cron設定のJSONが不正");
+      fs.writeFileSync(CRON_JOBS, "{}");
+      expect(() => readMaintenanceJobs()).toThrow("配列");
+    } finally { fs.unlinkSync(CRON_JOBS); }
+  });
+
   it("finds enabled prompt jobs without exposing prompts or command arguments", () => {
     const jobs = [
       { id: "private", enabled: true, prompt: "private business text", command: { args: ["secret-value"] } },
