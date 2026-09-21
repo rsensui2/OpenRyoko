@@ -95,18 +95,29 @@ describe("TurnResolver — StopFailure grace window (upstream port)", () => {
   });
 
   it("tool-hook activity re-arms the grace window", async () => {
-    const r = new TurnResolver({ fallbackSessionId: "s", stopFailureGraceMs: 30 });
-    let resolved: any;
-    r.promise.then((v) => { resolved = v; });
-    r.onHook({ hook_event_name: "StopFailure", error: "server_error" });
-    // Keep feeding activity past the original 30ms window.
-    for (let i = 0; i < 4; i++) {
-      await sleep(15);
-      r.onHook({ hook_event_name: "PostToolUse", tool_name: "Bash" });
+    vi.useFakeTimers();
+    try {
+      const r = new TurnResolver({ fallbackSessionId: "s", stopFailureGraceMs: 30 });
+      const onResolved = vi.fn();
+      r.promise.then(onResolved);
+      r.onHook({ hook_event_name: "StopFailure", error: "server_error" });
+      // Keep feeding activity past the original 30ms window without depending
+      // on real-time scheduling while the full test suite runs in parallel.
+      for (let i = 0; i < 4; i++) {
+        await vi.advanceTimersByTimeAsync(15);
+        expect(onResolved).not.toHaveBeenCalled();
+        r.onHook({ hook_event_name: "PostToolUse", tool_name: "Bash" });
+      }
+      await vi.advanceTimersByTimeAsync(29);
+      expect(onResolved).not.toHaveBeenCalled(); // the last hook reset the full window
+      await vi.advanceTimersByTimeAsync(1);
+      expect(onResolved).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        error: expect.stringMatching(/server_error/),
+        numTurns: 1,
+      }));
+    } finally {
+      vi.useRealTimers();
     }
-    expect(resolved).toBeUndefined(); // still alive well past 30ms
-    await sleep(60); // quiet — grace finally expires
-    expect(resolved?.error).toMatch(/server_error/);
   });
 
   it("defers settling while shouldDeferStopFailure reports in-flight work", async () => {
