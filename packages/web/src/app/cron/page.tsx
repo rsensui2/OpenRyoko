@@ -1,7 +1,8 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
-import { api, type Employee } from "@/lib/api"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { api, type CronJobSchedulerState, type CronSchedulerStatus, type Employee } from "@/lib/api"
+import { useGateway } from "@/hooks/use-gateway"
 import { describeCron, formatDuration } from "@/lib/cron-utils"
 import { PageLayout, ToolbarActions } from "@/components/page-layout"
 import { useBreadcrumbs } from "@/context/breadcrumb-context"
@@ -29,6 +30,7 @@ interface CronJob {
   employee?: string
   prompt?: string
   delivery?: unknown
+  scheduler?: CronJobSchedulerState
   [key: string]: unknown
 }
 
@@ -67,6 +69,30 @@ function timeAgo(dateStr: string | null | undefined): string {
   if (mins < 60) return `${mins}m ago`
   if (hrs < 24) return `${hrs}h ago`
   return `${days}d ago`
+}
+
+function registrationDisplay(scheduler: CronJobSchedulerState | undefined, stale: boolean) {
+  let label = "登録状態不明"
+  let color = "var(--text-tertiary)"
+  if (scheduler) {
+    if (scheduler.state === "error") {
+      label = scheduler.registered ? "登録エラー・旧設定で登録中" : "登録エラー・未登録"
+      color = "var(--system-red)"
+    } else if (scheduler.state === "pending") {
+      label = scheduler.registered ? "反映待ち・旧設定で登録中" : "登録待ち"
+      color = "var(--system-orange)"
+    } else if (scheduler.state === "stopped") {
+      label = "スケジューラー停止"
+      color = "var(--system-orange)"
+    } else if (scheduler.registered) {
+      label = "登録済み"
+      color = "var(--system-green)"
+    } else {
+      label = scheduler.state === "disabled" ? "無効・未登録" : "未登録"
+      color = scheduler.state === "disabled" ? "var(--text-tertiary)" : "var(--system-orange)"
+    }
+  }
+  return { label: stale ? `前回: ${label}` : label, color: stale ? "var(--text-tertiary)" : color }
 }
 
 /* ------------------------------------------------------------------ */
@@ -163,13 +189,17 @@ function RecentRuns({ jobId }: { jobId: string }) {
 
 export default function CronPage() {
   useBreadcrumbs([{ label: 'Cron' }])
+  const { subscribe } = useGateway()
   const [jobs, setJobs] = useState<CronJob[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [schedulerStatus, setSchedulerStatus] = useState<CronSchedulerStatus | null>(null)
+  const [statusError, setStatusError] = useState<string | null>(null)
+  const refreshGeneration = useRef(0)
   const [filter, setFilter] = useState<Filter>("all")
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [updatedAgo, setUpdatedAgo] = useState("just now")
-  const [lastRefresh, setLastRefresh] = useState<Date>(new Date())
+  const [lastRefresh, setLastRefresh] = useState<Date | null>(null)
   const [wfCreating, setWfCreating] = useState(false)
   const [wfInitialTemplate, setWfInitialTemplate] = useState<string | null>(null)
   const [wfCounts, setWfCounts] = useState({ total: 0, enabled: 0, disabled: 0, engineEnabled: true })
@@ -203,27 +233,50 @@ export default function CronPage() {
   }, [])
 
   const refresh = useCallback(() => {
-    setError(null)
-    api
-      .getCronJobs()
+    const generation = ++refreshGeneration.current
+    // Each endpoint settles independently: status remains visible even when
+    // the jobs file is unreadable, and a failed refresh retains the last list.
+    void api.getCronJobs()
       .then((data) => {
+        if (generation !== refreshGeneration.current) return
         setJobs(data as CronJob[])
         setLastRefresh(new Date())
+        setError(null)
       })
-      .catch((err) => setError(err instanceof Error ? err.message : "Unknown error"))
-      .finally(() => setLoading(false))
+      .catch((err) => {
+        if (generation === refreshGeneration.current) setError(err instanceof Error ? err.message : "Unknown error")
+      })
+      .finally(() => {
+        if (generation === refreshGeneration.current) setLoading(false)
+      })
+    void api.getCronStatus()
+      .then((data) => {
+        if (generation !== refreshGeneration.current) return
+        setSchedulerStatus(data)
+        setStatusError(null)
+      })
+      .catch((err) => {
+        if (generation === refreshGeneration.current) setStatusError(err instanceof Error ? err.message : "Unknown error")
+      })
   }, [])
 
-  // Initial load + auto-refresh every 60s
+  // Poll as a fallback for missed socket events or direct jobs.json edits.
   useEffect(() => {
     refresh()
-    const interval = setInterval(refresh, 60000)
-    return () => clearInterval(interval)
-  }, [refresh])
+    const interval = setInterval(refresh, 30000)
+    const unsubscribe = subscribe((event) => {
+      if (event === "cron:reloaded") refresh()
+    })
+    return () => {
+      clearInterval(interval)
+      unsubscribe()
+      refreshGeneration.current++
+    }
+  }, [refresh, subscribe])
 
   // "Updated X ago" ticker
   useEffect(() => {
-    const tick = () => setUpdatedAgo(timeAgo(lastRefresh.toISOString()))
+    const tick = () => setUpdatedAgo(timeAgo(lastRefresh?.toISOString()))
     tick()
     const interval = setInterval(tick, 30000)
     return () => clearInterval(interval)
@@ -234,11 +287,7 @@ export default function CronPage() {
     const newEnabled = !job.enabled
     api
       .updateCronJob(job.id, { enabled: newEnabled })
-      .then(() => {
-        setJobs((prev) =>
-          prev.map((j) => (j.id === job.id ? { ...j, enabled: newEnabled } : j))
-        )
-      })
+      .then(refresh)
       .catch(() => {})
   }
 
@@ -275,7 +324,7 @@ export default function CronPage() {
               <h1 className="text-[length:var(--text-title1)] font-bold text-[var(--text-primary)] tracking-tight leading-[1.2]">
                 自動化
               </h1>
-              {!loading && (
+              {lastRefresh && (
                 <p className="text-[length:var(--text-footnote)] text-[var(--text-secondary)] mt-[var(--space-1)]">
                   cron {jobs.length} 件{wfCounts.total > 0 ? <> &middot; ワークフロー {wfCounts.total} 件</> : null} &middot; 有効 {enabledCount + wfCounts.enabled} &middot; 無効 {disabledCount + wfCounts.disabled}
                 </p>
@@ -297,7 +346,7 @@ export default function CronPage() {
                   ＋ 新規作成
                 </button>
                 <span className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">
-                  Updated {updatedAgo}
+                  {lastRefresh ? `一覧取得 ${updatedAgo}` : "一覧未取得"}
                 </span>
                 <button
                   onClick={refresh}
@@ -316,17 +365,41 @@ export default function CronPage() {
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto px-[var(--space-6)] pt-[var(--space-4)] pb-[var(--space-6)]">
-          {error && jobs.length === 0 ? (
-            <div className="bg-[rgba(255,69,58,0.06)] border border-[var(--system-red)] rounded-[var(--radius-md)] p-[var(--space-4)] text-[var(--system-red)] text-[length:var(--text-footnote)] mb-[var(--space-4)]">
-              Failed to load cron jobs: {error}
+          {error && (
+            <div role="alert" className="bg-[rgba(255,69,58,0.06)] border border-[var(--system-red)] rounded-[var(--radius-md)] p-[var(--space-4)] text-[var(--system-red)] text-[length:var(--text-footnote)] mb-[var(--space-4)]">
+              一覧の読み込みに失敗しました: {error}
+              {lastRefresh && <p className="mt-1">前回取得した一覧を表示しています。現在の設定とは異なる可能性があります。</p>}
               <button
                 onClick={refresh}
                 className="ml-[var(--space-3)] underline bg-none border-none text-inherit cursor-pointer text-[length:inherit]"
               >
-                Retry
+                再読み込み
               </button>
             </div>
-          ) : loading ? (
+          )}
+          {statusError && (
+            <div role="alert" className="border border-[var(--system-orange)] rounded-[var(--radius-md)] p-[var(--space-4)] text-[var(--system-orange)] text-[length:var(--text-footnote)] mb-[var(--space-4)]">
+              スケジューラーの稼働状態を取得できません: {statusError}
+              {schedulerStatus && <p className="mt-1">以下は前回取得した稼働状態です。</p>}
+            </div>
+          )}
+          {schedulerStatus && (
+            <div className="mb-[var(--space-4)] text-[length:var(--text-footnote)]">
+              <p className="text-[var(--text-secondary)]">
+                {statusError ? "前回の定期実行登録" : "定期実行登録"}: {schedulerStatus.registeredJobIds.length} 件
+                {schedulerStatus.lastReloadAt && <span className="ml-2 text-[var(--text-tertiary)]">最終反映: {new Date(schedulerStatus.lastReloadAt).toLocaleString()}</span>}
+              </p>
+              {(!schedulerStatus.running || !schedulerStatus.storage.readable || schedulerStatus.orphanedJobIds.length > 0 || schedulerStatus.pendingJobIds.length > 0) && (
+                <div role="alert" className="mt-[var(--space-2)] border border-[var(--system-orange)] rounded-[var(--radius-md)] p-[var(--space-4)] text-[var(--system-orange)] space-y-1">
+                  {!schedulerStatus.running && <p>スケジューラーが停止しています。定期実行は行われません。</p>}
+                  {!schedulerStatus.storage.readable && <p>ジョブ設定を読み取れません。最後に正常に読み込んだ設定で登録を維持しています。{schedulerStatus.storage.error && <> 原因: {schedulerStatus.storage.error}</>}</p>}
+                  {schedulerStatus.orphanedJobIds.length > 0 && <p className="break-words">現在の設定にないジョブの登録が残っています: {schedulerStatus.orphanedJobIds.join(", ")}</p>}
+                  {schedulerStatus.pendingJobIds.length > 0 && <p>定期実行に反映されていないジョブが {schedulerStatus.pendingJobIds.length} 件あります。各ジョブの登録状態を確認してください。</p>}
+                </div>
+              )}
+            </div>
+          )}
+          {loading ? (
             <div>
               <div className="grid grid-cols-3 gap-[var(--space-3)] mb-[var(--space-4)]">
                 {[1, 2, 3].map(i => (
@@ -340,7 +413,7 @@ export default function CronPage() {
                 <Skeleton key={i} className="h-12 mb-1 rounded-[var(--radius-sm)]" />
               ))}
             </div>
-          ) : (
+          ) : !lastRefresh ? null : (
             <Tabs defaultValue="overview">
               <TabsList variant="line">
                 <TabsTrigger value="overview">概要</TabsTrigger>
@@ -353,8 +426,8 @@ export default function CronPage() {
                 {/* Summary cards */}
                 <div className="grid grid-cols-3 gap-[var(--space-3)] mb-[var(--space-4)] mt-[var(--space-4)]">
                   <SummaryCard label="自動化の総数" value={jobs.length + wfCounts.total} />
-                  <SummaryCard label="有効" value={enabledCount + wfCounts.enabled} color="var(--system-green)" />
-                  <SummaryCard label="無効" value={disabledCount + wfCounts.disabled} color="var(--text-tertiary)" />
+                  <SummaryCard label="設定で有効" value={enabledCount + wfCounts.enabled} />
+                  <SummaryCard label="設定で無効" value={disabledCount + wfCounts.disabled} color="var(--text-tertiary)" />
                 </div>
 
                 {/* Workflows live in the same list view, above the cron groups */}
@@ -420,6 +493,7 @@ export default function CronPage() {
                           <div className="rounded-[var(--radius-md)] overflow-hidden bg-[var(--material-regular)] border border-[var(--separator)]">
                             {empJobs.map((job, idx) => {
                               const isExpanded = expandedId === job.id
+                              const registration = registrationDisplay(job.scheduler, !!error)
 
                               return (
                                 <div key={job.id}>
@@ -441,7 +515,7 @@ export default function CronPage() {
                                     }}
                                     className="flex items-center cursor-pointer min-h-[48px] px-[var(--space-4)] transition-[background] duration-150 ease-in-out"
                                     style={{
-                                      borderLeft: `3px solid ${job.enabled ? "var(--system-green)" : "transparent"}`,
+                                      borderLeft: `3px solid ${registration.color}`,
                                     }}
                                     onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--fill-secondary)" }}
                                     onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "" }}
@@ -450,7 +524,7 @@ export default function CronPage() {
                                     <span
                                       className="w-2 h-2 rounded-full shrink-0"
                                       style={{
-                                        background: job.enabled ? "var(--system-green)" : "var(--text-tertiary)",
+                                        background: registration.color,
                                       }}
                                     />
 
@@ -462,6 +536,10 @@ export default function CronPage() {
                                       <span className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">
                                         {describeCron(job.schedule)}
                                       </span>
+                                      <span className="text-[length:var(--text-caption1)]" style={{ color: registration.color }}>
+                                        {registration.label}
+                                      </span>
+                                      {job.scheduler?.error && <span className="text-[length:var(--text-caption1)] text-[var(--system-red)] break-words">{job.scheduler.error}</span>}
                                     </div>
 
                                     {/* Metadata badges */}
@@ -486,6 +564,8 @@ export default function CronPage() {
                                           toggleEnabled(job)
                                         }}
                                         aria-label={job.enabled ? "Disable job" : "Enable job"}
+                                        aria-pressed={job.enabled}
+                                        title={job.enabled ? "設定で有効（定期実行の登録状態は別途表示）" : "設定で無効"}
                                         className="relative inline-flex items-center w-9 h-5 rounded-[10px] border-none cursor-pointer shrink-0 transition-[background] duration-200 ease-in-out"
                                         style={{
                                           background: job.enabled ? "var(--system-green)" : "var(--fill-tertiary)",
@@ -526,15 +606,18 @@ export default function CronPage() {
                                           </div>
                                         </div>
 
-                                        <span className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">Status</span>
+                                        <span className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">設定</span>
                                         <span
                                           className="text-[length:var(--text-caption1)] font-medium"
                                           style={{
-                                            color: job.enabled ? "var(--system-green)" : "var(--text-tertiary)",
+                                            color: "var(--text-secondary)",
                                           }}
                                         >
-                                          {job.enabled ? "Enabled" : "Disabled"}
+                                          {job.enabled ? "有効" : "無効"}
                                         </span>
+
+                                        <span className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">定期実行</span>
+                                        <span className="text-[length:var(--text-caption1)] font-medium" style={{ color: registration.color }}>{registration.label}</span>
 
                                         {job.kind !== "command" && job.engine && (
                                           <>

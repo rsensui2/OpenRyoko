@@ -26,6 +26,21 @@ export interface TypeSafeTestResult {
   error?: "missing_key" | "unauthorized" | "rate_limited" | "provider_error" | "network_error" | "timeout" | "invalid_response" | "busy"
 }
 
+export interface CronJobSchedulerState {
+  state: "scheduled" | "disabled" | "pending" | "error" | "stopped"
+  registered: boolean
+  error?: string
+}
+
+export interface CronSchedulerStatus {
+  running: boolean
+  registeredJobIds: string[]
+  lastReloadAt: string | null
+  storage: { readable: boolean; error?: string }
+  pendingJobIds: string[]
+  orphanedJobIds: string[]
+}
+
 export interface SlackConnectResult {
   ok: boolean
   stage?: "verify" | "reload"
@@ -388,6 +403,7 @@ export const api = {
   createWorkflowFromTemplate: (templateId: string, data: { name: string; title?: string; vars: Record<string, string>; enable?: boolean }) =>
     post<{ id: string; revision: number; enabled: boolean }>(`/api/automation/templates/${encodeURIComponent(templateId)}`, data),
   getCronJobs: () => get<Record<string, unknown>[]>("/api/cron"),
+  getCronStatus: () => get<CronSchedulerStatus>("/api/cron/status"),
   createCronJob: (data: Record<string, unknown>) =>
     post<Record<string, unknown>>("/api/cron", data),
   getCronRuns: (id: string) => get<Record<string, unknown>[]>(`/api/cron/${id}/runs`),
