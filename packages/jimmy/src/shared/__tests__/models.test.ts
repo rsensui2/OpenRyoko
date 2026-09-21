@@ -52,6 +52,21 @@ describe("synthesizeFromEngineConfig (backward-compat fallback)", () => {
     expect(contextWindowForModel(config, "codex", "gpt-6-astra")).toBe(1_050_000);
   });
 
+  it("keeps Terra available when Astra is the configured default", () => {
+    const config = cfg({ codex: { bin: "codex", model: "gpt-6-astra" } });
+    const reg = getModelRegistry(config);
+    expect(reg.codex.defaultModel).toBe("gpt-6-astra");
+    expect(reg.codex.models.find((model) => model.id === "gpt-5.6-terra")).toMatchObject({
+      supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh", "max"],
+    });
+  });
+
+  it("does not duplicate Terra when it is the configured default", () => {
+    const reg = synthesizeFromEngineConfig(cfg({ codex: { bin: "codex", model: "gpt-5.6-terra" } }));
+    expect(reg.codex.models.filter((model) => model.id === "gpt-5.6-terra")).toHaveLength(1);
+    expect(reg.codex.models[0].id).toBe("gpt-5.6-terra");
+  });
+
   it("makes Fable 5.1 available without changing either engine's configured default", () => {
     const config = cfg({
       default: "codex",
@@ -78,7 +93,8 @@ describe("synthesizeFromEngineConfig (backward-compat fallback)", () => {
 
   it("does not duplicate Astra when it is already the configured default", () => {
     const reg = synthesizeFromEngineConfig(cfg({ codex: { bin: "codex", model: "gpt-6-astra" } }));
-    expect(reg.codex.models.map((model) => model.id)).toEqual(["gpt-6-astra"]);
+    expect(reg.codex.models.filter((model) => model.id === "gpt-6-astra")).toHaveLength(1);
+    expect(reg.codex.models[0].id).toBe("gpt-6-astra");
     expect(reg.codex.models[0].effortLevels).toContain("max");
     expect(reg.codex.models[0].effortLevels).not.toContain("none");
   });
