@@ -44,6 +44,7 @@ When the user says "deploy" or asks about deployment status.
 {{portalName}} ships with these default skills (see `~/.ryoko/skills/`):
 
 - **onboarding**: First-run setup — fills IDENTITY.md / SOUL.md / MEMORY.md interactively
+- **openryoko-config**: Explain and configure the platform, including version-aware Claude Code/Codex fallback and Jev triage; verify runtime application
 - **management**: Hiring, firing, promotions, delegation, and board reviews for the org
 - **cron-manager**: Create, edit, enable/disable, and troubleshoot cron jobs
 - **skill-creator**: Write a SKILL.md playbook to create a new skill
@@ -51,6 +52,11 @@ When the user says "deploy" or asks about deployment status.
 - **self-heal**: Diagnose and repair {{portalName}}'s own configuration and runtime
 - **migrate**: Apply pending version migrations
 - **sync** / **new** / **status**: Slash-command playbooks (`/sync`, `/new`, `/status`)
+
+`ryoko setup` copies bundled skills on a new installation. `ryoko migrate` (including
+`--auto`, as used by `ryoko update`) also adds missing bundled skill directories and
+their Claude/Codex discovery links, even without pending version migrations. Existing
+skill directories and symlinks are preserved as a whole. `--check` does not install skills.
 
 ## Key Points
 

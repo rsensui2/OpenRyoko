@@ -17,6 +17,7 @@ vi.mock("node:fs", async () => {
       readFileSync: vi.fn(),
       writeFileSync: vi.fn(),
       copyFileSync: vi.fn(),
+      symlinkSync: vi.fn(),
       readdirSync: vi.fn(() => []),
       rmSync: vi.fn(),
     },
@@ -40,8 +41,16 @@ vi.mock("../../shared/version.js", () => ({
   getPendingMigrations: vi.fn(() => ["1.1.0"]),
 }));
 
+vi.mock("../bundled-skills.js", () => ({
+  stageMissingBundledSkills: vi.fn(() => []),
+}));
+
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import { stageMissingBundledSkills } from "../bundled-skills.js";
+import { compareSemver, getPendingMigrations } from "../../shared/version.js";
+import { CLAUDE_SKILLS_DIR, AGENTS_SKILLS_DIR } from "../../shared/paths.js";
+import path from "node:path";
 
 const mockExecFileSync = vi.mocked(execFileSync);
 const mockExistsSync = vi.mocked(fs.existsSync);
@@ -56,6 +65,7 @@ describe("migrate: AI session launcher", () => {
     mockExistsSync.mockReturnValue(true);
     // Empty directories (no files to copy)
     mockReaddirSync.mockReturnValue([]);
+    vi.mocked(fs.readFileSync).mockReset();
   });
 
   it("should NOT pass --cwd as a CLI argument to the engine binary", async () => {
@@ -115,5 +125,42 @@ describe("migrate: AI session launcher", () => {
     expect(mockExecFileSync).not.toHaveBeenCalled();
     expect(mockWriteFileSync).not.toHaveBeenCalled();
     expect(mockRmSync).not.toHaveBeenCalled();
+  });
+
+  it("adds newly bundled skills even when the instance version is current", async () => {
+    vi.mocked(compareSemver).mockReturnValueOnce(0);
+    const { runMigrate } = await import("../migrate.js");
+    await runMigrate({ auto: true });
+    expect(stageMissingBundledSkills).toHaveBeenCalledOnce();
+    expect(mockExecFileSync).not.toHaveBeenCalled();
+    expect(mockWriteFileSync).not.toHaveBeenCalled();
+  });
+
+  it("adds newly bundled skills even without versioned migration scripts", async () => {
+    vi.mocked(getPendingMigrations).mockReturnValueOnce([]);
+    vi.mocked(fs.readFileSync).mockReturnValue("jinn:\n  version: 1.0.0\n");
+    const { runMigrate } = await import("../migrate.js");
+    await runMigrate({ auto: true });
+    expect(stageMissingBundledSkills).toHaveBeenCalledOnce();
+    expect(mockExecFileSync).not.toHaveBeenCalled();
+  });
+
+  it("keeps --check from installing bundled skills", async () => {
+    const { runMigrate } = await import("../migrate.js");
+    await runMigrate({ check: true });
+    expect(stageMissingBundledSkills).not.toHaveBeenCalled();
+    expect(mockWriteFileSync).not.toHaveBeenCalled();
+  });
+
+  it("makes newly installed skills discoverable to Claude Code and Codex", async () => {
+    vi.mocked(compareSemver).mockReturnValueOnce(0);
+    vi.mocked(stageMissingBundledSkills).mockReturnValueOnce(["openryoko-config"]);
+    const links = [CLAUDE_SKILLS_DIR, AGENTS_SKILLS_DIR].map((directory) => path.join(directory, "openryoko-config"));
+    mockExistsSync.mockImplementation((file) => !links.includes(String(file)));
+    const { runMigrate } = await import("../migrate.js");
+    await runMigrate({ auto: true });
+    for (const link of links) {
+      expect(fs.symlinkSync).toHaveBeenCalledWith(path.join("..", "..", "skills", "openryoko-config"), link);
+    }
   });
 });

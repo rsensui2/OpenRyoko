@@ -6,7 +6,7 @@
 
 | File/Directory | Effect of Modification |
 |---|---|
-| `config.yaml` | File watcher triggers full config reload |
+| `config.yaml` | File watcher reloads config; boot-time components may still need restart |
 | `cron/jobs.json` | File watcher triggers cron reschedule |
 | `org/**/*.yaml` | File watcher triggers employee registry rebuild |
 | `org/**/board.json` | Read on demand by employees; no watcher needed |
@@ -17,11 +17,16 @@
 
 The gateway uses chokidar to watch for changes:
 
-- **config.yaml** → Parse YAML, validate schema, reload gateway configuration (port, engines, connectors, logging)
+- **config.yaml** → Parse YAML and reload the config reference used by session dispatch; reload changed connectors. Parsing does not guarantee full schema validation or application to already-constructed components.
 - **cron/jobs.json** → Cancel all scheduled jobs, parse JSON, validate schema, reschedule enabled jobs
 - **org/\*\*/\*.yaml** → Rebuild the employee registry from all persona and department YAML files
 
-Changes take effect immediately. No restart required.
+Ordinary session defaults, cron files, employees and skills reload at runtime. Changes
+to gateway port/host, Claude interactive PTY construction settings, enabling workflows,
+or process environment require restart (or container recreation for environment changes).
+Existing sessions may retain engine/model overrides. Confirm the effective behavior,
+not just the saved config. Use `skills/openryoko-config/SKILL.md` and its references for
+version-specific settings, Jev triage and execution-engine fallback.
 
 ## Safety Guidelines
 
