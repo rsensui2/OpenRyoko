@@ -49,6 +49,17 @@ async function fixture(mentionOnly = false, context: SlackConnectorContext = {})
 }
 
 describe("Slack conversation routing integration", () => {
+  it("carries stable event identity and tells the worker an unsolicited contribution was not a user request", async () => {
+    const f = await fixture();
+    vi.mocked(runTriage).mockResolvedValueOnce({ action: "reply", reason: "jev_proactive_contribution" });
+    await f.event("この集計に毎月3時間かかる");
+    expect(vi.mocked(runTriage).mock.calls.at(-1)?.[0].participationKey).toBe("URYOKO:C1:4.000");
+    expect(f.handler.mock.calls[0][0].transportMeta.proactiveContribution).toBe(true);
+    expect(f.handler.mock.calls[0][0].text).toContain("is not a request addressed to you");
+    expect(f.handler.mock.calls[0][0].text).toContain("この集計に毎月3時間かかる");
+    expect(f.reactions).toHaveBeenCalledWith(expect.objectContaining({ name: "eyes" }));
+  });
+
   it("uses a configured assistant name while @-mentions remain tied to the bot user ID", async () => {
     const f = await fixture(false, { portalName: "Momo" });
     await f.event("Momo、聞こえる？");

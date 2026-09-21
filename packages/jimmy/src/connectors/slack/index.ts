@@ -261,6 +261,7 @@ export class SlackConnector implements Connector {
 
     const decision = await runTriage(
       {
+        participationKey: event.ts ? `${this.botUserId ?? this.resolveBotName()}:${event.channel}:${event.ts}` : undefined,
         isReaction: !!ctx.reactionTarget,
         reactionAnswersPendingQuestion,
         botName: this.resolveBotName(),
@@ -627,6 +628,10 @@ export class SlackConnector implements Connector {
           return;
         }
         logger.info(`[slack] triage → reply (${decision.reason ?? "no reason"}) for ts=${(event as any).ts}`);
+        if (decision.reason === "jev_proactive_contribution") {
+          msg.transportMeta = { ...msg.transportMeta, proactiveContribution: true };
+          msg.text = "[Application routing context: You are joining this conversation proactively because your abilities may help. The observed Slack message below is not a request addressed to you. Offer a concise, concrete answer or helpful suggestion; do not claim you were asked or treat this routing decision as permission for external actions.]\n\n" + msg.text;
+        }
       }
 
       if (this.conversationTrackingEnabled()) {

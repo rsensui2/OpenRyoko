@@ -173,6 +173,18 @@ export function JevSettings({ config = {}, onChange, showCredentials = true }: J
         </button>
       </Field>
       <p id={`${id}-capabilities-help`} className={helpClass}>担当社員の役割と利用可能なスキルから、具体的に手伝える依頼かを判断します。人宛ての会話や雑談には割り込みません。</p>
+      <Field label="呼ばれていない時の参加率 (%)" id={`${id}-proactive-percent`}>
+        <input id={`${id}-proactive-percent`} type="number" min={0} max={100} step={1}
+          disabled={!useCapabilities} aria-describedby={`${id}-proactive-help`}
+          value={config.jev?.proactiveParticipationPercent ?? 0}
+          onChange={(event) => {
+            const value = Number(event.target.value)
+            if (Number.isInteger(value) && value >= 0 && value <= 100) {
+              onChange({ ...config, jev: { ...config.jev, proactiveParticipationPercent: value } })
+            }
+          }} className={controlClass} />
+      </Field>
+      <p id={`${id}-proactive-help`} className={helpClass}>未解決の困りごとに具体的に役立てる時、呼ばれていなくても提案します。0%で停止、100%で対象の機会すべてに参加。判定の確信度とは別の割合で、名前で呼ばれた時や依頼への応答は減らしません。スキル・担当領域の考慮が必要です。メンション限定のチャンネル設定は優先されます。</p>
     </>}
 
     {showCli && <div className="border-t border-[var(--separator)] pt-[var(--space-3)]">

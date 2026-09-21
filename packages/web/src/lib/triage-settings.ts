@@ -12,6 +12,7 @@ export interface SlackTriageSettings {
   conversationMaxEntries?: number
   jev?: {
     useCapabilities?: boolean
+    proactiveParticipationPercent?: number
     model?: string
     apiKeyEnv?: string
     fallback?: "none" | "cli"

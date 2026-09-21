@@ -11,6 +11,8 @@
 import type { TriageCapabilitySnapshot } from "../../shared/triage-capabilities.js";
 
 export interface TriagePromptInput {
+  /** Application-owned identity for repeatable participation sampling. Never sent to the classifier. */
+  participationKey?: string;
   /** Bounded application-owned role and available skill metadata, not skill instructions. */
   capabilities?: TriageCapabilitySnapshot;
   /** A Slack reaction event, as distinct from an emoji posted as a message. */

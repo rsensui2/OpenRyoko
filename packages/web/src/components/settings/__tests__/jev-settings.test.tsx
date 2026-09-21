@@ -30,6 +30,30 @@ async function ready() {
 }
 
 describe("JevSettings", () => {
+  it("edits unsolicited participation from 0 through 100 and retains it while capabilities are disabled", async () => {
+    const changed = vi.fn()
+    render(<Harness initial={{ enabled: true, backend: "jev", jev: { fallback: "none" } }} changed={changed} />)
+    await ready()
+    const field = screen.getByLabelText("呼ばれていない時の参加率 (%)") as HTMLInputElement
+    expect(field.value).toBe("0")
+    for (const value of [50, 100, 0]) {
+      fireEvent.change(field, { target: { value: String(value) } })
+      expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({ jev: { fallback: "none", proactiveParticipationPercent: value } }))
+    }
+    for (const value of [101, -1, 1.5]) {
+      changed.mockClear()
+      fireEvent.change(field, { target: { value: String(value) } })
+      expect(changed).not.toHaveBeenCalled()
+    }
+    fireEvent.change(field, { target: { value: "100" } })
+    fireEvent.click(screen.getByRole("switch", { name: "スキル・担当領域を考慮" }))
+    expect(field.disabled).toBe(true)
+    expect(field.value).toBe("100")
+    fireEvent.click(screen.getByRole("switch", { name: "スキル・担当領域を考慮" }))
+    expect(field.disabled).toBe(false)
+    expect(field.value).toBe("100")
+  })
+
   it("changes between all four modes and never silently enables CLI fallback", async () => {
     const changed = vi.fn()
     render(<Harness initial={{ enabled: true, engine: "claude", model: "haiku", jev: { model: "jev-1.13.0", fallback: "cli", timeoutMs: 2000 } }} changed={changed} />)

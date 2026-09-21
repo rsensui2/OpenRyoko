@@ -429,6 +429,8 @@ export interface SlackTriageConfig {
     fallback?: "none" | "cli";
     /** Use bounded role/skill metadata to assess useful help for open requests. Default: true. */
     useCapabilities?: boolean;
+    /** Chance of joining an unsolicited but useful opportunity, 0–100. Default: 0. Direct requests are unaffected. */
+    proactiveParticipationPercent?: number;
     /** Pin an evaluated model. Default: jev-1.13.0. */
     model?: string;
     /** Environment variable containing the TypeSafe API key. Default: TYPESAFE_API_KEY. */
