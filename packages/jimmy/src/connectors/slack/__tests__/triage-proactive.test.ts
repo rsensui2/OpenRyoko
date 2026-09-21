@@ -69,7 +69,7 @@ describe("unsolicited useful participation", () => {
     expect(resolveJevUncertaintyDecision(input, result, "silent").action).toBe("silent");
   });
 
-  it("requires confident capability fit and complete context; reactions and other-bot followups stay excluded", async () => {
+  it("requires confident capability fit and complete context; reactions stay excluded", async () => {
     const body = response();
     body.answers.proactive = { type: "choice", choice: "useful_now", confidence: .79,
       probabilities: { useful_now: .79, not_needed: .21, cannot_help: 0, unknown: 0 } };
@@ -77,12 +77,26 @@ describe("unsolicited useful participation", () => {
     expect(resolveJevUncertaintyDecision(input, weak, "silent").action).toBe("silent");
     for (const extra of [
       { contextIncomplete: true }, { isReaction: true },
-      { recentThread: [{ speaker: "OtherBot", text: "対応します", isBot: true, isSelf: false }] },
     ]) {
       const message = { ...input, ...extra };
       const result = await evaluateJevTriage(message, options());
       expect(resolveJevUncertaintyDecision(message, result, "silent").action).toBe("silent");
     }
+  });
+
+  it("allows a separate unmet need despite uncertain audience or an unrelated other-bot notification", async () => {
+    const body = response();
+    body.answers.recipient = { type: "choice", choice: "unknown", confidence: .5,
+      probabilities: { bot: .07, group: .10, other_human: .34, unknown: .49 } };
+    expect(await evaluateJevTriage(input, options(body))).toMatchObject({ status: "accepted", decision: { action: "reply", reason: "jev_proactive_contribution" } });
+    const afterOtherBot = { ...input, recentThread: [{ speaker: "WeatherBot", text: "明日は晴れです", isBot: true, isSelf: false }] };
+    expect(await evaluateJevTriage(afterOtherBot, options())).toMatchObject({ status: "accepted", decision: { action: "reply", reason: "jev_proactive_contribution" } });
+    const followup = { ...afterOtherBot, messageText: "はい、続けて" };
+    const result = await evaluateJevTriage(followup, options(response(followup, true, { recipient: "bot", intent: "continuation", relation: "bot_followup", response_value: 1 })));
+    expect(resolveJevUncertaintyDecision(followup, result, "silent").action).toBe("silent");
+    body.answers.recipient = { type: "choice", choice: "other_human", confidence: .5,
+      probabilities: { bot: .07, group: .10, other_human: .49, unknown: .34 } };
+    expect(resolveJevUncertaintyDecision(input, await evaluateJevTriage(input, options(body)), "silent").action).toBe("silent");
   });
 
   it("never samples away direct calls, open requests, or own-task continuation", async () => {

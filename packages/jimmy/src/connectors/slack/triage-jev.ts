@@ -465,15 +465,16 @@ function chooseWithProactiveParticipation(
   }
   // Requests, reactions and protected continuations are never sampled away.
   if (decision && decision.action !== "silent") return decision;
-  const previous = input.recentThread.at(-1);
   const suitableIntent = ["statement", "request", "mixed"].includes(answers.intent.choice)
     && ["statement", "request", "mixed"].reduce((sum, key) => sum + answers.intent.probabilities[key], 0) >= thresholds.reply;
+  // Unaddressed statements naturally split audience probabilities. The
+  // proactive axis judges unmet need and reserved/assigned work separately;
+  // a previous unrelated bot notification does not own the next topic.
   const eligible = percent > 0 && input.capabilities !== undefined
     && !input.isReaction && !input.wasMentioned && !input.dmEquivalent && input.channelType !== "im"
-    && !input.contextIncomplete && !(previous?.isBot && previous.isSelf === false)
+    && !input.contextIncomplete
     && (!failure || failure.code === "ambiguous" || failure.code === "below_threshold")
     && answers.recipient.choice !== "other_human"
-    && 1 - answers.recipient.probabilities.other_human >= thresholds.reply
     && suitableIntent && answers.relation.choice !== "closing" && answers.relation.choice !== "bot_followup"
     && answers.proactive?.choice === "useful_now" && answers.proactive.probability >= thresholds.reply;
   if (eligible) {
