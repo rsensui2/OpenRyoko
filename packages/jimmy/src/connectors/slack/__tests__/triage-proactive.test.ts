@@ -96,6 +96,9 @@ describe("unsolicited useful participation", () => {
     expect(resolveJevUncertaintyDecision(followup, result, "silent").action).toBe("silent");
     body.answers.recipient = { type: "choice", choice: "other_human", confidence: .5,
       probabilities: { bot: .07, group: .10, other_human: .49, unknown: .34 } };
+    expect(await evaluateJevTriage(input, options(body))).toMatchObject({ status: "accepted", decision: { action: "reply", reason: "jev_proactive_contribution" } });
+    body.answers.recipient = { type: "choice", choice: "other_human", confidence: .85,
+      probabilities: { bot: .05, group: .05, other_human: .85, unknown: .05 } };
     expect(resolveJevUncertaintyDecision(input, await evaluateJevTriage(input, options(body)), "silent").action).toBe("silent");
   });
 

@@ -474,7 +474,7 @@ function chooseWithProactiveParticipation(
     && !input.isReaction && !input.wasMentioned && !input.dmEquivalent && input.channelType !== "im"
     && !input.contextIncomplete
     && (!failure || failure.code === "ambiguous" || failure.code === "below_threshold")
-    && answers.recipient.choice !== "other_human"
+    && !(answers.recipient.choice === "other_human" && answers.recipient.probability >= thresholds.reply)
     && suitableIntent && answers.relation.choice !== "closing" && answers.relation.choice !== "bot_followup"
     && answers.proactive?.choice === "useful_now" && answers.proactive.probability >= thresholds.reply;
   if (eligible) {
