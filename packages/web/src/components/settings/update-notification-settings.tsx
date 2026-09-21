@@ -14,6 +14,7 @@ interface UpdateNotificationJob {
   kind?: string
   timezone?: string
   delivery?: { connector?: string; channel?: string }
+  maintenance?: { mode: "off" | "review" | "apply" }
 }
 
 interface Draft {
@@ -22,6 +23,7 @@ interface Draft {
   timezone: string
   connector: string
   channel: string
+  maintenanceMode: "off" | "review" | "apply"
 }
 
 export function UpdateNotificationSettings({
@@ -40,6 +42,7 @@ export function UpdateNotificationSettings({
     timezone: "",
     connector: defaultConnector ?? "",
     channel: defaultChannel ?? "",
+    maintenanceMode: "review",
   })
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -60,6 +63,7 @@ export function UpdateNotificationSettings({
           timezone: found.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
           connector: found.delivery?.connector || defaultConnector || "",
           channel: found.delivery?.channel || defaultChannel || "",
+          maintenanceMode: found.maintenance?.mode ?? "review",
         })
       } else {
         setDraft((current) => ({
@@ -101,6 +105,7 @@ export function UpdateNotificationSettings({
       schedule: draft.schedule.trim(),
       timezone: draft.timezone.trim() || undefined,
       prompt: "",
+      maintenance: { mode: draft.maintenanceMode },
       delivery: draft.connector.trim() && draft.channel.trim()
         ? { connector: draft.connector.trim(), channel: draft.channel.trim() }
         : undefined,
@@ -113,7 +118,7 @@ export function UpdateNotificationSettings({
       setFeedback({
         type: "success",
         message: draft.enabled
-          ? "更新通知を保存しました。新しいリリースが見つかった時だけAIがチャットへ知らせます。"
+          ? "更新通知と運用点検を保存しました。新しいリリースや未点検の改善候補がある時に結果を知らせます。"
           : "更新通知を無効で保存しました。",
       })
     } catch (error) {
@@ -131,13 +136,25 @@ export function UpdateNotificationSettings({
       await api.triggerCronJob(job.id)
       setFeedback({
         type: "success",
-        message: "更新確認を開始しました。新しい未通知バージョンがある場合だけチャットへ届きます。",
+        message: "更新確認を開始しました。新しいリリースや未点検の改善候補がある場合にチャットへ届きます。",
       })
     } catch (error) {
       setFeedback({ type: "error", message: error instanceof Error ? error.message : "更新確認を開始できませんでした" })
     } finally {
       setTriggering(false)
     }
+  }
+
+  async function inspect() {
+    if (!job) return
+    setTriggering(true)
+    setFeedback(null)
+    try {
+      await api.runMaintenance(job.id, "review")
+      setFeedback({ type: "success", message: "点検を開始しました。設定を変更せず、改善案を通知先へ送ります。" })
+    } catch (error) {
+      setFeedback({ type: "error", message: error instanceof Error ? error.message : "点検を開始できませんでした" })
+    } finally { setTriggering(false) }
   }
 
   if (loading) {
@@ -150,10 +167,10 @@ export function UpdateNotificationSettings({
         <BellRing size={18} className="mt-0.5 shrink-0 text-[var(--system-blue)]" aria-hidden="true" />
         <div>
           <div className="text-[length:var(--text-footnote)] font-[var(--weight-semibold)] text-[var(--text-primary)]">
-            AIによるアップデート通知
+            アップデート通知と運用点検
           </div>
           <p className="mt-1 text-[length:var(--text-caption2)] leading-relaxed text-[var(--text-tertiary)]">
-            定期確認はAIを使わず、新しいバージョンを見つけた時だけAIが通知文を作成します。同じバージョンは一度だけ送信されます。
+            定期確認はコードで行い、新しいリリースや未点検の改善候補がある時だけAIを起動します。導入済み機能に合わせてCronやJevの利用を点検し、同じ内容の通知は繰り返しません。
           </p>
         </div>
       </div>
@@ -214,6 +231,22 @@ export function UpdateNotificationSettings({
         </label>
       </div>
 
+      <label className="mt-3 block text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">
+        導入済み機能に合わせた運用点検
+        <select
+          value={draft.maintenanceMode}
+          onChange={(event) => setDraft((current) => ({ ...current, maintenanceMode: event.target.value as Draft["maintenanceMode"] }))}
+          className="mt-1 w-full rounded-[var(--radius-sm)] border border-[var(--separator)] bg-[var(--bg-secondary)] px-[10px] py-[6px] text-[length:var(--text-footnote)] text-[var(--text-primary)]"
+        >
+          <option value="review">点検・改善案を通知（既定）</option>
+          <option value="apply">検証できるローカル修正も実施</option>
+          <option value="off">運用点検は行わない</option>
+        </select>
+      </label>
+      <p className="mt-1 text-[length:var(--text-caption2)] leading-relaxed text-[var(--text-tertiary)]">
+        更新確認と同じスケジュール・通知先を使います。自動修正でも、通知先・実行時刻の変更やJevなど外部サービスの新規有効化は提案に留めます。
+      </p>
+
       {feedback && (
         <p className={`mt-3 text-[length:var(--text-caption1)] ${feedback.type === "success" ? "text-[var(--system-green)]" : "text-[var(--system-red)]"}`} role={feedback.type === "error" ? "alert" : "status"}>
           {feedback.message}
@@ -221,6 +254,12 @@ export function UpdateNotificationSettings({
       )}
 
       <div className="mt-[var(--space-3)] flex flex-wrap justify-end gap-[var(--space-2)]">
+        {job && (
+          <button type="button" onClick={inspect} disabled={triggering || saving}
+            className="rounded-[var(--radius-sm)] border border-[var(--separator)] bg-[var(--fill-tertiary)] px-3 py-1.5 text-[length:var(--text-caption1)] text-[var(--text-secondary)] disabled:opacity-60">
+            点検を実行
+          </button>
+        )}
         {job && (
           <button
             type="button"

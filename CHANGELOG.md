@@ -6,6 +6,7 @@
 
 ### 追加・改善
 
+- **更新に合わせたCron・運用点検**: 更新通知の定期確認で、導入済み機能とCron・Slack・Workflow設定から改善候補をコードで抽出します。既定はAIによる点検と改善案の通知。設定画面で検証できるローカル修正まで許可することもでき、変更のない回はAIを起動しません。通知失敗時は保存済みの結果だけを再配送します。手動点検は `ryoko maintenance inspect --json` / `ryoko maintenance run <update-job-id>`。
 - **OpenRyoko設定スキルを標準同梱**: `openryoko-config` がプラットフォームの機能・設定項目・反映方法を案内し、設定変更から検証まで支援します。Jev空気読みとClaude Code／Codexフォールバックは、開発中の実装と旧方式を区別し、稼働版の対応を確認して設定します。
 - **既存環境にも新しい標準スキルを追加**: `ryoko migrate`（`ryoko update` が使う `--auto` を含む）で、バージョン移行の有無にかかわらず未導入の標準スキルとClaude Code／Codex用リンクを追加します。既存のカスタムスキル・シンボリックリンクは保持し、`--check` では追加しません。
 - gatewayのport/hostやClaudeのPTY構築設定など、再起動が必要な設定を同梱運用資料に明記しました。

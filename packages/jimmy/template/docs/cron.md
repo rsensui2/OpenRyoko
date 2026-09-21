@@ -11,6 +11,7 @@ interface CronJob {
   enabled: boolean;      // Whether the job is active
   schedule: string;      // Cron expression (standard 5-field)
   kind?: "prompt" | "update-notification"; // Default: prompt
+  maintenance?: { mode: "off" | "review" | "apply" }; // Update notifications; default review
   timezone?: string;     // IANA timezone (default: system timezone)
   engine: string;        // "claude" or "codex"
   model?: string;        // Override default model
@@ -27,7 +28,14 @@ interface CronJob {
 the fixed OpenRyoko npm registry endpoint on schedule without invoking an AI.
 Only when a newer, not-yet-notified version exists does it ask the configured
 engine to write a short notice and deliver it to the selected connector. Each
-job notifies a given version once.
+job notifies a given version once. It also runs a local deterministic maintenance
+inspection against installed capabilities. With `maintenance.mode: review` (the
+default), new opportunities trigger an AI inspection and suggestions; `apply`
+also permits bounded local cron/script improvements, and `off` disables maintenance.
+Unchanged reviewed inputs and empty findings do not start AI. Pending result delivery
+is retried without repeating edits. See `skills/openryoko-config/references/maintenance.md`
+and `ryoko maintenance --help`. A newly installed release is inspected on the next
+enabled update-notification run, even when npm reports no newer version.
 
 ## Schedule Format
 

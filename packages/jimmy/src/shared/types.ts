@@ -254,6 +254,9 @@ export interface CronJob {
   /** Normal jobs always invoke the AI. Update notifications first perform a
    * deterministic npm registry check and invoke the AI only for a new release. */
   kind?: "prompt" | "update-notification";
+  /** Installed-feature maintenance during update checks. Default: review.
+   * apply explicitly authorizes bounded local changes; off disables inspection. */
+  maintenance?: { mode: "off" | "review" | "apply" };
   timezone?: string;
   engine?: string;
   model?: string;
