@@ -125,6 +125,8 @@ export interface Connector {
   removeReaction(target: Target, emoji: string): Promise<void>;
   editMessage(target: Target, text: string): Promise<void>;
   setTypingStatus?(channelId: string, threadTs: string | undefined, status: string): Promise<void>;
+  /** Reliable task outcome after a successful public reply; never inferred from prose. */
+  setConversationState?(target: Target, state: "awaiting_input" | "completed", userId?: string): void;
   onMessage(handler: (msg: IncomingMessage) => void): void;
   /** Return the bound employee name, if any */
   getEmployee?(): string | undefined;
@@ -199,6 +201,8 @@ export interface SessionGoal {
   condition: string;
   request: string;
   status: "active" | "complete" | "waiting" | "blocked" | "cancelled" | "incomplete";
+  /** Explicit assessment of what must happen next; only user means input/approval is requested. */
+  waitingFor?: "user" | "background" | "external" | "unknown";
   reason?: string;
   /** Bounded tool evidence retained across approval/input waits. */
   tools?: string[];
@@ -417,23 +421,48 @@ export interface WebConnectorConfig {}
 export interface SlackTriageConfig {
   /** Enable the air-reading triage layer. Default: false (legacy behavior). */
   enabled?: boolean;
+  /** Default: cli. Shadow observes Jev while the existing CLI still chooses the action. */
+  backend?: "cli" | "jev-shadow" | "jev";
+  /** Native TypeSafe API settings. Credentials are read from private storage/environment, never config. */
+  jev?: {
+    /** On uncertainty/error: none uses bounded routing rules without a CLI; cli explicitly opts into legacy classification. Default: none. */
+    fallback?: "none" | "cli";
+    /** Pin an evaluated model. Default: jev-1.13.0. */
+    model?: string;
+    /** Environment variable containing the TypeSafe API key. Default: TYPESAFE_API_KEY. */
+    apiKeyEnv?: string;
+    /** Total HTTP/body-read budget, then apply the chosen fallback policy. Default: 3000ms; maximum: 10000ms. */
+    timeoutMs?: number;
+    /** Concurrent Jev requests in this gateway process. Default: 4; maximum: 16. */
+    maxConcurrent?: number;
+    /**
+     * Factors required for each action must meet its threshold; irrelevant
+     * questions do not veto it. Probabilities are not multiplied and the
+     * provider's confidence summary is not treated as correctness.
+     * Initial conservative defaults, to be calibrated against Japanese data:
+     * reply 0.80, react 0.90, silent 0.97.
+     */
+    minProbability?: { reply?: number; react?: number; silent?: number };
+  };
   /** CLI engine to invoke for triage. Default: "codex"; "claude" is supported. */
   engine?: "claude" | "codex";
   /** Binary to invoke for triage. Defaults to the selected engine's CLI. */
   bin?: string;
   /** Model to use for triage calls. Defaults to claude-haiku-4-5 or gpt-5-nano. */
   model?: string;
-  /** Soft timeout before falling back to "silent". Default: 30000ms. */
+  /** CLI timeout before the caller's context-specific fallback. Default: 30000ms. */
   timeoutMs?: number;
   /** How many recent thread messages to include as context. Default: 10. */
   threadContextLimit?: number;
   /** Optional persona override for the triage prompt. Defaults to the bot's configured persona. */
   persona?: string;
+  /** Idle lifetime of conversation state. Default: 30 minutes. Reactions alone do not establish a conversation. */
+  conversationIdleTimeoutMs?: number;
+  /** Maximum in-memory conversation entries. Default: 5000. */
+  conversationMaxEntries?: number;
   /**
-   * @deprecated No longer used. Conversation engagement is now tracked
-   * permanently per-thread / per-(channel, user), invalidated only when a
-   * third human joins. This field is accepted for backwards compatibility
-   * with existing config files but has no effect.
+   * @deprecated No longer used. Use conversationIdleTimeoutMs instead.
+   * Accepted for backwards compatibility with existing config files; ignored.
    */
   activeThreadTtlMs?: number;
 }

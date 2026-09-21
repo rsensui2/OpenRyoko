@@ -15,6 +15,17 @@ export interface SlackVerifyResult {
   app: { ok: boolean; error?: string }
 }
 
+export interface TypeSafeKeyStatus {
+  configured: boolean
+  source: "stored" | "environment" | "none"
+}
+
+export interface TypeSafeTestResult {
+  ok: boolean
+  latencyMs?: number
+  error?: "missing_key" | "unauthorized" | "rate_limited" | "provider_error" | "network_error" | "timeout" | "invalid_response" | "busy"
+}
+
 export interface SlackConnectResult {
   ok: boolean
   stage?: "verify" | "reload"
@@ -279,6 +290,18 @@ async function patch<T>(path: string, body: unknown): Promise<T> {
   return res.json();
 }
 
+/** Credential endpoints never surface response bodies or arbitrary errors to the UI. */
+async function typeSafeRequest<T>(path: string, method = "GET", body?: { apiKey: string }): Promise<T> {
+  const response = await fetch(`${BASE}${path}`, {
+    method,
+    credentials: "same-origin",
+    cache: "no-store",
+    ...(body ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}),
+  })
+  if (!response.ok) throw new Error("TypeSafe request failed")
+  return response.json() as Promise<T>
+}
+
 interface UploadedFile {
   id: string
   filename: string
@@ -287,6 +310,10 @@ interface UploadedFile {
 }
 
 export const api = {
+  getTypeSafeKeyStatus: () => typeSafeRequest<TypeSafeKeyStatus>("/api/integrations/typesafe"),
+  saveTypeSafeKey: (apiKey: string) => typeSafeRequest<TypeSafeKeyStatus>("/api/integrations/typesafe", "PUT", { apiKey }),
+  deleteTypeSafeKey: () => typeSafeRequest<TypeSafeKeyStatus>("/api/integrations/typesafe", "DELETE"),
+  testTypeSafeKey: () => typeSafeRequest<TypeSafeTestResult>("/api/integrations/typesafe/test", "POST"),
   getStatus: () => get<Record<string, unknown>>("/api/status"),
   getUpdateStatus: (refresh = false) =>
     get<UpdateStatusResponse>(`/api/update${refresh ? "?refresh=1" : ""}`),

@@ -59,7 +59,7 @@ export async function runWithSessionGoal(engine: Engine, opts: EngineRunOpts, op
     return engine.run({ ...opts, prompt: explicit ? userPrompt : condition ? `/goal ${condition}\n\n${opts.prompt}` : opts.prompt });
   }
   if (explicit && /^(?:cancel|clear|off)$/i.test(explicit[1]?.trim() ?? "")) {
-    if (goal) updateSession(session.id, { goal: { ...goal, status: "cancelled", updatedAt: new Date().toISOString() } });
+    if (goal) updateSession(session.id, { goal: { ...goal, status: "cancelled", waitingFor: undefined, updatedAt: new Date().toISOString() } });
     return { sessionId: session.engineSessionId ?? "", result: "継続タスクを中止しました。" };
   }
   if (explicit && !explicit[1]?.trim()) {
@@ -73,7 +73,7 @@ export async function runWithSessionGoal(engine: Engine, opts: EngineRunOpts, op
   const interrupted = (result?: EngineResult): EngineResult => {
     const current = getSession(session.id);
     if (goal && current?.goal?.id === goal.id && current.goal.status === "active") {
-      updateSession(session.id, { goal: { ...current.goal, status: "waiting", reason: "処理が中断され、自動継続を停止しました。", updatedAt: new Date().toISOString() } });
+      updateSession(session.id, { goal: { ...current.goal, status: "waiting", waitingFor: "unknown", reason: "処理が中断され、自動継続を停止しました。", updatedAt: new Date().toISOString() } });
     }
     return { ...result, sessionId: result?.sessionId ?? session.engineSessionId ?? "", result: "", error: "Interrupted: goal continuation stopped", retryable: false };
   };
@@ -87,9 +87,11 @@ export async function runWithSessionGoal(engine: Engine, opts: EngineRunOpts, op
 
   const goalId = goal.id;
   const stillOwned = () => !stopped() && getSession(session.id)?.goal?.id === goalId && getSession(session.id)?.goal?.status !== "cancelled";
-  const persist = (status: SessionGoal["status"], reason?: string) => {
+  const persist = (status: SessionGoal["status"], reason?: string, waitingFor?: SessionGoal["waitingFor"]) => {
     if (stillOwned()) {
-      goal = { ...goal!, status, reason, updatedAt: new Date().toISOString() };
+      goal = { ...goal!, status, reason,
+        waitingFor: status === "waiting" || status === "blocked" ? waitingFor ?? "unknown" : undefined,
+        updatedAt: new Date().toISOString() };
       updateSession(session.id, { goal });
     }
   };
@@ -133,7 +135,7 @@ export async function runWithSessionGoal(engine: Engine, opts: EngineRunOpts, op
     if (!stillOwned()) return interrupted(result);
     if (options.shouldYield?.()) { persist("waiting", "新しいメッセージを優先します。"); return interrupted(result); }
     if (["complete", "waiting", "blocked", "cancelled"].includes(review.status)) {
-      persist(review.status as SessionGoal["status"], review.reason);
+      persist(review.status as SessionGoal["status"], review.reason, review.waitingFor);
       return result;
     }
     if (review.status !== "continue" || count >= maxContinuations || !result.sessionId) {

@@ -85,6 +85,7 @@ import {
   verifyGatewayAuth,
 } from "./auth.js";
 import { handleWorkflowApi } from "./workflow-api.js";
+import { handleTypeSafeIntegrationApi } from "./integrations-typesafe-api.js";
 import type { WorkflowService } from "../workflows/service.js";
 import { shouldRequireGatewayAuth as workflowAuthRequired, verifyGatewayAuth as workflowVerifyAuth } from "./auth.js";
 import { getDiskSpaceStatus } from "../shared/storage-health.js";
@@ -509,6 +510,11 @@ export async function handleApiRequest(
   const method = req.method || "GET";
 
   try {
+    if (pathname === "/api/integrations/typesafe" || pathname === "/api/integrations/typesafe/test") {
+      if (await handleTypeSafeIntegrationApi(req, res, { method, pathname, url }, {
+        config: context.getConfig(), authToken: context.authToken, authHome: context.authHome,
+      })) return;
+    }
     // /api/workflows/** — the Workflow engine (upstream port). Routed before the
     // flat routes below; handleWorkflowApi returns false for everything else.
     if (context.workflowService && pathname.startsWith("/api/workflows")) {

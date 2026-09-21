@@ -3,6 +3,7 @@ import type {
   Connector,
   Employee,
   Engine,
+  EngineResult,
   EngineRunOpts,
   IncomingMessage,
   JinnConfig,
@@ -36,6 +37,7 @@ import { continueWorkflowAttemptSession } from "./attempt-continuation.js";
 import { workflowAttemptInterruptionCause } from "./workflow-interruptions.js";
 import { recordTurnAccounting } from "./accounting.js";
 import { runWithSessionGoal, sessionGoalOptions } from "./goal-execution.js";
+import { conversationOutcome } from "./conversation-outcome.js";
 import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "./callbacks.js";
 import { buildContext } from "./context.js";
 import { normalizeDelivery, normalizeTurns, deliverPublic, type DeliveryContext } from "./reply-disposition.js";
@@ -472,9 +474,18 @@ export class SessionManager {
     // Queue cancellation is generational (see SessionQueue.clearQueue): this new
     // inbound message enqueues at the current generation and runs even if the session
     // was previously /stop- or watchdog-reset, so no explicit un-cancel is needed here.
-    await this.queue.enqueue(msg.sessionKey, () =>
-      this.runSession(session!, msg, attachmentPaths, connector, target, opts.employee),
-    );
+    let executionStarted = false;
+    try {
+      await this.queue.enqueue(msg.sessionKey, () => {
+        executionStarted = true;
+        return this.runSession(session!, msg, attachmentPaths, connector, target, opts.employee);
+      });
+    } finally {
+      // A cancelled queue item never enters runSession's cleanup. Clear only
+      // that item's pending indicators; a started session may have deliberately
+      // delivered :eyes: as its final response and must retain that reaction.
+      if (!executionStarted) await this.clearPendingReactions(connector, target);
+    }
 
     return { sessionId };
   }
@@ -568,6 +579,14 @@ export class SessionManager {
     }
   }
 
+  private async clearPendingReactions(connector: Connector, target: Target): Promise<void> {
+    if (!connector.getCapabilities().reactions) return;
+    await Promise.all([
+      connector.removeReaction(target, "eyes").catch(() => {}),
+      connector.removeReaction(target, "clock1").catch(() => {}),
+    ]);
+  }
+
   private async runSession(
     session: Session,
     msg: IncomingMessage,
@@ -576,25 +595,53 @@ export class SessionManager {
     target: Target,
     employee?: Employee,
   ): Promise<void> {
-    const current = getSession(session.id);
-    if (!current) return;
-    session = current;
-    const engine = this.engines.get(session.engine);
-    if (!engine) {
-      logger.error(`Engine "${session.engine}" not found for session ${session.id}`);
-      await connector.replyMessage(target, `Error: engine "${session.engine}" not available.`);
-      return;
-    }
-    if (!["claude", "codex"].includes(session.engine) && /^\/goal(?:\s|$)/i.test(msg.text.trim())) {
-      await connector.replyMessage(
-        target,
-        `/goal requires Claude or Codex. Current engine: ${session.engine}.`,
-      );
-      return;
+    let engine: Engine | undefined;
+    let prepared = false;
+    try {
+      const current = getSession(session.id);
+      if (!current) return;
+      session = current;
+      engine = this.engines.get(session.engine);
+      if (!engine) {
+        logger.error(`Engine "${session.engine}" not found for session ${session.id}`);
+        await connector.replyMessage(target, `Error: engine "${session.engine}" not available.`);
+        return;
+      }
+      if (!["claude", "codex"].includes(session.engine) && /^\/goal(?:\s|$)/i.test(msg.text.trim())) {
+        await connector.replyMessage(
+          target,
+          `/goal requires Claude or Codex. Current engine: ${session.engine}.`,
+        );
+        return;
+      }
+      prepared = true;
+    } finally {
+      // These exits precede the normal engine-delivery cleanup, including a
+      // failed attempt to report an unavailable engine back to the connector.
+      if (!prepared) await this.clearPendingReactions(connector, target);
     }
 
     const goalOptions = sessionGoalOptions(this.config, session, this.queue, msg.text);
-    const runEngine = (targetEngine: Engine, opts: EngineRunOpts) => runWithSessionGoal(targetEngine, opts, goalOptions);
+    let beforeAttemptGoal = session.goal;
+    let attemptEngineName = engine.name;
+    const runEngine = (targetEngine: Engine, opts: EngineRunOpts) => {
+      // Refresh for every retry/fallback: only the finally delivered attempt's
+      // structured assessment is evidence for conversation state.
+      beforeAttemptGoal = getSession(session.id)?.goal;
+      attemptEngineName = targetEngine.name;
+      return runWithSessionGoal(targetEngine, opts, goalOptions);
+    };
+    const recordDeliveredOutcome = (result: EngineResult, deliveredReply: boolean) => {
+      const state = conversationOutcome({
+        engine: attemptEngineName,
+        beforeGoal: beforeAttemptGoal,
+        session: getSession(session.id),
+        result,
+        deliveredReply,
+        interrupted: goalOptions.shouldStop?.(),
+      });
+      if (state) connector.setConversationState?.(target, state, msg.userId);
+    };
 
     insertMessage(session.id, "user", msg.text);
 
@@ -602,6 +649,7 @@ export class SessionManager {
     const decorateMessages = session.source !== "cron";
 
     if (decorateMessages && capabilities.reactions) {
+      await connector.removeReaction(target, "clock1").catch(() => {});
       await connector.addReaction(target, "eyes").catch(() => {});
     }
 
@@ -778,7 +826,13 @@ export class SessionManager {
       });
 
       // A /new/reset during goal assessment must not append an orphan reply.
-      if (!getSession(session.id)) return;
+      if (!getSession(session.id)) {
+        if (decorateMessages && connector.setTypingStatus) {
+          await connector.setTypingStatus(target.channel, threadTs, "").catch(() => {});
+        }
+        await this.clearPendingReactions(connector, target);
+        return;
+      }
       let wasInterrupted = result.error?.startsWith("Interrupted");
 
       // Poisoned transcript: the persisted engine history is corrupted (e.g.
@@ -1035,7 +1089,9 @@ export class SessionManager {
             }
             {
               const { publicAction } = normalizeDelivery(fallbackText, this.buildDeliveryContext(session, msg, capabilities));
-              await deliverPublic(connector, target, publicAction).catch(() => {});
+              const deliveredReply = await deliverPublic(connector, target, publicAction)
+                .then(() => publicAction.kind === "reply", () => false);
+              recordDeliveredOutcome(fallbackResult, deliveredReply);
             }
 
             const updated = updateSession(session.id, {
@@ -1203,7 +1259,9 @@ export class SessionManager {
 
             {
               const { publicAction } = normalizeDelivery(retryText, this.buildDeliveryContext(session, msg, capabilities));
-              await deliverPublic(connector, target, publicAction).catch(() => {});
+              const deliveredReply = await deliverPublic(connector, target, publicAction)
+                .then(() => publicAction.kind === "reply", () => false);
+              recordDeliveredOutcome(retryResult, deliveredReply);
             }
             const retryUpdated = updateSession(session.id, {
               ...(retryResult.sessionId?.trim() ? { engineSessionId: retryResult.sessionId } : {}),
@@ -1277,9 +1335,11 @@ export class SessionManager {
           for (const action of actions) {
             await deliverPublic(connector, target, action);
           }
+          recordDeliveredOutcome(result, actions.at(-1)?.kind === "reply");
         } else {
           const { publicAction } = normalizeDelivery(responseText, deliveryCtx);
           await deliverPublic(connector, target, publicAction);
+          recordDeliveredOutcome(result, publicAction.kind === "reply");
         }
       }
       const updatedSession = updateSession(session.id, {

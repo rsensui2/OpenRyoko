@@ -41,10 +41,11 @@ describe("tracked conversation goals", () => {
   it("persists a waiting goal across a later acknowledgement without inventing new approval", async () => {
     const { engine, opts, run, session } = setup();
     run.mockResolvedValue({ sessionId: "thread-81", result: "対象を確認してください。" });
-    vi.mocked(reviewGoal).mockResolvedValue({ status: "waiting", reason: "対象の確認待ち" });
+    vi.mocked(reviewGoal).mockResolvedValue({ status: "waiting", reason: "対象の確認待ち", waitingFor: "user" });
     await runWithSessionGoal(engine, opts);
     expect(run).toHaveBeenCalledTimes(1);
     expect(getSession(session.id)?.goal?.status).toBe("waiting");
+    expect(getSession(session.id)?.goal?.waitingFor).toBe("user");
     vi.mocked(reviewGoal).mockResolvedValue({ status: "complete", reason: "確認完了" });
     await runWithSessionGoal(engine, { ...opts, prompt: "はい、それで進めて", resumeSessionId: "thread-81" });
     const next = run.mock.calls[1][0];
@@ -52,6 +53,7 @@ describe("tracked conversation goals", () => {
     expect(next.systemPrompt).toContain("正式日程と参加者設定を確認する");
     expect(next.systemPrompt).toContain("does not grant permission");
     expect(getSession(session.id)?.goal?.status).toBe("complete");
+    expect(getSession(session.id)?.goal?.waitingFor).toBeUndefined();
   });
 
   it.each(["waiting", "cancelled", "blocked"] as const)("does not restart a %s task", async (status) => {
@@ -60,6 +62,20 @@ describe("tracked conversation goals", () => {
     await runWithSessionGoal(engine, opts);
     expect(run).toHaveBeenCalledTimes(1);
     expect(getSession(session.id)?.goal?.status).toBe(status);
+  });
+
+  it.each(["background", "external", "unknown"] as const)("persists explicit %s dependency without converting it to user input", async (waitingFor) => {
+    const { engine, opts, session } = setup();
+    vi.mocked(reviewGoal).mockResolvedValue({ status: "waiting", reason: "依存先の待機", waitingFor });
+    await runWithSessionGoal(engine, opts);
+    expect(getSession(session.id)?.goal?.waitingFor).toBe(waitingFor);
+  });
+
+  it("treats an unspecified waiting dependency as unknown", async () => {
+    const { engine, opts, session } = setup();
+    vi.mocked(reviewGoal).mockResolvedValue({ status: "blocked", reason: "サービスのエラー" });
+    await runWithSessionGoal(engine, opts);
+    expect(getSession(session.id)?.goal?.waitingFor).toBe("unknown");
   });
 
   it("bounds unfinished continuations and reports the unfinished work", async () => {
