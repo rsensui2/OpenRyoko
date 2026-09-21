@@ -277,12 +277,15 @@ export interface CronJob {
   enabled: boolean;
   schedule: string;
   /** Prompt jobs invoke AI. Command jobs bypass AI. Update notifications
-   * check npm first and invoke AI only for a new, undelivered release. */
+   * use AI only for a new release or unreviewed maintenance findings. */
   kind?: "prompt" | "update-notification" | "command";
   /** Direct process execution. Never routes through an AI session. */
   command?: CronCommand;
   failureDelivery?: CronDelivery | null;
   effortLevel?: string;
+  /** Installed-feature maintenance during update checks. Default: review.
+   * apply explicitly authorizes bounded local changes; off disables inspection. */
+  maintenance?: { mode: "off" | "review" | "apply" };
   timezone?: string;
   engine?: string;
   model?: string;

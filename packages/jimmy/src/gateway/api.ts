@@ -65,6 +65,7 @@ import { CronJobsReadError, loadJobs, saveJobs } from "../cron/jobs.js";
 import { getCronJobScheduleStatus, getSchedulerSnapshot, reloadScheduler } from "../cron/scheduler.js";
 import { runCronJob } from "../cron/runner.js";
 import { checkForUpdates } from "../updates/checker.js";
+import { inspectMaintenance, validMaintenanceMode } from "../updates/maintenance-audit.js";
 import QRCode from "qrcode";
 import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
 import { handleFilesRequest, ensureFilesDir } from "./files.js";
@@ -729,7 +730,35 @@ export async function handleApiRequest(
     // loads reuse the six-hour cache to avoid unnecessary external traffic.
     if (method === "GET" && pathname === "/api/update") {
       res.setHeader("Cache-Control", "no-store");
-      return json(res, await checkForUpdates({ force: url.searchParams.get("refresh") === "1" }));
+      const status = await checkForUpdates({ force: url.searchParams.get("refresh") === "1" });
+      // GET remains read-only: show local opportunities without launching AI.
+      let maintenance;
+      try { maintenance = inspectMaintenance(context.getConfig()); }
+      catch { maintenance = { error: "運用点検の設定を読み取れません" }; }
+      return json(res, { ...status, maintenance });
+    }
+
+    if (method === "GET" && pathname === "/api/maintenance") {
+      res.setHeader("Cache-Control", "no-store");
+      return json(res, inspectMaintenance(context.getConfig()));
+    }
+    if (method === "POST" && pathname === "/api/maintenance/run") {
+      const parsed = await readJsonBody(req, res);
+      if (!parsed.ok) return;
+      const body = parsed.body as { jobId?: unknown; mode?: unknown } | null;
+      if (!body || typeof body.jobId !== "string" || (body.mode !== "review" && body.mode !== "apply")) {
+        return badRequest(res, "jobId and mode (review/apply) are required");
+      }
+      const job = loadJobs().find((item) => item.id === body.jobId && item.kind === "update-notification");
+      if (!job) return notFound(res);
+      const delivery = job.delivery ?? context.getConfig().cron?.defaultDelivery;
+      if (!delivery?.channel || !context.connectors.has(delivery.connector)) {
+        return badRequest(res, "Maintenance requires an available delivery connector and channel");
+      }
+      void runCronJob(job, context.sessionManager, context.getConfig(), context.connectors, {
+        maintenanceOnly: true, maintenanceMode: body.mode as "review" | "apply", forceMaintenance: true,
+      }).catch(() => logger.error("Manual maintenance failed"));
+      return json(res, { status: "started", jobId: job.id, mode: body.mode }, 202);
     }
 
     // Live Claude subscription buckets, including model-scoped weekly limits.
@@ -1417,6 +1446,7 @@ export async function handleApiRequest(
         command: body.command,
         failureDelivery: body.failureDelivery,
         effortLevel: body.effortLevel,
+        maintenance: body.maintenance,
         timezone: body.timezone,
         engine: body.engine,
         model: body.model,
@@ -1433,6 +1463,9 @@ export async function handleApiRequest(
         if (error) return badRequest(res, error);
       }
       if (newJob.kind === "update-notification") {
+        if (newJob.maintenance !== undefined && (!newJob.maintenance || !validMaintenanceMode(newJob.maintenance.mode))) {
+          return badRequest(res, "maintenance.mode must be off, review, or apply");
+        }
         if (!cron.validate(newJob.schedule)) return badRequest(res, "Invalid cron schedule");
         if (newJob.enabled && (
           !newJob.delivery ||
@@ -1472,6 +1505,9 @@ export async function handleApiRequest(
         if (error) return badRequest(res, error);
       }
       if (updated.kind === "update-notification") {
+        if (updated.maintenance !== undefined && (!updated.maintenance || !validMaintenanceMode(updated.maintenance.mode))) {
+          return badRequest(res, "maintenance.mode must be off, review, or apply");
+        }
         if (!cron.validate(updated.schedule)) return badRequest(res, "Invalid cron schedule");
         if (updated.enabled && (
           !updated.delivery ||

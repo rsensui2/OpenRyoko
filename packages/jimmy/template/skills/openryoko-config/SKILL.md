@@ -19,6 +19,7 @@ description: OpenRyokoの機能・仕組みを説明し、対象インスタン�
 | 機能を知りたい、接続・人格・モデル・運用を設定したい | [設定と反映方法](references/platform.md) |
 | Claude Code／Codexの利用制限・無応答・タイムアウト・切り戻し | [実行エンジンとフォールバック](references/engine-fallback.md) |
 | Slackで空気を読む、Jevを有効化、判定用CLIを減らす | [JevとSlackの応答判定](references/jev.md) |
+| 更新に合わせてCronを点検・改善し、結果を知らせる | [更新後の運用点検](references/maintenance.md) |
 
 開発中機能には対応済みの稼働実装が必要。未対応なら有効にならないキーを書いて成功扱いしない。利用可能な代替と、必要な更新・反映作業を具体化する。設定依頼だけで開発ブランチのマージやパッケージ公開まで行わない。
 

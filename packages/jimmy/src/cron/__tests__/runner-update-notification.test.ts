@@ -7,17 +7,20 @@ const {
   buildUpdateNotificationPrompt,
   getLastNotifiedVersion,
   markVersionNotified,
+  runUpdateMaintenance,
 } = vi.hoisted(() => ({
   appendRunLog: vi.fn(),
   checkForUpdates: vi.fn(),
   buildUpdateNotificationPrompt: vi.fn(() => "verified update prompt"),
   getLastNotifiedVersion: vi.fn(),
   markVersionNotified: vi.fn(),
+  runUpdateMaintenance: vi.fn().mockResolvedValue({ status: "skipped", reason: "no-findings" }),
 }));
 
 vi.mock("../jobs.js", () => ({ appendRunLog }));
 vi.mock("../../updates/checker.js", () => ({ checkForUpdates, buildUpdateNotificationPrompt }));
 vi.mock("../../updates/notification-state.js", () => ({ getLastNotifiedVersion, markVersionNotified }));
+vi.mock("../../updates/maintenance.js", () => ({ runUpdateMaintenance }));
 
 import { runCronJob } from "../runner.js";
 
@@ -177,9 +180,36 @@ describe("update notification cron runner", () => {
 
     expect(checkForUpdates).not.toHaveBeenCalled();
     expect(sessionManager.route).not.toHaveBeenCalled();
+    expect(runUpdateMaintenance).not.toHaveBeenCalled();
     expect(appendRunLog).toHaveBeenCalledWith(job.id, expect.objectContaining({
       status: "skipped",
       reason: "delivery-connector-unavailable",
     }));
+  });
+
+  it("inspects the installed release even when there is no npm update", async () => {
+    checkForUpdates.mockResolvedValue({ currentVersion: "2026.9.21", latestVersion: "2026.9.21", updateAvailable: false });
+    const sessionManager = { route: vi.fn() };
+    await runCronJob(job, sessionManager as never, config, connectors);
+    expect(runUpdateMaintenance).toHaveBeenCalledOnce();
+    expect(sessionManager.route).not.toHaveBeenCalled();
+  });
+
+  it("runs a manual inspection without checking npm or generating a release notification", async () => {
+    const sessionManager = { route: vi.fn() };
+    await runCronJob(job, sessionManager as never, config, connectors, { maintenanceOnly: true, maintenanceMode: "review", forceMaintenance: true });
+    expect(runUpdateMaintenance).toHaveBeenCalledWith(job, sessionManager, config, connectors, { mode: "review", force: true });
+    expect(checkForUpdates).not.toHaveBeenCalled();
+    expect(sessionManager.route).not.toHaveBeenCalled();
+  });
+
+  it("keeps release checks working after an inspection error and releases the lock", async () => {
+    runUpdateMaintenance.mockRejectedValueOnce(new Error("inspection failed"));
+    checkForUpdates.mockResolvedValue({ updateAvailable: false });
+    const sessionManager = { route: vi.fn() };
+    await runCronJob(job, sessionManager as never, config, connectors);
+    await runCronJob(job, sessionManager as never, config, connectors);
+    expect(checkForUpdates).toHaveBeenCalledTimes(2);
+    expect(runUpdateMaintenance).toHaveBeenCalledTimes(2);
   });
 });

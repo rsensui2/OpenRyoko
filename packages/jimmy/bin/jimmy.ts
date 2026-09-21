@@ -66,6 +66,23 @@ program
   });
 
 {
+  const maintenance = program.command("maintenance").description("導入済み機能に合わせたCron・運用の点検");
+  maintenance.command("inspect").description("AIを起動せず改善候補を集計する")
+    .option("--json", "JSON形式で出力")
+    .action(async (opts) => {
+      const cli = await import("../src/cli/maintenance.js");
+      await cli.runMaintenanceInspect(opts).catch((error) => { console.error(String(error)); process.exitCode = 1; });
+    });
+  maintenance.command("run <update-job-id>").description("点検プロンプトを実行し、更新通知先へ結果を送る")
+    .option("--apply", "検証できる範囲のローカル修正も許可する（既定は点検のみ）")
+    .option("--json", "JSON形式で出力")
+    .action(async (id, opts) => {
+      const cli = await import("../src/cli/maintenance.js");
+      await cli.runMaintenanceReview(id, opts).catch((error) => { console.error(String(error)); process.exitCode = 1; });
+    });
+}
+
+{
   const automationCmd = program
     .command("automation")
     .description("自動化（cron + workflow）の統合操作");

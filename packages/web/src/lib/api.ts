@@ -332,6 +332,8 @@ export const api = {
   getStatus: () => get<Record<string, unknown>>("/api/status"),
   getUpdateStatus: (refresh = false) =>
     get<UpdateStatusResponse>(`/api/update${refresh ? "?refresh=1" : ""}`),
+  runMaintenance: (jobId: string, mode: "review" | "apply") =>
+    post<{ status: string; jobId: string; mode: string }>("/api/maintenance/run", { jobId, mode }),
   getClaudeUsage: () => get<ClaudeUsageResponse>("/api/usage/claude"),
   getSessions: () => get<Record<string, unknown>[]>("/api/sessions"),
   getSessionPage: (cursor?: string, limit = 100) => {

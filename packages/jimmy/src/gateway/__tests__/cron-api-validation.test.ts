@@ -107,6 +107,36 @@ describe("cron API validation", () => {
     });
   });
 
+  it("validates maintenance modes and preserves them on save", async () => {
+    for (const mode of ["off", "review", "apply"]) {
+      const response = await createJob({ id: `maintenance-${mode}`, kind: "update-notification", enabled: false, schedule: "0 9 * * *", maintenance: { mode } });
+      expect(response.status).toBe(201);
+      expect((await response.json() as { maintenance: unknown }).maintenance).toEqual({ mode });
+    }
+    const before = fs.readFileSync(jobsPath, "utf8");
+    const bad = await createJob({ id: "bad-mode", kind: "update-notification", enabled: false, maintenance: { mode: "execute-anything" } });
+    expect(bad.status).toBe(400);
+    expect(fs.readFileSync(jobsPath, "utf8")).toBe(before);
+    const updated = await fetch(`${baseUrl}/api/cron/maintenance-review`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ maintenance: { mode: "bad" } }) });
+    expect(updated.status).toBe(400);
+    expect(fs.readFileSync(jobsPath, "utf8")).toBe(before);
+  });
+
+  it("inspects through GET without creating an AI session or changing cron data", async () => {
+    const before = fs.readFileSync(jobsPath, "utf8");
+    const response = await fetch(`${baseUrl}/api/maintenance`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ fingerprint: expect.any(String), findings: expect.any(Array) });
+    expect(fs.readFileSync(jobsPath, "utf8")).toBe(before);
+  });
+
+  it("requires an explicit mode and a notification destination for manual execution", async () => {
+    const post = (body: object) => fetch(`${baseUrl}/api/maintenance/run`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    expect((await post({ jobId: "maintenance-review", mode: ["review"] })).status).toBe(400);
+    expect((await post({ jobId: "maintenance-review", mode: "apply" })).status).toBe(400);
+    expect((await post({ jobId: "existing-job", mode: "review" })).status).toBe(404);
+  });
+
   it("persists a command job and preserves its command when toggled", async () => {
     const command = { executable: "/bin/echo", args: ["hello"], timeoutSeconds: 20 };
     const response = await createJob({ id: "direct-command", kind: "command", enabled: false,
