@@ -51,7 +51,8 @@ import { RemoteDiscordConnector } from "../connectors/discord/remote.js";
 import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
 import { TelegramConnector } from "../connectors/telegram/index.js";
 import { loadJobs } from "../cron/jobs.js";
-import { startScheduler, reloadScheduler, stopScheduler } from "../cron/scheduler.js";
+import { startScheduler, stopScheduler } from "../cron/scheduler.js";
+import { createCronReconciler } from "../cron/reconcile.js";
 import { stopCommandJobs } from "../cron/command.js";
 import { scanOrg } from "./org.js";
 import { createDailyDatabaseBackup } from "../sessions/backup.js";
@@ -877,7 +878,10 @@ export async function startGateway(
   }
 
   // Start cron scheduler
-  const cronJobs = loadJobs();
+  let cronJobs: ReturnType<typeof loadJobs> = [];
+  try { cronJobs = loadJobs(); } catch (error) {
+    logger.error(`Cannot load cron jobs at startup: ${error instanceof Error ? error.message : "read failed"}`);
+  }
   startScheduler(cronJobs, sessionManager, config, connectorMap);
   logger.info(`Loaded ${cronJobs.length} cron job(s)`);
 
@@ -1245,12 +1249,7 @@ export async function startGateway(
         );
       }
     },
-    onCronReload: () => {
-      const updatedJobs = loadJobs();
-      reloadScheduler(updatedJobs);
-      logger.info(`Cron jobs reloaded (${updatedJobs.length} job(s))`);
-      emit("cron:reloaded", {});
-    },
+    onCronReload: createCronReconciler(() => emit("cron:reloaded", {})),
     onOrgChange: () => {
       employeeRegistry = scanOrg();
       logger.info(`Org directory changed, reloaded ${employeeRegistry.size} employee(s)`);

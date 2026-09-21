@@ -61,8 +61,8 @@ import { explicitThread } from "../shared/threading.js";
 import { effortLevelsForModel, invalidateModelRegistry } from "../shared/models.js";
 import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt, recordClaudeRateLimit } from "../shared/usageAwareness.js";
-import { loadJobs, saveJobs } from "../cron/jobs.js";
-import { reloadScheduler } from "../cron/scheduler.js";
+import { CronJobsReadError, loadJobs, saveJobs } from "../cron/jobs.js";
+import { getCronJobScheduleStatus, getSchedulerSnapshot, reloadScheduler } from "../cron/scheduler.js";
 import { runCronJob } from "../cron/runner.js";
 import { checkForUpdates } from "../updates/checker.js";
 import { inspectMaintenance, validMaintenanceMode } from "../updates/maintenance-audit.js";
@@ -1374,9 +1374,29 @@ export async function handleApiRequest(
       return json(res, { status: "queued", sessionId: session.id });
     }
 
+    // Runtime state must be queryable even when the file cannot be read.
+    if (method === "GET" && pathname === "/api/cron/status") {
+      res.setHeader("Cache-Control", "no-store");
+      const snapshot = getSchedulerSnapshot();
+      try {
+        const jobs = loadCronJobsForApi();
+        const desiredIds = new Set(jobs.map(job => job.id));
+        return json(res, {
+          ...snapshot,
+          storage: { readable: true },
+          pendingJobIds: jobs.filter(job => ["pending", "error", "stopped"].includes(getCronJobScheduleStatus(job).state)).map(job => job.id),
+          orphanedJobIds: snapshot.registeredJobIds.filter(id => !desiredIds.has(id)),
+        });
+      } catch (error) {
+        if (!(error instanceof CronJobsReadError)) throw error;
+        return json(res, { ...snapshot, storage: { readable: false, error: error.message }, pendingJobIds: [], orphanedJobIds: [] });
+      }
+    }
+
     // GET /api/cron
     if (method === "GET" && pathname === "/api/cron") {
-      const jobs = loadJobs();
+      res.setHeader("Cache-Control", "no-store");
+      const jobs = loadCronJobsForApi();
       // Enrich with last run status
       const enriched = jobs.map((job) => {
         const runFile = path.join(CRON_RUNS, `${job.id}.jsonl`);
@@ -1387,7 +1407,7 @@ export async function handleApiRequest(
             try { lastRun = JSON.parse(lines[lines.length - 1]); } catch {}
           }
         }
-        return { ...job, lastRun };
+        return { ...job, lastRun, scheduler: getCronJobScheduleStatus(job) };
       });
       return json(res, enriched);
     }
@@ -1412,7 +1432,7 @@ export async function handleApiRequest(
       if (!_parsed.ok) return;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const body = _parsed.body as any;
-      const jobs = loadJobs();
+      const jobs = loadCronJobsForApi();
       const newJobId = typeof body.id === "string" && body.id.trim() ? body.id.trim() : crypto.randomUUID();
       if (jobs.some((job) => job.id === newJobId)) {
         return json(res, { error: `Cron job id already exists: ${newJobId}` }, 409);
@@ -1434,6 +1454,9 @@ export async function handleApiRequest(
         prompt: body.prompt || "",
         delivery: body.delivery,
       };
+      if (typeof newJob.name !== "string" || typeof newJob.enabled !== "boolean" || typeof newJob.schedule !== "string") {
+        return badRequest(res, "Cron name/schedule must be strings and enabled must be a boolean");
+      }
       if (!["prompt", "update-notification", "command"].includes(newJob.kind!)) return badRequest(res, "Invalid cron job kind");
       if (newJob.kind === "command") {
         const error = validateCommandJob(newJob) ?? validateCronSchedule(newJob)[0]?.message;
@@ -1454,21 +1477,26 @@ export async function handleApiRequest(
       }
       jobs.push(newJob);
       saveJobs(jobs);
-      reloadScheduler(jobs);
+      if (reloadScheduler(jobs)) context.emit("cron:reloaded", {});
       return json(res, newJob, 201);
     }
 
     // PUT /api/cron/:id
     params = matchRoute("/api/cron/:id", pathname);
     if (method === "PUT" && params) {
-      const jobs = loadJobs();
-      const idx = jobs.findIndex((j) => j.id === params!.id);
-      if (idx === -1) return notFound(res);
       const _parsed = await readJsonBody(req, res);
       if (!_parsed.ok) return;
+      // Read after receiving the body; an edit while awaiting a slow client
+      // must not be overwritten with a stale snapshot.
+      const jobs = loadCronJobsForApi();
+      const idx = jobs.findIndex((j) => j.id === params!.id);
+      if (idx === -1) return notFound(res);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const body = _parsed.body as any;
       const updated = { ...jobs[idx], ...body, id: params.id } as CronJob;
+      if (typeof updated.name !== "string" || typeof updated.enabled !== "boolean" || typeof updated.schedule !== "string") {
+        return badRequest(res, "Cron name/schedule must be strings and enabled must be a boolean");
+      }
       if (updated.kind !== undefined && updated.kind !== "prompt" && updated.kind !== "update-notification" && updated.kind !== "command") {
         return badRequest(res, "Invalid cron job kind");
       }
@@ -1491,26 +1519,26 @@ export async function handleApiRequest(
       }
       jobs[idx] = updated;
       saveJobs(jobs);
-      reloadScheduler(jobs);
+      if (reloadScheduler(jobs)) context.emit("cron:reloaded", {});
       return json(res, jobs[idx]);
     }
 
     // DELETE /api/cron/:id
     params = matchRoute("/api/cron/:id", pathname);
     if (method === "DELETE" && params) {
-      const jobs = loadJobs();
+      const jobs = loadCronJobsForApi();
       const idx = jobs.findIndex((j) => j.id === params!.id);
       if (idx === -1) return notFound(res);
       const removed = jobs.splice(idx, 1)[0];
       saveJobs(jobs);
-      reloadScheduler(jobs);
+      if (reloadScheduler(jobs)) context.emit("cron:reloaded", {});
       return json(res, { deleted: removed.id, name: removed.name });
     }
 
     // POST /api/cron/:id/trigger — manually run a cron job now
     params = matchRoute("/api/cron/:id/trigger", pathname);
     if (method === "POST" && params) {
-      const jobs = loadJobs();
+      const jobs = loadCronJobsForApi();
       const job = jobs.find((j) => j.id === params!.id);
       if (!job) return notFound(res);
 
@@ -2564,9 +2592,16 @@ Handle this as a priority request from a colleague.`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error(`API error: ${msg}`);
+    if (err instanceof CronJobsReadError) return json(res, { error: msg }, 503);
     if (msg.startsWith("Insufficient disk space")) return json(res, { error: msg }, 507);
     return serverError(res, msg);
   }
+}
+
+function loadCronJobsForApi(): CronJob[] {
+  // Do not recreate an accidentally removed file and erase known jobs through
+  // a subsequent API write. A genuinely empty/new installation can still add its first job.
+  return loadJobs({ allowMissing: getSchedulerSnapshot().configuredJobIds.length === 0 });
 }
 
 /**
