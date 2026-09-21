@@ -47,6 +47,7 @@ export function JevSettings({ config = {}, onChange, showCredentials = true }: J
   const id = useId()
   const mode = triageMode(config)
   const native = mode !== "cli"
+  const useCapabilities = config.jev?.useCapabilities !== false
   const showCli = mode !== "jev"
   const [keyStatus, setKeyStatus] = useState<TypeSafeKeyStatus | null>(null)
   const [apiKey, setApiKey] = useState("")
@@ -161,6 +162,18 @@ export function JevSettings({ config = {}, onChange, showCredentials = true }: J
       <input id={`${id}-jev-timeout`} type="number" min={1} max={10000} value={config.jev?.timeoutMs ?? ""} placeholder="3000"
         onChange={(event) => onChange({ ...config, jev: { ...config.jev, timeoutMs: event.target.value ? Number(event.target.value) : undefined } })} className={controlClass} />
     </Field>}
+    {native && <>
+      <Field label="スキル・担当領域を考慮" id={`${id}-capabilities`}>
+        <button type="button" id={`${id}-capabilities`} role="switch" aria-checked={useCapabilities}
+          aria-describedby={`${id}-capabilities-help`}
+          onClick={() => onChange({ ...config, jev: { ...config.jev, useCapabilities: !useCapabilities } })}
+          className="relative block ml-auto w-[44px] h-[24px] rounded-[12px] border-none cursor-pointer"
+          style={{ background: useCapabilities ? "var(--system-green)" : "var(--fill-primary)" }}>
+          <span className="absolute top-[2px] w-[20px] h-[20px] rounded-full bg-white" style={{ left: useCapabilities ? 22 : 2 }} />
+        </button>
+      </Field>
+      <p id={`${id}-capabilities-help`} className={helpClass}>担当社員の役割と利用可能なスキルから、具体的に手伝える依頼かを判断します。人宛ての会話や雑談には割り込みません。</p>
+    </>}
 
     {showCli && <div className="border-t border-[var(--separator)] pt-[var(--space-3)]">
       <p className="text-[length:var(--text-footnote)] text-[var(--text-secondary)]">{cliLabel}</p>

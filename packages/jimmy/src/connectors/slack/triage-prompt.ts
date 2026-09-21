@@ -8,7 +8,11 @@
  * a subprocess.
  */
 
+import type { TriageCapabilitySnapshot } from "../../shared/triage-capabilities.js";
+
 export interface TriagePromptInput {
+  /** Bounded application-owned role and available skill metadata, not skill instructions. */
+  capabilities?: TriageCapabilitySnapshot;
   /** A Slack reaction event, as distinct from an emoji posted as a message. */
   isReaction?: boolean;
   /** Trusted routing evidence: the awaited user reacted to the latest pending bot reply. */

@@ -427,6 +427,8 @@ export interface SlackTriageConfig {
   jev?: {
     /** On uncertainty/error: none uses bounded routing rules without a CLI; cli explicitly opts into legacy classification. Default: none. */
     fallback?: "none" | "cli";
+    /** Use bounded role/skill metadata to assess useful help for open requests. Default: true. */
+    useCapabilities?: boolean;
     /** Pin an evaluated model. Default: jev-1.13.0. */
     model?: string;
     /** Environment variable containing the TypeSafe API key. Default: TYPESAFE_API_KEY. */

@@ -33,6 +33,8 @@ import {
   shouldHandleReaction,
 } from "./respond-policy.js";
 import { isOperatorSpeaker } from "../../shared/operator-match.js";
+import { resolveAssistantName } from "../../shared/assistant-identity.js";
+import type { TriageCapabilitySnapshot } from "../../shared/triage-capabilities.js";
 import { explicitThread } from "../../shared/threading.js";
 import { ConversationTracker } from "./conversation-tracker.js";
 import { AgentsCanvasUpdater } from "./agents-canvas.js";
@@ -44,6 +46,10 @@ import { logger } from "../../shared/logger.js";
 export interface SlackConnectorContext {
   /** Display name of the Jinn instance (used as botName in triage) */
   portalName?: string;
+  /** Current routed assistant name, resolved on each message after org updates. */
+  getBotName?: () => string;
+  /** Current bounded capabilities of the assistant assigned to this connector. */
+  getTriageCapabilities?: (messageText: string) => TriageCapabilitySnapshot;
   /** Configured operator name — used to identify operator vs third party */
   operatorName?: string;
   /** Additional operator names/handles (portal.operatorAliases) — see operator-match.ts. */
@@ -66,6 +72,8 @@ export class SlackConnector implements Connector {
   private readonly triageConfig: SlackTriageConfig | undefined;
   private readonly respondTo: SlackRespondToConfig | undefined;
   private readonly portalName: string | undefined;
+  private readonly getBotName: (() => string) | undefined;
+  private readonly getTriageCapabilities: SlackConnectorContext["getTriageCapabilities"];
   private readonly operatorName: string | undefined;
   private readonly operatorAliases: string[] | undefined;
   private readonly conversations: ConversationTracker;
@@ -148,6 +156,8 @@ export class SlackConnector implements Connector {
     this.triageConfig = config.triage;
     this.respondTo = config.respondTo;
     this.portalName = context.portalName;
+    this.getBotName = context.getBotName;
+    this.getTriageCapabilities = context.getTriageCapabilities;
     this.operatorName = context.operatorName;
     this.operatorAliases = context.operatorAliases;
     this.conversations = new ConversationTracker({
@@ -170,6 +180,10 @@ export class SlackConnector implements Connector {
    */
   private conversationTrackingEnabled(): boolean {
     return this.triageConfig?.enabled === true || respondPolicyNeedsTracking(this.respondTo);
+  }
+
+  private resolveBotName(): string {
+    return resolveAssistantName(this.getBotName?.() || this.portalName);
   }
 
   private async resolveSpeakerInfo(userId: string | undefined): Promise<SpeakerInfo | null> {
@@ -249,8 +263,11 @@ export class SlackConnector implements Connector {
       {
         isReaction: !!ctx.reactionTarget,
         reactionAnswersPendingQuestion,
-        botName: this.portalName || "Ryoko",
+        botName: this.resolveBotName(),
         persona: this.triageConfig?.persona,
+        capabilities: (this.triageConfig?.backend === "jev" || this.triageConfig?.backend === "jev-shadow")
+          && this.triageConfig.jev?.useCapabilities !== false
+          ? this.getTriageCapabilities?.(ctx.messageText) : undefined,
         operatorName: this.operatorName,
         channelType: ctx.channelType,
         channelDescription,
@@ -319,7 +336,7 @@ export class SlackConnector implements Connector {
     const recentThread = await Promise.all(messages.map(async (m) => {
       const isSelf = !!m.user && m.user === this.botUserId;
       const isBot = !!m.bot_id || isSelf;
-      const speaker = isSelf ? (this.portalName || "Ryoko") : isBot
+      const speaker = isSelf ? this.resolveBotName() : isBot
         ? `bot:${m.bot_id ?? m.user}`
         : m.user ? (await this.resolveSpeakerInfo(m.user))?.name ?? m.user : "unknown";
       return { speaker, text: m.text!, isBot, isSelf };
@@ -721,7 +738,7 @@ export class SlackConnector implements Connector {
           wasMentioned: false, messageText: `:${emoji}:`,
           reactionMessageTs: messageTs,
           reactionTarget: {
-            speaker: reacted?.user === this.botUserId ? (this.portalName || "Ryoko") : "other participant",
+            speaker: reacted?.user === this.botUserId ? this.resolveBotName() : "other participant",
             text: messageText, isSelf: reacted?.user === this.botUserId,
             isBot: !!reacted?.bot_id || reacted?.user === this.botUserId,
           },

@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SlackConnector } from "../index.js";
+import { SlackConnector, type SlackConnectorContext } from "../index.js";
 import { ConversationTracker } from "../conversation-tracker.js";
 import { runTriage } from "../triage.js";
+import { resolveAssistantName } from "../../../shared/assistant-identity.js";
 
 vi.mock("../triage.js", () => ({ runTriage: vi.fn() }));
 afterEach(() => { vi.clearAllMocks(); });
 
-async function fixture(mentionOnly = false) {
+async function fixture(mentionOnly = false, context: SlackConnectorContext = {}) {
   let now = 0;
   let receive: (args: { event: Record<string, unknown> }) => Promise<void>;
   let receiveReaction: (args: { event: Record<string, unknown> }) => Promise<void>;
@@ -34,6 +35,7 @@ async function fixture(mentionOnly = false) {
     respondTo: mentionOnly ? { channel: "mention" } : undefined,
     handler, allowedUsers: null, ignoreOldMessagesOnBoot: false,
     userInfoCache: new Map(), channelNameCache: new Map(), agentsCanvas: null,
+    ...context,
   });
   vi.mocked(runTriage).mockResolvedValue({ action: "reply" });
   await connector.start();
@@ -47,6 +49,59 @@ async function fixture(mentionOnly = false) {
 }
 
 describe("Slack conversation routing integration", () => {
+  it("uses a configured assistant name while @-mentions remain tied to the bot user ID", async () => {
+    const f = await fixture(false, { portalName: "Momo" });
+    await f.event("Momo、聞こえる？");
+    expect(vi.mocked(runTriage).mock.calls.at(-1)?.[0].botName).toBe("Momo");
+    await f.event("<@URYOKO> 確認して", { ts: "5.000" });
+    expect(runTriage).toHaveBeenCalledTimes(1);
+    expect(f.handler).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps employee triage and self-history names current after an org reload", async () => {
+    let employee: { name: string; displayName: string } | undefined = { name: "support", displayName: "Sora" };
+    const f = await fixture(false, {
+      portalName: "Momo",
+      getBotName: () => resolveAssistantName("Momo", employee),
+    });
+    f.replies.mockResolvedValue({ messages: [{ ts: "2.000", user: "URYOKO", text: "前の返答" }] });
+    await f.event("Sora、聞こえる？");
+    expect(vi.mocked(runTriage).mock.calls.at(-1)?.[0]).toMatchObject({
+      botName: "Sora", recentThread: [{ speaker: "Sora", isSelf: true }],
+    });
+    employee = { name: "support", displayName: "Mika" };
+    await f.event("Mika、聞こえる？", { ts: "5.000" });
+    expect(vi.mocked(runTriage).mock.calls.at(-1)?.[0]).toMatchObject({
+      botName: "Mika", recentThread: [{ speaker: "Mika", isSelf: true }],
+    });
+    await f.reaction("heart");
+    expect(vi.mocked(runTriage).mock.calls.at(-1)?.[0]).toMatchObject({
+      botName: "Mika", recentThread: [{ speaker: "Mika", isSelf: true }],
+    });
+    employee = undefined;
+    await f.event("Momo、聞こえる？", { ts: "6.000" });
+    expect(vi.mocked(runTriage).mock.calls.at(-1)?.[0].botName).toBe("Momo");
+  });
+
+  it("passes current bounded capabilities only when Jev capability awareness is enabled", async () => {
+    let snapshot = { skills: [{ name: "slides", description: "資料作成" }] };
+    const getTriageCapabilities = vi.fn(() => snapshot);
+    const f = await fixture(false, { getTriageCapabilities });
+    await f.event("誰か資料を作ってください");
+    expect(getTriageCapabilities).toHaveBeenLastCalledWith("誰か資料を作ってください");
+    expect(vi.mocked(runTriage).mock.calls.at(-1)?.[0].capabilities).toEqual(snapshot);
+    snapshot = { skills: [{ name: "pdf", description: "PDF分割" }] };
+    await f.event("誰かPDFを分割してください", { ts: "5.000" });
+    expect(vi.mocked(runTriage).mock.calls.at(-1)?.[0].capabilities).toEqual(snapshot);
+    Object.assign(f.connector, { triageConfig: { enabled: true, backend: "jev", jev: { useCapabilities: false } } });
+    await f.event("設定オフの依頼", { ts: "6.000" });
+    expect(getTriageCapabilities).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(runTriage).mock.calls.at(-1)?.[0].capabilities).toBeUndefined();
+    Object.assign(f.connector, { triageConfig: { enabled: true, backend: "cli" } });
+    await f.event("CLI方式の依頼", { ts: "7.000" });
+    expect(getTriageCapabilities).toHaveBeenCalledTimes(2);
+  });
+
   it("a triage reaction does not bypass triage for the next human message", async () => {
     const f = await fixture();
     vi.mocked(runTriage).mockResolvedValueOnce({ action: "react", emoji: "pray" });

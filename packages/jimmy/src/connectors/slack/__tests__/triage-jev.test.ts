@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildJevTriageRequest, evaluateJevTriage, JEV_TRIAGE_QUESTIONS, protectJevTriageDecision, resolveJevUncertaintyDecision } from "../triage-jev.js";
+import { buildJevTriageRequest, evaluateJevTriage, JEV_TRIAGE_QUESTIONS, JEV_CONTRIBUTION_QUESTION, protectJevTriageDecision, resolveJevUncertaintyDecision } from "../triage-jev.js";
 import type { TriagePromptInput } from "../triage-prompt.js";
 
 const input: TriagePromptInput = {
@@ -56,13 +56,86 @@ describe("native Jev triage", () => {
     expect(request).toMatchObject({ method: "POST", redirect: "error", headers: { Authorization: "Bearer test-not-a-real-api-key" } });
     const body = JSON.parse(request!.body as string);
     expect(body.model).toBe("jev-1.13.0");
-    expect(body.questions).toEqual(JEV_TRIAGE_QUESTIONS);
+    expect(body.questions).toEqual(buildJevTriageRequest(enriched).questions);
+    expect(body.questions.recipient.criteria.bot).toContain('Specifically "Ryoko" is the addressee');
+    const renamed = buildJevTriageRequest({ ...enriched, botName: "Sora" });
+    expect(renamed.questions.recipient.criteria.bot).toContain('Specifically "Sora" is the addressee');
     expect(body.state.application_context.conversation_state).toEqual(enriched.conversationState);
     expect(body.state.application_context.previous_was_self).toBe(false);
     expect(body.state.recent_messages[0].is_self).toBe(true);
     expect(body.state.recent_messages[0].speaker_role).toBe("self_bot");
     expect(body.state.message).toEqual({ text: enriched.messageText, source: "untrusted_slack_message", kind: "message" });
     expect(JSON.stringify(body)).not.toContain("test-not-a-real-api-key");
+  });
+
+  it("routes an open request by concrete capability fit, keeping all recipient and intent guards", async () => {
+    const capable = { ...input, messageText: "誰か資料の作成を手伝ってください", capabilities: { skills: [{ name: "slides", description: "スライド資料を作成する" }] } };
+    const body = responseBody({ ...baseChoices, recipient: "group", response_value: "unknown" });
+    const contribution = (choice: string, selected = 1) => ({
+      type: "choice", choice, confidence: selected,
+      probabilities: Object.fromEntries(Object.keys(JEV_CONTRIBUTION_QUESTION.criteria).map((key) => [key, key === choice ? selected : (1 - selected) / 3])),
+    });
+    body.answers.contribution = contribution("useful_now", 0.95);
+    expect(await evaluateJevTriage(capable, options(body))).toMatchObject({
+      status: "accepted", decision: { action: "reply", reason: "jev_useful_contribution" },
+      metadata: { contribution: { choice: "useful_now", probability: 0.95 } },
+    });
+    for (const choice of ["cannot_help", "not_needed", "unknown"]) {
+      body.answers.contribution = contribution(choice);
+      expect(await evaluateJevTriage(capable, options(body))).toMatchObject({ status: "fallback", reason: "below_threshold" });
+    }
+    for (const recipient of ["bot", "group"]) {
+      body.answers.recipient.choice = recipient;
+      body.answers.recipient.probabilities = recipient === "bot"
+        ? { bot: 0.57, group: 0.41, other_human: 0.01, unknown: 0.01 }
+        : { bot: 0.41, group: 0.57, other_human: 0.01, unknown: 0.01 };
+      body.answers.contribution = contribution("not_needed");
+      expect(await evaluateJevTriage(capable, options(body))).toMatchObject({ status: "fallback", reason: "below_threshold" });
+      body.answers.contribution = contribution("useful_now");
+      expect(await evaluateJevTriage(capable, options(body))).toMatchObject({ status: "accepted", decision: { action: "reply", reason: "jev_useful_contribution" } });
+    }
+    body.answers.recipient.probabilities = { bot: 0.21, group: 0.57, other_human: 0.21, unknown: 0.01 };
+    expect(await evaluateJevTriage(capable, options(body))).toMatchObject({ status: "fallback", reason: "below_threshold" });
+    body.answers.recipient = responseBody({ ...baseChoices, recipient: "group" }).answers.recipient;
+    body.answers.contribution = contribution("useful_now", 0.79);
+    expect(await evaluateJevTriage(capable, options(body))).toMatchObject({ status: "fallback", reason: "below_threshold" });
+    body.answers.contribution = contribution("useful_now");
+    body.answers.response_value.noul = 0.2;
+    expect(await evaluateJevTriage(capable, options(body))).toMatchObject({ status: "fallback", reason: "below_threshold" });
+    for (const recipient of ["other_human", "unknown"]) {
+      const other = responseBody({ ...baseChoices, recipient });
+      other.answers.contribution = contribution("useful_now");
+      const result = await evaluateJevTriage(capable, options(other));
+      expect(resolveJevUncertaintyDecision(capable, result, "silent").action).toBe("silent");
+    }
+    const statement = responseBody({ ...baseChoices, recipient: "group", intent: "statement" });
+    statement.answers.contribution = contribution("useful_now");
+    expect(await evaluateJevTriage(capable, options(statement))).toMatchObject({ status: "accepted", decision: { action: "silent" } });
+    const direct = responseBody({ ...baseChoices, recipient: "bot", response_value: "text_or_work" });
+    direct.answers.contribution = contribution("cannot_help");
+    expect(await evaluateJevTriage(capable, options(direct))).toMatchObject({ status: "accepted", decision: { action: "reply" } });
+    direct.answers.contribution.probabilities.useful_now = NaN;
+    expect(await evaluateJevTriage(capable, options(direct))).toMatchObject({ status: "fallback", reason: "invalid_response" });
+  });
+
+  it("bounds capability metadata and omits it entirely when the capability setting is disabled", async () => {
+    const enriched = { ...input, capabilities: {
+      role: "r".repeat(1000),
+      skills: Array.from({ length: 30 }, () => ({ name: "n".repeat(100), description: "d".repeat(300) })),
+      services: Array.from({ length: 10 }, () => ({ name: "s".repeat(100), description: "d".repeat(300) })),
+    } };
+    const request = buildJevTriageRequest(enriched);
+    expect(request.state.application_context.capabilities).toMatchObject({ role: "r".repeat(800), truncated: true });
+    expect(request.state.application_context.capabilities?.skills).toHaveLength(24);
+    expect(request.state.application_context.capabilities?.services).toHaveLength(8);
+    expect(request.questions).toHaveProperty("contribution");
+    const opts = { ...options(), useCapabilities: false };
+    expect(await evaluateJevTriage(enriched, opts)).toMatchObject({ status: "accepted" });
+    const body = JSON.parse(opts.fetchImpl.mock.calls[0][1]!.body as string);
+    expect(body.questions).not.toHaveProperty("contribution");
+    expect(body.state.application_context).not.toHaveProperty("capabilities");
+    expect(enriched.capabilities.skills).toHaveLength(30);
+    expect(await evaluateJevTriage(enriched, options())).toMatchObject({ status: "fallback", reason: "invalid_response" });
   });
 
   it.each([
@@ -311,6 +384,38 @@ describe("native Jev triage", () => {
     body.answers.intent.probabilities = { request: 0.5, continuation: 0.05, correction: 0, stop: 0, mixed: 0, acknowledgment: 0.35, social: 0, statement: 0, unknown: 0.1 };
     expect(await evaluateJevTriage(input, options(body)))
       .toMatchObject({ status: "fallback", reason: "below_threshold", metadata: { actionableIntentProbability: 0.55 } });
+  });
+
+  it.each(["bot", "group"])("accepts a requested reply when audience probability splits toward %s", async (recipient) => {
+    const body = responseBody({ ...baseChoices, recipient, response_value: "text_or_work" });
+    body.answers.recipient.probabilities = recipient === "bot"
+      ? { bot: 0.57, group: 0.41, other_human: 0.01, unknown: 0.01 }
+      : { bot: 0.41, group: 0.57, other_human: 0.01, unknown: 0.01 };
+    body.answers.response_value.noul = 0.89;
+    const call = { ...input, messageText: "Ryokoの空気読みテスト" };
+    expect(await evaluateJevTriage(call, options(body))).toMatchObject({
+      status: "accepted", decision: { action: "reply", reason: "jev_expected_audience_response" },
+      metadata: { botIncludedProbability: 0.98 },
+    });
+    body.answers.response_value.noul = 0.79;
+    expect(await evaluateJevTriage(call, options(body))).toMatchObject({ status: "fallback", reason: "below_threshold" });
+  });
+
+  it("does not promote audience uncertainty, weak intent, social talk, or another bot's continuation", async () => {
+    const call = { ...input, messageText: "Ryokoの反応確認" };
+    const body = responseBody({ ...baseChoices, recipient: "bot", response_value: "text_or_work" });
+    body.answers.recipient.probabilities = { bot: 0.41, group: 0.38, other_human: 0.2, unknown: 0.01 };
+    expect(await evaluateJevTriage(call, options(body))).toMatchObject({ status: "fallback", reason: "below_threshold" });
+    body.answers.recipient.probabilities = { bot: 0.57, group: 0.41, other_human: 0.01, unknown: 0.01 };
+    body.answers.intent.probabilities = { request: 0.79, continuation: 0, correction: 0, stop: 0, acknowledgment: 0, social: 0, statement: 0.21, mixed: 0, unknown: 0 };
+    expect(await evaluateJevTriage(call, options(body))).toMatchObject({ status: "fallback", reason: "below_threshold" });
+    const social = responseBody({ ...baseChoices, recipient: "bot", intent: "acknowledgment", acknowledgment: "thanks", response_value: "emoji_only" });
+    social.answers.recipient.probabilities = { ...body.answers.recipient.probabilities };
+    expect(await evaluateJevTriage({ ...call, messageText: "ありがとう" }, options(social))).toMatchObject({ status: "fallback", reason: "below_threshold" });
+    const otherBot = responseBody({ ...baseChoices, recipient: "group", intent: "continuation", relation: "bot_followup", response_value: "text_or_work" });
+    otherBot.answers.recipient.probabilities = { bot: 0.41, group: 0.57, other_human: 0.01, unknown: 0.01 };
+    expect(await evaluateJevTriage({ ...call, messageText: "はい", recentThread: [{ speaker: "OtherBot", text: "進めますか？", isBot: true, isSelf: false }] }, options(otherBot)))
+      .toMatchObject({ status: "fallback", reason: "inconsistent" });
   });
 
   it("uses a confirmed own-bot follow-up as independent targeting evidence, but still requires actionable intent", async () => {

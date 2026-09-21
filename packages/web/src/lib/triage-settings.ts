@@ -11,6 +11,7 @@ export interface SlackTriageSettings {
   conversationIdleTimeoutMs?: number
   conversationMaxEntries?: number
   jev?: {
+    useCapabilities?: boolean
     model?: string
     apiKeyEnv?: string
     fallback?: "none" | "cli"

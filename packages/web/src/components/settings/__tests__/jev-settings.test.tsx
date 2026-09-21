@@ -35,19 +35,47 @@ describe("JevSettings", () => {
     render(<Harness initial={{ enabled: true, engine: "claude", model: "haiku", jev: { model: "jev-1.13.0", fallback: "cli", timeoutMs: 2000 } }} changed={changed} />)
     await ready()
     expect(screen.getByLabelText("モデルのベンダー")).toBeDefined()
+    expect(screen.queryByRole("switch", { name: "スキル・担当領域を考慮" })).toBeNull()
     fireEvent.change(screen.getByLabelText("判定方式"), { target: { value: "jev" } })
     expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({ backend: "jev", engine: "claude", model: "haiku", jev: { model: "jev-1.13.0", fallback: "none", timeoutMs: 2000 } }))
     expect(screen.queryByLabelText("モデルのベンダー")).toBeNull()
     expect(screen.queryByLabelText("CLI パス（任意）")).toBeNull()
     expect(screen.getByText(/CLI は起動しません/)).toBeDefined()
+    expect(screen.getByRole("switch", { name: "スキル・担当領域を考慮" }).getAttribute("aria-checked")).toBe("true")
     fireEvent.change(screen.getByLabelText("判定方式"), { target: { value: "jev-fallback" } })
     expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({ backend: "jev", jev: expect.objectContaining({ fallback: "cli" }) }))
     expect(screen.getByText("再判定に使う CLI モデル")).toBeDefined()
+    expect(screen.getByRole("switch", { name: "スキル・担当領域を考慮" })).toBeDefined()
     fireEvent.change(screen.getByLabelText("判定方式"), { target: { value: "jev-shadow" } })
     expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({ backend: "jev-shadow" }))
     expect(screen.getByText("比較に使う CLI モデル")).toBeDefined()
+    expect(screen.getByRole("switch", { name: "スキル・担当領域を考慮" })).toBeDefined()
     fireEvent.change(screen.getByLabelText("判定方式"), { target: { value: "cli" } })
     expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({ backend: "cli" }))
+    expect(screen.queryByRole("switch", { name: "スキル・担当領域を考慮" })).toBeNull()
+  })
+
+  it.each([true, false])("defaults capability awareness on and preserves other settings (credentials: %s)", async (showCredentials) => {
+    const changed = vi.fn()
+    const initial: SlackTriageSettings = {
+      enabled: true, backend: "jev", engine: "claude", model: "haiku", persona: "サポート担当",
+      threadContextLimit: 8, jev: { fallback: "none", model: "jev-1.13.0", timeoutMs: 2000, minProbability: { reply: 0.85 } },
+    }
+    render(<Harness initial={initial} changed={changed} showCredentials={showCredentials} />)
+    await ready()
+    const control = screen.getByRole("switch", { name: "スキル・担当領域を考慮" })
+    expect(control.getAttribute("aria-checked")).toBe("true")
+    expect(document.getElementById(control.getAttribute("aria-describedby")!)).toHaveProperty(
+      "textContent", "担当社員の役割と利用可能なスキルから、具体的に手伝える依頼かを判断します。人宛ての会話や雑談には割り込みません。",
+    )
+    fireEvent.click(control)
+    expect(changed).toHaveBeenLastCalledWith({ ...initial, jev: { ...initial.jev, useCapabilities: false } })
+    expect(control.getAttribute("aria-checked")).toBe("false")
+    fireEvent.change(screen.getByLabelText("判定方式"), { target: { value: "cli" } })
+    fireEvent.change(screen.getByLabelText("判定方式"), { target: { value: "jev" } })
+    expect(changed).toHaveBeenLastCalledWith({ ...initial, jev: { ...initial.jev, useCapabilities: false } })
+    fireEvent.click(screen.getByRole("switch", { name: "スキル・担当領域を考慮" }))
+    expect(changed).toHaveBeenLastCalledWith({ ...initial, jev: { ...initial.jev, useCapabilities: true } })
   })
 
   it("requires a key before offering native modes and saves the secret separately from config", async () => {

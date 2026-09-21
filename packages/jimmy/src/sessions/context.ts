@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Employee, JinnConfig } from "../shared/types.js";
 import { gatewayUrlFromConfig } from "../shared/gateway-url.js";
+import { resolveAssistantName } from "../shared/assistant-identity.js";
 import { JINN_HOME, ORG_DIR, CRON_JOBS, DOCS_DIR } from "../shared/paths.js";
 import { isOperatorSpeaker } from "../shared/operator-match.js";
 import { logger } from "../shared/logger.js";
@@ -101,7 +102,7 @@ export function buildContext(opts: {
   const gatewayUrl = gatewayUrlFromConfig(opts.config);
 
   // Resolve personalized names from config
-  const portalName = opts.portalName || opts.config?.portal?.portalName || "Ryoko";
+  const portalName = resolveAssistantName(opts.portalName || opts.config?.portal?.portalName);
   const operatorName = opts.operatorName || opts.config?.portal?.operatorName;
   const language = opts.language || opts.config?.portal?.language || "English";
   // Single operator-identity decision for the whole prompt (identity block +
@@ -127,7 +128,7 @@ export function buildContext(opts: {
         opts.hierarchy?.nodes[opts.employee.name],
         opts.hierarchy,
       ),
-      summary: `# You are ${opts.employee.displayName}\nEmployee: ${opts.employee.name}, ${opts.employee.department}, ${opts.employee.rank}`,
+      summary: `# You are ${resolveAssistantName(portalName, opts.employee)}\nEmployee: ${opts.employee.name}, ${opts.employee.department}, ${opts.employee.rank}`,
     });
   } else {
     sections.push({
@@ -338,7 +339,7 @@ function buildEmployeeIdentity(
 
   const chainOfCommand = buildChainOfCommand(employee, portalName, node, hierarchy);
 
-  return `# You are ${employee.displayName}
+  return `# You are ${resolveAssistantName(portalName, employee)}
 
 You are an AI employee in the ${portalName} gateway system.
 
@@ -347,7 +348,7 @@ ${employee.persona}
 ${languageInstruction}
 ## Your role
 - **Name**: ${employee.name}
-- **Display name**: ${employee.displayName}
+- **Display name**: ${resolveAssistantName(portalName, employee)}
 - **Department**: ${employee.department}
 - **Rank**: ${employee.rank}
 - **Engine**: ${employee.engine}
