@@ -26,6 +26,7 @@ import {
 } from "../shared/templateReplacements.js";
 import { parseConfigPatch, applyPatchOps, type PatchOutcome } from "../shared/configPatch.js";
 import { auditGatewayReferences } from "./gateway-audit.js";
+import { stageMissingBundledSkills } from "./bundled-skills.js";
 
 const GREEN = "\x1b[32m";
 const YELLOW = "\x1b[33m";
@@ -181,6 +182,16 @@ export async function runMigrate(opts: { check?: boolean; auto?: boolean; fix?: 
 
   console.log(`\n${DIM}インスタンスバージョン:${RESET} ${instanceVersion}`);
   console.log(`${DIM}パッケージバージョン:${RESET}  ${packageVersion}\n`);
+
+  // New default skills are additive package content, independent of versioned
+  // config migrations. Keep --check read-only and preserve customized skills.
+  if (!opts.check) {
+    const replacements = buildTemplateReplacements(readPortalName());
+    for (const name of stageMissingBundledSkills(TEMPLATE_DIR, JINN_HOME, replacements)) {
+      ensureSkillSymlinks(name);
+      console.log(`  ${GREEN}[new skill]${RESET} ${name}`);
+    }
+  }
 
   // Already up to date
   if (compareSemver(instanceVersion, packageVersion) >= 0) {

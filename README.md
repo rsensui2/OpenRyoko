@@ -76,6 +76,7 @@ WebUI の onboarding wizard が `/goal` / Canvas / triage を案内するので�
 
 ### セキュリティ / 運用系（全て OpenRyoko 独自）
 
+- **設定を会話で依頼** — 標準同梱の [openryoko-config](packages/jimmy/template/skills/openryoko-config/SKILL.md) が、設定項目・反映方法を確認して変更と検証を支援。開発中のJev空気読みとClaude Code／Codexフォールバックも、稼働版の対応を確かめて案内します。新規setupと更新時のmigrateで追加され、既存のカスタムスキルは保持します。
 - 🔒 **端末認証 + Host/Origin guard** — ネットワーク公開時は自動的に認証を要求。単回ペアリング、端末解除、DNS rebinding対策付き
 - 🌐 **会話型オンボーディング** — Ryoko 自身が新規ユーザーに名前・役割・好みを聞いて `~/.ryoko/knowledge/` に保存
 - ✨ **Onboarding ウィザード** — Web UI 初回起動時に Slack 機能（`/goal` / Canvas / triage）を視覚的に紹介
