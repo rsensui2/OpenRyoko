@@ -271,7 +271,7 @@ provides:                    # オプション — この従業員が組織に�
   "kind": "prompt",
   "timezone": "Asia/Tokyo",
   "engine": "claude",
-  "model": "claude-opus-5",
+  "model": "claude-opus-5-5",
   "employee": "従業員名 or null",
   "prompt": "実行する指示",
   "delivery": {

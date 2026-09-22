@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState, useRef, useCallback } from "react";
 import dynamic from "next/dynamic";
+import { DEFAULT_CLAUDE_MODEL } from "@/lib/model-catalog";
 import { api } from "@/lib/api";
 import type { Employee, OrgData, OrgHierarchy } from "@/lib/api";
 import { EmployeeDetail } from "@/components/org/employee-detail";
@@ -48,7 +49,7 @@ export default function OrgPage() {
           department: "",
           rank: "executive",
           engine: "claude",
-          model: "claude-opus-5",
+          model: DEFAULT_CLAUDE_MODEL,
           persona: "COO and AI gateway daemon",
         };
         setEmployees([coo, ...data.employees]);

@@ -5,7 +5,7 @@
 // rather than a hunt through hardcoded <select> blocks.
 //
 // Values are the exact ids passed to each engine's CLI:
-//   - Claude: Opus は明示 ID `claude-opus-5` を既定にする。裸の `opus`
+//   - Claude: Opus は明示 ID `claude-opus-5-5` を既定にする。裸の `opus`
 //     エイリアスは「インストール済み Claude CLI が知っている最新 Opus」に
 //     解決されるため、CLI が古いと旧世代（4.8 等）に留まる。
 //     明示 ID で世代を固定する。各モデルに対応する CLI バージョンが必要。
@@ -41,7 +41,7 @@ export const TRIAGE_MODEL_VENDORS = MODEL_VENDORS.filter(
 export const CUSTOM_MODEL_VALUE = "__custom_model__"
 
 /** Default model id for each engine, mirrored by the backend synth defaults. */
-export const DEFAULT_CLAUDE_MODEL = "claude-opus-5"
+export const DEFAULT_CLAUDE_MODEL = "claude-opus-5-5"
 export const DEFAULT_CODEX_MODEL = "gpt-5.6-sol"
 export const DEFAULT_GEMINI_MODEL = "gemini-2.5-pro"
 export const DEFAULT_TRIAGE_CLAUDE_MODEL = "claude-haiku-4-5"
@@ -50,7 +50,8 @@ export const DEFAULT_TRIAGE_CODEX_MODEL = "gpt-5-nano"
 /** Anthropic models. Fable 5.1 is opt-in and requires Claude Code >=2.1.255.
  * https://code.claude.com/docs/en/model-config#work-with-fable */
 export const CLAUDE_MODELS: ModelOption[] = [
-  { value: "claude-opus-5", label: "Opus 5 — 上（既定 / claude-opus-5）" },
+  { value: "claude-opus-5-5", label: "Opus 5.5 — 上（既定 / claude-opus-5-5）" },
+  { value: "claude-opus-5", label: "Opus 5 — 旧世代（ピン留め用 / claude-opus-5）" },
   { value: "claude-fable-5-1", label: "Fable 5.1 — 高度な推論・長時間のエージェント作業" },
   { value: "claude-opus-4-8", label: "Opus 4.8 — 旧世代（ピン留め用 / claude-opus-4-8）" },
   { value: "opus", label: "Opus — CLI が解決する最新 Opus に自動追従" },
@@ -59,7 +60,7 @@ export const CLAUDE_MODELS: ModelOption[] = [
   { value: "haiku", label: "Haiku 4.5 — 小（軽量・高速 / claude-haiku-4-5）" },
 ]
 
-/** Fable's max is passed as --effort for each run, not saved in Claude settings. */
+/** Opus 5.5 / Fable max is passed as --effort for each run, not saved in Claude settings. */
 export function claudeEffortOptionsForModel(model: string | undefined): ModelOption[] {
   return [
     { value: "default", label: "Default" },
@@ -67,7 +68,7 @@ export function claudeEffortOptionsForModel(model: string | undefined): ModelOpt
     { value: "medium", label: "Medium" },
     { value: "high", label: "High" },
     { value: "xhigh", label: "Extra High" },
-    ...(model === "claude-fable-5-1" ? [{ value: "max", label: "Max" }] : []),
+    ...((model === "claude-fable-5-1" || model === "claude-opus-5-5") ? [{ value: "max", label: "Max" }] : []),
   ]
 }
 

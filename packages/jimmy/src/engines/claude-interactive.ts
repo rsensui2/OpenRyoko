@@ -28,13 +28,13 @@ interface InteractiveArgsOpts {
   attachments?: string[];
 }
 
-interface TranscriptUsage { inputTokens: number; outputTokens: number; cacheTokens: number; assistantTurns: number; model?: string; }
+interface TranscriptUsage { inputTokens: number; outputTokens: number; cacheTokens: number; assistantTurns: number; cost: number; model?: string; }
 
 // Config stores short aliases (opus/sonnet/haiku); the CLI resolves them to
 // concrete ids. When the transcript doesn't carry a model id we fall back to
 // this map so pricing keys line up with MODEL_PRICES instead of DEFAULT_PRICE.
 const CLAUDE_ALIAS_TO_ID: Record<string, string> = {
-  opus: "claude-opus-4-8",
+  opus: "claude-opus-5-5",
   sonnet: "claude-sonnet-5",
   haiku: "claude-haiku-4-5",
 };
@@ -46,19 +46,24 @@ function resolveClaudeModelId(model: string | undefined): string | undefined {
 
 // $/million tokens. Conservative defaults. Older model ids kept so cost can still
 // be reconstructed when resuming historical transcripts.
-const MODEL_PRICES: Record<string, { in: number; out: number }> = {
+interface ModelPrice { in: number; out: number; cacheRead?: number; }
+const MODEL_PRICES: Record<string, ModelPrice> = {
+  // https://www.anthropic.com/claude-opus-5-5 (2026-09-22)
+  "claude-opus-5-5": { in: 4, out: 20, cacheRead: 0.20 },
+  "claude-opus-5": { in: 5, out: 25 },
   // https://platform.claude.com/docs/en/models/fable-5-1/overview
-  "claude-fable-5-1": { in: 10, out: 50 },
-  "claude-opus-4-8": { in: 15, out: 75 },
-  "claude-opus-4-7": { in: 15, out: 75 },
+  "claude-fable-5-1": { in: 10, out: 50, cacheRead: 0.25 },
+  "claude-opus-4-8": { in: 5, out: 25 },
+  "claude-opus-4-7": { in: 5, out: 25 },
   "claude-sonnet-5": { in: 3, out: 15 },
   "claude-sonnet-4-6": { in: 3, out: 15 },
   "claude-haiku-4-5": { in: 1, out: 5 },
 };
-const DEFAULT_PRICE = { in: 15, out: 75 };
+const DEFAULT_PRICE: ModelPrice = { in: 15, out: 75 };
+const PRICE_KEYS = Object.keys(MODEL_PRICES).sort((a, b) => b.length - a.length);
 
-export function sumTranscriptUsage(content: string, afterMs?: number): TranscriptUsage {
-  const u: TranscriptUsage = { inputTokens: 0, outputTokens: 0, cacheTokens: 0, assistantTurns: 0 };
+export function sumTranscriptUsage(content: string, afterMs?: number, fallbackModel?: string): TranscriptUsage {
+  const u: TranscriptUsage = { inputTokens: 0, outputTokens: 0, cacheTokens: 0, assistantTurns: 0, cost: 0 };
   const seen = new Set<string>();
   for (const line of content.split("\n")) {
     const t = line.trim();
@@ -91,6 +96,21 @@ export function sumTranscriptUsage(content: string, afterMs?: number): Transcrip
     // reliable pricing key. Last one wins if it ever changes mid-session.
     const m = msg?.message?.model;
     if (typeof m === "string" && m) u.model = m;
+    // Price each message independently: /model can switch generations within
+    // one transcript. Prefer its concrete id over the configured alias.
+    const modelId = resolveClaudeModelId(typeof m === "string" && m ? m : fallbackModel);
+    const key = modelId && PRICE_KEYS.find((id) => modelId === id || modelId.startsWith(`${id}-`));
+    const price = (key && MODEL_PRICES[key]) || DEFAULT_PRICE;
+    const cacheRead = Number(usage.cache_read_input_tokens ?? 0);
+    const cacheWrite1h = Number(usage.cache_creation?.ephemeral_1h_input_tokens ?? 0);
+    const cacheWrite5m = Number(usage.cache_creation?.ephemeral_5m_input_tokens
+      ?? Math.max(0, Number(usage.cache_creation_input_tokens ?? 0) - cacheWrite1h));
+    // Standard cache writes cost 1.25x (5m) / 2x (1h) the base input rate.
+    u.cost += (Number(usage.input_tokens ?? 0) * price.in
+      + Number(usage.output_tokens ?? 0) * price.out
+      + cacheRead * (price.cacheRead ?? price.in * 0.1)
+      + cacheWrite5m * price.in * 1.25
+      + cacheWrite1h * price.in * 2) / 1_000_000;
   }
   return u;
 }
@@ -117,14 +137,9 @@ function lastTurnContextTokens(transcriptPath: string): number | undefined {
 export function computeInteractiveCost(transcriptPath: string, model?: string, afterMs?: number): { cost: number; turns: number } | null {
   let content: string;
   try { content = fs.readFileSync(transcriptPath, "utf-8"); } catch { return null; }
-  const u = sumTranscriptUsage(content, afterMs);
+  const u = sumTranscriptUsage(content, afterMs, model);
   if (u.assistantTurns === 0) return null;
-  // Prefer the concrete id from the transcript; fall back to resolving the
-  // config alias (opus/sonnet/haiku) so Sonnet/Haiku aren't priced as Opus.
-  const modelId = u.model ?? resolveClaudeModelId(model);
-  const price = (modelId && MODEL_PRICES[modelId]) || DEFAULT_PRICE;
-  const cost = (u.inputTokens / 1_000_000) * price.in + (u.outputTokens / 1_000_000) * price.out;
-  return { cost, turns: u.assistantTurns };
+  return { cost: u.cost, turns: u.assistantTurns };
 }
 
 /** Claude Code stores per-project transcripts at

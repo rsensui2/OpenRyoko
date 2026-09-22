@@ -17,10 +17,10 @@ engines:
   default: claude
   claude:
     bin: claude
-    # Opus 5 の明示 ID。裸の "opus" エイリアスはインストール済み Claude CLI が
+    # Opus 5.5 の明示 ID。裸の "opus" エイリアスはインストール済み Claude CLI が
     # 知っている最新 Opus に解決されるため、CLI が古いと旧世代（4.8 等）に留まる。
-    # 明示 ID は API パススルーなので CLI バージョンに関係なく Opus 5 が使われる。
-    model: claude-opus-5
+    # 明示 ID で世代を固定する。Claude Code は最新バージョンを使用する。
+    model: claude-opus-5-5
     effortLevel: xhigh
     # Interactive PTY mode (opt-in). When true, Claude work turns run as an
     # interactive PTY (cc_entrypoint=cli) which bills against the Max subscription

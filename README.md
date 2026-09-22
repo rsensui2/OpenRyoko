@@ -225,7 +225,7 @@ engines:
   default: claude
   claude:
     bin: claude
-    model: claude-opus-5   # Opus 5 明示 ID（裸の opus エイリアスは CLI が知る最新 Opus 止まり）
+    model: claude-opus-5-5   # Opus 5.5 明示 ID（裸の opus エイリアスは CLI が知る最新 Opus 止まり）
     effortLevel: medium
     interactive: false     # true で対話モード(PTY)起動 → 6/15改定後も通常サブスク枠で動く
   codex:

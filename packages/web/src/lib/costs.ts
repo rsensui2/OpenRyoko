@@ -3,6 +3,9 @@
 export interface ModelPricing {
   inputPer1M: number
   outputPer1M: number
+  cacheReadPer1M?: number
+  cacheWritePer1M?: number
+  cacheWrite1hPer1M?: number
 }
 
 export interface CronRun {
@@ -85,6 +88,8 @@ export interface CostSummary {
 // ── Pricing table (per 1M tokens) ────────────────────────────
 
 const PRICING: Record<string, ModelPricing> = {
+  // https://www.anthropic.com/claude-opus-5-5 (2026-09-22)
+  'claude-opus-5-5': { inputPer1M: 4, outputPer1M: 20, cacheReadPer1M: 0.20, cacheWritePer1M: 5, cacheWrite1hPer1M: 8 },
   // https://platform.claude.com/docs/en/models/fable-5-1/overview
   'claude-fable-5-1':    { inputPer1M: 10, outputPer1M: 50 },
   // Opus 5 / 4.8 / 4.7 / 4.6 はいずれも $5/$25 per MTok（Anthropic 公式 docs、
@@ -106,7 +111,7 @@ const DEFAULT_PRICING: ModelPricing = { inputPer1M: 3, outputPer1M: 15 }
 
 export function getModelPricing(model: string): ModelPricing {
   if (PRICING[model]) return PRICING[model]
-  for (const key of Object.keys(PRICING)) {
+  for (const key of Object.keys(PRICING).sort((a, b) => b.length - a.length)) {
     if (model.startsWith(key)) return PRICING[key]
   }
   return DEFAULT_PRICING

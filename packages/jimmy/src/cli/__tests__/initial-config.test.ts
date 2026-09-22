@@ -19,7 +19,7 @@ describe("initial config generation", () => {
     expect(parsed.mcp?.browser?.enabled).toBe(true);
     expect(parsed.mcp?.gateway?.enabled).toBe(true);
     expect(parsed.engines?.default).toBe("claude");
-    expect(parsed.engines?.claude?.model).toBe("claude-opus-5");
+    expect(parsed.engines?.claude?.model).toBe("claude-opus-5-5");
   });
 
   it("stamps the real package version over the template placeholder", () => {

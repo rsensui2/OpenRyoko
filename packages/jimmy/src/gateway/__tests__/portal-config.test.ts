@@ -21,7 +21,7 @@ describe("patchPortalSection", () => {
     const parsed = yaml.load(patched) as any;
     expect(parsed.portal).toEqual({ portalName: "Momo", language: "Japanese", onboarded: true });
     // Everything outside portal is untouched
-    expect(parsed.engines?.claude?.model).toBe("claude-opus-5");
+    expect(parsed.engines?.claude?.model).toBe("claude-opus-5-5");
     expect(parsed.mcp?.fetch?.enabled).toBe(true);
     expect(parsed.logging?.level).toBe("info");
   });
