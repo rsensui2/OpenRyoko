@@ -20,11 +20,11 @@ import {
 } from "@/lib/model-catalog"
 
 describe("model-catalog", () => {
-  it("defaults Codex to GPT-5.6 (Sol) and Claude to Opus 5 (explicit id)", () => {
+  it("defaults Codex to GPT-5.6 (Sol) and Claude to Opus 5.5 (explicit id)", () => {
     expect(DEFAULT_CODEX_MODEL).toBe("gpt-5.6-sol")
-    expect(DEFAULT_CLAUDE_MODEL).toBe("claude-opus-5")
+    expect(DEFAULT_CLAUDE_MODEL).toBe("claude-opus-5-5")
     expect(OPENAI_MODELS.some((m) => m.value === DEFAULT_CODEX_MODEL)).toBe(true)
-    expect(CLAUDE_MODELS[0].value).toBe("claude-opus-5")
+    expect(CLAUDE_MODELS[0].value).toBe("claude-opus-5-5")
     expect(CLAUDE_MODELS.some((m) => m.value === DEFAULT_CLAUDE_MODEL)).toBe(true)
   })
 
@@ -41,17 +41,23 @@ describe("model-catalog", () => {
 
   it("keeps Opus 4.8 pin and the bare opus alias selectable", () => {
     const ids = CLAUDE_MODELS.map((m) => m.value)
-    expect(ids).toEqual(expect.arrayContaining(["claude-opus-4-8", "opus"]))
+    expect(ids).toEqual(expect.arrayContaining(["claude-opus-5", "claude-opus-4-8", "opus"]))
   })
 
   it("offers Fable 5.1 by its explicit id with max effort without changing the Claude default", () => {
     expect(isCatalogModel("claude", "claude-fable-5-1")).toBe(true)
-    expect(DEFAULT_CLAUDE_MODEL).toBe("claude-opus-5")
+    expect(DEFAULT_CLAUDE_MODEL).toBe("claude-opus-5-5")
     expect(claudeEffortOptionsForModel("claude-fable-5-1").map((option) => option.value))
       .toEqual(["default", "low", "medium", "high", "xhigh", "max"])
     for (const model of ["claude-opus-5", "claude-haiku-4-5", undefined, "claude-private-preview"]) {
       expect(claudeEffortOptionsForModel(model).map((option) => option.value)).not.toContain("max")
     }
+  })
+
+  it("offers Opus 5.5 with all supported effort levels", () => {
+    expect(isCatalogModel("claude", "claude-opus-5-5")).toBe(true)
+    expect(claudeEffortOptionsForModel("claude-opus-5-5").map((option) => option.value))
+      .toEqual(["default", "low", "medium", "high", "xhigh", "max"])
   })
 
   it("exposes the GPT-5.6 松竹梅 tiers (Sol / Terra / Luna)", () => {

@@ -32,7 +32,7 @@ const EFFORT_MECHANISM: Record<EngineName, EffortMechanism> = {
 
 /** Conservative per-engine defaults used when synthesizing (no `models:` block). */
 const SYNTH_DEFAULTS: Record<EngineName, { supportsEffort: boolean; effortLevels: string[]; fallbackModel: string }> = {
-  claude: { supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh"], fallbackModel: "claude-opus-5" },
+  claude: { supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh"], fallbackModel: "claude-opus-5-5" },
   codex: { supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh"], fallbackModel: "gpt-5.6-sol" },
   gemini: { supportsEffort: false, effortLevels: [], fallbackModel: "gemini-2.5-pro" },
 };
@@ -43,6 +43,13 @@ const SYNTH_DEFAULTS: Record<EngineName, { supportsEffort: boolean; effortLevels
  * https://code.claude.com/docs/en/model-config#adjust-effort-level */
 const BUILTIN_MODELS: Partial<Record<EngineName, ModelInfo[]>> = {
   claude: [{
+    // https://platform.claude.com/docs/en/models/opus-5-5/overview
+    id: "claude-opus-5-5",
+    label: "Claude Opus 5.5",
+    supportsEffort: true,
+    effortLevels: ["low", "medium", "high", "xhigh", "max"],
+    contextWindow: 1_000_000,
+  }, {
     id: "claude-fable-5-1",
     label: "Claude Fable 5.1",
     supportsEffort: true,

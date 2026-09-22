@@ -4,6 +4,19 @@ import { ModelSelector } from "../model-selector"
 import { CUSTOM_MODEL_VALUE } from "@/lib/model-catalog"
 
 describe("ModelSelector", () => {
+  it("selects Opus 5.5 without custom input while retaining the Opus 5 pin", () => {
+    const onChange = vi.fn()
+    const { rerender } = render(
+      <ModelSelector id="model" engine="claude" model="claude-opus-5" onChange={onChange} />,
+    )
+    expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("claude-opus-5")
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "claude-opus-5-5" } })
+    expect(onChange).toHaveBeenCalledWith("claude-opus-5-5")
+    rerender(<ModelSelector id="model" engine="claude" model="claude-opus-5-5" onChange={onChange} />)
+    expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("claude-opus-5-5")
+    expect(screen.queryByRole("textbox")).toBeNull()
+  })
+
   it("selects Fable 5.1 without custom input and explains its minimum Claude Code version", () => {
     const onChange = vi.fn()
     const { rerender } = render(
@@ -41,7 +54,7 @@ describe("ModelSelector", () => {
       />,
     )
 
-    expect(screen.getByRole("option", { name: /Opus 5/ })).toBeDefined()
+    expect(screen.getByRole("option", { name: /Opus 5\.5/ })).toBeDefined()
     expect(screen.queryByRole("option", { name: /GPT-5\.6 Sol/ })).toBeNull()
 
     fireEvent.change(screen.getByRole("combobox"), { target: { value: "sonnet" } })

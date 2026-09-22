@@ -38,6 +38,22 @@ describe("synthesizeFromEngineConfig (backward-compat fallback)", () => {
     expect(reg.gemini.models[0].effortLevels).toEqual([]);
   });
 
+  it("defaults to Opus 5.5 with published capabilities when no model is configured", () => {
+    const config = cfg({ claude: { bin: "claude", model: "" } });
+    const reg = getModelRegistry(config);
+    expect(reg.claude.defaultModel).toBe("claude-opus-5-5");
+    expect(reg.claude.models.filter((m) => m.id === "claude-opus-5-5")).toHaveLength(1);
+    expect(effortLevelsForModel(config, "claude", "claude-opus-5-5"))
+      .toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(contextWindowForModel(config, "claude", "claude-opus-5-5")).toBe(1_000_000);
+  });
+
+  it("offers Opus 5.5 while preserving an explicitly configured Opus 5 default", () => {
+    const reg = getModelRegistry(cfg({ claude: { bin: "claude", model: "claude-opus-5" } }));
+    expect(reg.claude.defaultModel).toBe("claude-opus-5");
+    expect(reg.claude.models.map((m) => m.id)).toContain("claude-opus-5-5");
+  });
+
   it("makes Astra available alongside the configured Codex default with its own capabilities", () => {
     const config = cfg({ codex: { bin: "codex", model: "gpt-5.6-sol" } });
     const reg = getModelRegistry(config);
@@ -87,7 +103,7 @@ describe("synthesizeFromEngineConfig (backward-compat fallback)", () => {
 
   it("does not duplicate Fable 5.1 when it is already the configured default", () => {
     const reg = synthesizeFromEngineConfig(cfg({ claude: { bin: "claude", model: "claude-fable-5-1" } }));
-    expect(reg.claude.models.map((model) => model.id)).toEqual(["claude-fable-5-1"]);
+    expect(reg.claude.models.filter((model) => model.id === "claude-fable-5-1")).toHaveLength(1);
     expect(reg.claude.models[0].effortLevels).toContain("max");
   });
 
@@ -157,6 +173,7 @@ describe("getModelRegistry with a models: block", () => {
     const reg = getModelRegistry(cfg({}, models));
     expect(reg.codex.models.map((model) => model.id)).toEqual(["gpt-5.3-codex"]);
     expect(reg.claude.models.map((model) => model.id)).not.toContain("claude-fable-5-1");
+    expect(reg.claude.models.map((model) => model.id)).not.toContain("claude-opus-5-5");
   });
 
   it("honors explicit Fable capabilities, including restricted effort settings", () => {

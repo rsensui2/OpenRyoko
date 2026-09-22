@@ -55,10 +55,10 @@ sessions:
 engines:
   claude:
     fallbackModelMap:
-      claude-opus-5: gpt-5.6-sol
+      claude-opus-5-5: gpt-5.6-sol
   codex:
     fallbackModelMap:
-      gpt-5.6-sol: claude-opus-5
+      gpt-5.6-sol: claude-opus-5-5
 ```
 
 これはID対応の例であり最新推奨ではない。元sessionのpinとキーが一致し、対応先が切替先モデルレジストリに存在し、認証アカウントで実行できることを確認する。不正／未登録のmapは切替先既定へ戻る実装。通常はmapなしで十分。effortも切替先モデルの対応値で再解決される。
