@@ -129,6 +129,12 @@ function isEngineName(engine: string): engine is EngineName {
   return (ENGINE_NAMES as readonly string[]).includes(engine);
 }
 
+let discovered: Partial<Record<EngineName, ModelInfo[]>> = {};
+export function setDiscoveredModels(engine: EngineName, models: ModelInfo[]): void {
+  discovered[engine] = models;
+  invalidateModelRegistry();
+}
+
 let cached: ModelRegistry | null = null;
 
 /** Clear the cached registry. Call on config reload / PUT /api/config. */
@@ -139,7 +145,18 @@ export function invalidateModelRegistry(): void {
 /** Resolve the registry (cached). Pass the current config; cache is keyed by
  *  invalidation, not by config identity — call invalidateModelRegistry() to refresh. */
 export function getModelRegistry(config: JinnConfig): ModelRegistry {
-  if (!cached) cached = buildRegistry(config);
+  if (!cached) {
+    cached = buildRegistry(config);
+    for (const engine of ENGINE_NAMES) {
+      // Explicit registries may restrict both model IDs and effort levels.
+      // Discovery must not silently widen them. An intentional selection in
+      // ModelManagement adds that selected model to the config explicitly.
+      if (!cached[engine] || !discovered[engine] || config.models?.[engine]) continue;
+      const byId = new Map(cached[engine].models.map(m => [m.id, m]));
+      for (const model of discovered[engine]!) byId.set(model.id, { ...byId.get(model.id), ...model });
+      cached[engine].models = [...byId.values()];
+    }
+  }
   return cached;
 }
 
@@ -154,6 +171,11 @@ export function effortLevelsForModel(config: JinnConfig, engine: string, modelId
 
   const exact = modelId ? entry.models.find((m) => m.id === modelId) : undefined;
   if (exact) return exact.supportsEffort ? [...exact.effortLevels] : [];
+  // A session/employee can intentionally select a newly discovered model even
+  // when the configured picker list remains restricted. Use its actual effort
+  // bounds rather than borrowing the default model's capabilities.
+  const discoveredModel = modelId && isEngineName(engine) ? discovered[engine]?.find(m => m.id === modelId) : undefined;
+  if (discoveredModel) return discoveredModel.supportsEffort ? [...discoveredModel.effortLevels] : [];
 
   // modelId not in the registry (e.g. a session overrides the engine model to
   // one that isn't the config default). For a SYNTHESIZED engine (no explicit

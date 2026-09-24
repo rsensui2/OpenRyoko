@@ -325,7 +325,21 @@ interface UploadedFile {
   mimetype: string | null
 }
 
+export interface ModelManagementStatus {
+  engines: Array<{
+    engine: "codex" | "claude"; current: string;
+    policy: { mode: "auto" | "notify" | "fixed"; profile: "balanced" | "economy" | "performance" };
+    models: Array<{ id: string; label: string; effortLevels: string[] }>;
+    checkedAt: string | null; error: string | null; candidate: string | null; previous: string | null;
+  }>;
+  pins: Array<{ kind: "employee" | "cron"; id: string; name: string; engine: string; model: string | null; effective: string; inheritedFrom?: string; remote: boolean }>;
+  notification: { connector: string; channel: string } | null;
+  slackAdminConfigured: boolean;
+}
+
 export const api = {
+  getModels: () => get<ModelManagementStatus>("/api/models"),
+  modelAction: (action: unknown) => post<ModelManagementStatus>("/api/models/actions", action),
   getTypeSafeKeyStatus: () => typeSafeRequest<TypeSafeKeyStatus>("/api/integrations/typesafe"),
   saveTypeSafeKey: (apiKey: string) => typeSafeRequest<TypeSafeKeyStatus>("/api/integrations/typesafe", "PUT", { apiKey }),
   deleteTypeSafeKey: () => typeSafeRequest<TypeSafeKeyStatus>("/api/integrations/typesafe", "DELETE"),

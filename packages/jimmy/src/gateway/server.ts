@@ -1,3 +1,4 @@
+import { ModelManagement } from "../models/service.js";
 import http from "node:http";
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
@@ -303,6 +304,7 @@ export async function startGateway(
 
   // Session manager
   const sessionManager = new SessionManager(config, engines, connectorNames);
+  let modelManagement: ModelManagement | undefined;
 
   // Orphan hooks = engine activity AFTER a turn settled (background sub-agents /
   // tasks still running in the PTY). Any orphan event keeps the PTY alive; a
@@ -379,6 +381,8 @@ export async function startGateway(
             agentsCanvas: cfg.connectors.slack.agentsCanvas,
           },
           {
+            getModelManagement: () => modelManagement,
+            getOperatorSlackId: () => loadConfig().portal?.operatorSlackId,
             portalName: cfg.portal?.portalName,
             getBotName: () => resolveAssistantName(
               cfg.portal?.portalName,
@@ -561,6 +565,8 @@ export async function startGateway(
           case "slack": {
             const slackConfig = { ...typeConfig, id } as any;
             const slack = new SlackConnector(slackConfig, {
+              getModelManagement: () => modelManagement,
+              getOperatorSlackId: () => loadConfig().portal?.operatorSlackId,
               portalName: config.portal?.portalName,
               getBotName: () => resolveAssistantName(
                 config.portal?.portalName, employee ? employeeRegistry.get(employee) : undefined,
@@ -703,6 +709,8 @@ export async function startGateway(
               // Use freshConfig.portal (not the closure-captured boot-time
               // `config`) so renamed portals show up after a hot-reload.
               const slack = new SlackConnector(slackConfig, {
+                getModelManagement: () => modelManagement,
+                getOperatorSlackId: () => loadConfig().portal?.operatorSlackId,
                 portalName: freshConfig.portal?.portalName,
                 getBotName: () => resolveAssistantName(
                   freshConfig.portal?.portalName, employee ? employeeRegistry.get(employee) : undefined,
@@ -979,6 +987,32 @@ export async function startGateway(
   };
 
 
+
+  modelManagement = new ModelManagement({
+    getConfig: () => currentConfig,
+    onConfig: next => {
+      currentConfig = next;
+      apiContext.config = next;
+      sessionManager.setConfig(next);
+      emit("config:reloaded", {});
+    },
+    notify: async (text, engine, candidate) => {
+      const target = currentConfig.modelManagement?.notification;
+      if (!target) return false;
+      const connector = connectorMap.get(target.connector);
+      if (!connector) return false;
+      try {
+        if (connector instanceof SlackConnector) await connector.sendModelNotice(target.channel, text, engine, candidate);
+        else await connector.sendMessage({ channel: target.channel }, text);
+        return true;
+      } catch { logger.warn("Model update notification failed; will retry on next check"); return false; }
+    },
+  });
+  apiContext.modelManagement = modelManagement;
+  const refreshModels = () => modelManagement!.refresh().catch(() => logger.warn("Model catalog refresh failed"));
+  const modelRefreshTimer = setInterval(refreshModels, 6 * 3600_000);
+  modelRefreshTimer.unref();
+  void refreshModels();
 
   // NOTE: replaying pending web queue items is deferred until AFTER the server is
   // listening and gateway.json (port + hook secret) has been written — otherwise an
@@ -1378,6 +1412,8 @@ export async function startGateway(
   // Return cleanup function
   return async () => {
     logger.info("Gateway cleanup starting...");
+    clearInterval(modelRefreshTimer);
+    modelManagement?.stop();
     stopScheduler();
     await stopCommandJobs();
 

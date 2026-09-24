@@ -125,7 +125,7 @@ function findEmployeeYamlPath(name: string): string | undefined {
  */
 export function updateEmployeeYaml(
   name: string,
-  updates: { alwaysNotify?: boolean },
+  updates: { alwaysNotify?: boolean; model?: string | null },
 ): boolean {
   const filePath = findEmployeeYamlPath(name);
   if (!filePath) return false;
@@ -139,7 +139,11 @@ export function updateEmployeeYaml(
       data.alwaysNotify = updates.alwaysNotify;
     }
 
-    fs.writeFileSync(filePath, yaml.dump(data, { lineWidth: -1 }), "utf-8");
+    if (updates.model === null) delete data.model;
+    else if (typeof updates.model === "string" && updates.model.trim()) data.model = updates.model.trim();
+    const temporary = `${filePath}.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, yaml.dump(data, { lineWidth: -1 }), { mode: 0o600 });
+    fs.renameSync(temporary, filePath);
     return true;
   } catch (err) {
     logger.warn(`Failed to update employee YAML for ${name}: ${err}`);

@@ -125,6 +125,7 @@ function buildSlackManifest(botName?: string | null): string {
             "reaction_added",
           ],
         },
+        interactivity: { is_enabled: true },
         socket_mode_enabled: true,
       },
     },
@@ -229,6 +230,7 @@ interface Config {
   }
   portal?: {
     portalName?: string
+    operatorSlackId?: string
     operatorName?: string
   }
   [key: string]: unknown
@@ -301,11 +303,13 @@ function FieldRow({
 }
 
 function SettingsInput({
+  id,
   value,
   onChange,
   type = "text",
   placeholder,
 }: {
+  id?: string
   value: string
   onChange: (v: string) => void
   type?: string
@@ -313,6 +317,7 @@ function SettingsInput({
 }) {
   return (
     <input
+      id={id}
       type={type}
       value={value}
       onChange={(e) => onChange(e.target.value)}
@@ -1262,6 +1267,12 @@ export default function SettingsPage() {
                 </FieldRow>
               </Section>
 
+              <Section title="モデルの自動追従">
+                <a href="/models" className="text-sm underline">モデル一覧・更新方針・社員と定期実行の固定設定を管理する</a>
+                <FieldRow label="管理者Slack ID" htmlFor="operator-slack-id">
+                  <SettingsInput id="operator-slack-id" value={config.portal?.operatorSlackId ?? ""} onChange={v => updateConfig(["portal", "operatorSlackId"], v)} placeholder="U0123456789" />
+                </FieldRow>
+              </Section>
               {/* -- Section 4: Engine Configuration -- */}
               <Section title="エンジン設定">
                 <div
@@ -1302,7 +1313,7 @@ export default function SettingsPage() {
                     options={claudeEffortOptionsForModel(config.engines?.claude?.model)}
                   />
                 </FieldRow>
-                <FieldRow label="インタラクティブPTY（Max定額）">
+                <FieldRow label="インタラクティブPTY">
                   <ToggleSwitch
                     checked={config.engines?.claude?.interactive ?? false}
                     onChange={(v) =>
@@ -1314,7 +1325,7 @@ export default function SettingsPage() {
                   className="text-[length:var(--text-caption1)] text-[var(--label-secondary)] mt-[4px]"
                 >
                   有効にすると Claude の作業ターンを PTY（cc_entrypoint=cli）で実行します。
-                  Claude CLI が Max サブスクリプションでログイン済みなら、API 従量課金ではなく Max 側の利用枠で実行されます。
+                  認証方法・課金・利用上限は、CLI にログインしたアカウントとプロバイダーの条件に従います。
                   SSH リモート実行の従業員は headless <code>claude -p</code> にフォールバックします。
                   <strong>変更の反映にはゲートウェイの再起動が必要です</strong>（保存後に <code>ryoko stop &amp;&amp; ryoko start</code> など）。
                 </div>

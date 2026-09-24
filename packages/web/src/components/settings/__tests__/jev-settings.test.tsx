@@ -6,6 +6,7 @@ import type { SlackTriageSettings } from "@/lib/triage-settings"
 import { JevSettings } from "../jev-settings"
 
 vi.mock("@/lib/api", () => ({ api: {
+  getModels: vi.fn(async () => ({ engines: [] })),
   getTypeSafeKeyStatus: vi.fn(), saveTypeSafeKey: vi.fn(),
   deleteTypeSafeKey: vi.fn(), testTypeSafeKey: vi.fn(),
 } }))
