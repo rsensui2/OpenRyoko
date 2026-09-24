@@ -7,9 +7,10 @@ import {
   targetNotAModelIdProblem,
   unservedTargetWarning,
 } from "./fallback-map-wire.js";
+import { familyModel, modelFamily } from "../models/families.js";
 import { logger } from "./logger.js";
 import { isSpellableModelId } from "./model-id.js";
-import { ENGINE_NAMES, isKnownEngine, type EngineName } from "./models.js";
+import { ENGINE_NAMES, getDiscoveredModels, isKnownEngine, type EngineName } from "./models.js";
 import type { JinnConfig, ModelRegistry } from "./types.js";
 
 const KNOWN_ENGINES = ENGINE_NAMES.join(", ");
@@ -109,8 +110,8 @@ export function validateEngineFallbackModelMaps(engines: Record<string, unknown>
  * `undefined` is the floor rule and the default answer: drop the pin, let the
  * substitute's own configured default apply. A model id belongs to exactly one
  * provider, so carrying one across a swap is how a codex pin reached Anthropic and
- * came back `model_not_found`. `engines.<from>.fallbackModelMap` is the only way a
- * pin survives — and only when the substitute actually serves what the map names,
+ * came back `model_not_found`. An exact `fallbackModelMap` or an opted-in family counterpart carries a
+ * pin across — and only when the substitute actually serves what the map names,
  * because a map that could name anything would just spell the same bug in config.
  * An entry validation never saw, because it predates the check or was written by
  * hand, is refused here too rather than handed to a CLI as an argv.
@@ -120,17 +121,24 @@ export function resolveSubstituteModel(
   registry: ModelRegistry,
   { from, to, model }: { from: string; to: string; model: string | null | undefined },
 ): string | undefined {
-  if (!model) return undefined;
-
-  const mapped = config.engines[from as EngineName]?.fallbackModelMap?.[model];
+  const source = model || config.engines[from as EngineName]?.model;
+  if (!source) return undefined;
+  const family = modelFamily(from, source);
+  const other = from === "codex" ? "claude" : from === "claude" ? "codex" : undefined;
+  const targetFamily = to === other && family ? config.modelManagement?.familyFallbacks?.[from as "codex" | "claude"]?.[family] : undefined;
+  const served = registry[to]?.models ?? [];
+  const discovered = getDiscoveredModels(to as EngineName);
+  const familyCandidates = discovered ? discovered.filter(m => served.some(s => s.id === m.id)) : served;
+  const mapped = config.engines[from as EngineName]?.fallbackModelMap?.[source]
+    ?? (targetFamily ? familyModel(to, familyCandidates, targetFamily)?.id : undefined);
   if (!mapped) return undefined;
   if (!isSpellableModelId(mapped)) {
-    logger.warn(malformedTargetWarning({ engine: from, model, target: mapped, substitute: to }));
+    logger.warn(malformedTargetWarning({ engine: from, model: source, target: mapped, substitute: to }));
     return undefined;
   }
   if (registry[to]?.models.some((candidate) => candidate.id === mapped)) return mapped;
 
-  logger.warn(unservedTargetWarning({ engine: from, model, target: mapped, substitute: to }));
+  logger.warn(unservedTargetWarning({ engine: from, model: source, target: mapped, substitute: to }));
   return undefined;
 }
 

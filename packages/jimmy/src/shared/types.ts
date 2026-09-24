@@ -791,7 +791,11 @@ export interface JinnConfig {
     policies?: Partial<Record<"claude" | "codex", {
       mode: "auto" | "notify" | "fixed";
       profile: "balanced" | "economy" | "performance";
+      family?: string;
+      effort?: string;
     }>>;
+    rules?: Array<{ kind: "employee" | "cron" | "workflow"; id: string; engine: "codex" | "claude"; family: string; model: string; effort?: string; appliedEffort?: string }>;
+    familyFallbacks?: Partial<Record<"codex" | "claude", Record<string, string>>>;
     notification?: { connector: string; channel: string };
   };
   /** Workflow engine (ported from upstream jinn). Opt-in: absent/false = no

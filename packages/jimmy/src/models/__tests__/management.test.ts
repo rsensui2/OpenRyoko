@@ -4,6 +4,7 @@ import yaml from "js-yaml";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { JINN_HOME, CONFIG_PATH, ORG_DIR, CRON_JOBS } from "../../shared/paths.js";
 import type { JinnConfig } from "../../shared/types.js";
+import { compatibleEffort } from "../families.js";
 import { ModelManagement, recommend } from "../service.js";
 import { normalizeModels, type DiscoveredModel, type ManagedEngine } from "../discovery.js";
 import { createSession, getSession, initDb } from "../../sessions/registry.js";
@@ -159,4 +160,91 @@ describe("Slack controls authorization", () => {
     const token = (card.find((b: any) => b.type === "actions" && b.elements[0].action_id === "ryoko_models_session_codex") as any).elements[0].options[0].value;
     await expect(controls.execute(token, "UADMIN", "C1")).rejects.toThrow("実行中");
   });
+});
+
+describe("family loadouts", () => {
+  const employee = (extra = {}) => fs.writeFileSync(path.join(ORG_DIR, "writer.yaml"), yaml.dump({ name: "writer", persona: "write", engine: "codex", model: "gpt-5.6-terra", effortLevel: "high", ...extra }));
+  const advance = () => vi.spyOn(Date, "now").mockReturnValue(Date.now() + 7 * 3600_000);
+  it("keeps a task on Terra, upgrades the numeric generation, and leaves schedules/prompt unchanged", async () => {
+    const job = { id: "news", name: "News", schedule: "10 7 * * *", engine: "codex", model: "gpt-6-astra", prompt: "News", enabled: true, effortLevel: "high" };
+    fs.writeFileSync(CRON_JOBS, JSON.stringify([job]));
+    discover.mockImplementation(async engine => engine === "codex" ? [sol("gpt-6-astra"), sol("gpt-5.6-terra"), sol("gpt-5.10-terra")] : [sol("claude-opus-5-5")]);
+    const service = make(); await service.refresh();
+    await service.act({ action: "follow", kind: "cron", id: "news", family: "terra" });
+    expect(service.snapshot().pins[0]).toMatchObject({ family: "terra", model: "gpt-5.10-terra", effort: "high" });
+    expect(JSON.parse(fs.readFileSync(CRON_JOBS, "utf8"))[0]).toEqual({ ...job, model: "gpt-5.10-terra" });
+    discover.mockImplementation(async engine => engine === "codex" ? [sol("gpt-7-astra"), sol("gpt-5.10-terra"), { ...sol("gpt-6-terra"), effortLevels: ["low", "medium"] }] : [sol("claude-opus-5-5")]);
+    advance(); await service.refresh();
+    expect(service.snapshot().pins[0]).toMatchObject({ family: "terra", model: "gpt-6-terra", effort: "medium" });
+    expect(config.modelManagement?.rules?.[0].effort).toBe("high");
+    vi.restoreAllMocks();
+  });
+  it("does not overwrite a manual target edit; reports paused following", async () => {
+    employee({ model: "gpt-6-sol" });
+    const service = make(); await service.refresh();
+    await service.act({ action: "follow", kind: "employee", id: "writer", family: "sol" });
+    employee({ model: "manual-model" }); advance(); await service.refresh();
+    expect(service.snapshot().pins[0]).toMatchObject({ model: "manual-model", family: null, followPaused: true });
+    vi.restoreAllMocks();
+  });
+  it("keeps the previous choice if a family disappears or discovery fails", async () => {
+    employee({ model: "gpt-6-sol" }); const service = make(); await service.refresh();
+    await service.act({ action: "follow", kind: "employee", id: "writer", family: "sol" });
+    discover.mockResolvedValue([sol("gpt-7-astra")]); advance(); await service.refresh();
+    expect(service.snapshot().pins[0].model).toBe("gpt-6-sol");
+    discover.mockRejectedValue(new Error("offline")); advance(); await service.refresh();
+    expect(service.snapshot().pins[0].model).toBe("gpt-6-sol");
+    await expect(service.act({ action: "follow", kind: "employee", id: "writer", family: "astra" })).rejects.toThrow();
+    vi.restoreAllMocks();
+  });
+  it("preserves inherited effort and can detach following by choosing inherit", async () => {
+    employee({ effortLevel: undefined }); const service = make(); await service.refresh();
+    await service.act({ action: "follow", kind: "employee", id: "writer", family: "sol" });
+    expect(service.snapshot().pins[0]).toMatchObject({ effort: null, family: "sol" });
+    await service.act({ action: "effort", kind: "employee", id: "writer", effort: "high" });
+    expect(service.snapshot().pins[0]).toMatchObject({ effort: "high", family: "sol" });
+    await expect(service.act({ action: "effort", kind: "employee", id: "writer", effort: "max" })).rejects.toThrow();
+    await service.act({ action: "pin", kind: "employee", id: "writer", model: null });
+    expect(config.modelManagement?.rules).toEqual([]);
+  });
+  it("uses a chosen global family and keeps the requested depth on a new generation", async () => {
+    discover.mockImplementation(async engine => engine === "codex" ? [sol(), sol("gpt-5.6-terra")] : [sol("claude-opus-5-5")]);
+    const service = make(); await service.act({ action: "policy", engine: "codex", policy: { mode: "auto", profile: "balanced", family: "terra" } });
+    await service.act({ action: "default-effort", engine: "codex", effort: "high" });
+    discover.mockImplementation(async engine => engine === "codex" ? [sol(), sol("gpt-6-terra")] : [sol("claude-opus-5-5")]);
+    advance(); await service.refresh();
+    expect(config.engines.codex).toMatchObject({ model: "gpt-6-terra", effortLevel: "high" });
+    vi.restoreAllMocks();
+  });
+  it("changes a workflow node with revision protection without changing its trigger or prompt", async () => {
+    employee();
+    let definition = { id: "flow", title: "Flow", revision: 1, enabled: true, nodes: [{ id: "start", type: "trigger", config: { kind: "manual" } }, { id: "work", type: "employee", config: { employee: { source: "fixed", value: "writer" }, model: { source: "fixed", value: "gpt-5.6-terra" }, prompt: "Preserve this" } }] };
+    const before = structuredClone(definition);
+    const saveDefinition = vi.fn((next: any, revision: number) => { expect(revision).toBe(definition.revision); definition = { ...structuredClone(next), revision: revision + 1 }; return definition; });
+    const service = new ModelManagement({ getConfig: () => config, onConfig: c => { config = c; }, discover,
+      getWorkflows: () => ({ listDefinitions: () => ({ items: [{ id: "flow", title: "Flow" }], nextCursor: null }), getDefinition: () => structuredClone(definition), saveDefinition }) as any });
+    await service.refresh(); await service.act({ action: "follow", kind: "workflow", id: "flow/work", family: "sol" });
+    expect(service.snapshot().pins.find(p => p.kind === "workflow")).toMatchObject({ family: "sol", effective: "gpt-6-sol" });
+    expect(definition).toEqual({ ...before, revision: 2, nodes: [before.nodes[0], { ...before.nodes[1], config: { ...before.nodes[1].config, model: { source: "fixed", value: "gpt-6-sol" } } }] });
+  });
+  it("exposes bidirectional fallback and adds only explicitly selected fallback families to an allowlist", async () => {
+    config.models = { claude: { default: "claude-opus-5", models: [{ id: "claude-opus-5" }] } };
+    fs.writeFileSync(CONFIG_PATH, yaml.dump(config));
+    const service = make(); await service.refresh();
+    expect(config.models.claude.models).toHaveLength(1);
+    await service.act({ action: "fallback", enabled: true });
+    expect(config.engines.codex.fallback).toEqual(["claude"]); expect(config.engines.claude.fallback).toEqual(["codex"]);
+    expect(config.models.claude.models.map(m => m.id)).toEqual(["claude-opus-5", "claude-opus-5-5"]);
+    expect(service.snapshot().engines[0].fallback).toBe("claude-opus-5-5");
+    await service.act({ action: "fallback-family", engine: "codex", family: "sol", targetFamily: null });
+    expect(service.snapshot().engines[0].fallback).toBe("claude-opus-5");
+    await service.act({ action: "fallback", enabled: false }); expect(config.sessions?.rateLimitStrategy).toBe("wait");
+    expect(config.engines.codex.fallback).toEqual([]);
+  });
+});
+
+it("rounds depth down and chooses the lowest supported level regardless of catalog ordering", () => {
+  expect(compatibleEffort("max", ["low", "high", "medium"])).toBe("high");
+  expect(compatibleEffort("low", ["high", "medium"])).toBe("medium");
+  expect(compatibleEffort("max", [])).toBeUndefined();
 });

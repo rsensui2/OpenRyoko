@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026.9.26
+
+- Added model-family following for engine defaults, employees, AI cron jobs and workflow employee nodes. Sol/Terra/Opus stay within their selected family across generations.
+- Added capability-aware reasoning depth controls and editable directional Claude/Codex fallback families, including fixed-model sessions and workflow recovery.
+- Reworked model settings into family, depth and backup cards; added matching Slack controls. External task edits pause following instead of being overwritten.
+- Updated README, model management guide and release screenshots.
+
+
 > **バージョン体系について**: 2026.4.26 から日付ベース (`YYYY.M.D`) のCalVerに移行しました。npm semver の制約上、月・日の leading zero は付けません (例: 4月26日 → `2026.4.26`)。
 
 ## [Unreleased]

@@ -37,3 +37,22 @@ describe("Model management panel", () => {
     expect(screen.queryByRole("status")).toBeNull()
   })
 })
+
+it("selects a family without a version pin, changes depth, and enables fallback explicitly", async () => {
+  const value = structuredClone(status);
+  value.engines[0] = { ...value.engines[0], current: "gpt-new-sol", effort: "medium", families: [{ family: "sol", label: "Sol", model: "gpt-new-sol" }] };
+  vi.mocked(api.getModels).mockResolvedValue(value);
+  vi.mocked(api.modelAction).mockResolvedValue(value);
+  render(<ModelManagementPanel />);
+  fireEvent.click(await screen.findByRole("button", { name: "codex Sol の最新版に追従" }));
+  await waitFor(() => expect(api.modelAction).toHaveBeenLastCalledWith({ action: "policy", engine: "codex", policy: { mode: "auto", profile: "balanced", family: "sol" } }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "標準" }).hasAttribute("disabled")).toBe(false));
+  fireEvent.click(screen.getByRole("button", { name: "標準" }));
+  await waitFor(() => expect(api.modelAction).toHaveBeenLastCalledWith({ action: "default-effort", engine: "codex", effort: "medium" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "自動切替 OFF" }).hasAttribute("disabled")).toBe(false));
+  fireEvent.click(screen.getByRole("button", { name: "自動切替 OFF" }));
+  await waitFor(() => expect(api.modelAction).toHaveBeenLastCalledWith({ action: "fallback", enabled: true }));
+  await waitFor(() => expect(screen.getByLabelText("ニュースのモデル").hasAttribute("disabled")).toBe(false));
+  fireEvent.change(screen.getByLabelText("ニュースのモデル"), { target: { value: "family:sol" } });
+  await waitFor(() => expect(api.modelAction).toHaveBeenLastCalledWith({ action: "follow", kind: "cron", id: "news", family: "sol" }));
+});

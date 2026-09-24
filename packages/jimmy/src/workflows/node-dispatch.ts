@@ -1,3 +1,4 @@
+import { compatibleEffort } from "../models/families.js";
 import type { Employee, ModelRegistry } from "../shared/types.js";
 import { interpolateWorkflowPrompt, resolveBinding, type WorkflowBindingContext } from "./bindings.js";
 import { continuationPrompt, resolveEmployeeContinuation } from "./employee-continuation.js";
@@ -102,10 +103,12 @@ function resolveEffort(
   employee: Employee,
   pinned: boolean,
   modelInfo: ModelInfo,
+  substituted = false,
 ): ResolvedEmployeeConfig["effort"] {
   const effort = (node.config.effort
     ? resolveString(node.config.effort, context, "Effort")
     : pinned ? undefined : employee.effortLevel) as ResolvedEmployeeConfig["effort"];
+  if (substituted) return compatibleEffort(effort, modelInfo.supportsEffort ? modelInfo.effortLevels : []) as ResolvedEmployeeConfig["effort"];
   if (effort && (!modelInfo.supportsEffort || !modelInfo.effortLevels.includes(effort))) {
     throw new Error(`Workflow effort "${effort}" is not available for model "${modelInfo.id}".`);
   }
@@ -154,7 +157,7 @@ function dispatchTarget(
   const substitutedFrom = selectSubstituteEngine(run, node.id, base.engine, failed?.error, substituteDeps(options));
   const own = Boolean(pinned.engine || pinned.model);
   if (!substitutedFrom) return { ...base, pinned: own };
-  const stood = resolveTarget({ engine: substitutedFrom.engine, model: undefined }, employee, options.models);
+  const stood = resolveTarget({ engine: substitutedFrom.engine, model: options.engineFallback?.modelFor?.(base.engine, substitutedFrom.engine, base.model) }, employee, options.models);
   return { ...stood, pinned: true, substitutedFrom };
 }
 
@@ -193,7 +196,7 @@ export function resolveDispatch(
   const override = run.trigger.todoId ? options.todoDispatch?.read(run.trigger.todoId) : undefined;
   const target = dispatchTarget(run, node, employee, pinnedSelection(node, context, override), options);
   const { engine, model, substitutedFrom } = target;
-  const effort = resolveEffort(node, context, employee, target.pinned, target.modelInfo);
+  const effort = resolveEffort(node, context, employee, target.pinned, target.modelInfo, Boolean(substitutedFrom));
   const continuedFrom = resolveEmployeeContinuation(run, node, engine, {
     repository: options.repository,
     resumableEngineSession: (id, target) => options.executor.resumableEngineSession(id, target),

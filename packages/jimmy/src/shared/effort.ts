@@ -20,7 +20,7 @@ const DEFAULT_EFFORT = "medium";
  *
  * Workflow attempts carry their already-resolved effort in the session even
  * though they have no parent session. Honor that value before engine defaults.
- * For other non-child sessions (COO's own), use engine effortLevel directly.
+ * For non-child sessions, retain explicit session/employee settings before engine defaults.
  *
  * When the engine/model has no effort concept (validLevels empty, e.g.
  * Gemini), returns the default without warnings — effort is just ignored.
@@ -39,8 +39,8 @@ export function resolveEffort(
     logger.warn(`Invalid workflow effortLevel "${session.effortLevel}" (valid: ${validLevels.join(", ")}), skipping`);
   }
 
-  if (session.parentSessionId) {
-    const override = engineConfig.childEffortOverride;
+  {
+    const override = session.parentSessionId ? engineConfig.childEffortOverride : undefined;
     if (override) {
       if (isValid(override)) return override;
       logger.warn(`Invalid childEffortOverride "${override}" (valid: ${validLevels.join(", ")}), skipping`);

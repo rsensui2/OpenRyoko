@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildEngineSyncPrompt, computeEngineOverrideRevert, engineFallbackFailure, runEngineWithResponseTimeout, runFallbackAttempts } from "../engine-fallback.js";
 import { createSession, getSession, insertMessage, updateSession } from "../registry.js";
-import { invalidateModelRegistry } from "../../shared/models.js";
+import { invalidateModelRegistry, setDiscoveredModels } from "../../shared/models.js";
 import type { Engine, EngineResult, EngineRunOpts, InterruptibleEngine, JinnConfig } from "../../shared/types.js";
 
 let sequence = 0;
@@ -216,5 +216,21 @@ describe("engine response inactivity and cleanup", () => {
     finish({ sessionId: "source", result: "Done" });
     expect((await pending).result).toBe("Done");
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+
+describe("family counterpart failover", () => {
+  it.each(["claude", "codex"] as const)("honors a fixed %s model and downgrades unsupported effort on its counterpart", async (from) => {
+    const { options, config, run, to } = setup(from);
+    const sourceId = from === "codex" ? "gpt-6-sol" : "claude-opus-5-5";
+    const targetId = to === "codex" ? "gpt-7-sol" : "claude-opus-6";
+    config.modelManagement = { familyFallbacks: { codex: { sol: "opus" }, claude: { opus: "sol" } } };
+    config.models = { [to]: { default: `${to}-model`, models: [{ id: targetId, supportsEffort: true, effortLevels: ["low", "medium"] }] } };
+    setDiscoveredModels(to as "codex" | "claude", [{ id: targetId, label: targetId, supportsEffort: true, effortLevels: ["low", "medium"] }]);
+    options.session = updateSession(options.session.id, { model: sourceId, effortLevel: "max" })!;
+    await runFallbackAttempts(options);
+    expect(run).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ model: targetId, effortLevel: "medium" }));
+    expect(getSession(options.session.id)?.transportMeta?.engineOverride).toMatchObject({ originalModel: sourceId, originalEffortLevel: "max" });
   });
 });

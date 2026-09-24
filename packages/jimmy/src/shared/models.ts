@@ -130,6 +130,7 @@ function isEngineName(engine: string): engine is EngineName {
 }
 
 let discovered: Partial<Record<EngineName, ModelInfo[]>> = {};
+export function getDiscoveredModels(engine: EngineName): ModelInfo[] | undefined { return discovered[engine]; }
 export function setDiscoveredModels(engine: EngineName, models: ModelInfo[]): void {
   discovered[engine] = models;
   invalidateModelRegistry();

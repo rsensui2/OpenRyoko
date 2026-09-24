@@ -1,3 +1,4 @@
+import { resolveSubstituteModel } from "../shared/engine-fallback.js";
 import { ModelManagement } from "../models/service.js";
 import http from "node:http";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -990,6 +991,7 @@ export async function startGateway(
 
   modelManagement = new ModelManagement({
     getConfig: () => currentConfig,
+    getWorkflows: () => workflowService,
     onConfig: next => {
       currentConfig = next;
       apiContext.config = next;
@@ -1361,7 +1363,7 @@ export async function startGateway(
       }),
       employees: () => employeeRegistry,
       models: () => getModelRegistry(currentConfig),
-      engineFallback: { chainFor: (engine) => (currentConfig.engines as unknown as Record<string, { fallback?: string[] } | undefined>)[engine]?.fallback ?? [] },
+      engineFallback: { modelFor: (from, to, model) => resolveSubstituteModel(currentConfig, getModelRegistry(currentConfig), { from, to, model }), chainFor: (engine) => (currentConfig.engines as unknown as Record<string, { fallback?: string[] } | undefined>)[engine]?.fallback ?? [] },
       sessionSpend: (sessionIds) => sessionIds.reduce((sum, id) => sum + (getSession(id)?.totalCost ?? 0), 0),
       readTranscript: (id) => getMessages(id).map(({ id: messageId, role, content, timestamp }) => ({ id: messageId, role, content, timestamp })),
       onChange: ({ workflowId, runId }) => emit("workflow:changed", { entity: "workflow-run", workflowId, runId }),
