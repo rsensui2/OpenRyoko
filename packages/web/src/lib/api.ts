@@ -328,13 +328,16 @@ interface UploadedFile {
 export interface ModelManagementStatus {
   engines: Array<{
     engine: "codex" | "claude"; current: string;
-    policy: { mode: "auto" | "notify" | "fixed"; profile: "balanced" | "economy" | "performance" };
+    policy: { mode: "auto" | "notify" | "fixed"; profile: "balanced" | "economy" | "performance"; family?: string; effort?: string };
+    families?: Array<{ family: string; label: string; model: string }>;
+    effort?: string | null; fallback?: string; fallbackFamilies?: Record<string, string>;
     models: Array<{ id: string; label: string; effortLevels: string[] }>;
     checkedAt: string | null; error: string | null; candidate: string | null; previous: string | null;
   }>;
-  pins: Array<{ kind: "employee" | "cron"; id: string; name: string; engine: string; model: string | null; effective: string; inheritedFrom?: string; remote: boolean }>;
+  pins: Array<{ kind: "employee" | "cron" | "workflow"; id: string; name: string; engine: string; model: string | null; effective: string; effort?: string | null; family?: string | null; followPaused?: boolean; unmanagedReason?: string; inheritedFrom?: string; remote: boolean }>;
   notification: { connector: string; channel: string } | null;
   slackAdminConfigured: boolean;
+  fallbackEnabled?: boolean;
 }
 
 export const api = {

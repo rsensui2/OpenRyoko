@@ -11,16 +11,28 @@ import { getModelRegistry, invalidateModelRegistry, setDiscoveredModels } from "
 import { scanOrg, updateEmployeeYaml } from "../gateway/org.js";
 import { loadJobs, saveJobs } from "../cron/jobs.js";
 import { discoverModels, type DiscoveredModel, type ManagedEngine } from "./discovery.js";
+import { compatibleEffort, defaultFamilyFallbacks, familyModel, modelFamilies, modelFamily } from "./families.js";
+import { resolveSubstituteModel } from "../shared/engine-fallback.js";
+import type { WorkflowService } from "../workflows/service.js";
 import type { JinnConfig } from "../shared/types.js";
 
-export const policySchema = z.object({ mode: z.enum(["auto", "notify", "fixed"]), profile: z.enum(["balanced", "economy", "performance"]) }).strict();
+const familySchema = z.string().regex(/^[a-z][a-z0-9]{0,39}$/);
+const effortSchema = z.enum(["low", "medium", "high", "xhigh", "max"]);
+const kindSchema = z.enum(["employee", "cron", "workflow"]);
+interface Target { kind: "employee" | "cron" | "workflow"; id: string; name: string; engine: string; model: string | null; effective: string; effort: string | null; inheritedFrom?: string; remote: boolean; unmanagedReason?: string }
+export const policySchema = z.object({ mode: z.enum(["auto", "notify", "fixed"]), profile: z.enum(["balanced", "economy", "performance"]), family: familySchema.optional(), effort: effortSchema.optional() }).strict();
 export const actionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("refresh") }).strict(),
   z.object({ action: z.literal("policy"), engine: z.enum(["codex", "claude"]), policy: policySchema }).strict(),
   z.object({ action: z.literal("default"), engine: z.enum(["codex", "claude"]), model: z.string().min(1).max(160) }).strict(),
   z.object({ action: z.literal("accept"), engine: z.enum(["codex", "claude"]), model: z.string().min(1).max(160) }).strict(),
   z.object({ action: z.literal("rollback"), engine: z.enum(["codex", "claude"]) }).strict(),
-  z.object({ action: z.literal("pin"), kind: z.enum(["employee", "cron"]), id: z.string().min(1).max(200), model: z.string().min(1).max(160).nullable() }).strict(),
+  z.object({ action: z.literal("pin"), kind: kindSchema, id: z.string().min(1).max(200), model: z.string().min(1).max(160).nullable() }).strict(),
+  z.object({ action: z.literal("follow"), kind: kindSchema, id: z.string().min(1).max(200), family: familySchema }).strict(),
+  z.object({ action: z.literal("effort"), kind: kindSchema, id: z.string().min(1).max(200), effort: effortSchema.nullable() }).strict(),
+  z.object({ action: z.literal("default-effort"), engine: z.enum(["codex", "claude"]), effort: effortSchema }).strict(),
+  z.object({ action: z.literal("fallback"), enabled: z.boolean() }).strict(),
+  z.object({ action: z.literal("fallback-family"), engine: z.enum(["codex", "claude"]), family: familySchema, targetFamily: familySchema.nullable() }).strict(),
   z.object({ action: z.literal("notification"), connector: z.string().min(1).max(100), channel: z.string().max(100) }).strict(),
 ]);
 export type ModelAction = z.infer<typeof actionSchema>;
@@ -74,6 +86,7 @@ export class ModelManagement {
   constructor(private options: {
     getConfig: () => JinnConfig;
     onConfig: (config: JinnConfig) => void;
+    getWorkflows?: () => Pick<WorkflowService, "listDefinitions" | "getDefinition" | "saveDefinition"> | undefined;
     discover?: typeof discoverModels;
     notify?: (text: string, engine: ManagedEngine, candidate?: string) => Promise<boolean>;
   }) {
@@ -90,11 +103,12 @@ export class ModelManagement {
     } catch { /* first run or invalid cache — rebuild from the CLI */ }
   }
   private save() { atomic(stateFile, JSON.stringify(this.state, null, 2) + "\n"); }
-  private async editConfig(edit: (config: JinnConfig) => void): Promise<void> {
+  private async editConfig(edit: (config: JinnConfig) => void | (() => void)): Promise<void> {
     await withConfigLock(async () => {
       const config = loadConfig();
-      edit(config);
-      atomic(CONFIG_PATH, yaml.dump(config, { lineWidth: -1 }));
+      const undo = edit(config);
+      try { atomic(CONFIG_PATH, yaml.dump(config, { lineWidth: -1 })); }
+      catch (error) { undo?.(); throw error; }
       invalidateModelRegistry();
       this.options.onConfig(config);
     });
@@ -109,6 +123,9 @@ export class ModelManagement {
     if (catalog.bin !== (this.options.getConfig().engines[engine].bin || engine) || !Number.isFinite(Date.parse(catalog.checkedAt)) || Date.now() - Date.parse(catalog.checkedAt) > 24 * 3600_000) return "モデル一覧を更新してから選択してください。";
     return null;
   }
+  private recommended(engine: ManagedEngine, models: DiscoveredModel[], policy = this.policy(engine)) {
+    return policy.family ? familyModel(engine, models, policy.family) : recommend(engine, models, policy.profile);
+  }
   snapshot() {
     const config = this.options.getConfig();
     const registry = getModelRegistry(config);
@@ -117,30 +134,143 @@ export class ModelManagement {
         const catalog = this.state.catalogs[engine];
         const policy = this.policy(engine);
         return { engine, current: config.engines[engine].model, policy,
-          models: catalog?.models.length ? catalog.models : registry[engine]?.models ?? [], checkedAt: catalog?.checkedAt ?? null,
+          families: modelFamilies(engine, catalog?.models ?? []), effort: config.engines[engine].effortLevel ?? null,
+          fallbackFamilies: config.modelManagement?.familyFallbacks?.[engine] ?? {},
+          fallback: resolveSubstituteModel(config, registry, { from: engine, to: engine === "codex" ? "claude" : "codex", model: config.engines[engine].model }) ?? config.engines[engine === "codex" ? "claude" : "codex"].model,
+          models: catalog?.models.length ? catalog.models.map(m => ({ ...m, effortLevels: this.levels(config, engine, m) })) : registry[engine]?.models ?? [], checkedAt: catalog?.checkedAt ?? null,
           error: this.catalogError(engine),
-          candidate: catalog && !this.catalogError(engine) ? recommend(engine, catalog.models, policy.profile)?.id ?? null : null,
+          candidate: catalog && !this.catalogError(engine) ? this.recommended(engine, catalog.models, policy)?.id ?? null : null,
           previous: this.state.history[engine]?.from ?? null,
         };
       }),
-      pins: this.pins(),
+      pins: this.pins().map(pin => {
+        const rule = config.modelManagement?.rules?.find(r => r.kind === pin.kind && r.id === pin.id);
+        const following = rule && rule.engine === pin.engine && rule.model === pin.model && (rule.appliedEffort ?? null) === pin.effort ? rule.family : null;
+        return { ...pin, family: following, followPaused: Boolean(rule && !following),
+          effective: this.state.catalogs[pin.engine as ManagedEngine]?.models.find(m => m.aliases?.includes(pin.effective))?.id ?? pin.effective };
+      }),
+      fallbackEnabled: config.sessions?.rateLimitStrategy !== "wait" && engines.every(e => config.engines[e].fallback?.includes(e === "codex" ? "claude" : "codex")),
       notification: config.modelManagement?.notification ?? null,
       slackAdminConfigured: Boolean(config.portal?.operatorSlackId),
     };
   }
-  pins() {
-    const config = this.options.getConfig();
+  pins(config = this.options.getConfig()): Target[] {
     const employees = scanOrg();
     const resolve = (engine: string) => (config.engines as any)[engine]?.model ?? "default";
     return [
-      ...[...employees.values()].map(e => ({ kind: "employee" as const, id: e.name, name: e.displayName, engine: e.engine, model: e.model ?? null, effective: e.model || resolve(e.engine), remote: Boolean(e.sshHost) })),
+      ...[...employees.values()].map(e => ({ kind: "employee" as const, id: e.name, name: e.displayName, engine: e.engine, model: e.model ?? null, effective: e.model || resolve(e.engine), effort: e.effortLevel ?? null, remote: Boolean(e.sshHost) })),
       ...loadJobs().filter(j => j.kind !== "command").map(j => {
         const e = j.employee ? employees.get(j.employee) : undefined;
         const engine = j.engine || e?.engine || config.engines.default;
         const employeeModel = e?.engine === engine ? e.model : undefined;
-        return { kind: "cron" as const, id: j.id, name: j.name, engine, model: j.model ?? null, effective: j.model || employeeModel || resolve(engine), inheritedFrom: employeeModel ? `employee:${e!.name}` : "default", remote: Boolean(e?.sshHost) };
+        return { kind: "cron" as const, id: j.id, name: j.name, engine, model: j.model ?? null, effective: j.model || employeeModel || resolve(engine), effort: j.effortLevel ?? null, inheritedFrom: employeeModel ? `employee:${e!.name}` : "default", remote: Boolean(e?.sshHost) };
       }),
+      ...this.workflowTargets(employees, resolve),
     ];
+  }
+  private workflowTargets(employees: ReturnType<typeof scanOrg>, resolve: (engine: string) => string): Target[] {
+    const service = this.options.getWorkflows?.();
+    if (!service) return [];
+    const result: Target[] = []; let cursor: string | undefined;
+    do {
+      const page = service.listDefinitions({ limit: 100, cursor });
+      for (const summary of page.items) {
+        const definition = service.getDefinition(summary.id);
+        for (const node of definition?.nodes ?? []) {
+          if (node.type !== "employee") continue;
+          const fixed = (b: { source: string; value?: unknown } | undefined) => b?.source === "fixed" && typeof b.value === "string" ? b.value : undefined;
+          const employee = employees.get(fixed(node.config.employee) ?? "");
+          const engine = fixed(node.config.engine) ?? employee?.engine ?? "dynamic";
+          const model = fixed(node.config.model);
+          const dynamic = !employee || Boolean(node.config.engine && !fixed(node.config.engine)) || Boolean(node.config.model && !model) || Boolean(node.config.effort && !fixed(node.config.effort));
+          result.push({ kind: "workflow", id: `${summary.id}/${node.id}`, name: `${summary.title} / ${node.id}`, engine, model: model ?? null,
+            effective: model ?? (node.config.engine ? resolve(engine) : employee?.model || resolve(engine)), effort: fixed(node.config.effort) ?? null,
+            remote: dynamic || Boolean(employee?.sshHost), unmanagedReason: dynamic ? "実行時に決定" : employee?.sshHost ? "リモート" : undefined });
+        }
+      }
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+    return result;
+  }
+  private async registerFallbackFamilies() {
+    const current = this.options.getConfig();
+    const additions = engines.flatMap(from => {
+      const to: ManagedEngine = from === "codex" ? "claude" : "codex";
+      if (!current.models?.[to] || this.catalogError(to)) return [];
+      return Object.values(current.modelManagement?.familyFallbacks?.[from] ?? {}).flatMap(family => {
+        const model = familyModel(to, this.state.catalogs[to]?.models ?? [], family);
+        return model && !current.models![to].models.some(m => m.id === model.id) ? [{ from, to, family, model }] : [];
+      });
+    });
+    if (!additions.length) return;
+    await this.editConfig(config => {
+      for (const { from, to, family, model } of additions) {
+        if (!Object.values(config.modelManagement?.familyFallbacks?.[from] ?? {}).includes(family)) continue;
+        const registry = config.models?.[to];
+        if (registry && !registry.models.some(m => m.id === model.id)) registry.models.push({ id: model.id, label: model.label, supportsEffort: model.supportsEffort, effortLevels: model.effortLevels });
+      }
+    });
+  }
+  private levels(config: JinnConfig, engine: ManagedEngine, model: DiscoveredModel): string[] {
+    const explicit = config.models?.[engine]?.models.find(m => m.id === model.id);
+    return explicit?.supportsEffort === false ? [] : explicit?.effortLevels ?? model.effortLevels;
+  }
+  private writeTarget(target: Target, model: string | null, effort: string | null): void {
+    if (target.kind === "employee") {
+      if (!updateEmployeeYaml(target.id, { model, effortLevel: effort })) throw new Error("社員設定を保存できませんでした。");
+    } else if (target.kind === "cron") {
+      const jobs = loadJobs({ allowMissing: false }), job = jobs.find(j => j.id === target.id);
+      if (!job) throw new Error("定期実行が見つかりません。");
+      if (model === null) delete job.model; else job.model = model;
+      if (effort === null) delete job.effortLevel; else job.effortLevel = effort;
+      saveJobs(jobs);
+    } else {
+      const [id, nodeId] = target.id.split("/");
+      const service = this.options.getWorkflows?.(), definition = service?.getDefinition(id);
+      const node = definition?.nodes.find(n => n.id === nodeId);
+      if (!service || !definition || node?.type !== "employee") throw new Error("ワークフローが見つかりません。");
+      if (model === null) delete node.config.model; else node.config.model = { source: "fixed", value: model };
+      if (effort === null) delete node.config.effort; else node.config.effort = { source: "fixed", value: effort as z.infer<typeof effortSchema> };
+      service.saveDefinition(definition, definition.revision);
+    }
+  }
+  private async changeTarget(action: Extract<ModelAction, { action: "pin" | "follow" | "effort" }>, expected?: NonNullable<NonNullable<JinnConfig["modelManagement"]>["rules"]>[number]) {
+    await this.editConfig(config => {
+      const target = this.pins(config).find(p => p.kind === action.kind && p.id === action.id);
+      if (!target) throw new Error("対象が見つかりません。");
+      if (target.remote) throw new Error("リモート・動的な対象は個別設定で変更してください。");
+      const rules = config.modelManagement?.rules ?? [];
+      const old = rules.find(r => r.kind === target.kind && r.id === target.id);
+      if (expected && (!old || JSON.stringify(old) !== JSON.stringify(expected) || target.engine !== expected.engine || target.model !== expected.model || target.effort !== (expected.appliedEffort ?? null))) return;
+      const engine = target.engine as ManagedEngine;
+      if (!engines.includes(engine) && !(action.action === "pin" && action.model === null)) throw new Error("この対象のモデルは個別設定で変更してください。");
+      let model = target.model, effort = target.effort;
+      let selected: DiscoveredModel | undefined;
+      if (action.action === "follow") {
+        selected = familyModel(engine, this.state.catalogs[engine]?.models ?? [], action.family);
+        if (!selected) throw new Error("この系列が一覧にありません。現在の設定を維持します。");
+        this.available(engine, selected.id); model = selected.id;
+        effort = expected?.effort || effort ? compatibleEffort(expected?.effort ?? effort ?? undefined, this.levels(config, engine, selected)) ?? null : null;
+      } else if (action.action === "pin") {
+        model = action.model;
+        if (model) { selected = this.available(engine, model); effort = compatibleEffort(effort ?? undefined, this.levels(config, engine, selected)) ?? null; }
+      } else {
+        if (action.effort) {
+          selected = this.available(engine, this.state.catalogs[engine]?.models.find(m => m.id === target.effective || m.aliases?.includes(target.effective))?.id ?? target.effective);
+          if (!this.levels(config, engine, selected).includes(action.effort)) throw new Error("このモデルでは選べない深さです。");
+        }
+        effort = action.effort;
+      }
+      if (selected && config.models?.[engine] && !config.models[engine].models.some(m => m.id === selected!.id)) config.models[engine].models.push({ id: selected.id, label: selected.label, supportsEffort: selected.supportsEffort, effortLevels: selected.effortLevels });
+      config.modelManagement ??= {};
+      config.modelManagement.rules = rules.filter(r => r.kind !== target.kind || r.id !== target.id);
+      if (action.action === "follow" || (action.action === "effort" && old && old.model === target.model && old.engine === engine && (old.appliedEffort ?? null) === target.effort)) {
+        config.modelManagement.rules.push({ kind: target.kind, id: target.id, engine, family: action.action === "follow" ? action.family : old!.family, model: model!,
+          effort: action.action === "effort" ? action.effort ?? undefined : expected?.effort ?? target.effort ?? undefined, appliedEffort: effort ?? undefined });
+      }
+      if (model !== target.model || effort !== target.effort) this.writeTarget(target, model, effort);
+      return () => this.writeTarget(target, target.model, target.effort);
+    });
   }
   refresh(force = false): Promise<void> {
     if (this.stopped) return Promise.resolve();
@@ -166,12 +296,20 @@ export class ModelManagement {
     }));
     if (this.stopped) return;
     this.save();
+    await this.registerFallbackFamilies();
     for (const engine of engines) await this.reconcile(engine);
+    for (const rule of [...(this.options.getConfig().modelManagement?.rules ?? [])]) {
+      if (this.catalogError(rule.engine)) continue;
+      const candidate = familyModel(rule.engine, this.state.catalogs[rule.engine]?.models ?? [], rule.family);
+      if (!candidate) continue;
+      try { await this.changeTarget({ action: "follow", kind: rule.kind, id: rule.id, family: rule.family }, rule); }
+      catch { /* A deleted, edited or unavailable target stays unchanged. */ }
+    }
   }
   private async reconcile(engine: ManagedEngine) {
     const policy = this.policy(engine), catalog = this.state.catalogs[engine];
     if (!catalog || catalog.error || policy.mode === "fixed") return;
-    const candidate = recommend(engine, catalog.models, policy.profile);
+    const candidate = this.recommended(engine, catalog.models, policy);
     const current = this.options.getConfig().engines[engine].model;
     if (!candidate) return;
     if (candidate.id !== current) {
@@ -202,7 +340,7 @@ export class ModelManagement {
     let applied = false;
     const selected = this.available(engine, model);
     await this.editConfig(config => {
-      if (expectedPolicy && (config.modelManagement?.policies?.[engine]?.mode !== expectedPolicy.mode || config.modelManagement?.policies?.[engine]?.profile !== expectedPolicy.profile)) return;
+      if (expectedPolicy && (config.modelManagement?.policies?.[engine]?.mode !== expectedPolicy.mode || config.modelManagement?.policies?.[engine]?.profile !== expectedPolicy.profile || config.modelManagement?.policies?.[engine]?.family !== expectedPolicy.family || config.modelManagement?.policies?.[engine]?.effort !== expectedPolicy.effort)) return;
       this.available(engine, model);
       applied = true;
       const previous = config.engines[engine];
@@ -217,7 +355,7 @@ export class ModelManagement {
       const explicit = config.models?.[engine];
       const capabilities = explicit?.models.find(m => m.id === model);
       const levels = capabilities?.supportsEffort === false ? [] : capabilities?.effortLevels ?? selected.effortLevels;
-      previous.effortLevel = selected.defaultEffort && levels.includes(selected.defaultEffort) ? selected.defaultEffort : levels.includes("medium") ? "medium" : levels[0];
+      previous.effortLevel = compatibleEffort(config.modelManagement?.policies?.[engine]?.effort ?? selected.defaultEffort, levels);
       if (explicit) {
         explicit.default = model;
         if (!capabilities) explicit.models.push({ id: selected.id, label: selected.label, supportsEffort: selected.supportsEffort, effortLevels: [...selected.effortLevels] });
@@ -241,7 +379,7 @@ export class ModelManagement {
       case "default": await this.select(action.engine, action.model, true); break;
       case "accept": {
         const c = this.state.catalogs[action.engine];
-        if (!c || recommend(action.engine, c.models, this.policy(action.engine).profile)?.id !== action.model) throw new Error("推奨モデルが変わりました。一覧を更新してください。");
+        if (!c || this.recommended(action.engine, c.models)?.id !== action.model) throw new Error("推奨モデルが変わりました。一覧を更新してください。");
         await this.select(action.engine, action.model, false); break;
       }
       case "rollback": {
@@ -258,26 +396,43 @@ export class ModelManagement {
         });
         delete this.state.history[action.engine]; this.save(); break;
       }
-      case "pin": {
-        const pin = this.pins().find(p => p.kind === action.kind && p.id === action.id);
-        if (!pin) throw new Error("対象が見つかりません。");
-        if (action.model !== null) {
-          if (!engines.includes(pin.engine as ManagedEngine) || pin.remote) throw new Error("この対象のモデルは個別設定で変更してください。");
-          this.available(pin.engine as ManagedEngine, action.model);
+      case "pin": case "follow": case "effort": await this.changeTarget(action); break;
+      case "default-effort":
+        await this.editConfig(config => {
+          const model = this.available(action.engine, config.engines[action.engine].model);
+          if (!this.levels(config, action.engine, model).includes(action.effort)) throw new Error("このモデルでは選べない深さです。");
+          const previous = config.engines[action.engine].effortLevel;
+          initDb().prepare("UPDATE sessions SET effort_level = ? WHERE engine = ? AND effort_level IS NULL").run(previous ?? null, action.engine);
+          config.engines[action.engine].effortLevel = action.effort;
+          config.modelManagement ??= {}; config.modelManagement.policies ??= {};
+          config.modelManagement.policies[action.engine] = { ...this.policy(action.engine), effort: action.effort };
+        }); break;
+      case "fallback":
+        await this.editConfig(config => {
+          config.modelManagement ??= {};
+          if (action.enabled) config.modelManagement.familyFallbacks ??= structuredClone(defaultFamilyFallbacks);
+          for (const engine of engines) {
+            const other: ManagedEngine = engine === "codex" ? "claude" : "codex";
+            config.engines[engine].fallback = action.enabled ? [...new Set([other, ...(config.engines[engine].fallback ?? [])])] : [];
+          }
+          config.sessions ??= {};
+          config.sessions.rateLimitStrategy = action.enabled ? "fallback" : "wait";
+        }); break;
+      case "fallback-family":
+        if (action.targetFamily) {
+          const other = action.engine === "codex" ? "claude" : "codex";
+          const model = familyModel(other, this.state.catalogs[other]?.models ?? [], action.targetFamily);
+          if (!model) throw new Error("代役の系列が一覧にありません。");
+          this.available(other, model.id);
         }
-        // Synchronous read-modify-write: do not await between loading and saving.
-        if (action.kind === "employee") {
-          if (!updateEmployeeYaml(action.id, { model: action.model })) throw new Error("社員設定を保存できませんでした。");
-        } else {
-          const jobs = loadJobs({ allowMissing: false }), job = jobs.find(j => j.id === action.id);
-          if (!job) throw new Error("定期実行が見つかりません。");
-          if (action.model === null) delete job.model; else job.model = action.model;
-          saveJobs(jobs);
-        }
-        break;
-      }
+        await this.editConfig(config => {
+          config.modelManagement ??= {}; config.modelManagement.familyFallbacks ??= {};
+          const map = config.modelManagement.familyFallbacks[action.engine] ??= {};
+          if (action.targetFamily) map[action.family] = action.targetFamily; else delete map[action.family];
+        }); break;
       case "notification": await this.editConfig(config => { config.modelManagement ??= {}; config.modelManagement.notification = action.channel ? { connector: action.connector, channel: action.channel } : undefined; }); break;
     }
+    if (action.action === "fallback" || action.action === "fallback-family") await this.registerFallbackFamilies();
     return this.snapshot();
   }
 }

@@ -63,8 +63,10 @@ describe("resolveEffort (registry-driven validation)", () => {
     });
   });
 
-  it("non-child sessions use the engine default directly", () => {
-    expect(resolveEffort({ effortLevel: "high" }, { parentSessionId: null, effortLevel: "low" }, { effortLevel: "low" }, CLAUDE)).toBe("high");
+  it("non-child sessions retain an explicit depth across engine default changes", () => {
+    expect(resolveEffort({ effortLevel: "high" }, { parentSessionId: null, effortLevel: "low" }, { effortLevel: "high" }, CLAUDE)).toBe("low");
+    expect(resolveEffort({ effortLevel: "high" }, { parentSessionId: null, effortLevel: null }, { effortLevel: "low" }, CLAUDE)).toBe("low");
+    expect(resolveEffort({ effortLevel: "high" }, { parentSessionId: null, effortLevel: null }, null, CLAUDE)).toBe("high");
   });
 });
 

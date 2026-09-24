@@ -201,6 +201,19 @@ describe('resolveDispatch and the chain substitution', () => {
     expect(MODELS.claude.models.map((model) => model.id)).toContain(resolved.model);
   });
 
+  it('uses the counterpart mapping and adjusts an explicit effort for a substituted model', () => {
+    const config = { model: { source: 'fixed' as const, value: 'gpt-5.6-sol' }, effort: { source: 'fixed' as const, value: 'max' as const } };
+    const detail = afterCodexLimit(); detail.definition = definition(config);
+    const models = structuredClone(MODELS);
+    models.claude.models[1] = { id: 'sonnet', label: 'Sonnet', supportsEffort: true, effortLevels: ['low', 'medium'] };
+    const resolved = resolveDispatch(detail, employeeNode(config), { ...chained, models: () => models,
+      engineFallback: { chainFor: () => ['claude'], modelFor: () => 'sonnet' } });
+    expect(resolved).toMatchObject({ engine: 'claude', model: 'sonnet', effort: 'medium' });
+    models.claude.models[1].supportsEffort = false;
+    expect(resolveDispatch(detail, employeeNode(config), { ...chained, models: () => models,
+      engineFallback: { chainFor: () => ['claude'], modelFor: () => 'sonnet' } }).effort).toBeUndefined();
+  });
+
   it('drops a node pin that belongs to the limited engine rather than carrying it over', () => {
     const config = { model: { source: 'fixed' as const, value: 'gpt-5.5' } };
     const detail = afterCodexLimit();

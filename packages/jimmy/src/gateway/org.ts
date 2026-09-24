@@ -125,7 +125,7 @@ function findEmployeeYamlPath(name: string): string | undefined {
  */
 export function updateEmployeeYaml(
   name: string,
-  updates: { alwaysNotify?: boolean; model?: string | null },
+  updates: { alwaysNotify?: boolean; model?: string | null; effortLevel?: string | null },
 ): boolean {
   const filePath = findEmployeeYamlPath(name);
   if (!filePath) return false;
@@ -139,6 +139,8 @@ export function updateEmployeeYaml(
       data.alwaysNotify = updates.alwaysNotify;
     }
 
+    if (updates.effortLevel === null) delete data.effortLevel;
+    else if (updates.effortLevel !== undefined) data.effortLevel = updates.effortLevel;
     if (updates.model === null) delete data.model;
     else if (typeof updates.model === "string" && updates.model.trim()) data.model = updates.model.trim();
     const temporary = `${filePath}.${process.pid}.tmp`;

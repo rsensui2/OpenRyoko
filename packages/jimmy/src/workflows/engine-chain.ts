@@ -46,6 +46,7 @@ export type NodeFallback = z.infer<typeof nodeFallbackSchema>;
  *  reload lands on the next attempt. */
 export interface EngineChainSource {
   chainFor(engine: string): readonly string[];
+  modelFor?(from: string, to: string, model: string): string | undefined;
 }
 
 export interface EngineSubstitution {

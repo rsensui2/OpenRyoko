@@ -1,8 +1,8 @@
+import { compatibleEffort } from "../models/families.js";
 import type { Employee, Engine, EngineResult, EngineRunOpts, JinnConfig, Session } from "../shared/types.js";
 import { isInterruptibleEngine } from "../shared/types.js";
 import { resolveFallbackEngine, resolveSubstituteModel } from "../shared/engine-fallback.js";
 import { effortLevelsForModel, getModelRegistry } from "../shared/models.js";
-import { resolveEffort } from "../shared/effort.js";
 import { detectRateLimit } from "../shared/rateLimit.js";
 import { recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { redactText } from "../shared/redact.js";
@@ -204,7 +204,9 @@ export async function runFallbackAttempts(options: EngineFallbackOptions): Promi
     const target = options.getEngine(targetName)!;
     const targetConfig = config.engines[targetName]!;
     const model = resolveSubstituteModel(config, getModelRegistry(config), { from: engine.name, to: targetName, model: session.model }) ?? targetConfig.model;
-    const effort = resolveEffort(targetConfig, session, employee, effortLevelsForModel(config, targetName, model));
+    const levels = effortLevelsForModel(config, targetName, model);
+    const childOverride = session.parentSessionId && session.source !== "cron" ? targetConfig.childEffortOverride : undefined;
+    const effort = compatibleEffort(childOverride ?? session.effortLevel ?? employee?.effortLevel ?? config.engines[engine.name as "codex" | "claude"]?.effortLevel, levels);
     const meta = object(getSession(session.id)?.transportMeta ?? session.transportMeta);
     const engineSessions = object(meta.engineSessions);
     if (result.sessionId || session.engineSessionId) engineSessions[engine.name] = result.sessionId || session.engineSessionId;
