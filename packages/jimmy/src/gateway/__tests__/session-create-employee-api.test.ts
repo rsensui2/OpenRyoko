@@ -33,6 +33,12 @@ fs.writeFileSync(path.join(orgDir, "tako.yaml"), [
   "persona: Advise.",
 ].join("\n"));
 
+for (const engine of ["codex", "claude", "gemini"]) {
+  fs.writeFileSync(path.join(orgDir, `${engine}-default.yaml`), [
+    `name: ${engine}-default`, `engine: ${engine}`, "persona: Use the engine default.",
+  ].join("\n"));
+}
+
 let api: typeof import("../api.js");
 let registry: typeof import("../../sessions/registry.js");
 let Manager: typeof import("../../sessions/manager.js").SessionManager;
@@ -47,18 +53,19 @@ afterAll(() => fs.rmSync(scratch, { recursive: true, force: true }));
 function setup() {
   const config = {
     jinn: { version: "test" }, gateway: { port: 0, host: "127.0.0.1" },
-    engines: { default: "codex", claude: { bin: "claude-test", model: "opus" }, codex: { bin: "codex-test", model: "gpt-6-astra" } },
+    engines: { default: "codex", claude: { bin: "claude-test", model: "opus" }, codex: { bin: "codex-test", model: "gpt-6-astra" }, gemini: { bin: "gemini-test", model: "gemini-2.5-pro" } },
     connectors: {}, sessions: {}, logging: { level: "error", stdout: false, file: false },
   } as JinnConfig;
   const ok = (name: string): EngineResult => ({ sessionId: `${name}-1`, result: "done", cost: 0, numTurns: 1 });
   const codexRun = vi.fn(async (_opts: EngineRunOpts) => ok("codex"));
   const claudeRun = vi.fn(async (_opts: EngineRunOpts) => ok("claude"));
-  const engines = new Map<string, Engine>([["codex", { name: "codex", run: codexRun }], ["claude", { name: "claude", run: claudeRun }]]);
+  const geminiRun = vi.fn(async (_opts: EngineRunOpts) => ok("gemini"));
+  const engines = new Map<string, Engine>([["codex", { name: "codex", run: codexRun }], ["claude", { name: "claude", run: claudeRun }], ["gemini", { name: "gemini", run: geminiRun }]]);
   const context: ApiContext = {
     config, getConfig: () => config, sessionManager: new Manager(config, engines, []),
     startTime: Date.now(), emit: vi.fn(), connectors: new Map(),
   };
-  return { context, codexRun, claudeRun };
+  return { context, codexRun, claudeRun, geminiRun };
 }
 
 async function createSession(context: ApiContext, body: unknown) {
@@ -81,6 +88,27 @@ async function createSession(context: ApiContext, body: unknown) {
 }
 
 describe("POST /api/sessions with an employee", () => {
+  it.each([
+    ["codex", "gpt-6-astra"], ["claude", "opus"], ["gemini", "gemini-2.5-pro"],
+  ])("inherits %s config when employee model is omitted", async (engine, expectedModel) => {
+    const { context, codexRun, claudeRun, geminiRun } = setup();
+    const { status, body } = await createSession(context, { prompt: "Summarize", employee: `${engine}-default` });
+    expect(status).toBe(201);
+    expect(body.engine).toBe(engine);
+    expect(registry.getSession(body.id)?.model).toBeNull();
+    const run = engine === "codex" ? codexRun : engine === "claude" ? claudeRun : geminiRun;
+    await vi.waitFor(() => expect(run).toHaveBeenCalled(), { timeout: 3000 });
+    expect(run.mock.calls[0][0].model).toBe(expectedModel);
+  });
+
+  it("honors an explicit request model when the employee has no model", async () => {
+    const { context, codexRun } = setup();
+    const { body } = await createSession(context, { prompt: "Summarize", employee: "codex-default", model: "gpt-6-sol" });
+    expect(registry.getSession(body.id)?.model).toBe("gpt-6-sol");
+    await vi.waitFor(() => expect(codexRun).toHaveBeenCalled(), { timeout: 3000 });
+    expect(codexRun.mock.calls[0][0].model).toBe("gpt-6-sol");
+  });
+
   it("runs the child on the employee's engine and model, with its cliFlags", async () => {
     const { context, codexRun } = setup();
     const { status, body } = await createSession(context, { prompt: "Summarize", employee: "local-drafter" });

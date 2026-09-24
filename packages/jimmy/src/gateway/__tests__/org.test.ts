@@ -38,6 +38,16 @@ describe("scanOrg — alwaysNotify field", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  it.each(["", "model: null", 'model: "   "'])("preserves an unset model (%s)", (modelLine) => {
+    writeYaml("platform", "default.yaml", `name: worker\nengine: codex\npersona: Draft.\n${modelLine}\n`);
+    expect(scanOrg().get("worker")?.model).toBeUndefined();
+  });
+
+  it("preserves and trims an explicit model override", () => {
+    writeYaml("platform", "pinned.yaml", 'name: worker\nengine: codex\npersona: Draft.\nmodel: " local "\n');
+    expect(scanOrg().get("worker")?.model).toBe("local");
+  });
+
   it("defaults alwaysNotify to true when not specified in YAML", () => {
     writeYaml("platform", "dev.yaml", `
 name: dev
