@@ -10,8 +10,8 @@
 //     解決されるため、CLI が古いと旧世代（4.8 等）に留まる。
 //     明示 ID で世代を固定する。各モデルに対応する CLI バージョンが必要。
 //     `sonnet`/`haiku` の裸エイリアスは従来どおり最新ティアに解決。
-//   - OpenAI (Codex): GPT-5.6 ships three durable capability tiers —
-//     Sol (上 / flagship), Terra (中 / balanced), Luna (小 / fastest & cheapest).
+//   - OpenAI (Codex): GPT-6 offers Astra, Sol (default), and Luna.
+//     GPT-5.6 Terra remains available as an explicit older-generation choice.
 //     Always use the explicit tier ids (`gpt-5.6-sol` etc.): the bare
 //     `gpt-5.6` alias is rejected (400) by Codex on ChatGPT accounts,
 //     which is how most gateways run (subscription, not metered API).
@@ -42,7 +42,7 @@ export const CUSTOM_MODEL_VALUE = "__custom_model__"
 
 /** Default model id for each engine, mirrored by the backend synth defaults. */
 export const DEFAULT_CLAUDE_MODEL = "claude-opus-5-5"
-export const DEFAULT_CODEX_MODEL = "gpt-5.6-sol"
+export const DEFAULT_CODEX_MODEL = "gpt-6-sol"
 export const DEFAULT_GEMINI_MODEL = "gemini-2.5-pro"
 export const DEFAULT_TRIAGE_CLAUDE_MODEL = "claude-haiku-4-5"
 export const DEFAULT_TRIAGE_CODEX_MODEL = "gpt-5-nano"
@@ -73,13 +73,15 @@ export function claudeEffortOptionsForModel(model: string | undefined): ModelOpt
 }
 
 /**
- * OpenAI models. GPT-6 Astra is opt-in; GPT-5.6 Sol remains the default.
+ * OpenAI models. GPT-6 Sol is the default; Astra and Luna are explicit choices.
  * Access depends on the connected account and Codex CLI rollout.
  * https://developers.openai.com/api/docs/models/gpt-6-astra
  */
 export const OPENAI_MODELS: ModelOption[] = [
+  { value: "gpt-6-sol", label: "GPT-6 Sol — 既定（コーディング・日常業務）" },
+  { value: "gpt-6-luna", label: "GPT-6 Luna — 軽量・低コスト" },
   { value: "gpt-6-astra", label: "GPT-6 Astra — 高度な推論・コーディング" },
-  { value: "gpt-5.6-sol", label: "GPT-5.6 Sol — 上（フラッグシップ / 既定）" },
+  { value: "gpt-5.6-sol", label: "GPT-5.6 Sol — 旧世代（ピン留め用）" },
   { value: "gpt-5.6-terra", label: "GPT-5.6 Terra — 中（バランス・低コスト）" },
   { value: "gpt-5.6-luna", label: "GPT-5.6 Luna — 小（最速・最安 / トリアージ向け）" },
   { value: "gpt-5.5", label: "GPT-5.5" },
@@ -92,7 +94,7 @@ export const OPENAI_MODELS: ModelOption[] = [
   { value: "gpt-5-nano", label: "GPT-5 nano — 軽量（トリアージ向け）" },
 ]
 
-/** Model-specific effort choices; older Codex models do not inherit Astra's max. */
+/** Model-specific effort choices; older Codex models do not inherit GPT-6 max. */
 export function codexEffortOptionsForModel(model: string | undefined): ModelOption[] {
   return [
     { value: "default", label: "Default" },
@@ -100,7 +102,7 @@ export function codexEffortOptionsForModel(model: string | undefined): ModelOpti
     { value: "medium", label: "Medium" },
     { value: "high", label: "High" },
     { value: "xhigh", label: "Extra High" },
-    ...(model === "gpt-6-astra" ? [{ value: "max", label: "Max" }] : []),
+    ...(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"].includes(model ?? "") ? [{ value: "max", label: "Max" }] : []),
   ]
 }
 

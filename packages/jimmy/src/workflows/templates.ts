@@ -43,7 +43,7 @@ export class TemplateError extends Error {}
 
 const COMMON_MODEL_VARS: TemplateVariableSpec[] = [
   { key: "engine", label: "エンジン", hint: "claude / codex / gemini", required: false, default: "claude", options: ["claude", "codex", "gemini"] },
-  { key: "model", label: "モデル", hint: "例: opus, sonnet, gpt-5.6-sol", required: false, default: "opus" },
+  { key: "model", label: "モデル", hint: "例: opus, sonnet, gpt-6-sol", required: false, default: "opus" },
   { key: "effort", label: "effort", hint: "low / medium / high / xhigh / max", required: false, default: "high", options: ["low", "medium", "high", "xhigh", "max"] },
 ];
 

@@ -12,6 +12,8 @@ const DEFAULT_WINDOW = 200_000
 const MODEL_WINDOWS: ReadonlyArray<readonly [pattern: string, window: number]> = [
   ['claude-fable-5-1', 1_000_000],
   ['gpt-6-astra', 1_050_000],
+  ['gpt-6-sol', 1_050_000],
+  ['gpt-6-luna', 1_050_000],
   ['gpt-5', 400_000],
   ['gpt-4.1', 1_000_000],
   ['o3', 200_000],

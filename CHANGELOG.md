@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+## [2026.9.24] - 2026-09-24
+
+### Added / Changed
+
+- Add GPT-6 Sol and Luna to model pickers and the backend capability registry, including published context windows and Codex `low` through `max` effort support.
+- Default new Codex installations to `gpt-6-sol` / `medium`; use Sol when no model is configured. Preserve explicit existing defaults, custom registries, and job/employee pins.
+- Keep supported `max` effort when switching between GPT-6 models or to Opus 5.5 by checking model capabilities.
+
 ## [2026.9.23] - 2026-09-23
 
 ### 追加・改善

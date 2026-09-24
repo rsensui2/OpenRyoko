@@ -33,10 +33,10 @@ engines:
     # autoApproveSafetyPrompts: false
   codex:
     bin: codex
-    # GPT-5.6 の3ティア: gpt-5.6-sol(上) / gpt-5.6-terra(中) / gpt-5.6-luna(小)
+    # GPT-6: gpt-6-sol(既定) / gpt-6-astra(高度な推論) / gpt-6-luna(軽量)
     # 注意: 裸の "gpt-5.6" エイリアスは ChatGPT アカウントの Codex では 400 になる。明示 ID を使うこと
-    model: gpt-5.6-sol
-    effortLevel: high
+    model: gpt-6-sol
+    effortLevel: medium
 
 connectors:
   slack:

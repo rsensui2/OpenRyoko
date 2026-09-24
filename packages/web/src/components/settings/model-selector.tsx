@@ -137,8 +137,8 @@ export function ModelSelector({
         className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)]"
       >
         一覧にないモデルは「カスタムモデルID」を選び、入力後に確定できます。
-        {engine === "codex" && model === "gpt-6-astra" && (
-          <> GPT-6 Astra の利用には、対応する Codex CLI とアカウントのアクセス権が必要です。</>
+        {engine === "codex" && ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"].includes(model ?? "") && (
+          <> GPT-6 の利用には、対応する Codex CLI とアカウントのアクセス権が必要です。</>
         )}
         {engine === "claude" && model === "claude-fable-5-1" && (
           <> Fable 5.1 の利用には、Claude Code 2.1.255 以降とアカウントのアクセス権が必要です。</>
