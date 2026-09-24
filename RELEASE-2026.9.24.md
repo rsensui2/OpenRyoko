@@ -25,7 +25,7 @@ Sources: [OpenAI model catalog](https://developers.openai.com/api/docs/models), 
 
 - 2,371 backend tests and 123 Web tests passed; type checking and production builds passed.
 - Package contents verified to include the compiled registry, Web UI, and configuration template.
-- GPT-6 Sol live smoke test passed with Codex CLI 0.155.1 on an eligible account. A second account returned an explicit unsupported-model error with the same CLI version, confirming that upgrading the client alone does not grant access. This verifies connectivity, not task quality or subscription savings.
+- GPT-6 Sol and Luna live smoke tests passed with Codex CLI 0.155.1 on the host. Sol also passed on the deployment account when 0.155.1 was launched directly; the older 0.153.4 CLI rejected that model. These checks verify connectivity, not task quality or subscription savings.
 
 ## Update
 
