@@ -50,6 +50,7 @@ connectors:
 | `jev.timeoutMs` | 既定3000ms、最大10000ms。外側の `triage.timeoutMs` はCLI用で別 |
 | `jev.maxConcurrent` | gatewayプロセス内の上限。既定4、最大16 |
 | `jev.minProbability` | 返信・反応・沈黙の判定閾値。0〜1。確率を正解率と同一視しない |
+| `reactionPassthrough.channels` | 列挙したチャンネルのリアクションはトリアージを飛ばして本体へ渡す（承認カード用）。`botMessagesOnly`（既定true）でbotの投稿へのリアクションに限る |
 | `conversationIdleTimeoutMs/conversationMaxEntries` | 通常の1対1会話の期限（既定30分）／件数上限（既定5000） |
 
 `fallback: none` は「すべての障害で沈黙」ではない。DM・明示メンション・根拠のある続行は保護し、不確かな部屋の会話には沈黙する。純粋な感謝等はリアクションになり、作業に入る時は👀が付く。名前だけの呼びかけ、全体への依頼、他人宛て、他botへの続行を分けて検証する。

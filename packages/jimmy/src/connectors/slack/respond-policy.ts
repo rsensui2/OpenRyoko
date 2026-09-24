@@ -11,7 +11,11 @@
  *   - "mpim"  → mpim   (group DM)
  *   - "channel", "group" (legacy private channel), unknown → channel
  */
-import type { SlackRespondMode, SlackRespondToConfig } from "../../shared/types.js";
+import type {
+  SlackReactionPassthroughConfig,
+  SlackRespondMode,
+  SlackRespondToConfig,
+} from "../../shared/types.js";
 
 export type RespondScope = "im" | "mpim" | "channel";
 
@@ -94,4 +98,23 @@ export function shouldHandleReaction(
 ): boolean {
   if (itemChannel.startsWith("D")) return true;
   return resolveRespondMode(config, "channel") === "always";
+}
+
+/**
+ * Whether a reaction skips the LLM triage layer (`triage.reactionPassthrough`).
+ *
+ * Triage treats a reaction as a light acknowledgement unless it answers a
+ * question the conversation tracker saw the bot ask. Approval cards posted by
+ * cron or scripts never pass through the tracker, so an ✅ on them would be
+ * dropped silently. Opting a channel in restores the pre-triage behavior for
+ * that channel only. Child threads need no text match: the channel decides.
+ */
+export function shouldBypassReactionTriage(
+  config: SlackReactionPassthroughConfig | undefined,
+  itemChannel: string,
+  reactedIsBot: boolean,
+): boolean {
+  if (!config?.channels?.includes(itemChannel)) return false;
+  if (config.botMessagesOnly !== false && !reactedIsBot) return false;
+  return true;
 }

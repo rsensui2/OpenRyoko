@@ -470,6 +470,14 @@ export interface SlackTriageConfig {
   threadContextLimit?: number;
   /** Optional persona override for the triage prompt. Defaults to the bot's configured persona. */
   persona?: string;
+  /**
+   * Reactions that skip triage and are always handed to the engine. Use this
+   * for approval channels where a reaction on a bot-posted card IS the
+   * instruction (e.g. ✅ approve / ❌ reject), even though the conversation
+   * tracker never saw the bot ask — cron and scripts post those cards. Absent
+   * (default) keeps every reaction behind triage.
+   */
+  reactionPassthrough?: SlackReactionPassthroughConfig;
   /** Idle lifetime of conversation state. Default: 30 minutes. Reactions alone do not establish a conversation. */
   conversationIdleTimeoutMs?: number;
   /** Maximum in-memory conversation entries. Default: 5000. */
@@ -479,6 +487,16 @@ export interface SlackTriageConfig {
    * Accepted for backwards compatibility with existing config files; ignored.
    */
   activeThreadTtlMs?: number;
+}
+
+export interface SlackReactionPassthroughConfig {
+  /** Channel IDs whose reactions skip triage. Required; empty means no passthrough. */
+  channels?: string[];
+  /**
+   * Only reactions on messages posted by a bot (any bot, not just this one —
+   * a sibling connector may have posted the card). Default: true.
+   */
+  botMessagesOnly?: boolean;
 }
 
 export interface SlackGoalExtractionConfig {

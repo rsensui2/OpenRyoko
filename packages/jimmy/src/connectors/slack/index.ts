@@ -33,6 +33,7 @@ import {
   hasMentionScope,
   resolveRespondMode,
   respondPolicyNeedsTracking,
+  shouldBypassReactionTriage,
   shouldHandleReaction,
 } from "./respond-policy.js";
 import { isOperatorSpeaker } from "../../shared/operator-match.js";
@@ -771,7 +772,12 @@ export class SlackConnector implements Connector {
       const threadAnchor = reacted?.thread_ts || messageTs;
       const reactionKey = { channel: channelId, threadTs: threadAnchor, ts: reactionTs, userId: event.user };
       if (this.conversationTrackingEnabled()) this.conversations.recordHumanMessage(reactionKey);
-      if (this.triageConfig?.enabled) {
+      const reactedIsBot = !!reacted?.bot_id || reacted?.user === this.botUserId;
+      const bypassTriage = shouldBypassReactionTriage(this.triageConfig?.reactionPassthrough, channelId, reactedIsBot);
+      if (bypassTriage) {
+        logger.info(`[slack] reaction triage bypassed (reactionPassthrough) for ${channelId}:${messageTs}`);
+      }
+      if (this.triageConfig?.enabled && !bypassTriage) {
         const decision = await this.runSlackTriage({
           channel: channelId, thread_ts: threadAnchor, ts: reactionTs, user: event.user,
         }, {
@@ -781,10 +787,13 @@ export class SlackConnector implements Connector {
           reactionTarget: {
             speaker: reacted?.user === this.botUserId ? this.resolveBotName() : "other participant",
             text: messageText, isSelf: reacted?.user === this.botUserId,
-            isBot: !!reacted?.bot_id || reacted?.user === this.botUserId,
+            isBot: reactedIsBot,
           },
         });
-        if (decision.action === "silent") return;
+        if (decision.action === "silent") {
+          logger.info(`[slack] reaction triage → silent (${decision.reason ?? "no reason"}) for ${channelId}:${messageTs}`);
+          return;
+        }
         if (decision.action === "react") {
           await this.addReaction({ channel: channelId, messageTs }, decision.emoji || "pray");
           this.conversations.recordBotReaction(reactionKey);

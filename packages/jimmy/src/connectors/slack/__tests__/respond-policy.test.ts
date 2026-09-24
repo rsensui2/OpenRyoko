@@ -6,6 +6,7 @@ import {
   hasMentionScope,
   respondPolicyNeedsTracking,
   shouldHandleReaction,
+  shouldBypassReactionTriage,
 } from "../respond-policy.js";
 import type { SlackRespondToConfig } from "../../../shared/types.js";
 
@@ -218,5 +219,31 @@ describe("shouldHandleReaction", () => {
     // group DM follows the channel scope exactly like a public channel.
     expect(shouldHandleReaction({ channel: "mention" }, "G123")).toBe(false);
     expect(shouldHandleReaction({ channel: "always" }, "G123")).toBe(true);
+  });
+});
+
+describe("shouldBypassReactionTriage", () => {
+  // Approval cards posted by cron/scripts never pass through the conversation
+  // tracker, so triage would treat an ✅ on them as a light acknowledgement.
+
+  it("keeps every reaction behind triage when unconfigured", () => {
+    expect(shouldBypassReactionTriage(undefined, "C123", true)).toBe(false);
+    expect(shouldBypassReactionTriage({}, "C123", true)).toBe(false);
+  });
+
+  it("bypasses reactions on bot messages in a listed channel", () => {
+    expect(shouldBypassReactionTriage({ channels: ["C123"] }, "C123", true)).toBe(true);
+  });
+
+  it("does not bypass reactions in unlisted channels", () => {
+    expect(shouldBypassReactionTriage({ channels: ["C123"] }, "C999", true)).toBe(false);
+  });
+
+  it("does not bypass reactions on human messages by default", () => {
+    expect(shouldBypassReactionTriage({ channels: ["C123"] }, "C123", false)).toBe(false);
+  });
+
+  it("bypasses reactions on human messages when botMessagesOnly is false", () => {
+    expect(shouldBypassReactionTriage({ channels: ["C123"], botMessagesOnly: false }, "C123", false)).toBe(true);
   });
 });

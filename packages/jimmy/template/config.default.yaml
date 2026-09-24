@@ -51,6 +51,9 @@ connectors:
     #   model: gpt-5-nano    # 軽量モデル推奨（gpt-5.6-luna / claude-haiku-4-5 も可）
     #   timeoutMs: 20000
     #   threadContextLimit: 10
+    #   reactionPassthrough:   # 承認チャンネルのリアクションはトリアージを飛ばす
+    #     channels: []
+    #     botMessagesOnly: true
     #
     # 自然言語の「最後までやって」を /goal に変換する判定。
     # 遅いためデフォルトはオフ。/goal 実行自体は Claude セッション専用。
