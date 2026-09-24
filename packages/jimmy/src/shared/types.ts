@@ -312,7 +312,8 @@ export interface Employee {
   department: string;
   rank: "executive" | "manager" | "senior" | "employee";
   engine: string;
-  model: string;
+  /** Optional override; omitted models inherit the selected engine default. */
+  model?: string;
   persona: string;
   /** Emoji icon for this employee (shown in sidebar, org chart, etc.) */
   emoji?: string;

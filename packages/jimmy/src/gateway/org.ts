@@ -57,7 +57,8 @@ export function scanOrg(): Map<string, Employee> {
                 data.department || path.basename(path.dirname(fullPath)),
               rank: data.rank || "employee",
               engine,
-              model: data.model || "sonnet",
+              // Keep omission intact; each execution path resolves its engine default.
+              model: typeof data.model === "string" ? data.model.trim() || undefined : undefined,
               persona: data.persona,
               emoji: typeof data.emoji === "string" ? data.emoji : undefined,
               cliFlags: Array.isArray(data.cliFlags) ? data.cliFlags : undefined,

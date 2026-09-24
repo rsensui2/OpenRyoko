@@ -43,7 +43,7 @@ function EmployeeCard({
           {employee.engine}
         </span>
         <span className="text-[length:var(--text-caption2)] font-[var(--weight-medium)] text-[var(--text-quaternary)] bg-[var(--fill-quaternary)] px-[7px] py-px rounded-[10px]">
-          {employee.model}
+          {employee.model || "default"}
         </span>
       </div>
     </button>

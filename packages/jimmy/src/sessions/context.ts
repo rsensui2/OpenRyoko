@@ -352,7 +352,7 @@ ${languageInstruction}
 - **Department**: ${employee.department}
 - **Rank**: ${employee.rank}
 - **Engine**: ${employee.engine}
-- **Model**: ${employee.model}
+- **Model**: ${employee.model ?? "engine default"}
 ${chainOfCommand}
 ## System context
 You are part of the ${portalName} AI gateway — a system that orchestrates AI workers. You have access to the filesystem, can run commands, call APIs, and send messages via connectors. Your working directory is \`~/.ryoko\` (${JINN_HOME}).
