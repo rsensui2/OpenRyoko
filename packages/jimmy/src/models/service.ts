@@ -173,7 +173,7 @@ export class ModelManagement {
     if (!service) return [];
     const result: Target[] = []; let cursor: string | undefined;
     do {
-      const page = service.listDefinitions({ limit: 100, cursor });
+      const page = service.listDefinitions({ limit: 100, ...(cursor ? { cursor } : {}) });
       for (const summary of page.items) {
         const definition = service.getDefinition(summary.id);
         for (const node of definition?.nodes ?? []) {

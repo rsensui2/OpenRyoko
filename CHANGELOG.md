@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026.9.27
+
+- Fixed model settings failing when workflows are enabled: omit an unset pagination cursor instead of passing an undefined value to the strict workflow repository.
+- Added a regression test using the real repository with 101 definitions, including pagination and family selection. Version 2026.9.26 is deprecated; use this version for the model-family features below.
+
+
 ## 2026.9.26
 
 - Added model-family following for engine defaults, employees, AI cron jobs and workflow employee nodes. Sol/Terra/Opus stay within their selected family across generations.

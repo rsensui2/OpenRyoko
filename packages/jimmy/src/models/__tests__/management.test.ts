@@ -9,6 +9,8 @@ import { ModelManagement, recommend } from "../service.js";
 import { normalizeModels, type DiscoveredModel, type ManagedEngine } from "../discovery.js";
 import { createSession, getSession, initDb } from "../../sessions/registry.js";
 import { invalidateModelRegistry, getModelRegistry, setDiscoveredModels } from "../../shared/models.js";
+import { WorkflowRepository } from "../../workflows/repository.js";
+import { openWorkflowDatabase } from "../../workflows/repository-migrations.js";
 import { SlackModelControls } from "../../connectors/slack/model-controls.js";
 
 const sol = (id = "gpt-6-sol"): DiscoveredModel => ({ id, label: id, supportsEffort: true, effortLevels: ["low", "medium", "high"], defaultEffort: "medium" });
@@ -247,4 +249,32 @@ it("rounds depth down and chooses the lowest supported level regardless of catal
   expect(compatibleEffort("max", ["low", "high", "medium"])).toBe("high");
   expect(compatibleEffort("low", ["high", "medium"])).toBe("medium");
   expect(compatibleEffort("max", [])).toBeUndefined();
+});
+
+it("lists and updates real workflow definitions across pages using JSON-safe queries", async () => {
+  fs.writeFileSync(path.join(ORG_DIR, "writer.yaml"), yaml.dump({ name: "writer", persona: "write", engine: "codex", model: "gpt-5.6-sol" }));
+  const database = openWorkflowDatabase(path.join(JINN_HOME, "models", "workflow-test.db"));
+  const workflows = new WorkflowRepository(database);
+  try {
+    const definition = workflows.createDefinition({ id: "family-flow", title: "Family flow" });
+    definition.nodes = [
+      { id: "start", type: "trigger", name: "Start", config: { kind: "manual" } },
+      { id: "work", type: "employee", name: "Work", config: { employee: { source: "fixed", value: "writer" }, prompt: "Keep this prompt" } },
+      { id: "finish", type: "end", name: "Finish", config: { result: "success" } },
+    ];
+    definition.edges = [
+      { id: "a", from: { nodeId: "start", port: "success" }, to: { nodeId: "work", port: "input" } },
+      { id: "b", from: { nodeId: "work", port: "success" }, to: { nodeId: "finish", port: "input" } },
+    ];
+    workflows.saveDefinition(definition, definition.revision);
+    for (let i = 0; i < 100; i++) workflows.createDefinition({ id: `other-${i}`, title: `Other ${i}` });
+    const service = new ModelManagement({ getConfig: () => config, onConfig: c => { config = c; }, discover, getWorkflows: () => workflows });
+    expect(service.snapshot().pins.find(p => p.kind === "workflow")).toMatchObject({ id: "family-flow/work", model: null });
+    await service.refresh();
+    await service.act({ action: "follow", kind: "workflow", id: "family-flow/work", family: "sol" });
+    expect(service.snapshot().pins.find(p => p.kind === "workflow")).toMatchObject({ id: "family-flow/work", family: "sol", model: "gpt-6-sol" });
+    const saved = workflows.getDefinition("family-flow")!;
+    expect(saved.nodes[1]).toMatchObject({ config: { prompt: "Keep this prompt", model: { source: "fixed", value: "gpt-6-sol" } } });
+    expect(saved.enabled).toBe(false);
+  } finally { database.close(); }
 });
