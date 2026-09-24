@@ -1,6 +1,7 @@
-import { fireEvent, render, screen } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 import { ModelSelector } from "../model-selector"
+import { api, type ModelManagementStatus } from "@/lib/api"
 import { CUSTOM_MODEL_VALUE } from "@/lib/model-catalog"
 
 describe("ModelSelector", () => {
@@ -183,4 +184,16 @@ describe("ModelSelector", () => {
     fireEvent.change(screen.getByRole("combobox"), { target: { value: "" } })
     expect(onChange).toHaveBeenCalledWith(undefined)
   })
+  it("loads a newly discovered model and does not show another engine's stale catalog", async () => {
+    const mock = vi.spyOn(api, "getModels").mockResolvedValue({ engines: [{ engine: "codex", models: [{ id: "future-sol", label: "Future Sol" }] }] } as ModelManagementStatus)
+    try {
+      const { rerender } = render(<ModelSelector id="dynamic" engine="codex" model="future-sol" onChange={vi.fn()} />)
+      await screen.findByRole("option", { name: "Future Sol" })
+      await waitFor(() => expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("future-sol"))
+      expect(screen.queryByRole("textbox")).toBeNull()
+      rerender(<ModelSelector id="dynamic" engine="claude" model="sonnet" onChange={vi.fn()} />)
+      expect(screen.queryByRole("option", { name: "Future Sol" })).toBeNull()
+    } finally { mock.mockRestore() }
+  })
+
 })

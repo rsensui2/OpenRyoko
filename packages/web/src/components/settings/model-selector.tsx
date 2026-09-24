@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
+import { api } from "@/lib/api"
 import {
   CUSTOM_MODEL_VALUE,
   isCatalogModel,
@@ -30,7 +31,17 @@ export function ModelSelector({
   onChange,
   allowAutomatic = false,
 }: ModelSelectorProps) {
-  const knownModel = isCatalogModel(engine, model)
+  const [catalog, setCatalog] = useState<{ engine: string; models: Array<{ value: string; label: string }> } | null>(null)
+  const discovered = catalog?.engine === engine ? catalog.models : []
+  useEffect(() => {
+    let active = true
+    api.getModels().then(status => {
+      if (active) setCatalog({ engine, models: status.engines.find(e => e.engine === engine)?.models.map(m => ({ value: m.id, label: m.label })) ?? [] })
+    }).catch(() => {})
+    return () => { active = false }
+  }, [engine])
+  const options = [...new Map([...modelsForEngine(engine), ...discovered].map(m => [m.value, m])).values()]
+  const knownModel = options.some(m => m.value === model)
   const [customMode, setCustomMode] = useState(Boolean(model && !knownModel))
   const [customDraft, setCustomDraft] = useState(model && !knownModel ? model : "")
   const customInputRef = useRef<HTMLInputElement>(null)
@@ -45,7 +56,7 @@ export function ModelSelector({
         : "例: gpt-private-preview"
 
   useEffect(() => {
-    const isCustom = Boolean(model && !isCatalogModel(engine, model))
+    const isCustom = Boolean(model && !isCatalogModel(engine, model) && !discovered.some(m => m.value === model))
     setCustomMode(isCustom)
     setCustomDraft(isCustom ? model ?? "" : "")
   }, [engine, model])
@@ -69,7 +80,8 @@ export function ModelSelector({
     onChange(nextModel)
   }
 
-  const selectValue = customMode
+  const showCustom = customMode && (!knownModel || customDraft !== model)
+  const selectValue = showCustom
     ? CUSTOM_MODEL_VALUE
     : model && knownModel
       ? model
@@ -95,7 +107,7 @@ export function ModelSelector({
       >
         {allowAutomatic && <option value="">自動（ベンダー既定）</option>}
         {!allowAutomatic && !model && <option value="">モデルを選択</option>}
-        {modelsForEngine(engine).map((option) => (
+        {options.map((option) => (
           <option key={option.value} value={option.value}>
             {option.label}
           </option>
@@ -103,7 +115,7 @@ export function ModelSelector({
         <option value={CUSTOM_MODEL_VALUE}>カスタムモデルIDを入力…</option>
       </select>
 
-      {customMode && (
+      {showCustom && (
         <input
           ref={customInputRef}
           id={customInputId}

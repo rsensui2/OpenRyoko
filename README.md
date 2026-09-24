@@ -1,42 +1,22 @@
 # 🌸 OpenRyoko
 
-**Slackで空気を読み、必要な時だけ発言し、頼まれた仕事は最後までやり切る AI 同僚。**
+**Slackで会話し、Claude Code・Codex・Gemini CLIに仕事をつなぐ、常駐AIアシスタント。**
 
-「最後までやって」と言えば自律で動き続け、進捗は Slack の Canvas にライブ表示。
-Claude Code v2.1.139+ の `/goal` Stop hook と Agent View をネイティブに Slack に橋渡しした、
-**Slackファースト・日本語ファースト**の常駐AIゲートウェイです。
+Slackで依頼し、Webダッシュボードで会話・社員・定期ジョブ・実行状況を管理できます。完了条件の追跡、必要な場面での返信やリアクション、モデルの選択と既定モデルの自動追従を備えています。
 
 <p align="center">
-  <img src="assets/ryoko-avatar.jpeg" alt="Ryoko" width="240" />
+  <img src="assets/ryoko-avatar.jpeg" alt="Ryoko" width="200" />
 </p>
 
-<p align="center">
-  <img src="assets/jinn-showcase.gif" alt="OpenRyoko Web Dashboard" width="800" />
-</p>
+[Jinn](https://github.com/hristo2612/jinn) のゲートウェイ・AI組織・Cron・Web UIを基盤に、日本語とSlackでの運用を中心に開発しています。MITライセンスで利用できます。
 
-> 🪶 OpenRyokoは [Jinn](https://github.com/hristo2612/jinn)（MIT License, by Hristo Stoyanov）の AI 組織・cron・Web ダッシュボードといった土台レイヤーを継承しつつ、Slack 上での**振る舞い** — 空気読み・自律完遂・状態可視化 — に集中して大きく前進した設計です。
+CLIを使う個人・小規模チーム向けのガイドです。初回は「始め方」と「モデル設定」を読み、以降は必要な章を参照してください。
 
----
+[始め方](#まずwebで動かしてslackを接続する) · [モデル設定](#モデルを選ぶ既定モデルを追従させる) · [最近の機能](#最近の機能でできること) · [更新方法](#本体cliコンテナを更新する) · [変更履歴](CHANGELOG.md)
 
-## 💡 OpenRyokoが解く問題
+## まずWebで動かして、Slackを接続する
 
-社内 Slack に AI を住まわせると、すぐ3つの壁にぶつかります：
-
-1. **「うざい」問題** — 雑談に割り込んでくる、誰宛か分からない発言に毎回反応する
-2. **「中途半端」問題** — 1ターンで返事して止まる。長い作業の途中でユーザーが「続けて」「次は？」を投げ続けないといけない
-3. **「見えない」問題** — 何が動いてるのか、何が詰まってるのか、Slack の会話ログを遡らないと分からない
-
-OpenRyoko はこの3つを**Slack側のメカニズムごと用意**して解決します：
-
-| 問題 | OpenRyoko の解 | 実装 |
-|---|---|---|
-| ① うざい | **空気読みトリアージ** — メッセージ毎に Haiku が silent/react/reply を判定。返信は慎重に、自然な場面では絵文字で反応 | `slack/triage.ts` |
-| ② 中途半端 | **自然言語 `/goal`** — 完了条件を抽出し、Claude の Stop hook または Codex の完了判定・再開で作業を継続 | `slack/goal-extractor.ts` + `sessions/goal-execution.ts` |
-| ③ 見えない | **Agents View Canvas** — running/waiting/errored/idle の全セッションを Slack チャンネルのタブとして30秒毎ライブ同期 | `slack/agents-canvas.ts` |
-
----
-
-## ⚡ 30秒で始める
+Node.js 22以上と、利用するAIエンジンのCLIが必要です。Claude Code・Codex・Geminiのいずれかを導入し、**Ryokoを起動する環境で**ログインを済ませてください。Dockerではホスト側とコンテナ側のインストール・認証が異なります。
 
 ```bash
 npm install -g openryoko
@@ -44,328 +24,168 @@ ryoko setup
 ryoko start
 ```
 
-ブラウザで [http://localhost:7777](http://localhost:7777) → Settings → Slack に Bot Token を貼って保存。
-WebUI の onboarding wizard が `/goal` / Canvas / triage を案内するので、迷わず有効化できます。
+1. [http://127.0.0.1:7777](http://127.0.0.1:7777) を開き、設定で利用するエンジンを確認します。
+2. Webチャットから短い依頼を送り、応答を確認します。
+3. Slackを使う場合は、設定画面のSlack App Manifestでアプリを作成し、Socket Modeを有効にします。Bot TokenとApp Tokenを設定画面に保存してください。
+4. 許可する利用者のSlack IDを `allowFrom` に設定し、ボットを利用先チャンネルへ招待します。`@Ryoko` とメンションして依頼できます。
 
-> 💡 Slack 機能をフルに使うには **Claude Code v2.1.139 以降**が必要です（`/goal` コマンド対応）。`npm install -g @anthropic-ai/claude-code@latest` で最新化してください。
+CLIの導入・ログイン・更新手順は [Claude Code](https://code.claude.com/docs/en/setup)、[Codex](https://learn.chatgpt.com/docs/codex/cli)、[Gemini CLI](https://geminicli.com/docs/get-started/installation/) の公式案内を参照してください。
 
----
+モデル設定カードをSlackで操作する場合は、さらに **管理者Slack ID** とSlackアプリの **Interactivity** を設定します。新しく生成するManifestにはInteractivityが含まれます。既存アプリは設定を確認してください。
 
-## 🌸 OpenRyoko 独自の差別化
+## モデルを選ぶ、既定モデルを追従させる
 
-[Jinn](https://github.com/hristo2612/jinn) からは「常駐デーモン + マルチエンジン + AI組織 + Webダッシュボード + Cron + Skills + MCP」の枠を継承していますが、**Slack 上で AI同僚として実用に耐える挙動**は OpenRyoko のためにフルに作り直しました。
+ダッシュボードの **モデル設定**（`/models`）で、導入済みのCodex・Claude CLIが返すモデル一覧を取得できます。通常は起動時と6時間ごとに確認し、画面からも更新できます。一覧取得や設定カードの操作でAIの推論ターンは起動しません。
 
-### Slack 振る舞い系（全て OpenRyoko 独自）
+同じCLIプロトコルで取得できる新モデルは、Ryokoへの個別追加を待たずに選択できます。一覧に出ない場合はCLIの版とログイン状態を確認してください。表示は「CLIが列挙したモデル」であり、そのアカウントでの応答テスト完了を意味しません。取得に失敗した場合は現在の既定モデルを維持します。
 
-- 🌸 **空気読みトリアージ** — Haiku で `silent / react / reply` を判定。テキスト返信は慎重に、挨拶や成果共有には軽い絵文字で反応
-- 🎯 **自然言語 `/goal`** — 依頼から完了条件を抽出し、Claude の Stop hook または Codex の完了判定・再開で追跡
-- 🖼️ **Agents View Canvas** — 全 Ryoko セッションを Slack の Canvas タブにライブ同期。設定 UI から channel picker でワンクリック有効化
-- 💬 **ターン毎の個別投稿** — `/goal` で多ターン回した時、Claude の各ターンの応答が個別の Slack メッセージとして到着（進捗が見える）
-- 👤 **発言者認識** — Slack ID から display name を解決し、operator と他者を system prompt 上で明示区別
-- 🧵 **DM-equivalent 検出** — チャンネル内でも「ボット + 自分だけの会話」を検出して triage を skip、自然な対話を実現
-- 📡 **Telegram コネクタ** — Jinn には無い 4 つ目のコネクタ
+![モデル設定画面。既定モデル、追従方針、用途、切り戻しを操作できます](assets/model-management.png)
 
-### エンジン / コスト最適化系（全て OpenRyoko 独自）
+[使い方の解説スライド（PDF・PowerPoint）](https://github.com/rsensui2/OpenRyoko/releases/tag/v2026.9.25)
 
-- **GPT-6 Astra** — 設定画面で OpenAI（Codex）→ GPT-6 Astra を選択。推論強度は `low / medium / high / xhigh / max`。既定の GPT-5.6 Sol を保ち、利用するアカウントでAstraへのアクセス権が必要です。[公式モデル情報](https://developers.openai.com/api/docs/models/gpt-6-astra)
-- **Claude Fable 5.1** — 設定画面で Anthropic（Claude）→ Fable 5.1 を選択。推論強度 `low / medium / high / xhigh / max` と100万トークンのコンテキスト表示に対応。Claude Code 2.1.255以降とアカウントのアクセス権が必要です。既存の既定モデルは維持します。[公式モデル情報](https://platform.claude.com/docs/en/models/fable-5-1/overview)
-- 💸 **Interactive PTY エンジン** — Claude を「対話モード」で PTY 起動（`cc_entrypoint=cli`）。2026/6/15 の Claude 改定後も自動化を**通常のサブスク利用枠**で動かし、Agent SDK クレジットの消費・追加課金を回避（オプトイン。SSH 実行は `claude -p` に自動フォールバック、ターンタイムアウト等で堅牢化）
-- 📊 **コンテキストメーター** — codex / claude 両エンジンで直近ターンの入力コンテキスト量を計測・可視化。コンテキスト枯渇の予兆が一目で分かる
-- 🖥️ **ライブ xterm CLI ビュー** — ダッシュボードで Claude の PTY セッションをそのままターミナル表示（`/ws/pty`、Origin/host ガード付き）
-- ⚙️ **`ryoko config interactive` + setup/update プロンプト** — CLI でも Web UI でも interactive を切替。更新時に未設定なら対話で案内
+### 追従方針はエンジンごとに選べます
 
-### セキュリティ / 運用系（全て OpenRyoko 独自）
+| 方針 | 動作 | 向いている運用 |
+| --- | --- | --- |
+| おすすめに自動追従 | 選択した用途に合う候補を、新しい会話の既定モデルに適用 | 手動での既定変更を減らしたい |
+| 通知して選ぶ | 現在の既定を維持し、候補を確認してから適用 | 変更前に確認したい |
+| 特定モデルに固定 | 指定したモデルIDを維持 | 同じモデルで継続したい |
 
-- **設定を会話で依頼** — 標準同梱の [openryoko-config](packages/jimmy/template/skills/openryoko-config/SKILL.md) が、設定項目・反映方法を確認して変更と検証を支援。開発中のJev空気読みとClaude Code／Codexフォールバックも、稼働版の対応を確かめて案内します。新規setupと更新時のmigrateで追加され、既存のカスタムスキルは保持します。
-- 🔒 **端末認証 + Host/Origin guard** — ネットワーク公開時は自動的に認証を要求。単回ペアリング、端末解除、DNS rebinding対策付き
-- 🌐 **会話型オンボーディング** — Ryoko 自身が新規ユーザーに名前・役割・好みを聞いて `~/.ryoko/knowledge/` に保存
-- ✨ **Onboarding ウィザード** — Web UI 初回起動時に Slack 機能（`/goal` / Canvas / triage）を視覚的に紹介
-- 💡 **Inline discovery hint** — Slack tokens 設定済みで Canvas 未有効なら設定画面で気づかせる
-- 🧠 **Persona / Memory レイヤー** — `ryoko update` で自動マイグレーションされる人格・記憶テンプレート
-- 🏠 **`~/.ryoko` ホームディレクトリ** — `~/.jinn` からの自動マイグレーション付き、日本語ファースト
+**既存環境は、方針を選ぶまで現在の設定を維持します。** 個別に既定モデルを選ぶと「固定」になります。「以前のモデルに戻して固定する」では、直前のモデルと思考量を復元し、自動追従を停止できます。
 
-### Jinn から継承している土台（変えていない強み）
+候補の用途は次の区分から選びます。CLIが返す情報を使って候補を決めます。選定方法の詳細はモデル管理ガイドに記載しています。
 
-- 🔌 **3エンジン対応** — Claude Code CLI + Codex SDK + Gemini CLI
-- 💬 **マルチコネクタ** — Slack / Discord / WhatsApp / Telegram
-- 👥 **AI 組織システム** — 部門・階級・マネージャー・従業員・タスクボード
-- 🌐 **Web ダッシュボード** — チャット / 組織図 / カンバン / コスト追跡 / cron 可視化
-- ⏰ **Cron スケジューリング** — ホットリロード対応
-- 🔄 **ホットリロード** — config / cron / org ファイルを再起動なしで反映
-- 🛠️ **自己改変** — エージェントが自分の設定・スキル・組織を実行中に編集可能
-- 📦 **スキルシステム** — Markdown プレイブックでエンジンが native に従う
-- 🏢 **マルチインスタンス** — 複数の Ryoko を並列起動
-- 🔗 **MCP 対応** — 任意の MCP サーバーに接続
+| 用途 | Codex | Claude |
+| --- | --- | --- |
+| 節約 | Luna系列 | Haiku |
+| バランス | Sol系列 | アカウントの既定モデル |
+| 性能重視 | Astra系列 | 一覧にあればFable、なければOpus |
 
----
+区分は用途の目安で、料金や利用量の保証ではありません。該当系列が見つからなければ現在の既定を保ちます。新しい名前の系列も一覧から手動で選べますが、追従先の区分への追加にはRyoko側の対応が必要です。
 
-## 📦 「中身」もほしい人へ（OpenRyoko パッケージ）
+新規セットアップの既定は、Claudeが **Opus 5.5 / xhigh**、Codexが **GPT-6 Sol / medium** です。Geminiは従来どおり手動設定です。
 
-OpenRyoko 本体（この基盤）は **MIT ライセンスで無料**です。ここは今後も変わりません。
+### Slackから設定カードを開く
 
-ただ、セットアップ直後のアシスタントは「まっさら」で、実務で使えるようになるまでには
-指示書・人格ファイル・記憶の運用・cron の設計・検証ゲートを自分で育てる必要があります。
-この「育てた中身」を、本家 Ryoko が実際に使っているものから固有情報を除いて配布しています。
+設定画面で `portal.operatorSlackId` に管理者本人の `U…` 形式のSlack IDを保存します。そのIDを、接続先の `allowFrom` にも含めてください。
 
-| | 内容 |
-|---|---|
-| **基本パッケージ** ¥29,800 | 計26ファイル: 運用指示書 完全版（AGENTS.md / CLAUDE.md）・人格ファイル5枚・記憶の2層運用設計・cron 設計パターン集と雛形4本・独立検証ゲート4本・スキル3本・配線スクリプト |
-| **拡張パッケージ** ¥98,000 | さらに計55ファイル: 時間軸つき知識グラフ（スキーマ・取込アダプタ・質問スクリプト・3D可視化）・自律ループ3層キット（設計書テンプレ4本＋ランタイム部品）・read-only rootfs の Docker 常駐環境 |
+- チャンネルでは **`@Ryoko モデル設定`** と送信します。
+- DMでは **`モデル設定`** と送信します。
+- 表示された本人専用カードで、既定モデル、用途、追従方針、通知先、切り戻しを操作できます。
 
-各ルールには「なぜ」（多くは実際に起きた障害）が添えてあり、そのまま使っても、
-自分の環境に合わせて書き換えても構いません。買い切り・GitHub リポジトリ招待で即納です。
+表示名や信頼話者の登録だけでは設定変更の権限になりません。カードは30分で失効し、操作後は更新されます。通知を受け取るには「このチャンネルで通知」、またはWebの通知先設定を使います。通知先を空にすると配信を停止します。
 
-→ **[パッケージの詳細と購入 (tekion.jp/openryoko/packages)](https://tekion.jp/openryoko/packages)**
+### 既存の会話と社員・ジョブの固定設定は維持します
 
-## 💎 設計哲学
+既定モデルの変更は新しい会話に適用します。すでにある会話は従来のモデルと思考量を保ちます。Slackの設定カードでは、処理が動いておらず、実行キューにも入っていない会話のモデルを変更できます。同じエンジン内での変更に限ります。
 
-### 🔑 Anthropic Max サブスクリプションで動く
+モデル設定画面の一覧には、社員とAIを使うCronジョブについて、個別に指定した「固定モデル」、実際に使う「実効モデル」、指定を引き継いだ先の「継承元」を表示します。検索、個別変更、複数の固定設定の解除ができます。ジョブの固定を解除しても、担当社員に固定があればそのモデルを継承します。
 
-OpenRyoko は Claude Code CLI を子プロセスとして起動するため、Anthropic の公式クライアントとして扱われ、[Max サブスクリプション](https://www.anthropic.com/pricing)の利用枠で動作します。APIトークン従量課金を前提にしません。
+既定をSolにしても重いモデルの利用が減らない場合は、この一覧で社員・ジョブの固定を確認してください。実行頻度、会話の長さ、思考量も利用量に影響します。リモート社員の利用可能モデルはローカルCLIからは確認できません。Workflowのノード指定や外部スクリプトはこの一覧の対象外です。
 
-> **⚠️ 2026年6月15日の Claude 改定への対応**
->
-> この日から「Claude Agent SDK クレジット」という**別枠の月次クレジット**が新設され、**プログラム的な利用**（`claude -p` 非対話モード / Claude Agent SDK / Claude Code GitHub Actions）はこの別枠（消費レートは API と同一・プラン額相当を毎月付与）から消費されるようになりました。一方、**対話（インタラクティブ）利用は対象外で、従来どおり通常のサブスク枠**で動きます。
->
-> OpenRyoko は **Interactive PTY エンジン**（`engines.claude.interactive`）を備え、自動化のターンも「人が使うのと同じ対話モード」で Claude を起動します。これにより**改定後も通常のサブスク利用枠で動き続け**、Agent SDK クレジットの消費や追加課金を避けられます。
-> - 既定は従来の headless `claude -p`。**`ryoko config interactive on`**、または **設定画面 → エンジン設定 → 「インタラクティブPTY」トグル**、もしくは `ryoko setup` / `ryoko update` の対話プロンプトで有効化（反映にはゲートウェイ再起動）。
-> - SSH リモート実行の従業員は PTY を使えないため、自動で headless `claude -p` にフォールバックします。
+API・継承・互換性の詳細は [モデル管理ガイド](docs/model-management.md) を参照してください。
 
-空気読みトリアージと `/goal` の抽出・完了判定にも、設定した Claude / Codex CLI を使います。
+## 最近の機能でできること
 
-### 🧠 「バス、脳ではない」哲学
+| 機能 | 使い方・変わること |
+| --- | --- |
+| **Jevの空気読み** | 設定 → Slack → 空気読み判定で、CLI・Jevのみ・Jev＋CLI・比較運転を選択。会話の流れと担当能力を踏まえ、返信・リアクション・沈黙を判断します。 |
+| **Claude / Codexのフォールバック** | 設定で有効にすると、利用上限・応答なし・タイムアウト時に、元の処理を停止して作業状況を別エンジンへ引き継ぎます。 |
+| **AIを使わない定期実行** | Cronの `kind: command` で既存スクリプトを直接起動。タイムアウト、重複起動の防止、ログ上限、失敗通知に対応します。 |
+| **更新に合わせた運用点検** | 更新通知ジョブが導入済み機能と設定から改善候補を抽出。変更のない回はAIを起動せず、新しい候補だけを点検します。 |
+| **Cronの反映状態** | ジョブファイルの変更と実際の登録を照合し、画面に反映待ち・登録エラーを表示します。不正JSONや一時的な消失では直前の登録を維持します。 |
+| **完了条件の追跡** | Claudeの `/goal` とCodexの完了判定で作業を継続。Codexは承認済みの残作業がある場合、同じ会話を最大2回再開します。 |
+| **進捗の可視化** | SlackのAgents View Canvas、Webの実行状況、コンテキストメーター、Claudeのライブターミナル表示で確認できます。 |
 
-ツール利用・ファイル編集・推論は各エンジンが担当し、OpenRyoko は Slack、cron、WebUI、Canvas へ接続します。Claude の自律継続はネイティブの `/goal` に任せ、Codex の非対話実行には完了条件の保持・終了後の判定・回数を制限した再開を補います。
+### 空気読みを使う
 
-### 🌸 空気読みの判断フロー
+Slackでは、許可ユーザーと `respondTo` の条件を先に確認します。その後、明示メンション・DM・継続中の会話などを処理し、判断が必要な発言をトリアージへ渡します。トリアージが `react` を選ぶと絵文字だけを返し、回答エンジンは起動しません。
 
-```
-受信メッセージ
-  ├─ DM？               ──→ 常に返信
-  ├─ @メンション？       ──→ 常に返信
-  ├─ DM相当の会話？      ──→ 常に返信（一度engage済み + 1ユーザーだけの会話）
-  └─ グレーゾーン        ──→ Haiku でトリアージ
-                             ├─ silent → 何もしない
-                             ├─ react  → 絵文字スタンプだけ付ける
-                             └─ reply  → 本エンジンで返信
-```
+Jevの利用にはTypeSafeのAPIキーが必要です。設定画面で保存して接続を確認できます。Jevのみの方式は、不確かな判定や障害時にもCLIを追加起動しません。Jev＋CLIは必要に応じてCLIへ引き継ぎ、比較運転はCLIの判断を採用します。既存環境は設定を変えるまで従来のCLI方式を維持します。
 
-判定基準（デフォルトプロンプトより）:
-- 明らかに自分宛 → reply
-- 自分の専門領域で役に立てる → reply
-- 単なる同意・感謝 → react（絵文字のみ）
-- それ以外 → silent（雑談には絶対に割り込まない）
+「役立てる場面への自発的な参加」は0〜100%で設定でき、既定は0%です。名指しの依頼や会話の継続とは別に、呼ばれていない場面での提案を調整します。`respondTo` や利用者制限を越えて発言する設定ではありません。
 
-確信度 60% 未満なら silent に倒す保守的設計です。
+詳しい設定と判定範囲は [Jevトリアージと会話追跡](docs/jev-slack-triage.md) にあります。
 
-## 🚀 クイックスタート
+### 定期ジョブと運用点検
 
-### npm で入れる（推奨）
+CronはWeb画面、または `~/.ryoko/cron/jobs.json` で管理します。AIに依頼するジョブでは `model` と `effortLevel` を必要に応じて指定し、全体の既定に追従させるなら、ジョブと担当社員の両方で固定を解除します。決まったコマンドを実行するだけなら `kind: command` を使えます。
+
+更新通知ジョブの運用点検は、既定で改善案のレビューと通知を行います。`maintenance.mode` は `review`・`apply`・`off` から選択します。`apply` は検証可能なローカル修正まで許可する設定です。
 
 ```bash
-npm install -g openryoko
-ryoko setup
-ryoko start
+# コードによる点検結果を確認する
+ryoko maintenance inspect --json
+
+# 設定済みの更新通知ジョブを手動実行する
+ryoko maintenance run <update-job-id>
 ```
 
-アップデートは `ryoko update`。稼働中のゲートウェイをそのまま新コードに載せ替えたい場合は `ryoko update --restart` を使うと、更新・マイグレーション後に自動で再起動します（systemd ユニット → フォークデーモンの順に検出。systemd ユニット名は `--service <name>` か環境変数 `RYOKO_SERVICE` で上書き可、既定は `openryoko`）。
+## 設定ファイルと保存先
 
-### ソースから入れる（開発・改造向け）
-
-```bash
-git clone https://github.com/rsensui2/OpenRyoko.git
-cd OpenRyoko
-pnpm install
-pnpm build
-npm install -g ./packages/jimmy
-
-ryoko setup
-ryoko start
-```
-
-ブラウザで [http://localhost:7777](http://localhost:7777) を開くとダッシュボードが表示されます。
-
-## 🏗️ アーキテクチャ
-
-```
-                          +----------------+
-                          |   ryoko CLI    |
-                          +-------+--------+
-                                  |
-                          +-------v--------+
-                          |   ゲートウェイ  |
-                          |    デーモン     |
-                          +--+--+--+--+---+
-                             |  |  |  |
-              +--------------+  |  |  +--------------+
-              |                 |  |                  |
-      +-------v-------+ +------v------+  +-----------v---+
-      |    エンジン    | |  コネクタ    |  |    Web UI     |
-      |Claude|Codex|Gem| | Slack|WA|DC |  | localhost:7777|
-      +----------------+ +-------------+  +---------------+
-              |                 |
-      +-------v-------+ +------v------+
-      |     Cron      | |   組織       |
-      | スケジューラ    | |  システム     |
-      +---------------+ +-------------+
-```
-
-CLI がゲートウェイデーモンにコマンドを送信。デーモンがAIエンジンへ作業を振り分け、コネクタ統合を管理し、cron ジョブを実行し、Web ダッシュボードを配信します。
-
-## ⚙️ 設定
-
-OpenRyokoは `~/.ryoko/config.yaml` から設定を読み込みます（`~/.jinn/` が既存の場合、初回起動時に自動マイグレーション）。
+設定は `~/.ryoko/config.yaml` に保存されます。まずは画面で設定し、必要な項目だけファイルで調整できます。以下はClaudeの思考量（effort）を新規初期値の `xhigh` から `medium` に調整した例です。トークン・IDは仮の値です。
 
 ```yaml
 gateway:
   port: 7777
   host: "127.0.0.1"
-
 engines:
   default: claude
   claude:
     bin: claude
-    model: claude-opus-5-5   # Opus 5.5 明示 ID（裸の opus エイリアスは CLI が知る最新 Opus 止まり）
+    model: claude-opus-5-5
     effortLevel: medium
-    interactive: false     # true で対話モード(PTY)起動 → 6/15改定後も通常サブスク枠で動く
   codex:
     bin: codex
-    model: gpt-5.6-sol     # gpt-6-astra も選択可能。Sol / Terra / Luna も引き続き利用できます。
-
-connectors:
-  slack:
-    app_token: xapp-...
-    bot_token: xoxb-...
-    # 決定的な応答ゲート（トリアージの前段で評価。省略時は全メッセージに応答）
-    respondTo:
-      im: always            # DM: メンション不要で常に応答
-      mpim: mention         # グループDM: @メンション時のみ
-      channel: mention      # チャンネル: @メンション時のみ
-      engagedThreads: true  # botが参加済みのスレッド内は再メンション不要（デフォルト true）
-    # 空気読みトリアージ（メンションなしメッセージへの過剰反応を抑制）
-    triage:
-      enabled: true
-      model: claude-haiku-4-5
-      timeoutMs: 20000
-      threadContextLimit: 10
-  discord:
-    botToken: ...
-    # 平場チャンネルでの返信先: channel（そのまま投稿・既定）/ reply（元メッセージにリプライ）
-    # / thread（元メッセージからスレッドを作って返信。Slack 風にスレッド単位のセッションになる。
-    #   既存デプロイで thread に切り替えると平場チャンネルの進行中セッションは新規に切り直される）
-    replyStyle: reply
-    # Slack と同じ決定的な応答ゲート。
-    # 省略時も他ユーザー宛のメンション/リプライには応答しない（Slack と同じ既定挙動）
-    respondTo:
-      dm: always            # DM（1:1・グループ）: メンション不要で常に応答
-      channel: mention      # チャンネル/スレッド: @メンション or botへのリプライ時のみ
-      engagedThreads: true  # botが参加済みのスレッド内は再メンション不要（デフォルト true）
-
-cron:
-  jobs:
-    - name: daily-review
-      schedule: "0 9 * * *"
-      task: "PRをレビューして要約を投稿"
-
+    model: gpt-6-sol
+    effortLevel: medium
 portal:
   portalName: Ryoko
-  operatorName: 亮介
+  operatorName: 管理者
+  operatorSlackId: U0123456789
   language: Japanese
-
-org:
-  agents:
-    - name: reviewer
-      role: code-review
+connectors:
+  slack:
+    appToken: xapp-REPLACE_ME
+    botToken: xoxb-REPLACE_ME
+    allowFrom: [U0123456789]
+    respondTo:
+      im: always
+      mpim: mention
+      channel: mention
+      engagedThreads: true
+    triage:
+      enabled: true
+      backend: cli
+      model: claude-haiku-4-5
 ```
 
-## 📁 プロジェクト構成
+社員の定義は `~/.ryoko/org/<部門>/<社員名>.yaml`、定期ジョブは `~/.ryoko/cron/jobs.json` に置きます。`config.yaml` 内の `org.agents` や `cron.jobs` ではありません。モデルの追従方針と通知先は **モデル設定画面から保存**できます。
 
-```
-OpenRyoko/
-  packages/
-    jimmy/          # ゲートウェイデーモン + CLI（パッケージ名: openryoko）
-    web/            # Web ダッシュボード（パッケージ名: @openryoko/web）
-  turbo.json
-  pnpm-workspace.yaml
-```
+Slack接続、Cron、社員の設定は変更を監視して反映します。一方、gatewayのhost/port、Claudeの対話モード（PTY）、起動時に構築する機能の変更は再起動が必要です。設定の支援を依頼する場合は、標準同梱の [openryoko-configスキル](packages/jimmy/template/skills/openryoko-config/SKILL.md) が使えます。
 
-## 🧑‍💻 開発
+### Claudeの対話モード
+
+`ryoko config interactive on` または設定画面の「インタラクティブPTY」で切り替えます。変更後はゲートウェイを再起動してください。SSHで実行するリモート社員は、非対話モードの `claude -p` を使います。
+
+OpenRyokoはインストール済みのCLIを子プロセスとして起動します。認証方法や課金・利用上限は各プロバイダーの条件に従います。対話モードの選択だけで追加料金が発生しないことを保証するものではありません。
+
+## 本体・CLI・コンテナを更新する
+
+モデル一覧の自動取得と既定モデルの追従は、ソフトウェアのインストールとは別の機能です。CLIのプロトコル変更に対応する場合などは、Ryoko本体の更新も必要になります。
+
+通常のnpmインストールでは次のコマンドで、本体の更新・マイグレーション・再起動を実行できます。
 
 ```bash
-git clone https://github.com/rsensui2/OpenRyoko.git
-cd OpenRyoko
-pnpm install
-pnpm setup   # 一回限り: 全パッケージビルド + ~/.ryoko 作成
-pnpm dev     # ゲートウェイ + Next.js dev サーバーをホットリロードで起動
+ryoko update --restart
+ryoko --version
 ```
 
-[http://localhost:3000](http://localhost:3000) で Web ダッシュボードが開けます。
+`ryoko update` が更新するのはRyoko本体です。Claude Code・Codex・Gemini CLIは、上記の公式案内に従い、各CLIを導入した方法で別途更新してください。
 
-> **前提条件:** Node.js 22+、pnpm 10+、[Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)（`npm install -g @anthropic-ai/claude-code`）
+systemdでは既定の `openryoko` ユニットを検出します。別名なら `--service <name>`、または `RYOKO_SERVICE` を指定してください。
 
-### 主要スクリプト
-
-| コマンド | 説明 |
-| --- | --- |
-| `pnpm setup` | 全パッケージビルド + `~/.ryoko` 初期化（一回限り） |
-| `pnpm dev` | ゲートウェイ（`:7777`）と Next.js dev サーバー（`:3000`）をホットリロードで起動 |
-| `pnpm start` | クリーンビルド後にゲートウェイを `:7777` で起動 |
-| `pnpm stop` | 稼働中のゲートウェイデーモンを停止 |
-| `pnpm status` | ゲートウェイの稼働状態を確認 |
-| `pnpm build` | 全パッケージをビルド |
-| `pnpm typecheck` | TypeScript 型チェックを実行 |
-| `pnpm lint` | 全パッケージを lint |
-| `pnpm clean` | ビルド成果物を削除 |
-
-## 🖥️ Linux サーバーで常駐させる（systemd）
-
-VPS等で 24/7 稼働させたい場合、`scripts/systemd/` に systemd unit テンプレートと
-インストーラを用意しています。これを使えば「`spawn claude ENOENT`」「rootだとClaude
-CLIに弾かれる」「クラッシュ後に手動で立ち上げ直し」といったお決まりの落とし穴を
-回避できます。
-
-```bash
-# 1. 専用ユーザーを作成（rootで動かさない）
-sudo useradd -m -s /bin/bash ryoko
-
-# 2. その ryoko ユーザーで Node 22+ と OpenRyoko をインストール
-sudo -u ryoko -i bash -lc '
-  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
-  source ~/.nvm/nvm.sh
-  nvm install 22
-  npm install -g openryoko @anthropic-ai/claude-code
-  ryoko setup
-'
-
-# 3. systemd unit を /etc/systemd/system/ に配置して enable
-sudo ./scripts/systemd/install.sh ryoko
-
-# 4. ログ追跡
-journalctl -u openryoko -f
-```
-
-`install.sh` は対象ユーザーの PATH（nvm の Node ディレクトリ含む）を自動検出して
-unit ファイルに焼き込みます。手動で `openryoko.service` をコピーする場合は、
-テンプレート先頭のコメント（User / WorkingDirectory / Environment=PATH=… /
-ExecStart）を必ず編集してください。
-
-常駐運用ではアップデートと再起動を `ryoko update --restart` の1コマンドで完結できます。
-この unit（`openryoko`）を自動検出して `systemctl restart` を実行します（直接の権限が無い場合は
-`sudo -n` を試行）。ユニット名が異なる場合は `--service <name>` か環境変数 `RYOKO_SERVICE` で指定してください。
-
-> **rootで動かしたい場合**: 非推奨ですが、OpenRyoko が `IS_SANDBOX=1` を自動付与
-> するので Claude CLI の root 拒否はバイパスされます。それでも専用ユーザー運用を強く推奨します。
-
-## ⚙️ Web UI からの設定変更
-
-ダッシュボードの Settings 画面で Slack トークン等を保存すると、`~/.ryoko/config.yaml`
-が更新されたあと自動でコネクタが再接続されます（v0.9.5 以降）。デーモン再起動は
-不要です。手動で再接続したい場合は `POST /api/connectors/reload` を叩けます。
-
-Settings → エンジン設定 には **「インタラクティブPTY（Max定額）」トグル** もあり、
-`engines.claude.interactive` を切替できます（6/15 の Claude 改定対応）。エンジンの選択は
-起動時に確定するため、このトグルの反映には**ゲートウェイの再起動が必要**です
-（`ryoko update --restart` か `ryoko stop && ryoko start`）。
+Dockerの読み取り専用イメージに本体やCLIを組み込んでいる場合は、**Dockerfileの版を更新してイメージを再ビルドし、コンテナを再作成**します。ローカルtarballを上書きインストールする構成では、そのtarballも同じ版へ更新してください。ホスト側CLIの更新だけではコンテナ側は変わりません。更新後はコンテナ内で版とログイン状態を確認し、`ryoko migrate --auto` を実行します。
 
 ## 🎯 自然言語 `/goal` — 自律完遂タスク
 
@@ -448,8 +268,35 @@ OpenRyoko は **個人マシン or 信頼境界内の VPS で 1 人 / 1 チー�
   付与されている以上、Slack の任意ユーザが promptインジェクション経由で Ryoko に
   これらを使わせる可能性は理論上残る。`allowFrom` の絞り込みが第一防御線。
 - **Loopback Host header guard / 限定 CORS** を v2026.5.13 から有効化。`gateway.host`
-  が `127.0.0.1` の時は loopback origin 以外からの API 呼び出しを 421 で拒否する。
+  が `127.0.0.1` の時は許可されていないHostを421、不許可のOriginを403で拒否する。
   これにより DNS rebinding によるローカルブラウザ経由の attack をブロック。
+
+## 開発と構成
+
+```bash
+git clone https://github.com/rsensui2/OpenRyoko.git
+cd OpenRyoko
+pnpm install
+pnpm setup
+pnpm dev
+```
+
+Node.js 22以上、pnpm 10以上を使います。開発用Web画面は [http://localhost:3000](http://localhost:3000)、ゲートウェイは `:7777` です。
+
+| 場所・コマンド | 内容 |
+| --- | --- |
+| `packages/jimmy` | ゲートウェイとCLI。npmパッケージ名は `openryoko` |
+| `packages/web` | Next.js製ダッシュボード |
+| `pnpm build` | Webとゲートウェイをビルド |
+| `pnpm typecheck` | 型チェック |
+| `pnpm test` | テスト |
+| `pnpm stop` / `pnpm status` | 開発環境の停止・状態確認 |
+
+Linuxで常駐させる場合は [systemdテンプレートとインストーラ](scripts/systemd/) を使えます。専用ユーザーでCLIの導入と認証を済ませてから、`sudo ./scripts/systemd/install.sh ryoko` を実行してください。インストーラは対象ユーザーのPATHを検出します。
+
+## 運用テンプレートを追加したい場合
+
+本体はMITライセンスです。実務向けの指示書・人格・記憶・Cronなどをまとめた有料パッケージも提供しています。内容と価格は [パッケージ案内](https://tekion.jp/openryoko/packages) を確認してください。
 
 ## 🔗 Jinn からの移行
 
@@ -473,6 +320,21 @@ OpenRyoko は **個人マシン or 信頼境界内の VPS で 1 人 / 1 チー�
 - Web ダッシュボードの UI コンポーネントは [ClawPort UI](https://github.com/JohnRiceML/clawport-ui) by John Rice を基礎にしています
 - `/goal` 自然言語化・Slack Canvas 同期・空気読みトリアージ等 **Slack 振る舞い系の機能**は OpenRyoko 独自実装で、上流に汎用化できる部分は Jinn に PR を送る方針です
 
+## 用語と問い合わせ
+
+| 用語 | 意味 |
+| --- | --- |
+| CLI | ターミナルから使うClaude Code・Codexなどのプログラム |
+| ゲートウェイ | Slack・Web・定期ジョブとAIエンジンをつなぐ常駐プロセス |
+| 社員 | 担当・指示・エンジンなどを設定したAIの役割 |
+| Cron | 指定時刻・間隔で実行する定期ジョブ |
+| effort | モデルの思考量を調整する設定。選べる値はモデルによって異なります |
+| 既定・継承・固定 | 標準で使う値、上位の設定を引き継ぐこと、個別に値を指定すること |
+
+不具合や説明の不足は [GitHub Issues](https://github.com/rsensui2/OpenRyoko/issues) へ、RyokoとCLIの版・再現手順を添えて報告してください。トークンや会話の秘密情報は公開しないでください。
+
 ## 🤝 コントリビュート
 
 本リポジトリは現在、個人利用に合わせた日本語ファーストの実験的派生版です。上流 Jinn に還元できる汎用的な改善は積極的に PR を送る方針です。
+
+最終更新: 2026年9月24日

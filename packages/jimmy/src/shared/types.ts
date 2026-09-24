@@ -786,6 +786,14 @@ export interface JinnConfig {
   /** Optional model/capability registry override. Absent → synthesized from
    *  `engines.<name>.model`. See shared/models.ts. */
   models?: ModelsConfig;
+  /** Absent policy preserves existing pins; explicitly enable following per engine. */
+  modelManagement?: {
+    policies?: Partial<Record<"claude" | "codex", {
+      mode: "auto" | "notify" | "fixed";
+      profile: "balanced" | "economy" | "performance";
+    }>>;
+    notification?: { connector: string; channel: string };
+  };
   /** Workflow engine (ported from upstream jinn). Opt-in: absent/false = no
    *  workflow service, no schedule arming, no workflow API. */
   workflows?: {

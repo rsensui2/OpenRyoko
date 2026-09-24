@@ -1,3 +1,6 @@
+import { SlackModelControls } from "./model-controls.js";
+import type { ModelManagement } from "../../models/service.js";
+import type { ManagedEngine } from "../../models/discovery.js";
 import { App } from "@slack/bolt";
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -44,6 +47,8 @@ import { JINN_HOME, TMP_DIR } from "../../shared/paths.js";
 import { logger } from "../../shared/logger.js";
 
 export interface SlackConnectorContext {
+  getModelManagement?: () => ModelManagement | undefined;
+  getOperatorSlackId?: () => string | undefined;
   /** Display name of the Jinn instance (used as botName in triage) */
   portalName?: string;
   /** Current routed assistant name, resolved on each message after org updates. */
@@ -59,6 +64,7 @@ export interface SlackConnectorContext {
 export class SlackConnector implements Connector {
   name = "slack";
   private app: App;
+  private modelControls?: SlackModelControls;
   private handler: ((msg: IncomingMessage) => void) | null = null;
   private readonly allowedUsers: Set<string> | null;
   private readonly ignoreOldMessagesOnBoot: boolean;
@@ -146,6 +152,7 @@ export class SlackConnector implements Connector {
       appToken: config.appToken,
       socketMode: true,
     });
+    if (context.getModelManagement && context.getOperatorSlackId) this.modelControls = new SlackModelControls(context.getModelManagement, context.getOperatorSlackId, (config as { id?: string }).id || "slack");
     this.ignoreOldMessagesOnBoot = config.ignoreOldMessagesOnBoot !== false;
     const allowFrom = Array.isArray(config.allowFrom)
       ? config.allowFrom
@@ -374,7 +381,25 @@ export class SlackConnector implements Connector {
     return (await this.resolveChannelInfo(channelId)).name;
   }
 
+  async sendModelNotice(channel: string, text: string, engine: ManagedEngine, candidate?: string): Promise<void> {
+    await this.app.client.chat.postMessage({ channel, text, blocks: this.modelControls?.notice(channel, text, engine, candidate) });
+  }
+
   async start() {
+    if (this.modelControls) this.app.action(/^ryoko_models_/, async ({ ack, body, action, respond }) => {
+      await ack();
+      const user = body.user.id;
+      const channel = "channel" in body ? body.channel?.id : undefined;
+      if (!channel || (this.allowedUsers && !this.allowedUsers.has(user))) return;
+      try {
+        const value = "selected_option" in action ? action.selected_option?.value : "value" in action ? action.value : undefined;
+        if (!value) return;
+        const result = await this.modelControls!.execute(value, user, channel);
+        await respond({ ...result, response_type: "ephemeral", replace_original: false });
+      } catch (error) {
+        await respond({ text: error instanceof Error ? error.message : "設定を変更できませんでした。", response_type: "ephemeral", replace_original: false });
+      }
+    });
     this.app.message(async ({ event }) => {
       logger.info(`[slack] Received message event: user=${(event as any).user} channel=${(event as any).channel} channel_type=${(event as any).channel_type ?? "-"} thread_ts=${(event as any).thread_ts ?? "-"} subtype=${(event as any).subtype ?? "-"} text="${((event as any).text || "").slice(0, 50)}"`);
       // Skip bot's own messages
@@ -405,6 +430,17 @@ export class SlackConnector implements Connector {
       const channelType = ((event as any).channel_type as string) || "channel";
       const threadTs = (event as any).thread_ts as string | undefined;
       const wasMentioned = !!this.botUserId && rawText.includes(`<@${this.botUserId}>`);
+
+      const modelCommand = rawText.replace(/<@[A-Z0-9]+>/g, "").trim();
+      if (this.modelControls && (wasMentioned || channelType === "im") && ["モデル設定", "/model", "model settings"].includes(modelCommand)) {
+        const channel = (event as any).channel as string;
+        if (!this.modelControls.authorized(slackUserId)) {
+          await this.app.client.chat.postEphemeral({ channel, user: slackUserId, text: "モデル設定は管理者専用です。Web設定の operatorSlackId に管理者のSlack IDを登録してください。" });
+        } else {
+          await this.app.client.chat.postEphemeral({ channel, user: slackUserId, text: "モデル設定", blocks: this.modelControls.card(channel, slackUserId, deriveSessionKey(event as any)) });
+        }
+        return;
+      }
 
       const triageEnabled = this.triageConfig?.enabled === true;
       const conversationKey = {

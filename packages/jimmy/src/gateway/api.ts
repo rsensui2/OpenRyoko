@@ -1,3 +1,5 @@
+import type { ModelManagement } from "../models/service.js";
+import { withConfigLock } from "../shared/config-lock.js";
 import { validateCommandJob } from "../cron/command.js";
 import { validateCronSchedule } from "../cron/validation.js";
 import type { IncomingMessage as HttpRequest, ServerResponse } from "node:http";
@@ -106,6 +108,7 @@ const pairingAttempts = new PairingAttemptLimiter(10, PAIR_ATTEMPT_WINDOW_MS);
 const pairingGlobalAttempts = new PairingAttemptLimiter(1_000, PAIR_ATTEMPT_WINDOW_MS, 1);
 
 export interface ApiContext {
+  modelManagement?: ModelManagement;
   config: JinnConfig;
   sessionManager: SessionManager;
   startTime: number;
@@ -723,6 +726,21 @@ export async function handleApiRequest(
         connectors,
         storage: getDiskSpaceStatus(),
       });
+    }
+
+    if (pathname === "/api/models" || pathname === "/api/models/actions") {
+      const authenticated = !workflowAuthRequired(context.getConfig()) || Boolean(context.authToken && context.authHome && workflowVerifyAuth(req.headers, context.authToken, context.authHome));
+      if (!authenticated) return json(res, { error: "Unauthorized" }, 401);
+      if (!context.modelManagement) return json(res, { error: "Model management unavailable" }, 503);
+      res.setHeader("Cache-Control", "no-store");
+      if (method === "GET" && pathname === "/api/models") return json(res, context.modelManagement.snapshot());
+      if (method === "POST" && pathname === "/api/models/actions") {
+        const parsed = await readJsonBody(req, res, 16 * 1024);
+        if (!parsed.ok) return;
+        try { return json(res, await context.modelManagement.act(parsed.body)); }
+        catch (error) { return badRequest(res, error instanceof Error && error.name !== "ZodError" ? error.message : "Invalid model settings"); }
+      }
+      return notFound(res);
     }
 
     // GET /api/update — fixed-origin npm registry check with a shared cache.
@@ -1938,6 +1956,7 @@ Handle this as a priority request from a colleague.`;
         "gateway",
         "engines",
         "models",
+        "modelManagement",
         "connectors",
         "logging",
         "mcp",
@@ -3220,12 +3239,7 @@ async function runWebSession(
 
 /** One writer at a time for config.yaml + connector reload. The chain never
  *  rejects: a failing writer settles its own promise and the next waiter runs. */
-let configWriteChain: Promise<void> = Promise.resolve();
-export function withConfigLock<T>(work: () => Promise<T>): Promise<T> {
-  const run = configWriteChain.then(work, work);
-  configWriteChain = run.then(() => undefined, () => undefined);
-  return run;
-}
+export { withConfigLock } from "../shared/config-lock.js";
 
 // ---------------------------------------------------------------------------
 // Onboarding probes (fork addition)
