@@ -1206,10 +1206,19 @@ export async function handleApiRequest(
       const prompt = messageText(body, ["prompt", "message"]);
       if (!prompt) return badRequest(res, "prompt or message must be a non-empty string");
       const config = context.getConfig();
-      const engineName = body.engine || config.engines.default;
+      // Delegated children name an employee: run them on that employee's engine and model
+      // (cliFlags are already read from the employee at run time). An explicit engine/model
+      // in the request still wins, and an employee's model never crosses onto another engine.
+      const employeeDef = typeof body.employee === "string" && body.employee
+        ? (await import("./org.js")).scanOrg().get(body.employee)
+        : undefined;
+      const engineName = body.engine || employeeDef?.engine || config.engines.default;
+      const requestedModel = typeof body.model === "string" && body.model.trim() ? body.model.trim() : undefined;
+      const model = requestedModel ?? (employeeDef && employeeDef.engine === engineName ? employeeDef.model || undefined : undefined);
       const sessionKey = `web:${Date.now()}`;
       const session = createSession({
         engine: engineName,
+        model,
         source: "web",
         sourceRef: sessionKey,
         connector: "web",
