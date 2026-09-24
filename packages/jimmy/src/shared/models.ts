@@ -33,12 +33,14 @@ const EFFORT_MECHANISM: Record<EngineName, EffortMechanism> = {
 /** Conservative per-engine defaults used when synthesizing (no `models:` block). */
 const SYNTH_DEFAULTS: Record<EngineName, { supportsEffort: boolean; effortLevels: string[]; fallbackModel: string }> = {
   claude: { supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh"], fallbackModel: "claude-opus-5-5" },
-  codex: { supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh"], fallbackModel: "gpt-5.6-sol" },
+  codex: { supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh"], fallbackModel: "gpt-6-sol" },
   gemini: { supportsEffort: false, effortLevels: [], fallbackModel: "gemini-2.5-pro" },
 };
 
 /** Published capabilities, not a guarantee of access on the connected account.
  * https://developers.openai.com/api/docs/models/gpt-6-astra
+ * https://developers.openai.com/api/docs/models/gpt-6-sol
+ * https://developers.openai.com/api/docs/models/gpt-6-luna
  * https://platform.claude.com/docs/en/models/fable-5-1/overview
  * https://code.claude.com/docs/en/model-config#adjust-effort-level */
 const BUILTIN_MODELS: Partial<Record<EngineName, ModelInfo[]>> = {
@@ -57,6 +59,19 @@ const BUILTIN_MODELS: Partial<Record<EngineName, ModelInfo[]>> = {
     contextWindow: 1_000_000,
   }],
   codex: [{
+    // Codex exposes low..max; API-only `none` is not a CLI effort option.
+    id: "gpt-6-sol",
+    label: "GPT-6 Sol",
+    supportsEffort: true,
+    effortLevels: ["low", "medium", "high", "xhigh", "max"],
+    contextWindow: 1_050_000,
+  }, {
+    id: "gpt-6-luna",
+    label: "GPT-6 Luna",
+    supportsEffort: true,
+    effortLevels: ["low", "medium", "high", "xhigh", "max"],
+    contextWindow: 1_050_000,
+  }, {
     id: "gpt-6-astra",
     label: "GPT-6 Astra",
     supportsEffort: true,

@@ -20,8 +20,15 @@ import {
 } from "@/lib/model-catalog"
 
 describe("model-catalog", () => {
-  it("defaults Codex to GPT-5.6 (Sol) and Claude to Opus 5.5 (explicit id)", () => {
-    expect(DEFAULT_CODEX_MODEL).toBe("gpt-5.6-sol")
+  it.each(["gpt-6-sol", "gpt-6-luna"])("offers %s with CLI effort levels", (model) => {
+    expect(isCatalogModel("codex", model)).toBe(true)
+    expect(codexEffortOptionsForModel(model).map((option) => option.value))
+      .toEqual(["default", "low", "medium", "high", "xhigh", "max"])
+    expect(isCatalogModel("codex", "gpt-6-terra")).toBe(false)
+  })
+
+  it("defaults Codex to GPT-6 Sol and Claude to Opus 5.5 (explicit id)", () => {
+    expect(DEFAULT_CODEX_MODEL).toBe("gpt-6-sol")
     expect(DEFAULT_CLAUDE_MODEL).toBe("claude-opus-5-5")
     expect(OPENAI_MODELS.some((m) => m.value === DEFAULT_CODEX_MODEL)).toBe(true)
     expect(CLAUDE_MODELS[0].value).toBe("claude-opus-5-5")
@@ -29,7 +36,7 @@ describe("model-catalog", () => {
   })
 
   it("offers GPT-6 Astra by its explicit id and limits max effort to Astra", () => {
-    expect(OPENAI_MODELS[0].value).toBe("gpt-6-astra")
+    expect(OPENAI_MODELS[0].value).toBe("gpt-6-sol")
     expect(isCatalogModel("codex", "gpt-6-astra")).toBe(true)
     expect(isCatalogModel("codex", "gpt-6")).toBe(false)
     expect(codexEffortOptionsForModel("gpt-6-astra").map((option) => option.value))

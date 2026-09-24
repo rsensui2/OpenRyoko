@@ -820,8 +820,8 @@ export default function SettingsPage() {
       // Changing models must not leave an invisible max effort selected.
       if (
         obj.effortLevel === "max" && (
-          (path.join(".") === "engines.codex.model" && value !== "gpt-6-astra") ||
-          (path.join(".") === "engines.claude.model" && value !== "claude-fable-5-1")
+          (path.join(".") === "engines.codex.model" && !codexEffortOptionsForModel(String(value)).some((option) => option.value === "max")) ||
+          (path.join(".") === "engines.claude.model" && !claudeEffortOptionsForModel(String(value)).some((option) => option.value === "max"))
         )
       ) {
         obj.effortLevel = "default"

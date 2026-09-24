@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest"
 import { contextFraction, contextLevel, contextWindowFor } from "../context-meter"
 
 describe("GPT-6 Astra context meter", () => {
+  it.each(["gpt-6-sol", "gpt-6-luna"])("knows the published context for %s", (model) => {
+    expect(contextWindowFor(model)).toBe(1_050_000)
+    expect(contextFraction(525_000, model)).toBe(0.5)
+  })
   it("measures context against Astra's published window instead of the unknown-model fallback", () => {
     expect(contextWindowFor("gpt-6-astra")).toBe(1_050_000)
     expect(contextFraction(525_000, "gpt-6-astra")).toBe(0.5)

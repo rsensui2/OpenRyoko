@@ -19,6 +19,17 @@ function cfg(partial: Partial<JinnConfig["engines"]>, models?: JinnConfig["model
 beforeEach(() => invalidateModelRegistry());
 
 describe("synthesizeFromEngineConfig (backward-compat fallback)", () => {
+  it("defaults unconfigured Codex to Sol and offers both new tiers", () => {
+    const config = cfg({ codex: { bin: "codex", model: "" } });
+    const reg = getModelRegistry(config);
+    expect(reg.codex.defaultModel).toBe("gpt-6-sol");
+    for (const id of ["gpt-6-sol", "gpt-6-luna"]) {
+      expect(reg.codex.models.filter((model) => model.id === id)).toHaveLength(1);
+      expect(effortLevelsForModel(config, "codex", id)).toEqual(["low", "medium", "high", "xhigh", "max"]);
+      expect(contextWindowForModel(config, "codex", id)).toBe(1_050_000);
+    }
+  });
+
   it("builds an entry per engine from engines.<name>.model", () => {
     const reg = synthesizeFromEngineConfig(cfg({}));
     expect(reg.claude.models[0].id).toBe("opus");

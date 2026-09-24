@@ -103,6 +103,18 @@ describe("CodexEngine", () => {
       await resultPromise;
     });
 
+    it.each(["gpt-6-sol", "gpt-6-luna"])("passes %s and max through the CLI", async (model) => {
+      const proc = createMockProcess();
+      mockSpawn.mockReturnValue(proc as any);
+      const resultPromise = engine.run({ prompt: "hello", cwd: "/tmp", model, effortLevel: "max" });
+      const args = mockSpawn.mock.calls.at(-1)?.[1] as string[];
+      expect(args[args.indexOf("--model") + 1]).toBe(model);
+      expect(args).toContain('model_reasoning_effort="max"');
+      proc.exitCode = 0;
+      proc.emit("close", 0);
+      await resultPromise;
+    });
+
     it("uses a positional fence so dash-prefixed prompts are never parsed as CLI flags", async () => {
       const proc = createMockProcess();
       mockSpawn.mockReturnValue(proc as any);
