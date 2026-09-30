@@ -232,17 +232,43 @@ Claude の自然言語連携には `/goal` に対応した Claude Code v2.1.139 
 
 ### 有効化手順
 
-1. **Slack App に scope を追加** — Settings ページの「Slack App Manifest」ブロックを
-   コピーして自分の Slack App に貼り直し、Reinstall to Workspace を実行。これで
-   `canvases:write` / `canvases:read` を含む必要 scope がすべて揃います
+1. **Slack App の権限を更新** — Settings のセットアップガイドから Manifest をコピーし、
+   対象アプリの **App Manifest** に貼り付けて保存。その後 **OAuth & Permissions →
+   Reinstall to Workspace** を実行します。コピー用 Manifest には Bot の
+   `canvases:write` / `canvases:read`、チャンネル参照用の `channels:read` / `groups:read`、
+   ファイル参照用の `files:read` が含まれています。Manifest の保存だけでは、発行済み
+   トークンの権限は増えません。Bot Token が変わった場合は Settings でも更新してください
 2. **Settings → Slack → Agents View Canvas** で：
+   - 表示先の専用チャンネルに Bot を招待
    - 「有効化」をON
    - 「表示先チャンネル」のドロップダウンから対象チャンネル選択（Bot が member の
      channel のみ表示されます）
    - 必要に応じてタイトル・更新間隔・表示件数を調整
-3. 保存すると30秒以内に指定チャンネルに Canvas が出現します
+3. 保存すると指定チャンネルの Canvas への同期が始まります（既定の確認間隔は30秒）
 
 設定はホットリロード対応なので、デーモン再起動は不要です。
+
+**表示先は専用チャンネルを選んでください。** 既存のチャンネル Canvas を採用した場合は、
+内容全体をセッション一覧に置き換えます。指定チャンネルの Canvas が見つからない場合は
+停止します。別チャンネルにある同名 Canvas を自動採用することはありません。
+
+`channelId` 未指定時は独立した Canvas（standalone）を作成します。Slack のプランに
+よっては standalone の作成・編集が制限されるため、表示先チャンネルの指定を推奨します。
+
+### Canvas が更新されない場合
+
+- `missing_scope`: Manifest を更新して再インストールし、設定済み Bot Token の権限を確認
+- `restricted_action` / `no_permission` / `access_denied`: Bot のチャンネルへの参加、対象
+  Canvas の編集権限、ワークスペースの Canvas 制限を確認。scope の追加だけで解消するとは限りません
+- `free_teams_cannot_create_non_tabbed_canvases` / `free_teams_cannot_edit_standalone_canvases`:
+  Bot が参加しているチャンネルを表示先に指定
+
+作成・編集が10回連続で失敗すると、Canvas 同期を自動停止してログに対処方法を出します。
+原因を解消してからゲートウェイを再起動してください。保存済み Canvas ID は編集権限の
+エラーでは削除せず、Canvas 自体が見つからない場合に再作成します。
+
+参考: [Slack の再インストール条件](https://docs.slack.dev/app-management/distribution/)、
+[Canvas 編集に必要な権限](https://docs.slack.dev/reference/methods/canvases.edit/)。
 
 ## 🔒 セキュリティ運用上の注意
 

@@ -45,7 +45,7 @@ const ACCENT_PRESETS = [
 ]
 
 // ---------------------------------------------------------------------------
-// Slack App manifest (minimum config — paste-and-go)
+// Slack App manifest (includes Agents View Canvas bot permissions)
 // ---------------------------------------------------------------------------
 
 // Build the paste-and-go Slack App manifest for a given bot name. The
@@ -75,6 +75,7 @@ function buildSlackManifest(botName?: string | null): string {
           bot: [
             "app_mentions:read",
             "assistant:write",
+            // Agents View Canvas uses the bot token, including for edits.
             "canvases:read",
             "canvases:write",
             "channels:history",
@@ -638,6 +639,20 @@ function SlackSetupGuide() {
               スコープ付きトークンを発行し（<code>xapp-…</code>）、下の App Token に貼り付け。
             </li>
           </ol>
+          <div className="text-[length:var(--text-caption1)] text-[var(--label-secondary)] leading-relaxed mb-[var(--space-3)]">
+            <p className="font-[var(--weight-semibold)] text-[var(--text-primary)]">既存アプリで Canvas を使う場合</p>
+            <p>
+              対象アプリの「App Manifest」に下のJSONを貼り付けて保存し、
+              「OAuth &amp; Permissions」から「Reinstall to Workspace」を実行してください。
+              Manifest の保存だけでは、発行済みトークンの権限は増えません。
+              Bot Token が変わった場合は、この画面でも更新して保存してください。
+            </p>
+            <p className="mt-[var(--space-1)]">
+              このJSONには Canvas の読み書き権限が含まれています。
+              表示先の専用チャンネルにBotを招待し、下の「Agents View Canvas」を有効化してください。
+              既存 Canvas を使う場合は、Bot が編集できることも確認してください。
+            </p>
+          </div>
           <div className="relative">
             <button
               type="button"
@@ -725,7 +740,7 @@ export default function SettingsPage() {
       if (!body?.ok) {
         const err = body?.error || `HTTP ${res.status}`
         if (err === "missing_scope") {
-          setSlackChannelsError("Bot に canvases / channels scope が足りません。上のSlack App Manifestを貼り直して再インストールしてください。")
+          setSlackChannelsError("Bot にチャンネル一覧の権限（channels:read / groups:read）が足りません。上のSlack App Manifestを貼り直して再インストールしてください。")
         } else if (err === "slack_not_configured") {
           setSlackChannelsError("Slack コネクタが未起動です。先に Bot Token / App Token を保存して再起動してください。")
         } else {
@@ -1664,9 +1679,7 @@ export default function SettingsPage() {
                       </div>
                       <div className="text-[length:var(--text-caption1)] text-[var(--text-secondary)]">
                         いま動いている全 Ryoko セッションが Slack の Canvas タブにライブ表示されます。
-                        下の「有効化」を ON にしてチャンネルを選ぶだけで30秒以内に作成されます。
-                        必要 scope は <code className="text-[var(--accent)]">canvases:write</code> と
-                        <code className="text-[var(--accent)] ml-1">canvases:read</code>（manifest を貼り直して reinstall すれば自動）。
+                        上のセットアップガイドでアプリの権限を更新し、Botを招待した専用チャンネルを選んで保存してください。
                       </div>
                     </div>
                   )}
@@ -1674,13 +1687,16 @@ export default function SettingsPage() {
                   className="text-[length:var(--text-caption1)] text-[var(--text-secondary)] mb-[var(--space-2)] px-[var(--space-2)]"
                 >
                   今動いている Ryoko のセッション一覧（running / waiting / errored / idle）
-                  を Slack の Canvas に自動同期します。指定したチャンネル直下のタブとして
-                  常に最新状態が見えるようになります。Bot に
+                  を Slack の Canvas に自動同期します。上のコピー用 Manifest は、Bot の
                   <code className="mx-1 text-[var(--accent)]">canvases:write</code>
                   と
                   <code className="mx-1 text-[var(--accent)]">canvases:read</code>
-                  scope が必要です（上の Slack App Manifest を貼り直して reinstall すれば
-                  自動で揃います）。
+                  を含みます。既存アプリは Manifest の更新後に再インストールしてください。
+                  対象 Canvas の編集権限も必要です。
+                </p>
+                <p className="text-[length:var(--text-caption1)] text-[var(--text-secondary)] mb-[var(--space-2)] px-[var(--space-2)]">
+                  既存のチャンネル Canvas は内容全体がセッション一覧に置き換わります。専用チャンネルを選んでください。
+                  チャンネル未指定時は独立した Canvas を作成しますが、Slack のプランによっては作成・編集できません。
                 </p>
                 <FieldRow label="有効化">
                   <ToggleSwitch

@@ -330,7 +330,7 @@ export class AgentsCanvasUpdater {
       if (this.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
         logger.error(
           `[agents-canvas] disabling after ${this.consecutiveFailures} consecutive failures — ` +
-            `last error: ${err}. Fix the cause and restart the gateway to re-enable.`,
+            `last error: ${err}. ${canvasFailureAdvice(err)} Restart the gateway to re-enable after fixing the cause.`,
         );
         this.stop();
       }
@@ -355,7 +355,9 @@ export class AgentsCanvasUpdater {
         this.canvasId = null;
         saveState({ canvasId: undefined, channelId: this.config.channelId });
       } else {
-        logger.warn(`[agents-canvas] edit failed, keeping existing canvas id to avoid duplicate canvases: ${err}`);
+        // Keep the ID to avoid duplicate canvases, but let tick() count the
+        // failure and stop the loop if editing continues to fail.
+        throw err;
       }
       return false;
     }
@@ -378,13 +380,12 @@ export class AgentsCanvasUpdater {
       } catch (err) {
         // Recover from two Slack failure modes:
         //   - `channel_canvas_already_exists`: this channel already has a canvas.
-        //   - `free_team_canvas_tab_already_exists`: free plan has used its one
-        //     allowed canvas (anywhere in the workspace).
-        // For both, find the existing canvas and edit it instead of looping.
+        //   - `free_team_canvas_tab_already_exists`: the channel already has
+        //     its allowed canvas tab on the free plan.
+        // Only adopt this channel's canvas. A same-title file found elsewhere
+        // may belong to another channel or user and may not be editable.
         if (isChannelCanvasAlreadyExistsError(err) || isFreeTeamCanvasAlreadyExistsError(err)) {
-          const existingId =
-            (await this.fetchExistingChannelCanvasId(this.config.channelId))
-            ?? (await this.findExistingStandaloneCanvasId());
+          const existingId = await this.fetchExistingChannelCanvasId(this.config.channelId);
           if (existingId) {
             logger.info(`[agents-canvas] adopting existing canvas ${existingId}`);
             this.canvasId = existingId;
@@ -393,7 +394,8 @@ export class AgentsCanvasUpdater {
             return;
           }
           logger.error(
-            "[agents-canvas] canvas already exists per Slack but none could be located — disabling updates to stop the retry loop.",
+            `[agents-canvas] an existing canvas could not be located for channel ${this.config.channelId} — disabling updates. ` +
+              "Check the bot's channel membership and channels:read / groups:read scopes, then verify the channel's canvas tab before restarting the gateway.",
           );
           this.stop();
           return;
@@ -412,9 +414,8 @@ export class AgentsCanvasUpdater {
         }
         this.canvasId = canvasId;
       } catch (err) {
-        // Free Slack workspaces are limited to a single standalone canvas. If
-        // one already exists (e.g. left over from a previous run), adopt it
-        // instead of looping forever on the create call.
+        // If Slack refuses creation because a canvas tab already exists,
+        // try locating a previous standalone canvas instead of retrying forever.
         if (isFreeTeamCanvasAlreadyExistsError(err)) {
           const existingId = await this.findExistingStandaloneCanvasId();
           if (existingId) {
@@ -425,7 +426,7 @@ export class AgentsCanvasUpdater {
             return;
           }
           logger.error(
-            "[agents-canvas] free workspace standalone canvas limit reached and no existing canvas matched by title — disabling updates. Set agentsCanvas.channelId to host the canvas in a channel instead.",
+            "[agents-canvas] Slack refused standalone canvas creation and no existing canvas matched by title — disabling updates. Set agentsCanvas.channelId to a channel the bot has joined.",
           );
           this.stop();
           return;
@@ -502,9 +503,28 @@ function isCanvasNotFoundError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
   const data = (err as { data?: { error?: string } }).data;
   const code = data?.error;
-  if (code && /(?:not_found|notfound|missing|deleted)/i.test(code)) return true;
+  // A structured Slack error takes precedence over the message. In particular,
+  // missing_scope and channel_not_found do not mean the canvas was deleted.
+  if (code) return code === "canvas_not_found" || code === "file_not_found";
   const msg = err instanceof Error ? err.message : String(err);
-  return /(?:canvas|file).*(?:not_found|not found|missing|deleted)|(?:not_found|not found|missing|deleted).*(?:canvas|file)/i.test(msg);
+  return /\b(?:canvas|file)(?:_not_found| not found)\b/i.test(msg);
+}
+
+function canvasFailureAdvice(err: unknown): string {
+  const code = (err as { data?: { error?: string } } | null)?.data?.error;
+  switch (code) {
+    case "missing_scope":
+      return "Update the app with the Slack App Manifest from Settings, reinstall it to the workspace, and verify the configured Bot Token has the required scopes (including canvases:write).";
+    case "restricted_action":
+    case "no_permission":
+    case "access_denied":
+      return "Check the bot's access to the target channel and write access to this canvas, plus workspace canvas restrictions; reinstalling the manifest alone may not grant canvas access.";
+    case "free_teams_cannot_create_non_tabbed_canvases":
+    case "free_teams_cannot_edit_standalone_canvases":
+      return "Set agentsCanvas.channelId to a channel the bot has joined and use a channel canvas supported by your Slack plan.";
+    default:
+      return "Check the Slack error and the target canvas's permissions.";
+  }
 }
 
 function isFreeTeamCanvasAlreadyExistsError(err: unknown): boolean {
