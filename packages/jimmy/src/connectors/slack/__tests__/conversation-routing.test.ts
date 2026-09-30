@@ -3,8 +3,13 @@ import { SlackConnector, type SlackConnectorContext } from "../index.js";
 import { ConversationTracker } from "../conversation-tracker.js";
 import { runTriage } from "../triage.js";
 import { resolveAssistantName } from "../../../shared/assistant-identity.js";
+import { downloadAttachment } from "../format.js";
 
 vi.mock("../triage.js", () => ({ runTriage: vi.fn() }));
+vi.mock("../format.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../format.js")>(),
+  downloadAttachment: vi.fn().mockResolvedValue("/tmp/slack-test-upload.txt"),
+}));
 afterEach(() => { vi.clearAllMocks(); });
 
 async function fixture(mentionOnly = false, context: SlackConnectorContext = {}) {
@@ -49,6 +54,32 @@ async function fixture(mentionOnly = false, context: SlackConnectorContext = {})
 }
 
 describe("Slack conversation routing integration", () => {
+  it.each(["", " \n\t "])("skips empty/whitespace forwards before fetching context or starting a turn", async (text) => {
+    const f = await fixture();
+    f.replies.mockResolvedValue({ messages: [{ text: "Old request that must not be repeated" }] });
+    for (const channel_type of ["im", "channel"]) {
+      await f.event(text, { channel_type, attachments: [{ text: "Forwarded preview" }] });
+    }
+    expect(f.handler).not.toHaveBeenCalled();
+    expect(runTriage).not.toHaveBeenCalled();
+    expect(f.replies).not.toHaveBeenCalled();
+    expect(f.postMessage).not.toHaveBeenCalled();
+    expect(f.reactions).not.toHaveBeenCalled();
+  });
+
+  it("still handles a file-only upload and reports failed downloads", async () => {
+    const f = await fixture();
+    const files = [{ id: "F1", name: "report.txt", mimetype: "text/plain", url_private_download: "https://files.slack.com/report.txt" }];
+    await f.event("", { channel_type: "im", files });
+    expect(f.handler.mock.calls[0][0].attachments).toEqual([
+      expect.objectContaining({ name: "report.txt", localPath: "/tmp/slack-test-upload.txt" }),
+    ]);
+    vi.mocked(downloadAttachment).mockRejectedValueOnce(new Error("unavailable"));
+    await f.event("", { channel_type: "im", files, ts: "5.000" });
+    expect(f.handler.mock.calls[1][0].text).toContain("Slack file F1");
+    expect(f.handler.mock.calls[1][0].attachments).toEqual([]);
+  });
+
   it("carries stable event identity and tells the worker an unsolicited contribution was not a user request", async () => {
     const f = await fixture();
     vi.mocked(runTriage).mockResolvedValueOnce({ action: "reply", reason: "jev_proactive_contribution" });
