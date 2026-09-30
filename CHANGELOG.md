@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026.9.30
+
+- Fixed Agents View Canvas edit failures bypassing the consecutive-failure counter. Updates now stop after 10 consecutive failures while retaining the canvas ID.
+- Restricted missing-canvas recovery to canvas/file not-found errors; missing scopes and channel errors no longer discard the saved canvas ID.
+- Prevented channel canvas recovery from adopting an unrelated same-title canvas elsewhere in the workspace.
+- Added error-specific recovery guidance and clarified Slack Manifest reinstallation, bot membership, canvas edit access, and dedicated-channel setup.
+
 ## 2026.9.27
 
 - Fixed model settings failing when workflows are enabled: omit an unset pagination cursor instead of passing an undefined value to the strict workflow repository.
