@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026.10.1
+
+Same-day follow-up to 2026.9.30, using the next available CalVer number.
+
+- Updated better-sqlite3 to the N-API-based 13.0.3 release to avoid the Node 24 cleanup-hook crash in source-built 11.x addons.
+- Added Node 24.21.0 CI coverage for backend tests, CLI startup, session storage, recovery, FTS, backups, and allocation-driven garbage collection.
+- Skip Slack messages with empty or whitespace-only text and no files, including forwarding previews, before starting an engine turn. File-only uploads continue through attachment handling.
+
 ## 2026.9.30
 
 - Fixed Agents View Canvas edit failures bypassing the consecutive-failure counter. Updates now stop after 10 consecutive failures while retaining the canvas ID.
@@ -24,10 +32,6 @@
 > **バージョン体系について**: 2026.4.26 から日付ベース (`YYYY.M.D`) のCalVerに移行しました。npm semver の制約上、月・日の leading zero は付けません (例: 4月26日 → `2026.4.26`)。
 
 ## [Unreleased]
-
-- Updated better-sqlite3 to the N-API-based 13.0.3 release to avoid the Node 24 cleanup-hook crash in source-built 11.x addons.
-- Added Node 24.21.0 CI coverage for backend tests, CLI startup, session storage, recovery, FTS, backups, and allocation-driven garbage collection.
-- Skip Slack messages with empty or whitespace-only text and no files, including forwarding previews, before starting an engine turn. File-only uploads continue through attachment handling.
 
 ## [2026.9.25] - 2026-09-24
 
