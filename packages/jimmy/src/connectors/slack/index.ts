@@ -427,6 +427,14 @@ export class SlackConnector implements Connector {
 
       const slackUserId = (event as any).user as string;
       const rawText = ((event as any).text || "") as string;
+      // Forwarded messages can have an empty text field and only an attachment
+      // preview. Until previews are supported, do not start an empty engine turn
+      // (or treat the thread's parent as a new request). File-only uploads still
+      // go through the attachment download/failure-notice path below.
+      if (!rawText.trim() && !(event as any).files?.length) {
+        logger.debug(`[slack] Skipping message with no text or files`);
+        return;
+      }
       const channelType = ((event as any).channel_type as string) || "channel";
       const threadTs = (event as any).thread_ts as string | undefined;
       const wasMentioned = !!this.botUserId && rawText.includes(`<@${this.botUserId}>`);

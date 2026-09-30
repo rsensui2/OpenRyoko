@@ -25,6 +25,10 @@
 
 ## [Unreleased]
 
+- Updated better-sqlite3 to the N-API-based 13.0.3 release to avoid the Node 24 cleanup-hook crash in source-built 11.x addons.
+- Added Node 24.21.0 CI coverage for backend tests, CLI startup, session storage, recovery, FTS, backups, and allocation-driven garbage collection.
+- Skip Slack messages with empty or whitespace-only text and no files, including forwarding previews, before starting an engine turn. File-only uploads continue through attachment handling.
+
 ## [2026.9.25] - 2026-09-24
 
 同日の追加リリースです。公開済みの `2026.9.24` との衝突を避け、次の未使用番号を採番しています。
