@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { listSessions } from "../../../sessions/registry.js";
+import { logger } from "../../../shared/logger.js";
 import { AgentsCanvasUpdater, renderCanvasMarkdown } from "../agents-canvas.js";
 import type { Session } from "../../../shared/types.js";
 
@@ -53,12 +54,14 @@ const FIXED_NOW = Date.parse("2026-05-13T01:30:00.000Z");
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(listSessions).mockReset().mockReturnValue([]);
   vi.useFakeTimers();
   vi.setSystemTime(FIXED_NOW);
   fs.rmSync("/tmp/openryoko-agents-canvas-test", { recursive: true, force: true });
 });
 
 afterEach(() => {
+  vi.clearAllTimers();
   vi.useRealTimers();
 });
 
@@ -171,6 +174,71 @@ describe("renderCanvasMarkdown", () => {
 });
 
 describe("AgentsCanvasUpdater", () => {
+  it.each(
+    [undefined, "C123"].flatMap((channelId) => [
+      { code: "restricted_action", message: "restricted_action" },
+      { code: "missing_scope", message: "missing_scope" },
+      { code: "missing_post_type", message: "missing_post_type" },
+      { code: "channel_not_found", message: "channel_not_found" },
+      { code: "restricted_action", message: "canvas_not_found" },
+      { code: undefined, message: "canvases.edit failed: missing_scope" },
+    ].map((error) => ({ channelId, scope: channelId ? "channel" : "standalone", ...error }))),
+  )("$scope: stops after 10 edit failures ($code / $message) and preserves the canvas", async ({ channelId, code, message }) => {
+    const error = Object.assign(new Error(message), code ? { data: { error: code } } : {});
+    const apiCall = vi.fn(async (method: string) => {
+      if (method.endsWith("canvases.create")) return { canvas_id: "F123" };
+      if (method === "canvases.edit") throw error;
+      return {};
+    });
+    const updater = new AgentsCanvasUpdater({ client: { apiCall } } as any, { enabled: true, channelId });
+    updater.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The first edit is at 60s; subsequent failures retry every 30s.
+    await vi.advanceTimersByTimeAsync(60_000 + 8 * 30_000);
+    expect(apiCall.mock.calls.filter(([method]) => method === "canvases.edit")).toHaveLength(9);
+    expect(logger.error).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("disabling after 10 consecutive failures"));
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining(message));
+    if (code === "missing_scope") {
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("reinstall it to the workspace"));
+    } else if (code === "restricted_action") {
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("write access to this canvas"));
+    }
+
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(apiCall.mock.calls.filter(([method]) => method === "canvases.edit")).toHaveLength(10);
+    expect(apiCall.mock.calls.filter(([method]) => method.endsWith("canvases.create"))).toHaveLength(1);
+    expect(JSON.parse(fs.readFileSync("/tmp/openryoko-agents-canvas-test/.agents-canvas-state.json", "utf8")))
+      .toEqual({ canvasId: "F123", ...(channelId ? { channelId } : {}) });
+  });
+
+  it("resets consecutive edit failures after a successful edit", async () => {
+    let failEdit = true;
+    const apiCall = vi.fn(async (method: string) => {
+      if (method === "canvases.create") return { canvas_id: "F123" };
+      if (method === "canvases.edit" && failEdit) {
+        throw Object.assign(new Error("restricted_action"), { data: { error: "restricted_action" } });
+      }
+      return {};
+    });
+    const updater = new AgentsCanvasUpdater({ client: { apiCall } } as any, { enabled: true });
+    updater.start();
+    await vi.advanceTimersByTimeAsync(60_000 + 8 * 30_000);
+    expect(apiCall.mock.calls.filter(([method]) => method === "canvases.edit")).toHaveLength(9);
+    failEdit = false;
+    await vi.advanceTimersByTimeAsync(30_000);
+    failEdit = true;
+    await vi.advanceTimersByTimeAsync(9 * 30_000);
+    expect(apiCall.mock.calls.filter(([method]) => method === "canvases.edit")).toHaveLength(19);
+    expect(logger.error).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("disabling after 10 consecutive failures"));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(apiCall.mock.calls.filter(([method]) => method === "canvases.edit")).toHaveLength(20);
+  });
+
   it("keeps the current canvas id on non-recoverable edit failures instead of creating duplicates", async () => {
     const apiCall = vi.fn(async (method: string) => {
       if (method === "canvases.create") return { canvas_id: "F123" };
@@ -204,12 +272,16 @@ describe("AgentsCanvasUpdater", () => {
     expect(apiCall.mock.calls.filter(([method]) => method === "canvases.edit")).toHaveLength(2);
   });
 
-  it("recreates on the next tick when Slack reports the canvas is missing", async () => {
+  it.each([
+    { code: "canvas_not_found", message: "canvas_not_found" },
+    { code: "file_not_found", message: "file_not_found" },
+    { code: undefined, message: "An API error occurred: canvas_not_found" },
+    { code: undefined, message: "canvas not found" },
+  ])("recreates on the next tick when Slack reports $message", async ({ code, message }) => {
     const apiCall = vi.fn(async (method: string) => {
       if (method === "canvases.create") return { canvas_id: `F${apiCall.mock.calls.length}` };
       if (method === "canvases.edit") {
-        const err = new Error("canvas_not_found");
-        (err as any).data = { error: "canvas_not_found" };
+        const err = Object.assign(new Error(message), code ? { data: { error: code } } : {});
         throw err;
       }
       return {};
@@ -226,7 +298,11 @@ describe("AgentsCanvasUpdater", () => {
     mockedListSessions.mockReturnValueOnce([
       makeSession({ id: "changed", status: "running", title: "changed" }),
     ]);
+    // A missing canvas is recoverable even at the failure threshold.
+    (updater as any).consecutiveFailures = 9;
     await (updater as any).tick();
+    expect((updater as any).stopped).toBe(false);
+    expect((updater as any).consecutiveFailures).toBe(0);
 
     mockedListSessions.mockReturnValueOnce([
       makeSession({ id: "changed-again", status: "running", title: "changed again" }),
@@ -457,7 +533,7 @@ describe("AgentsCanvasUpdater — free_team_canvas_tab_already_exists recovery",
     expect(edit?.payload.canvas_id).toBe("F_EXISTING");
   });
 
-  it("falls back to files.list when the channel does not own the existing canvas", async () => {
+  it("stops without adopting a same-title canvas outside the selected channel", async () => {
     const calls: Array<{ method: string; payload: Record<string, unknown> }> = [];
     const app = makeFakeApp(async (method, payload) => {
       calls.push({ method, payload: payload as Record<string, unknown> });
@@ -484,9 +560,11 @@ describe("AgentsCanvasUpdater — free_team_canvas_tab_already_exists recovery",
     await (updater as unknown as { tick(): Promise<void> }).tick();
 
     const methods = calls.map((c) => c.method);
-    expect(methods).toContain("files.list");
-    const edit = calls.find((c) => c.method === "canvases.edit");
-    expect(edit?.payload.canvas_id).toBe("F_STANDALONE");
+    expect(methods).toEqual(["conversations.canvases.create", "conversations.info"]);
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("channel C123"));
+    const callsBefore = calls.length;
+    await (updater as unknown as { tick(): Promise<void> }).tick();
+    expect(calls).toHaveLength(callsBefore);
   });
 
   it("stops the updater after one log when no existing canvas can be located", async () => {
