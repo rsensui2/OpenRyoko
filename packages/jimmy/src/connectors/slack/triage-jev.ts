@@ -11,11 +11,28 @@ import {
 } from "./triage-prompt.js";
 
 export type JevTriageOptions = NonNullable<SlackTriageConfig["jev"]> & {
-  /** Tests can inject a transport; the production destination is fixed. */
+  /** Tests can inject a transport. The destination is TypeSafe or a loopback endpoint only. */
   fetchImpl?: typeof fetch;
 };
 
 const ENDPOINT = "https://api.typesafe.ai/v1/systemone";
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+const JEV_MODEL = /^jev-[\w.-]{1,64}$/;
+// Local Jev-compatible servers (e.g. Ollama decision models) use their own model names such as "nimble" or "tev1:0.8b".
+const LOCAL_MODEL = /^[A-Za-z0-9][\w.:-]{0,63}$/;
+
+/**
+ * Slack text must never reach an arbitrary host: only the TypeSafe production
+ * endpoint or a loopback server exposing the same /v1/systemone shape is allowed.
+ */
+function resolveEndpoint(raw: string | undefined): { url: string; local: boolean } | undefined {
+  if (raw === undefined || raw === ENDPOINT) return { url: ENDPOINT, local: false };
+  let url: URL;
+  try { url = new URL(raw); } catch { return undefined; }
+  if ((url.protocol !== "http:" && url.protocol !== "https:") || !LOOPBACK_HOSTS.has(url.hostname)
+    || url.pathname !== "/v1/systemone" || url.search || url.hash || url.username || url.password) return undefined;
+  return { url: url.href, local: true };
+}
 const DEFAULT_MODEL = "jev-1.13.0";
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const DEFAULT_THRESHOLDS = { reply: 0.8, react: 0.9, silent: 0.97 };
@@ -245,8 +262,8 @@ function parseChoiceAnswer(answer: unknown, options: string[]): ChoiceAnswer {
   };
 }
 
-function parseResponse(raw: unknown, withCapabilities: boolean, withProactive: boolean): { answers: Answers; metadata: Omit<JevTriageMetadata, "elapsedMs"> } {
-  if (!record(raw) || typeof raw.model !== "string" || !/^jev-[\w.-]{1,64}$/.test(raw.model)
+function parseResponse(raw: unknown, withCapabilities: boolean, withProactive: boolean, modelPattern: RegExp = JEV_MODEL): { answers: Answers; metadata: Omit<JevTriageMetadata, "elapsedMs"> } {
+  if (!record(raw) || typeof raw.model !== "string" || !modelPattern.test(raw.model)
     || !record(raw.answers) || !record(raw.usage)
     || !tokenCount(raw.usage.input_tokens) || !tokenCount(raw.usage.output_tokens)) {
     throw new JevFailure("invalid_response");
@@ -543,7 +560,9 @@ export async function evaluateJevTriage(input: TriagePromptInput, options: JevTr
     const proactivePercent = options.proactiveParticipationPercent ?? 0;
     const withProactive = input.capabilities !== undefined && proactivePercent > 0;
     const thresholds = { ...DEFAULT_THRESHOLDS, ...options.minProbability };
-    if (!/^jev-[\w.-]{1,64}$/.test(model) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(keyEnv)
+    const endpoint = resolveEndpoint(options.endpoint);
+    const modelPattern = endpoint?.local ? LOCAL_MODEL : JEV_MODEL;
+    if (!endpoint || !modelPattern.test(model) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(keyEnv)
       || options.useCapabilities !== undefined && typeof options.useCapabilities !== "boolean"
       || !Number.isInteger(proactivePercent) || proactivePercent < 0 || proactivePercent > 100
       || !Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 10000
@@ -551,8 +570,9 @@ export async function evaluateJevTriage(input: TriagePromptInput, options: JevTr
       || Object.values(thresholds).some((value) => !probability(value) || value < 0.5)) {
       throw new JevFailure("invalid_config");
     }
-    const apiKey = resolveTypeSafeApiKey(keyEnv);
-    if (!apiKey) throw new JevFailure("missing_key");
+    // A loopback server needs no TypeSafe key; never forward one to it.
+    const apiKey = endpoint.local ? undefined : resolveTypeSafeApiKey(keyEnv);
+    if (!endpoint.local && !apiKey) throw new JevFailure("missing_key");
     if (input.contextIncomplete) throw new JevFailure("context_incomplete");
     // Do not truncate the message and risk losing a trailing instruction.
     if (input.messageText.length > 4000) throw new JevFailure("input_too_large");
@@ -560,10 +580,10 @@ export async function evaluateJevTriage(input: TriagePromptInput, options: JevTr
     inFlight++;
     acquired = true;
     const request = async () => {
-      const response = await (options.fetchImpl ?? fetch)(ENDPOINT, {
+      const response = await (options.fetchImpl ?? fetch)(endpoint.url, {
         method: "POST",
         redirect: "error",
-        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        headers: apiKey ? { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" } : { "Content-Type": "application/json" },
         body: JSON.stringify(buildJevTriageRequest(input, model, withProactive)),
         signal: controller.signal,
       });
@@ -585,7 +605,7 @@ export async function evaluateJevTriage(input: TriagePromptInput, options: JevTr
       }, timeoutMs);
     });
     const raw = await Promise.race([request(), deadline]);
-    const parsed = parseResponse(raw, input.capabilities !== undefined, withProactive);
+    const parsed = parseResponse(raw, input.capabilities !== undefined, withProactive, modelPattern);
     metadata = { ...metadata, ...parsed.metadata };
     const decision = chooseWithProactiveParticipation(input, parsed.answers, thresholds, proactivePercent, metadata);
     return { status: "accepted", decision, metadata: { ...metadata, elapsedMs: Date.now() - startedAt } };

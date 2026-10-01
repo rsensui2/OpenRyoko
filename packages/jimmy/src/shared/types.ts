@@ -441,7 +441,13 @@ export interface SlackTriageConfig {
     useCapabilities?: boolean;
     /** Chance of joining an unsolicited but useful opportunity, 0–100. Default: 0. Direct requests are unaffected. */
     proactiveParticipationPercent?: number;
-    /** Pin an evaluated model. Default: jev-1.13.0. */
+    /**
+     * Destination of the Jev-compatible /v1/systemone API. Default: https://api.typesafe.ai/v1/systemone.
+     * Only a loopback server (localhost / 127.0.0.1 / [::1], e.g. Ollama decision models) may replace it,
+     * so Slack text never leaves the machine for any other host. A loopback endpoint needs no API key.
+     */
+    endpoint?: string;
+    /** Pin an evaluated model. Default: jev-1.13.0 (TypeSafe requires jev-*; a loopback endpoint accepts its own model name). */
     model?: string;
     /** Environment variable containing the TypeSafe API key. Default: TYPESAFE_API_KEY. */
     apiKeyEnv?: string;

@@ -286,6 +286,43 @@ describe("native Jev triage", () => {
     expect(opts.fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("sends to a loopback Jev-compatible server with its own model name and no API key", async () => {
+    vi.stubEnv("JEV_TEST_KEY", "");
+    const opts = options({ ...responseBody(), model: "nimble" });
+    const result = await evaluateJevTriage(input, { ...opts, endpoint: "http://localhost:11434/v1/systemone", model: "nimble" });
+    expect(result.status).toBe("accepted");
+    const [url, request] = opts.fetchImpl.mock.calls[0];
+    expect(url).toBe("http://localhost:11434/v1/systemone");
+    expect(request).toMatchObject({ method: "POST", redirect: "error", headers: { "Content-Type": "application/json" } });
+    expect((request!.headers as Record<string, string>).Authorization).toBeUndefined();
+    expect(JSON.parse(request!.body as string).model).toBe("nimble");
+  });
+
+  it("never forwards the TypeSafe key to a loopback server", async () => {
+    const opts = options({ ...responseBody(), model: "tev1:0.8b" });
+    await evaluateJevTriage(input, { ...opts, endpoint: "http://127.0.0.1:11434/v1/systemone", model: "tev1:0.8b" });
+    expect(JSON.stringify(opts.fetchImpl.mock.calls[0][1])).not.toContain("test-not-a-real-api-key");
+  });
+
+  it.each([
+    { endpoint: "https://untrusted.example/v1/systemone" },
+    { endpoint: "http://localhost.example.com/v1/systemone" },
+    { endpoint: "http://localhost:11434/v1/other" },
+    { endpoint: "http://user:pass@localhost:11434/v1/systemone" },
+    { endpoint: "file:///v1/systemone" },
+    { endpoint: "not a url" },
+    { model: "nimble" },
+  ])("keeps Slack text off non-loopback hosts and jev-* models on TypeSafe %j", async (config) => {
+    const opts = options();
+    expect(await evaluateJevTriage(input, { ...opts, ...config })).toMatchObject({ status: "fallback", reason: "invalid_config" });
+    expect(opts.fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("still requires a jev-* model in TypeSafe responses", async () => {
+    expect(await evaluateJevTriage(input, options({ ...responseBody(), model: "nimble" })))
+      .toMatchObject({ status: "fallback", reason: "invalid_response" });
+  });
+
   it.each([401, 422, 429, 529, 302])("sanitizes HTTP %i without parsing or echoing its body", async (status) => {
     const opts = options();
     const body = new Response("test-not-a-real-api-key private-message-text", { status });
