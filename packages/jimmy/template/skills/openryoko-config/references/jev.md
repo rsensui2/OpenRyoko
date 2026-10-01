@@ -47,6 +47,7 @@ connectors:
 | `jev.fallback: cli` | Jevが採用できないときに `triage.engine/bin/model` で従来判定を実行 |
 | `jev.useCapabilities` | 既定true。社員の役割・提供サービスとスキルの名前／説明を判定材料にする。スキル本文・MEMORY・認証設定は送らない |
 | `jev.proactiveParticipationPercent` | 0〜100の整数、既定0。未依頼でも具体的に役立てると判定した場面への参加率。`useCapabilities: true` が必要。100は対象条件を満たす機会すべて、50は平均して半分に参加する |
+| `jev.endpoint` | 既定 `https://api.typesafe.ai/v1/systemone`。差し替えられるのは同じ `/v1/systemone` 形式の**ループバック（localhost／127.0.0.1／[::1]）だけ**（例：Ollama 0.35+ の判定モデル `http://localhost:11434/v1/systemone`）。Slack本文を他のホストへ送らないための制限。ループバックではAPIキー不要（送らない）で、`jev.model` に `nimble` 等の独自名を使える。⚠️ローカルの判定は1通3〜7秒かかることがある（M6・Nimble 9Bの実測）ため `jev.timeoutMs: 10000` を推奨 |
 | `jev.timeoutMs` | 既定3000ms、最大10000ms。外側の `triage.timeoutMs` はCLI用で別 |
 | `jev.maxConcurrent` | gatewayプロセス内の上限。既定4、最大16 |
 | `jev.minProbability` | 返信・反応・沈黙の判定閾値。0〜1。確率を正解率と同一視しない |
