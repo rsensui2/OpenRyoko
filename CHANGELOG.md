@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026.10.2
+
+- Allow Slack Jev triage to use a local Jev-compatible decision server, such as Ollama, through `slack.triage.jev.endpoint`.
+- Restrict custom destinations to loopback `/v1/systemone` endpoints, omit TypeSafe credentials from local requests, and reject redirects.
+- Preserve TypeSafe authentication and `jev-*` model validation. Local models can use names such as `nimble` or `tev1:0.8b`; use `timeoutMs: 10000` for slower local evaluations and start with `jev-shadow` to assess routing quality.
+
 ## 2026.10.1
 
 Same-day follow-up to 2026.9.30, using the next available CalVer number.
