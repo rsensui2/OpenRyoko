@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026.10.8
+
+- Fix inflated disk capacity and free-space health readings on Linux filesystems such as Docker Desktop virtiofs, where the allocation unit differs from the preferred I/O block size.
+- Read Linux allocation units and counters together, cache the result, and report unknown capacity if the bounded probe fails. Preserve native disk statistics on macOS and Windows.
+
 ## 2026.10.2
 
 - Allow Slack Jev triage to use a local Jev-compatible decision server, such as Ollama, through `slack.triage.jev.endpoint`.

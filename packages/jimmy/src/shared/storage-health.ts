@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import { JINN_HOME } from "./paths.js";
 
 const WARNING_BYTES = 1024 ** 3;
@@ -29,7 +30,24 @@ let cached: { at: number; path: string; value: DiskSpaceStatus } | null = null;
 export function getDiskSpaceStatus(target = JINN_HOME, now = Date.now()): DiskSpaceStatus {
   if (cached && cached.path === target && now - cached.at < CACHE_MS) return cached.value;
   let value: DiskSpaceStatus;
-  try { value = evaluateDiskSpace(fs.statfsSync(target)); }
+  try {
+    // Linux statfs.bsize is an I/O size on virtiofs, while counters use
+    // statvfs.f_frsize. Node 22 does not expose that fragment size.
+    if (process.platform === "linux") {
+      const output = execFileSync("stat", ["-f", "-c", "%S %b %a", "--", target], {
+        encoding: "utf8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"],
+        env: { ...process.env, LC_ALL: "C" },
+      }).trim();
+      if (!/^\d+ \d+ \d+$/.test(output)) throw new Error("Invalid filesystem statistics");
+      const [bsize, blocks, bavail] = output.split(" ").map(Number);
+      if (![bsize, blocks, bavail].every(Number.isSafeInteger) || bsize <= 0 || blocks <= 0) {
+        throw new Error("Invalid filesystem statistics");
+      }
+      value = evaluateDiskSpace({ bsize, blocks, bavail });
+    } else {
+      value = evaluateDiskSpace(fs.statfsSync(target));
+    }
+  }
   catch { value = { level: "unknown", freeBytes: null, totalBytes: null, freePercent: null }; }
   cached = { at: now, path: target, value };
   return value;
