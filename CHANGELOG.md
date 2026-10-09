@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026.10.9
+
+- Ship `AGENTS.md` as the single instruction source for new instances: an 8 KB operating map of boundaries, a request-to-skill lookup, and memory rules. `CLAUDE.md` becomes an entry point that imports `AGENTS.md`, `IDENTITY.md`, and `SOUL.md`. The two files were near-identical 20 KB copies that drifted apart in production.
+- Turn off Claude Code auto memory for gateway-run Claude sessions, including the PTY engine, session forks, and `ryoko migrate`. Its notes were visible only to Claude sessions and its index loaded for every speaker, outside the `MEMORY.md` privacy gate. Instances that already hold notes keep it enabled and log where they are; `engines.claude.autoMemory` forces either behaviour. See `docs/memory.md` for moving existing notes into the instance.
+- Stop the migrate skill from copying whole template sections into instruction files or appending to an entry-point `CLAUDE.md`. Onboarding no longer adds the language section to an entry-point file and keeps the language value to one short line.
+- Existing instruction files and memory are not rewritten. Migration 2026.10.9 ships `docs/memory.md` and the revised migrate skill, and describes an opt-in cleanup for instances whose two instruction files have diverged.
+
 ## 2026.10.8
 
 - Fix inflated disk capacity and free-space health readings on Linux filesystems such as Docker Desktop virtiofs, where the allocation unit differs from the preferred I/O block size.
