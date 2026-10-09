@@ -14,6 +14,7 @@ import { chooseApproval, keystrokesToSelect, parsePermissionPrompt, terminalText
 import type { HookRegistry, HookPayload } from "../gateway/hook-registry.js";
 import { SsePtyProxy, type SseDataEvent, type StreamCtx } from "./sse-pty-proxy.js";
 import { neutralizeForPaste } from "../shared/skill-commands.js";
+import { claudeAutoMemoryEnvFor } from "../shared/claude-auto-memory.js";
 
 export type { PtyControlEvent } from "./pty-view-engine.js";
 
@@ -590,6 +591,9 @@ export function pasteAndSubmit(proc: Pick<pty.IPty, "write">, text: string, conf
 export function buildClaudePtyEnv(
   proxyPort?: number,
   sourceEnv: NodeJS.ProcessEnv = process.env,
+  /** Flags the gateway sets on purpose. Applied after the scrub below, which
+   *  drops every inherited CLAUDE_CODE_* value. */
+  gatewayEnv: Record<string, string> = {},
 ): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(sourceEnv)) {
@@ -604,7 +608,7 @@ export function buildClaudePtyEnv(
     env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${proxyPort}`;
     env._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL = "1";
   }
-  return env;
+  return { ...env, ...gatewayEnv };
 }
 
 export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngine {
@@ -968,8 +972,8 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
    *  When `proxyPort` is given, points ANTHROPIC_BASE_URL at the per-PTY SSE
    *  forward proxy on 127.0.0.1 — subscription OAuth token is passed separately
    *  by claude, so this stays cc_entrypoint=cli / subsidy-safe (verified Item A). */
-  private buildPtyEnv(proxyPort?: number): Record<string, string> {
-    return buildClaudePtyEnv(proxyPort);
+  private buildPtyEnv(proxyPort: number | undefined, cwd: string): Record<string, string> {
+    return buildClaudePtyEnv(proxyPort, process.env, claudeAutoMemoryEnvFor(cwd));
   }
 
   /** Translate parsed SSE events from a PTY's proxy into StreamDeltas and route
@@ -1140,7 +1144,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
     // one child triggers the (single-use) token refresh — others wait for it.
     await awaitFreshClaudeCredentials();
     const { proxy, port } = await this.startProxy(jinnSessionId);
-    const env = this.buildPtyEnv(port || undefined);
+    const env = this.buildPtyEnv(port || undefined, opts.cwd || JINN_HOME);
     const bin = opts.bin || "claude";
     const geom = this.lastGeom.get(jinnSessionId);
     logger.info(`InteractiveClaudeEngine spawning ${bin} (resume: ${opts.resumeSessionId || "none"}, geom: ${geom ? `${geom.cols}×${geom.rows}` : "default"}, sseProxy: ${port || "off"})`);
@@ -1197,7 +1201,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
           proxy.stop();
           return;
         }
-        const env = this.buildPtyEnv(port || undefined);
+        const env = this.buildPtyEnv(port || undefined, opts.cwd || JINN_HOME);
         logger.info(`InteractiveClaudeEngine ensureIdleSpawn for session ${jinnSessionId} (resume ${opts.engineSessionId || "none — fresh"}, geom ${cols}×${rows}, sseProxy: ${port || "off"})`);
         const proc = pty.spawn(bin, args, {
           name: "xterm-256color",

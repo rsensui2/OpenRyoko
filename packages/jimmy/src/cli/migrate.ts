@@ -27,6 +27,7 @@ import {
 import { parseConfigPatch, applyPatchOps, type PatchOutcome } from "../shared/configPatch.js";
 import { auditGatewayReferences } from "./gateway-audit.js";
 import { stageMissingBundledSkills } from "./bundled-skills.js";
+import { claudeAutoMemoryEnvFor } from "../shared/claude-auto-memory.js";
 
 const GREEN = "\x1b[32m";
 const YELLOW = "\x1b[33m";
@@ -150,6 +151,13 @@ function buildMigrateArgs(engine: string, prompt: string): string[] {
     default:
       return ["-p", "--dangerously-skip-permissions", prompt];
   }
+}
+
+/** Env for the engine run that applies migrations. A Claude run here works in
+ *  the instance directory like any gateway session, so it follows the same
+ *  auto-memory policy; other engines get the environment untouched. */
+export function migrateChildEnv(engine: string, cwd: string): NodeJS.ProcessEnv {
+  return engine === "claude" ? { ...process.env, ...claudeAutoMemoryEnvFor(cwd) } : process.env;
 }
 
 export async function runMigrate(opts: { check?: boolean; auto?: boolean; fix?: boolean }): Promise<void> {
@@ -281,6 +289,7 @@ export async function runMigrate(opts: { check?: boolean; auto?: boolean; fix?: 
     execFileSync(engineConfig.bin, args, {
       stdio: "inherit",
       cwd: JINN_HOME,
+      env: migrateChildEnv(defaultEngine, JINN_HOME),
     });
 
     console.log(`\n${GREEN}マイグレーションが完了しました。${RESET}\n`);

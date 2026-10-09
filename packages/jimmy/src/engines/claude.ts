@@ -4,6 +4,7 @@ import { logger } from "../shared/logger.js";
 import { isDeadSessionError } from "../shared/rateLimit.js";
 import { resolveBin, formatSpawnError } from "../shared/resolveBin.js";
 import { buildChildEnv } from "../shared/childEnv.js";
+import { claudeAutoMemoryEnvFor } from "../shared/claude-auto-memory.js";
 
 interface LiveProcess {
   proc: ChildProcess;
@@ -270,7 +271,7 @@ export class ClaudeEngine implements InterruptibleEngine {
       spawnBin = resolveBin(requestedBin);
       spawnArgs = args;
       spawnCwd = opts.cwd;
-      spawnEnv = buildChildEnv();
+      spawnEnv = { ...buildChildEnv(), ...claudeAutoMemoryEnvFor(opts.cwd || process.cwd()) };
       logger.info(
         `Claude engine (one-shot) starting: ${spawnBin} -p --output-format ${streaming ? "stream-json" : "json"} --model ${opts.model || "default"} (resume: ${opts.resumeSessionId || "none"})`,
       );

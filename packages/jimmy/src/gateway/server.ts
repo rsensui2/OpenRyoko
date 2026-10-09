@@ -10,6 +10,7 @@ import { randomUUID, randomBytes } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { JinnConfig, Connector, Employee } from "../shared/types.js";
 import { loadConfig } from "../shared/config.js";
+import { claudeAutoMemoryEnvFor, configureClaudeAutoMemory } from "../shared/claude-auto-memory.js";
 import { resolveAssistantName } from "../shared/assistant-identity.js";
 import { getTriageCapabilities, invalidateTriageCapabilities } from "../shared/triage-capabilities.js";
 import { invalidateModelRegistry } from "../shared/models.js";
@@ -228,6 +229,10 @@ export async function startGateway(
   }
 
   // Set up engines
+  configureClaudeAutoMemory(config.engines?.claude?.autoMemory);
+  // Resolve once at boot so un-migrated notes are reported in the startup log,
+  // not only when the first Claude session happens to spawn.
+  claudeAutoMemoryEnvFor(JINN_HOME);
   const claudeEngine = new ClaudeEngine();
   const codexEngine = new CodexEngine();
   const geminiEngine = new GeminiEngine();
@@ -1230,6 +1235,7 @@ export async function startGateway(
         // pick up edits to engines.default / portal.* / engine bin paths
         // even when the connectors block didn't change.
         sessionManager.setConfig(currentConfig);
+        configureClaudeAutoMemory(currentConfig.engines?.claude?.autoMemory);
         logger.info("Config reloaded successfully");
         emit("config:reloaded", {});
 

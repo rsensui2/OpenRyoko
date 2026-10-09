@@ -17,7 +17,7 @@ export function resolveEffectiveName(requested: unknown, current: unknown): stri
 
 export function personalizeInstructionMd(md: string, name: string): string {
   let out = md.replace(
-    /^(# ).+( — 運用指示書)$/m,
+    /^(# ).+( — (?:運用指示書|Claude Code入口))$/m,
     (_m, p1: string, p2: string) => p1 + name + p2,
   );
   out = out.replace(
@@ -30,6 +30,24 @@ export function personalizeInstructionMd(md: string, name: string): string {
     () => `You are ${name}, the COO of the user's AI organization.`,
   );
   return out;
+}
+
+const LANGUAGE_SECTION = /\n\n## Language\nAlways respond in .+\. All communication with the user must be in .+\./m;
+
+/** An entry-point file only `@`-imports the real instructions, so anything
+ *  appended to it would duplicate what the import already brings in. */
+function importsAgentsMd(md: string): boolean {
+  return /^@(?:\.\/)?AGENTS\.md\s*$/m.test(md);
+}
+
+/** Set, replace or remove the language section of an instruction file. */
+export function applyLanguageSection(md: string, language: unknown): string {
+  const stripped = md.replace(LANGUAGE_SECTION, "");
+  // The value goes into an always-loaded instruction file: keep it to one short
+  // line so it cannot smuggle in extra instructions or defeat LANGUAGE_SECTION.
+  const name = typeof language === "string" ? language.replace(/\s+/g, " ").trim().slice(0, 40) : "";
+  if (!name || name === "English" || importsAgentsMd(stripped)) return stripped;
+  return `${stripped.trimEnd()}\n\n## Language\nAlways respond in ${name}. All communication with the user must be in ${name}.\n`;
 }
 
 export function personalizeIdentityMd(md: string, name: string): string {
