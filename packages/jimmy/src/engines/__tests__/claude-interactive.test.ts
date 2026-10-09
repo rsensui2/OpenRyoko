@@ -1,4 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 // claude-interactive.ts imports node-pty at the top level. node-pty loads its
 // native module at import time and that fails on Linux CI runners (looks for
@@ -8,6 +11,7 @@ import { describe, it, expect, vi } from "vitest";
 vi.mock("node-pty", () => ({ spawn: vi.fn() }));
 
 import {
+  InteractiveClaudeEngine,
   TurnResolver,
   buildAttachmentSuffix,
   buildClaudePtyEnv,
@@ -17,6 +21,7 @@ import {
   shouldSettleStalledTurn,
   sumTranscriptUsage,
 } from "../claude-interactive.js";
+import { resetClaudeAutoMemoryForTests } from "../../shared/claude-auto-memory.js";
 
 describe("TurnResolver", () => {
   it("resolves only after BOTH SessionStart and Stop", async () => {
@@ -217,6 +222,34 @@ describe("Jinn v0.27-v0.30 reliability ports", () => {
   it("strips suggestion metadata without dropping the real answer", () => {
     expect(sanitizeAssistantText("<suggestion>do this next</suggestion>Real answer")).toBe("Real answer");
     expect(sanitizeAssistantText("Real answer<suggestion>unfinished")).toBe("Real answer");
+  });
+
+  it("carries gateway-chosen flags past the CLAUDE_CODE_* scrub", () => {
+    const env = buildClaudePtyEnv(
+      undefined,
+      { PATH: "/bin", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "0" },
+      { CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" },
+    );
+    expect(env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe("1");
+    expect(buildClaudePtyEnv(undefined, { PATH: "/bin", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" }).CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBeUndefined();
+  });
+
+  it("applies the auto-memory policy to the PTY it spawns for a working directory", () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pty-wiring-"));
+    const saved = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = configDir;
+    resetClaudeAutoMemoryForTests();
+    try {
+      const engine = new InteractiveClaudeEngine({} as never, {} as never);
+      const env = (engine as unknown as { buildPtyEnv(port: number | undefined, cwd: string): Record<string, string> })
+        .buildPtyEnv(undefined, "/srv/instance/.ryoko");
+      expect(env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe("1");
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = saved;
+      resetClaudeAutoMemoryForTests();
+      fs.rmSync(configDir, { recursive: true, force: true });
+    }
   });
 
   it("restores the real model context ceiling behind the local proxy", () => {

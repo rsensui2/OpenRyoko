@@ -15,6 +15,10 @@ export default function setup(): () => void {
   // would silently override every one of them.
   delete process.env.RYOKO_HOME;
   process.env.JINN_HOME = home;
+  // Engine code inspects Claude Code's own state directory (auto memory,
+  // credentials). Point it at the throwaway home so no suite reads the
+  // developer's real ~/.claude.
+  process.env.CLAUDE_CONFIG_DIR = path.join(home, 'claude-config');
   return () => {
     try { fs.rmSync(home, { recursive: true, force: true }); } catch { /* best effort */ }
   };

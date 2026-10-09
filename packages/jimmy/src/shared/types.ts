@@ -785,6 +785,12 @@ export interface JinnConfig {
       fallback?: ("claude" | "codex" | "gemini")[];
       /** Pinned-model → substitute-model map applied when swapping engines. */
       fallbackModelMap?: Record<string, string>;
+      /** Claude Code's own per-project "auto memory" (~/.claude/projects/<cwd>/memory).
+       *  It is invisible to other engines and its index is loaded for every
+       *  speaker, outside the MEMORY.md privacy gate, so gateway-run sessions
+       *  turn it off. Unset: off, unless un-migrated notes already exist there
+       *  (kept on until they are moved into knowledge/). true/false forces it. */
+      autoMemory?: boolean;
     };
     codex: { bin: string; model: string; effortLevel?: string; childEffortOverride?: string; fallback?: ("claude" | "codex" | "gemini")[]; fallbackModelMap?: Record<string, string> };
     gemini?: { bin: string; model: string; effortLevel?: string; childEffortOverride?: string; fallback?: ("claude" | "codex" | "gemini")[]; fallbackModelMap?: Record<string, string> };
