@@ -485,8 +485,7 @@ Your working directory is \`~/.ryoko\` (${JINN_HOME}). This contains:
 - \`cron/\` — scheduled job definitions and run history
 - \`sessions/\` — session database
 - \`logs/\` — gateway logs
-- \`CLAUDE.md\` — user-defined instructions (always follow these)
-- \`AGENTS.md\` — agent/employee documentation
+- \`AGENTS.md\` / \`CLAUDE.md\` — your operating instructions (always follow these). On newer instances CLAUDE.md is only an entry point that imports AGENTS.md
 
 You can read, write, and modify any of these files to configure yourself, create new employees, add skills, etc.`;
 }

@@ -97,7 +97,7 @@ import { getDiskSpaceStatus } from "../shared/storage-health.js";
 import { ptySnapshotStore } from "../engines/pty-snapshot.js";
 import { collectClaudeUsage } from "../shared/claude-usage.js";
 import { PairingAttemptLimiter, pairingAttemptKey } from "./pairing-rate-limit.js";
-import { personalizeInstructionMd, personalizeIdentityMd, resolveEffectiveName } from "./onboarding-personalize.js";
+import { applyLanguageSection, personalizeInstructionMd, personalizeIdentityMd, resolveEffectiveName } from "./onboarding-personalize.js";
 import { patchPortalSection, writeFileAtomic } from "./portal-config.js";
 
 /** Max bytes accepted on /api/internal/hook (loopback-only relay payloads are tiny). */
@@ -2354,9 +2354,6 @@ Handle this as a priority request from a colleague.`;
       logger.info(`Onboarding: portal name="${portalName}", operator="${operatorName}", language="${language}"`);
 
       const effectiveName = resolveEffectiveName(portalName, config.portal?.portalName);
-      const languageSection = language && language !== "English"
-        ? `\n\n## Language\nAlways respond in ${language}. All communication with the user must be in ${language}.`
-        : "";
 
       // Update CLAUDE.md / AGENTS.md: language section always; the name only
       // when this request actually carries one (a language-only update must
@@ -2368,12 +2365,7 @@ Handle this as a priority request from a colleague.`;
         if (provided(portalName)) {
           md = personalizeInstructionMd(md, effectiveName);
         }
-        // Remove existing language section if present, then add new one if needed
-        md = md.replace(/\n\n## Language\nAlways respond in .+\. All communication with the user must be in .+\./m, "");
-        if (languageSection) {
-          md = md.trimEnd() + languageSection + "\n";
-        }
-        writeFileAtomic(mdPath, md);
+        writeFileAtomic(mdPath, applyLanguageSection(md, language));
       }
 
       // Keep the persona file's Name section in sync

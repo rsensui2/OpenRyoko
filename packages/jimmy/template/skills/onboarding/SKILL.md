@@ -9,7 +9,7 @@ description: Walk a new user through initial {{portalName}} setup, fill IDENTITY
 
 このスキルは以下のいずれかで起動します:
 
-1. **`~/.ryoko/BOOTSTRAP.md` が存在するとき**（初回起動時に CLAUDE.md / AGENTS.md から最優先で呼ばれる）
+1. **`~/.ryoko/BOOTSTRAP.md` が存在するとき**（初回起動時に AGENTS.md から最優先で呼ばれる）
 2. ユーザーが明示的にオンボーディングのやり直しを希望したとき
 
 ---
