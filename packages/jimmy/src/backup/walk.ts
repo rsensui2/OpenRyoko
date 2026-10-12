@@ -38,6 +38,8 @@ interface WalkState {
   weight: Map<string, { entries: number; bytes: number }>;
   skipped: SkippedEntry[];
   skippedCount: number;
+  /** Names a directory listed that then could not be opened. */
+  unopened: number;
   warnings: string[];
 }
 
@@ -122,12 +124,27 @@ function record(state: WalkState, relativePath: string, stat: fs.Stats, type: Ho
   });
 }
 
-/** lstat that reports a vanished path as absent and anything else as skipped. */
-async function inspect(state: WalkState, relativePath: string): Promise<fs.Stats | null> {
+/**
+ * lstat that reports a path that is not there as absent and anything else as
+ * skipped.
+ *
+ * "Not there" is silent for a target the home simply does not have. It is not
+ * silent for a name the directory itself has just listed: that is a file the
+ * backup is leaving out. The usual cause is a name that is not valid UTF-8 -
+ * its bytes are replaced on the way into a string, and the path rebuilt from
+ * the string leads nowhere - and the other is a file removed in the instant
+ * between. Either way it is counted and said.
+ */
+async function inspect(state: WalkState, relativePath: string, listed = false): Promise<fs.Stats | null> {
   try {
     return await fs.promises.lstat(absolutePathOf(state.home, relativePath));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") noteSkipped(state, relativePath, `could not be read (${errorCode(error)})`);
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      noteSkipped(state, relativePath, `could not be read (${errorCode(error)})`);
+    } else if (listed) {
+      state.unopened += 1;
+      noteSkipped(state, relativePath, "was listed but could not be opened (its name may not be valid UTF-8)");
+    }
     return null;
   }
 }
@@ -155,15 +172,19 @@ async function recordSymlink(state: WalkState, relativePath: string, stat: fs.St
   return linkTarget;
 }
 
-/** Classifies one path. Resolves true when it is a directory the walk should descend into. */
-async function visit(state: WalkState, relativePath: string): Promise<boolean> {
+/**
+ * Classifies one path. Resolves true when it is a directory the walk should
+ * descend into. `listed` says the name came out of a directory listing rather
+ * than from the list of targets.
+ */
+async function visit(state: WalkState, relativePath: string, listed = false): Promise<boolean> {
   const limit = pathByteLimit(state.limits);
   if (Buffer.byteLength(relativePath) > limit) {
     // Not listed any further either: what is under a path this long is longer still.
     noteSkipped(state, relativePath, `path longer than ${limit} bytes`);
     return false;
   }
-  const stat = await inspect(state, relativePath);
+  const stat = await inspect(state, relativePath, listed);
   if (!stat) return false;
   if (stat.isSymbolicLink()) {
     await recordSymlink(state, relativePath, stat);
@@ -223,7 +244,7 @@ async function walkDirectory(state: WalkState, start: string): Promise<void> {
     const directory = pending.pop()!;
     await eachName(state, directory, async (name) => {
       const child = `${directory}/${name}`;
-      if (await visit(state, child)) pending.push(child);
+      if (await visit(state, child, true)) pending.push(child);
     });
   }
 }
@@ -273,7 +294,7 @@ async function visitTarget(state: WalkState, target: string): Promise<void> {
 async function visitTopLevelFiles(state: WalkState, pattern: RegExp): Promise<void> {
   await eachName(state, ".", async (name) => {
     if (!pattern.test(name) || state.entries.has(name)) return;
-    const stat = await inspect(state, name);
+    const stat = await inspect(state, name, true);
     if (!stat || stat.isDirectory()) return;
     if (stat.isSymbolicLink()) await recordTargetSymlink(state, name, stat);
     else if (stat.isFile()) record(state, name, stat, "file");
@@ -298,6 +319,7 @@ export async function collectHomeEntries(home: string, options: { excludePaths?:
     weight: new Map(),
     skipped: [],
     skippedCount: 0,
+    unopened: 0,
     warnings: [],
   };
   for (const target of HOME_ARCHIVE_TARGETS) {
@@ -305,6 +327,13 @@ export async function collectHomeEntries(home: string, options: { excludePaths?:
   }
   // After the named paths, so a file one of them already claimed (MEMORY.md) is not taken twice.
   for (const { pattern } of TOP_LEVEL_FILE_TARGETS) await visitTopLevelFiles(state, pattern);
+  if (state.unopened > 0) {
+    const one = state.unopened === 1;
+    state.warnings.push(
+      `${state.unopened} name${one ? "" : "s"} listed in the archived directories could not be opened `
+      + `and ${one ? "is" : "are"} not in this backup (a file name that is not valid UTF-8 reads this way)`,
+    );
+  }
   const entries = [...state.entries.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   return { entries, bytes: state.bytes, skipped: state.skipped, skippedCount: state.skippedCount, warnings: state.warnings };
 }

@@ -336,6 +336,29 @@ describe("createHomeArchive", () => {
     expect(result.warnings.join("\n")).toMatch(/longer than 60 bytes/);
   });
 
+  it("says how many listed names it could not open, instead of dropping them without a word", async () => {
+    // A file name that is not valid UTF-8 comes back from the listing with its
+    // bad bytes replaced, and the path built from that does not exist. It used
+    // to be taken for a file that had just been deleted, and said nothing.
+    const root = tempDir();
+    const home = makeHome(root);
+    writeTree(home, { "knowledge/bad-bytes-1.md": "x", "knowledge/bad-bytes-2.md": "y" });
+    const realLstat = fs.promises.lstat.bind(fs.promises);
+    const lstat = vi.spyOn(fs.promises, "lstat").mockImplementation((async (target: fs.PathLike) => {
+      if (String(target).includes("bad-bytes-")) throw Object.assign(new Error("ENOENT: no such file or directory, lstat"), { code: "ENOENT" });
+      return realLstat(target);
+    }) as typeof fs.promises.lstat);
+
+    const result = await archiveInto(root, home).finally(() => lstat.mockRestore());
+    const paths = (await entriesOf(result.file)).map((entry) => entry.path);
+
+    expect(paths).toContain("knowledge/議事録/notes.md");
+    expect(paths.filter((entry) => entry.includes("bad-bytes-"))).toEqual([]);
+    expect(result.skipped.map((item) => item.path).sort()).toEqual(["knowledge/bad-bytes-1.md", "knowledge/bad-bytes-2.md"]);
+    expect(result.warnings.join("\n")).toMatch(/2 names .*could not be opened/);
+    expect(result.warnings.join("\n")).toMatch(/not in this backup/);
+  });
+
   it("records only the first hundred things it skipped, and says how many there were", async () => {
     const root = tempDir();
     const home = makeHome(root);
