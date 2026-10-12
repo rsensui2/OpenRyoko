@@ -1,0 +1,64 @@
+import fs from "node:fs";
+import path from "node:path";
+import { sha256 } from "./bundled.js";
+import { isHousekeepingFile } from "./names.js";
+
+/** What currently sits at skills/<name> in the instance home. */
+export type HomeSkill =
+  | { kind: "missing" }
+  /** A symlink, or a directory holding a symlink or another non-file: the user's. */
+  | { kind: "symlink" }
+  | { kind: "not-directory" }
+  | { kind: "unreadable"; error: string }
+  /** A plain directory tree. `paths` are sorted and "/"-separated. */
+  | { kind: "directory"; paths: string[] };
+
+/** Look without following: every decision is made on lstat, so a link is never
+ *  mistaken for the content it happens to point at. */
+export function inspectHomeSkill(directory: string): HomeSkill {
+  let stat: fs.Stats;
+  try { stat = fs.lstatSync(directory); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { kind: "missing" };
+    return unreadable(error);
+  }
+  if (stat.isSymbolicLink()) return { kind: "symlink" };
+  if (!stat.isDirectory()) return { kind: "not-directory" };
+  try {
+    const paths = listPlainFiles(directory);
+    return paths ? { kind: "directory", paths } : { kind: "symlink" };
+  } catch (error) {
+    return unreadable(error);
+  }
+}
+
+/** Sorted file paths, or null when the tree holds anything but files and directories. */
+function listPlainFiles(root: string): string[] | null {
+  const found: string[] = [];
+  const walk = (directory: string, prefix: string): boolean => {
+    for (const entry of fs.readdirSync(directory)) {
+      const full = path.join(directory, entry);
+      const relative = prefix ? `${prefix}/${entry}` : entry;
+      const stat = fs.lstatSync(full);
+      if (stat.isDirectory()) {
+        if (!walk(full, relative)) return false;
+      } else if (!stat.isFile()) {
+        return false;
+      } else if (!isHousekeepingFile(entry)) {
+        found.push(relative);
+      }
+    }
+    return true;
+  };
+  return walk(root, "") ? found.sort() : null;
+}
+
+export function hashFiles(root: string, paths: readonly string[]): Record<string, string> {
+  return Object.fromEntries(
+    paths.map((relative) => [relative, sha256(fs.readFileSync(path.join(root, ...relative.split("/"))))]),
+  );
+}
+
+function unreadable(error: unknown): HomeSkill {
+  return { kind: "unreadable", error: error instanceof Error ? error.message : String(error) };
+}
