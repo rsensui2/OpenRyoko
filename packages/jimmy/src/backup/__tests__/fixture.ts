@@ -112,6 +112,51 @@ export function makeHome(root: string, name = "home", options: HomeOptions = {})
   return home;
 }
 
+const DATABASE_FILE_SUFFIXES = ["", "-wal", "-shm"] as const;
+
+/**
+ * Puts a database at `file` the way a process that cannot see its locks finds
+ * one mid-flight: committed rows that live only in the WAL, and nobody visibly
+ * holding it. This is what a gateway in a container looks like from the host
+ * across a bind mount, and what a killed gateway leaves behind. Anything that
+ * opens it read-write, believing itself alone, checkpoints the WAL into the
+ * main file and deletes it.
+ */
+export function leaveMidFlight(file: string, table: string, rows: number): void {
+  const source = `${file}.source`;
+  seedDatabase(source, table, 1);
+  const writer = new Database(source);
+  try {
+    writer.pragma("wal_autocheckpoint = 0");
+    const insert = writer.prepare(`INSERT INTO ${table} (label) VALUES (?)`);
+    for (let index = 1; index < rows; index += 1) insert.run(`${table}-${index}`);
+    for (const suffix of DATABASE_FILE_SUFFIXES) fs.copyFileSync(`${source}${suffix}`, `${file}${suffix}`);
+  } finally {
+    writer.close();
+    for (const suffix of DATABASE_FILE_SUFFIXES) fs.rmSync(`${source}${suffix}`, { force: true });
+  }
+}
+
+/** Stamps a database and whatever sidecars it has as last written at `when`. */
+export function setDatabaseModified(file: string, when: Date): void {
+  for (const suffix of DATABASE_FILE_SUFFIXES) {
+    if (fs.existsSync(`${file}${suffix}`)) fs.utimesSync(`${file}${suffix}`, when, when);
+  }
+}
+
+/**
+ * Everything about a database's files that reading must not disturb: which of
+ * the three exist, their bytes, and when they were last written.
+ */
+export function databaseFingerprint(file: string): Record<string, string> {
+  return Object.fromEntries(DATABASE_FILE_SUFFIXES.map((suffix) => {
+    const target = `${file}${suffix}`;
+    if (!fs.existsSync(target)) return [`database${suffix}`, "absent"];
+    const stat = fs.statSync(target);
+    return [`database${suffix}`, `${stat.size} bytes, sha256 ${sha256(fs.readFileSync(target))}, mtime ${stat.mtimeMs}`];
+  }));
+}
+
 export function rowCount(file: string, table: string): number {
   const db = new Database(file, { readonly: true, fileMustExist: true });
   try {

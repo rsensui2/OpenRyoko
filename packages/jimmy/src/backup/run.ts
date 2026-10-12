@@ -64,10 +64,20 @@ export interface BackupRunOptions {
 }
 
 /**
- * Opens a database read-only for copying. A second connection, even from
- * another process, cannot checkpoint or delete the WAL of a database the
- * gateway has open - which a read-write one would do on close if it believed
- * itself the last.
+ * Opens a database read-only for copying. A read-only connection cannot
+ * checkpoint, and does not delete the WAL on close - which a read-write one
+ * does the moment it believes itself the last, and is how a database in use
+ * gets damaged from the far side of a container boundary, where the gateway's
+ * locks cannot be seen.
+ *
+ * Remaining risk, measured rather than assumed: a read-only connection leaves
+ * the main file and the -wal byte for byte as they were, but it does write the
+ * -shm (the WAL's index), and creates one when there is none. On the machine
+ * the gateway runs on that is ordinary SQLite, coordinated by locks. Across a
+ * bind mount into a container it is not coordinated at all, and what a gateway
+ * makes of an index written from outside has not been tested. `ryoko backup
+ * run` belongs where the gateway runs. Inside the gateway the registry is
+ * copied through the gateway's own connection and none of this applies.
  */
 export function readOnlyDatabaseSource(file: string): DatabaseSource {
   return () => {

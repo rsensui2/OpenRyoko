@@ -5,7 +5,7 @@ import path from "node:path";
 import { SQLITE_SIDECAR_SUFFIXES, type DatabaseBackupName } from "../sessions/backup.js";
 import { reserveDatabaseSnapshotName } from "./catalog.js";
 import { errorMessage } from "./format.js";
-import { databaseHeldOpen, detectRunningGateway, type GatewayLiveness } from "./gateway-liveness.js";
+import { detectRunningGateway, type GatewayLiveness } from "./gateway-liveness.js";
 import { databasePath } from "./layout.js";
 
 export interface DatabaseRestoreOptions {
@@ -24,7 +24,7 @@ export interface DatabaseRestoreOptions {
    */
   gatewayStopped?: boolean;
   /** Replaces the check for a running gateway. `destination` is the database about to be replaced. */
-  detectGateway?: (home: string, destination: string) => GatewayLiveness;
+  detectGateway?: (home: string, destination: string, now: Date) => GatewayLiveness;
 }
 
 export interface DatabaseRestoreResult {
@@ -68,14 +68,9 @@ export function inspectDatabaseBackup(file: string): string[] {
   }
 }
 
-function findRunningGateway(home: string, destination: string): GatewayLiveness {
-  const gateway = detectRunningGateway(home);
-  if (gateway.running) return gateway;
-  // detectRunningGateway has already asked this of the registry itself.
-  if (destination !== databasePath(home, "sessions") && databaseHeldOpen(destination)) {
-    return { running: true, reason: `${path.relative(home, destination)} is open in another process` };
-  }
-  return { running: false };
+/** The registry, and the database about to be replaced when that is a different one. */
+function findRunningGateway(home: string, destination: string, now: Date): GatewayLiveness {
+  return detectRunningGateway(home, { now, databases: [destination] });
 }
 
 /**
@@ -125,20 +120,22 @@ async function installDatabase(backup: string, destination: string): Promise<voi
 export const GATEWAY_STOPPED_FLAG = "--gateway-stopped";
 
 /**
- * Why "no gateway was detected" is not enough to replace a database.
+ * Why a database is not replaced on the strength of "no gateway was detected".
  *
- * Both signs the detection reads - a live pid and a lock on the registry -
- * stop at a container boundary. The usual deployment keeps the home on the
- * host and bind-mounts it into a container where the gateway runs; a `ryoko`
- * on the host sees the same files, a pid that means nothing in its own pid
- * namespace, and no lock, because file locks do not cross the mount. It would
- * swap the registry out from under a gateway that is very much running.
+ * What the detection can read - a live pid, a recent write - is evidence that
+ * a gateway is there, never that one is not. The usual deployment keeps the
+ * home on the host and bind-mounts it into a container where the gateway runs;
+ * a `ryoko` on the host sees the same files, a pid that means nothing in its
+ * own pid namespace, and, while the gateway has nothing to write, files that
+ * look idle. The one way to know for certain would be to open the database,
+ * and opening a database in use from the wrong side of that boundary is what
+ * destroys it.
  */
 function confirmationRequired(): Error {
   return new Error(
     `restoring a database needs ${GATEWAY_STOPPED_FLAG}, your confirmation that no gateway is running on this home. `
-    + "No running gateway was detected, but that check cannot see across a container boundary: when the home is bind-mounted "
-    + "into a container, a gateway running inside it is invisible to a command run on the host. "
+    + "This command cannot be sure of it by itself: when the home is bind-mounted into a container, a gateway running inside is "
+    + "not reliably visible to a command run on the host, and a database that may be in use is never opened just to find out. "
     + `Run this where the gateway runs (inside the container), stop the gateway first (ryoko stop), then repeat the command with ${GATEWAY_STOPPED_FLAG}. `
     + "Nothing was changed.",
   );
@@ -149,29 +146,40 @@ function confirmationRequired(): Error {
  *
  * Refused while a gateway is running on the home: its connection would keep
  * writing to a file that is no longer there, and a WAL from the old database
- * would be replayed into the new one. Detecting one is necessary and not
- * sufficient, so the operator has to confirm it is stopped as well. The backup
- * has to pass SQLite's own integrity check first, and the database it replaces
- * is copied aside before it is touched.
+ * would be replayed into the new one.
+ *
+ * What is opened, and when, is the whole design:
+ *
+ * - The live database is never opened, in any mode, at any point: not to see
+ *   whether it is in use, not on a dry run, not to copy it aside (that is a
+ *   plain file copy, sidecars included), not to replace it (a rename).
+ * - The operator's confirmation is checked first, before anything is looked
+ *   at. Then the signs of a running gateway, which are pid files and file
+ *   timestamps. A refusal at either point has read no database at all.
+ * - Only then is the backup opened, read-only: once for SQLite's integrity
+ *   check (on a dry run too - it is a file in the backup directory, not the
+ *   one in use), and once as the source of the copy that is written to a new
+ *   file beside the live database and renamed over it.
  */
 export async function restoreDatabase(options: DatabaseRestoreOptions): Promise<DatabaseRestoreResult> {
+  const destination = databasePath(options.home, options.name);
+  const dryRun = options.dryRun === true;
+  if (!dryRun && options.gatewayStopped !== true) throw confirmationRequired();
+
+  const liveness = (options.detectGateway ?? findRunningGateway)(options.home, destination, options.now);
+  if (liveness.running) {
+    throw new Error(
+      `a gateway appears to be running on this home (${liveness.reason ?? "it was detected"}). A database cannot be replaced underneath it: `
+      + `stop the gateway (ryoko stop), wait a minute, run this command again with ${GATEWAY_STOPPED_FLAG}, then start the gateway. `
+      + "Nothing was changed.",
+    );
+  }
   const problems = inspectDatabaseBackup(options.backup);
   if (problems.length > 0) {
     throw new Error(`refusing to restore a database backup that failed its integrity check - ${problems.slice(0, 3).join("; ")}`);
   }
-  const destination = databasePath(options.home, options.name);
-  const liveness = (options.detectGateway ?? findRunningGateway)(options.home, destination);
-  if (liveness.running) {
-    throw new Error(
-      `the gateway for this home is running (${liveness.reason ?? "it was detected"}). A database cannot be replaced underneath it: `
-      + `stop the gateway (ryoko stop), run this command again with ${GATEWAY_STOPPED_FLAG}, then start it.`,
-    );
-  }
-  const result: DatabaseRestoreResult = {
-    name: options.name, backup: options.backup, destination, dryRun: options.dryRun === true, preRestore: null,
-  };
-  if (result.dryRun) return result;
-  if (options.gatewayStopped !== true) throw confirmationRequired();
+  const result: DatabaseRestoreResult = { name: options.name, backup: options.backup, destination, dryRun, preRestore: null };
+  if (dryRun) return result;
 
   const preRestore = keepCurrentDatabase(options, destination);
   await installDatabase(options.backup, destination);

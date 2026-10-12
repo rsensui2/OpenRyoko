@@ -2,7 +2,17 @@ import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { HOME_CONTENT, makeHome, removeTempDirs, rowCount, tempDir, writeTree } from "../../backup/__tests__/fixture.js";
+import {
+  databaseFingerprint,
+  HOME_CONTENT,
+  leaveMidFlight,
+  makeHome,
+  removeTempDirs,
+  rowCount,
+  setDatabaseModified,
+  tempDir,
+  writeTree,
+} from "../../backup/__tests__/fixture.js";
 import { listBackups } from "../../backup/catalog.js";
 import { BACKUP_STATE_FILE, readBackupState } from "../../backup/state.js";
 import type { JinnConfig } from "../../shared/types.js";
@@ -377,13 +387,33 @@ describe("ryoko backup restore", () => {
     expect(read(state.home, "config.yaml")).toBe("broken\n");
   });
 
-  /** A registry backed up at four rows that has since grown to five. */
+  /** Stamps the registry as untouched for the last hour of the test's own clock. File times come from the wall clock otherwise. */
+  function idle(state: Cli, live: string): void {
+    setDatabaseModified(live, new Date(state.clock.now.getTime() - 60 * 60_000));
+  }
+
+  /** A registry backed up at four rows that has since grown to five, and has been idle for an hour. */
   async function grownRegistry(): Promise<{ state: Cli; live: string }> {
     const state = await backedUp({ sessionRows: 4 });
     const live = path.join(state.home, "sessions", "registry.db");
     const grow = new Database(live);
     grow.prepare("INSERT INTO sessions (label) VALUES (?)").run("after the backup");
     grow.close();
+    idle(state, live);
+    return { state, live };
+  }
+
+  /**
+   * The same backup, beside a registry that looks the way a live one does to a
+   * process that cannot see its locks: rows still in the WAL, nobody visibly
+   * holding it. This is the host's view of a gateway running in a container.
+   */
+  async function registryMidFlight(): Promise<{ state: Cli; live: string }> {
+    const state = await backedUp({ sessionRows: 4 });
+    const live = path.join(state.home, "sessions", "registry.db");
+    for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(`${live}${suffix}`, { force: true });
+    leaveMidFlight(live, "sessions", 7);
+    idle(state, live);
     return { state, live };
   }
 
@@ -435,10 +465,52 @@ describe("ryoko backup restore", () => {
     await runBackupRestore("sessions-2026-10-12", { gatewayStopped: true }, state.deps);
 
     const refusal = take(state.err);
-    expect(refusal).toMatch(/gateway for this home is running/);
+    expect(refusal).toMatch(/gateway appears to be running/);
     expect(refusal).toContain("ryoko stop");
     expect(process.exitCode).toBe(1);
     expect(fs.readFileSync(live).equals(before)).toBe(true);
+  });
+
+  it("leaves a registry that may be in use exactly as it was, whichever way the command ends without restoring", async () => {
+    // Run on the host against a home that a container's gateway has open, none
+    // of these may so much as open the registry: doing that is what deletes
+    // its WAL. Bytes, sidecars and timestamps, not row counts.
+    const { state, live } = await registryMidFlight();
+    const before = databaseFingerprint(live);
+    expect(Object.values(before)).not.toContain("absent");
+
+    await runBackupRestore("sessions-2026-10-12", { dryRun: true }, state.deps);
+    expect(process.exitCode).toBeUndefined();
+    expect(databaseFingerprint(live)).toEqual(before);
+
+    await runBackupRestore("sessions-2026-10-12", {}, state.deps);
+    expect(process.exitCode).toBe(1);
+    expect(take(state.err)).toContain("Nothing was changed.");
+    expect(databaseFingerprint(live)).toEqual(before);
+
+    process.exitCode = undefined;
+    fs.writeFileSync(path.join(state.home, "gateway.json"), JSON.stringify({ port: 7901, pid: process.pid, secret: "s" }));
+    for (const options of [{ gatewayStopped: true }, { dryRun: true }]) {
+      await runBackupRestore("sessions-2026-10-12", options, state.deps);
+      expect(take(state.err)).toMatch(/gateway appears to be running/);
+    }
+    expect(process.exitCode).toBe(1);
+    expect(databaseFingerprint(live)).toEqual(before);
+  });
+
+  it("refuses, flag or not, when the registry was written a few seconds ago", async () => {
+    const { state, live } = await registryMidFlight();
+    const justNow = new Date(state.clock.now.getTime() - 8_000);
+    fs.utimesSync(`${live}-wal`, justNow, justNow);
+    const before = databaseFingerprint(live);
+
+    await runBackupRestore("sessions-2026-10-12", { gatewayStopped: true }, state.deps);
+
+    const refusal = take(state.err);
+    expect(refusal).toContain("registry.db-wal was written 8 seconds ago");
+    expect(refusal).toContain("wait a minute");
+    expect(process.exitCode).toBe(1);
+    expect(databaseFingerprint(live)).toEqual(before);
   });
 
   it("asks for no such confirmation to restore files", async () => {
