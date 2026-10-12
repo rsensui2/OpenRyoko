@@ -3,6 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { CronJob } from "../shared/types.js";
 import { CRON_JOBS, CRON_RUNS } from "../shared/paths.js";
+import { logger } from "../shared/logger.js";
 
 export class CronJobsReadError extends Error {
   constructor(public readonly reason: "missing" | "invalid" | "unreadable", message: string) {
@@ -64,17 +65,33 @@ export function saveJobs(jobs: CronJob[]): void {
   }
 }
 
-export function appendRunLog(jobId: string, entry: object): void {
-  fs.mkdirSync(CRON_RUNS, { recursive: true });
+/** Where a job's run log lives, or null when the id would take it outside
+ *  cron/runs (`../x`, a NUL byte). Job ids are free-form and jobs.json is not
+ *  rejected over one, so the path is checked wherever it is built instead. */
+export function runLogPath(jobId: string): string | null {
+  if (jobId.includes("\0")) return null;
   const logPath = path.join(CRON_RUNS, `${jobId}.jsonl`);
+  const relative = path.relative(CRON_RUNS, logPath);
+  const escapes = relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative);
+  return escapes ? null : logPath;
+}
+
+export function appendRunLog(jobId: string, entry: object): void {
+  const logPath = runLogPath(jobId);
+  if (!logPath) {
+    logger.warn(`Run log not written: job id ${JSON.stringify(jobId)} resolves outside cron/runs`);
+    return;
+  }
+  fs.mkdirSync(CRON_RUNS, { recursive: true });
   fs.appendFileSync(logPath, JSON.stringify(entry) + "\n", "utf-8");
 }
 
 /** A job's runs, oldest first (the log is append-only). A positive `limit`
- *  keeps the newest N in that same order and parses only those lines. */
+ *  keeps the newest N in that same order and parses only those lines. An id
+ *  that points outside cron/runs has no history. */
 export function readRunLog(jobId: string, limit = 0): unknown[] {
-  const logPath = path.join(CRON_RUNS, `${jobId}.jsonl`);
-  if (!fs.existsSync(logPath)) return [];
+  const logPath = runLogPath(jobId);
+  if (!logPath || !fs.existsSync(logPath)) return [];
   const lines = fs.readFileSync(logPath, "utf-8").trim().split("\n").filter(Boolean);
   return (limit > 0 ? lines.slice(-limit) : lines).map((line) => JSON.parse(line));
 }

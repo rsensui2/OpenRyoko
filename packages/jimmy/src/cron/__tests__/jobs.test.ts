@@ -86,3 +86,47 @@ describe("cron run history", () => {
     expect(storage.readRunLog("damaged", 2)).toEqual(entries.slice(-2));
   });
 });
+
+// A job id is joined into the run-log path as it is. `../x` used to name
+// cron/x.jsonl, so an id (from jobs.json or decoded from an API path) could
+// read or append to a .jsonl file outside cron/runs.
+describe("run log paths stay inside cron/runs", () => {
+  const runs = path.join(root, "cron", "runs");
+  const beside = path.join(root, "cron", "beside.jsonl");
+  const above = path.join(root, "above.jsonl");
+  const escaping = ["../beside", "../../above", "nested/../../beside", "..\u0000/beside"];
+
+  afterEach(() => { fs.rmSync(above, { force: true }); });
+
+  it("resolves an ordinary id to its file and an escaping id to nothing", () => {
+    expect(storage.runLogPath("daily-report")).toBe(path.join(runs, "daily-report.jsonl"));
+    for (const id of escaping) expect(storage.runLogPath(id)).toBeNull();
+  });
+
+  it("reads no history for an id that points outside the runs directory", () => {
+    fs.mkdirSync(runs, { recursive: true });
+    for (const file of [beside, above]) fs.writeFileSync(file, JSON.stringify({ outside: true }) + "\n");
+    for (const id of escaping) {
+      expect(storage.readRunLog(id)).toEqual([]);
+      expect(storage.readRunLog(id, 5)).toEqual([]);
+    }
+  });
+
+  it("warns and writes nothing for an id that points outside the runs directory", async () => {
+    const { logger } = await import("../../shared/logger.js");
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    for (const id of escaping) storage.appendRunLog(id, { status: "success" });
+    expect(fs.existsSync(beside)).toBe(false);
+    expect(fs.existsSync(above)).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(escaping.length);
+    expect(warn.mock.calls[0]![0]).toContain("outside");
+  });
+
+  it.each(["daily-report", "8b1f0c1e-7a52-4a0e-9d55-2f1f5a0c9b11", "report.v2", "..hidden", ".", "..", "日次レポート", "with space"])(
+    "keeps reading and writing an id that stays inside: %s", (id) => {
+      storage.appendRunLog(id, { status: "success" });
+      expect(storage.readRunLog(id)).toEqual([{ status: "success" }]);
+      expect(path.dirname(storage.runLogPath(id)!)).toBe(runs);
+    },
+  );
+});

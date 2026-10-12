@@ -64,4 +64,33 @@ describe("GET /api/cron/:id/runs", () => {
       expect(await response.json()).toEqual([]);
     }
   });
+
+  // The route decodes `:id`, so `..%2F` arrives as `../` and used to be joined
+  // into the path: any .jsonl file above cron/runs could be read through it.
+  describe("an id that points outside cron/runs", () => {
+    beforeAll(() => {
+      for (const file of [path.join(root, "cron", "beside.jsonl"), path.join(root, "above.jsonl")]) {
+        fs.writeFileSync(file, JSON.stringify({ outside: true }) + "\n");
+      }
+    });
+
+    it.each(["..%2Fbeside", "..%2F..%2Fabove", "nested%2F..%2F..%2Fbeside"])("has no history through the runs route: %s", async (id) => {
+      for (const query of ["", "?limit=5"]) {
+        const response = await fetch(`${baseUrl}/api/cron/${id}/runs${query}`);
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual([]);
+      }
+    });
+
+    it("has no last run in the job list, while other jobs keep theirs", async () => {
+      fs.writeFileSync(path.join(root, "cron", "jobs.json"), JSON.stringify([
+        { id: "../beside", name: "Escaping", enabled: false, schedule: "0 9 * * *", prompt: "" },
+        { id: "daily-report", name: "Daily report", enabled: false, schedule: "0 9 * * *", prompt: "" },
+      ]));
+      const response = await fetch(`${baseUrl}/api/cron`);
+      expect(response.status).toBe(200);
+      const jobs = await response.json() as Array<{ id: string; lastRun: unknown }>;
+      expect(jobs.map((job) => [job.id, job.lastRun])).toEqual([["../beside", null], ["daily-report", entries.at(-1)]]);
+    });
+  });
 });

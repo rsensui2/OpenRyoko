@@ -47,7 +47,6 @@ import { deliverToOriginConnector, isUndeliveredToOrigin, recordFailedOriginDeli
 import {
   CONFIG_PATH,
   CRON_JOBS,
-  CRON_RUNS,
   ORG_DIR,
   SKILLS_DIR,
   LOGS_DIR,
@@ -63,7 +62,7 @@ import { explicitThread } from "../shared/threading.js";
 import { effortLevelsForModel, invalidateModelRegistry } from "../shared/models.js";
 import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt, recordClaudeRateLimit } from "../shared/usageAwareness.js";
-import { CronJobsReadError, loadJobs, readRunLog, saveJobs } from "../cron/jobs.js";
+import { CronJobsReadError, loadJobs, readRunLog, runLogPath, saveJobs } from "../cron/jobs.js";
 import { getCronJobScheduleStatus, getSchedulerSnapshot, reloadScheduler } from "../cron/scheduler.js";
 import { runCronJob } from "../cron/runner.js";
 import { checkForUpdates } from "../updates/checker.js";
@@ -1426,9 +1425,9 @@ export async function handleApiRequest(
       const jobs = loadCronJobsForApi();
       // Enrich with last run status
       const enriched = jobs.map((job) => {
-        const runFile = path.join(CRON_RUNS, `${job.id}.jsonl`);
+        const runFile = runLogPath(job.id);
         let lastRun = null;
-        if (fs.existsSync(runFile)) {
+        if (runFile && fs.existsSync(runFile)) {
           const lines = fs.readFileSync(runFile, "utf-8").trim().split("\n").filter(Boolean);
           if (lines.length > 0) {
             try { lastRun = JSON.parse(lines[lines.length - 1]); } catch {}
