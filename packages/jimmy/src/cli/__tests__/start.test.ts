@@ -6,7 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // caller's job: a boot that fails still has to end the process.
 //
 // Either way, the skills the package ships are synced into the home before the
-// gateway comes up — in the foreground, with the net already in place.
+// gateway comes up — in the foreground, with the net already in place. What the
+// sync has to say goes through the logger, which only writes logs/gateway.log once
+// it has been set up: so it is set up before the sync runs, not after.
 
 const mocks = vi.hoisted(() => ({
   calls: [] as string[],
@@ -15,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   installProcessSafetyNet: vi.fn(),
   loadConfig: vi.fn(),
   syncBundledSkills: vi.fn(),
+  configureLogger: vi.fn(),
 }));
 
 vi.mock("../../gateway/lifecycle.js", () => ({
@@ -26,6 +29,10 @@ vi.mock("../../shared/process-safety-net.js", () => ({
 }));
 vi.mock("../../shared/config.js", () => ({
   loadConfig: mocks.loadConfig,
+}));
+vi.mock("../../shared/logger.js", async () => ({
+  ...(await vi.importActual<typeof import("../../shared/logger.js")>("../../shared/logger.js")),
+  configureLogger: mocks.configureLogger,
 }));
 vi.mock("../../shared/version.js", () => ({
   compareSemver: () => 0,
@@ -50,7 +57,7 @@ const NOTHING: BundledSkillSync = {
 
 function config(overrides: Partial<JinnConfig> = {}): JinnConfig {
   // Never a real gateway: lifecycle is mocked, and the port is not the production one.
-  return { gateway: { host: "127.0.0.1", port: 17999 }, ...overrides } as JinnConfig;
+  return { gateway: { host: "127.0.0.1", port: 17999 }, logging: { level: "info", stdout: true, file: true }, ...overrides } as JinnConfig;
 }
 
 describe("runStart", () => {
@@ -63,6 +70,7 @@ describe("runStart", () => {
     mocks.startForeground.mockReset().mockImplementation(async () => { mocks.calls.push("gateway"); });
     mocks.startDaemon.mockReset().mockImplementation(() => { mocks.calls.push("daemon"); });
     mocks.syncBundledSkills.mockReset().mockImplementation(() => { mocks.calls.push("skills"); return NOTHING; });
+    mocks.configureLogger.mockReset().mockImplementation(() => { mocks.calls.push("log"); });
     mocks.loadConfig.mockReset().mockReturnValue(config());
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(logger, "error").mockImplementation(() => {});
@@ -75,12 +83,13 @@ describe("runStart", () => {
   });
 
   describe("in the foreground", () => {
-    it("installs the safety net, then syncs bundled skills, then starts the gateway", async () => {
+    it("installs the safety net, sets up the log, syncs bundled skills, then starts the gateway", async () => {
       await runStart({});
 
       // The net first: whatever goes wrong from here on, in the sync included, must
-      // not take down the process that is about to be the gateway.
-      expect(mocks.calls).toEqual(["safety-net", "skills", "gateway"]);
+      // not take down the process that is about to be the gateway. The log before the
+      // sync: what the sync reports would otherwise reach the standard output alone.
+      expect(mocks.calls).toEqual(["safety-net", "log", "skills", "gateway"]);
       expect(mocks.startDaemon).not.toHaveBeenCalled();
       expect(exit).not.toHaveBeenCalled();
     });
@@ -110,10 +119,12 @@ describe("runStart", () => {
   });
 
   describe("as a daemon", () => {
-    it("syncs bundled skills before forking the daemon", async () => {
+    it("sets up the log and syncs bundled skills before forking the daemon", async () => {
       await runStart({ daemon: true });
 
-      expect(mocks.calls).toEqual(["skills", "daemon"]);
+      // The daemon writes gateway.log once it is up, but the sync runs here, in the
+      // process that launches it: its report is appended from here.
+      expect(mocks.calls).toEqual(["log", "skills", "daemon"]);
       expect(mocks.startForeground).not.toHaveBeenCalled();
     });
 
@@ -145,6 +156,35 @@ describe("runStart", () => {
     await runStart({});
 
     expect(mocks.syncBundledSkills).not.toHaveBeenCalled();
-    expect(mocks.calls).toEqual(["safety-net", "gateway"]);
+    expect(mocks.calls).toEqual(["safety-net", "log", "gateway"]);
+  });
+
+  it("sets the log up the way the gateway itself will", async () => {
+    mocks.loadConfig.mockReturnValue(config({ logging: { level: "debug", stdout: false, file: true } }));
+
+    await runStart({});
+
+    expect(mocks.configureLogger).toHaveBeenCalledExactlyOnceWith({ level: "debug", stdout: false, file: true });
+  });
+
+  it.each([
+    ["in the foreground", {}, mocks.startForeground],
+    ["as a daemon", { daemon: true }, mocks.startDaemon],
+  ])("still syncs and starts %s when the log cannot be set up", async (_label, opts, start) => {
+    mocks.configureLogger.mockImplementation(() => { throw new Error("EACCES: permission denied, mkdir 'logs'"); });
+
+    await expect(runStart(opts)).resolves.toBeUndefined();
+
+    expect(mocks.syncBundledSkills).toHaveBeenCalledTimes(1);
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(exit).not.toHaveBeenCalled();
+  });
+
+  it("starts with a config that says nothing about logging", async () => {
+    mocks.loadConfig.mockReturnValue({ gateway: { host: "127.0.0.1", port: 17999 } } as JinnConfig);
+
+    await expect(runStart({})).resolves.toBeUndefined();
+
+    expect(mocks.calls.filter((call) => call !== "log")).toEqual(["safety-net", "skills", "gateway"]);
   });
 });

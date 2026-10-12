@@ -61,6 +61,10 @@ export function configureLogger(opts: {
   if (opts.file !== false) {
     fs.mkdirSync(LOGS_DIR, { recursive: true });
     const logPath = path.join(LOGS_DIR, "gateway.log");
+    // Already writing there: keep the stream. `ryoko start` sets the logger up before
+    // the gateway does, the same way; closing the file and opening it again would let
+    // the gateway's next line reach it ahead of the lines logged just before.
+    if (logStream && activeLogPath === logPath) return;
     if (logStream) {
       logStream.end();
       logStream = null;
