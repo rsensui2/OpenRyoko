@@ -7,8 +7,11 @@ describe("detectProviderAuthFailure", () => {
     ["claude", 'API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"OAuth token has expired."}}'],
     ["claude", "OAuth token has expired. Please obtain a new token or refresh your existing token."],
     ["claude", "Invalid API key · Please run /login"],
+    ["claude", "Not logged in · Please run /login"],
+    ["claude", "Claude exited with code 1: Invalid API key · Please run /login"],
     ["codex", 'unexpected status 401 Unauthorized: {"error":{"message":"Provided authentication token is expired. Please try signing in again.","code":"token_expired"}}'],
     ["codex", "Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again."],
+    ["codex", "Codex exited with code 1: Error: unexpected status 401 Unauthorized: Missing bearer or basic authentication in header"],
     ["codex", "Codex exited with code 1: Not logged in. Run `codex login` to sign in."],
   ] as const)("recognizes a %s login failure: %s", (engine, error) => {
     expect(detectProviderAuthFailure({ engine, error })).toBe(engine);
@@ -26,6 +29,36 @@ describe("detectProviderAuthFailure", () => {
     ["claude", ""],
     ["claude", undefined],
   ] as const)("does not mistake an unrelated %s failure for a login failure: %s", (engine, error) => {
+    expect(detectProviderAuthFailure({ engine, error })).toBeNull();
+  });
+
+  // A non-fatal `error` item from an MCP server ends up in the Codex engine's
+  // error text even when the turn itself succeeded.
+  it.each([
+    "MCP server `linear` returned HTTP 401 Unauthorized",
+    "mcp tool call failed: 401 Unauthorized (github)",
+    "request to https://internal.example/api failed with 401 unauthorized",
+  ])("does not read an MCP server's own 401 as a lost Codex login: %s", (error) => {
+    expect(detectProviderAuthFailure({ engine: "codex", error })).toBeNull();
+  });
+
+  // Anyone who can talk to the bot can choose the next turn's model with
+  // `/model <name>`, and a failure that quotes that name must not be able to
+  // summon a "log in again" notice to the operator.
+  it.each([
+    ["codex", `unexpected status 400 Bad Request: {"detail":"The 'token_expired' model is not supported when using Codex with a ChatGPT account."}`],
+    ["codex", "unexpected status 404 Not Found: The model `unexpected status 401` does not exist"],
+    ["codex", "The model 'Your access token could not be refreshed' does not exist or you do not have access to it."],
+    ["codex", "unsupported model: sign in again"],
+    ["codex", "Codex exited with code 1: error: unknown model `codex login`"],
+    ["codex", "invalid model: Not logged in"],
+    ["claude", 'API Error: 404 {"type":"error","error":{"type":"not_found_error","message":"model: authentication_error"}}'],
+    ["claude", "There's an issue with the selected model (authentication_failed). It may not exist or you may not have access to it."],
+    ["claude", "Unknown model: Please run /login"],
+    ["claude", 'Model "Invalid API key" was not found'],
+    ["claude", "Interactive turn failed: invalid_request (model: authentication_failed)"],
+    ["claude", "Claude exited with code 1: error: model 'OAuth token has expired' not found"],
+  ] as const)("is not triggered by a %s failure that merely quotes a chosen string: %s", (engine, error) => {
     expect(detectProviderAuthFailure({ engine, error })).toBeNull();
   });
 
