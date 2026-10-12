@@ -1,0 +1,465 @@
+import Database from "better-sqlite3";
+import fs from "node:fs";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { HOME_CONTENT, makeHome, removeTempDirs, rowCount, tempDir, writeTree } from "../../backup/__tests__/fixture.js";
+import { listBackups } from "../../backup/catalog.js";
+import { BACKUP_STATE_FILE, readBackupState } from "../../backup/state.js";
+import type { JinnConfig } from "../../shared/types.js";
+import { runBackupList, runBackupRestore, runBackupRun, runBackupVerify, type BackupCliDeps } from "../backup.js";
+
+/* `ryoko backup run | list | verify <id> | restore <id>`, driven the way an
+ * operator or an agent drives it: through the handlers the binary calls, on a
+ * throwaway home, reading what they print and the exit code they leave. */
+
+interface Cli {
+  home: string;
+  out: string[];
+  err: string[];
+  deps: BackupCliDeps;
+  clock: { now: Date };
+  config: Pick<JinnConfig, "backup">;
+}
+
+const START = new Date("2026-10-12T03:00:00.000Z");
+let previousExitCode: typeof process.exitCode;
+
+function cli(home: string, config: Pick<JinnConfig, "backup"> = {}): Cli {
+  const state: Cli = { home, out: [], err: [], clock: { now: START }, config, deps: {} };
+  state.deps = {
+    home,
+    io: { out: (text) => { state.out.push(text); }, err: (text) => { state.err.push(text); } },
+    now: () => state.clock.now,
+    loadConfig: () => state.config,
+  };
+  return state;
+}
+
+/** Everything printed so far, then forgotten, so each step is read on its own. */
+function take(lines: string[]): string {
+  return lines.splice(0).join("\n");
+}
+
+const json = <T>(state: Cli): T => JSON.parse(take(state.out)) as T;
+const later = (state: Cli, minutes: number): void => { state.clock.now = new Date(state.clock.now.getTime() + minutes * 60_000); };
+const read = (home: string, relative: string): string => fs.readFileSync(path.join(home, ...relative.split("/")), "utf8");
+
+interface RunReport { status: string; directory: string; targets: { name: string; status: string; file?: string; error?: string }[] }
+interface Listing { directory: string; backups: { id: string; kind: string; preRestore: boolean; bytes: number; createdAt: string }[] }
+
+beforeEach(() => {
+  previousExitCode = process.exitCode;
+  process.exitCode = undefined;
+});
+
+afterEach(() => {
+  process.exitCode = previousExitCode;
+  removeTempDirs();
+});
+
+describe("ryoko backup", () => {
+  it("goes all the way round: run, list, verify, break something, restore", async () => {
+    const home = makeHome(tempDir(), "home", { sessionRows: 6, workflowRows: 2 });
+    const state = cli(home);
+
+    await runBackupRun({ json: true }, state.deps);
+    const report = json<RunReport>(state);
+    expect(report.status).toBe("ok");
+    expect(report.targets.map((target) => [target.name, target.status])).toEqual([["home", "ok"], ["sessions", "ok"], ["workflows", "ok"]]);
+    expect(process.exitCode).toBeUndefined();
+
+    await runBackupList({ json: true }, state.deps);
+    const listing = json<Listing>(state);
+    expect(listing.directory).toBe(path.join(home, "backups"));
+    expect(listing.backups.map((item) => item.id).sort()).toEqual(["home-20261012T030000Z", "sessions-2026-10-12", "workflows-2026-10-12"]);
+
+    for (const { id } of listing.backups) {
+      await runBackupVerify(id, { json: true }, state.deps);
+      expect(json<{ id: string; ok: boolean; problems: string[] }>(state), id).toMatchObject({ id, ok: true, problems: [] });
+    }
+    expect(process.exitCode).toBeUndefined();
+
+    fs.writeFileSync(path.join(home, "config.yaml"), "gateway: { port: broken\n");
+    fs.rmSync(path.join(home, "MEMORY.md"));
+    later(state, 30);
+    await runBackupRestore("home-20261012T030000Z", { json: true }, state.deps);
+
+    const restored = json<{ id: string; dryRun: boolean; changes: { path: string; action: string }[]; preRestore: { id: string } }>(state);
+    expect(restored.changes.map((change) => [change.path, change.action]).sort()).toEqual([["MEMORY.md", "create"], ["config.yaml", "replace"]]);
+    expect(restored.preRestore.id).toBe("pre-restore-20261012T033000Z");
+    expect(read(home, "config.yaml")).toBe(HOME_CONTENT["config.yaml"]);
+    expect(read(home, "MEMORY.md")).toBe(HOME_CONTENT["MEMORY.md"]);
+    expect(process.exitCode).toBeUndefined();
+    expect(take(state.err)).toBe("");
+  });
+
+  it("prints a summary a person can read when --json is not given", async () => {
+    const home = makeHome(tempDir(), "home", { sessionRows: 1 });
+    const state = cli(home);
+
+    await runBackupRun({}, state.deps);
+    const ran = take(state.out);
+    expect(ran).toContain(path.join(home, "backups"));
+    expect(ran).toMatch(/ok\s+home\s+home-20261012T030000Z/);
+    expect(ran).toMatch(/ok\s+sessions\s+sessions-2026-10-12/);
+    expect(ran).toMatch(/workflows.*no database in this home/);
+
+    await runBackupList({}, state.deps);
+    const listed = take(state.out);
+    expect(listed).toMatch(/home-20261012T030000Z\s+home/);
+    expect(listed).toMatch(/sessions-2026-10-12\s+sessions/);
+
+    await runBackupVerify("home-20261012T030000Z", {}, state.deps);
+    expect(take(state.out)).toMatch(/^ok\s+home-20261012T030000Z/);
+  });
+});
+
+describe("ryoko backup run", () => {
+  it("exits non-zero when a target failed, and still reports the ones that did not", async () => {
+    const home = makeHome(tempDir(), "home", { sessionRows: 3 });
+    writeTree(home, { "workflows/workflows.db": "this is not a database" });
+    const state = cli(home);
+
+    await runBackupRun({ json: true }, state.deps);
+
+    const report = json<RunReport>(state);
+    expect(process.exitCode).toBe(1);
+    expect(report.status).toBe("failed");
+    expect(report.targets.map((target) => [target.name, target.status])).toEqual([["home", "ok"], ["sessions", "ok"], ["workflows", "failed"]]);
+  });
+
+  it("names the failed target and the reason for a person, too", async () => {
+    const home = makeHome(tempDir());
+    writeTree(home, { "knowledge/dump.bin": "x".repeat(3 * 1024 * 1024) });
+    const state = cli(home, { backup: { maxArchiveMb: 1 } });
+
+    await runBackupRun({}, state.deps);
+
+    expect(process.exitCode).toBe(1);
+    expect(take(state.out)).toMatch(/失敗\s+home\s+.*over the 1\.0 MB limit/);
+  });
+
+  it("counts towards the gateway's daily schedule", async () => {
+    const home = makeHome(tempDir(), "home", { sessionRows: 1 });
+    const state = cli(home);
+
+    await runBackupRun({ json: true }, state.deps);
+
+    const recorded = readBackupState(path.join(home, "backups"));
+    expect(recorded.targets).toEqual({
+      home: { lastAttemptAt: START.toISOString(), lastSuccessAt: START.toISOString() },
+      sessions: { lastAttemptAt: START.toISOString(), lastSuccessAt: START.toISOString() },
+      workflows: { lastAttemptAt: START.toISOString(), lastSuccessAt: START.toISOString() },
+    });
+  });
+
+  it("runs when asked even though the daily backups are switched off", async () => {
+    const home = makeHome(tempDir());
+    const state = cli(home, { backup: { enabled: false } });
+
+    await runBackupRun({ json: true }, state.deps);
+
+    expect(json<RunReport>(state).targets[0]).toMatchObject({ name: "home", status: "ok" });
+  });
+
+  it("writes where the config says, and trims to the configured generations", async () => {
+    const root = tempDir();
+    const home = makeHome(root);
+    const outside = path.join(root, "external");
+    const state = cli(home, { backup: { directory: outside, retention: 2 } });
+
+    for (let round = 0; round < 3; round += 1) {
+      await runBackupRun({ json: true }, state.deps);
+      later(state, 60);
+    }
+
+    expect(listBackups(outside).map((item) => item.id)).toEqual(["home-20261012T050000Z", "home-20261012T040000Z"]);
+    expect(fs.existsSync(path.join(outside, BACKUP_STATE_FILE))).toBe(true);
+  });
+
+  it("falls back to the default directory, and says so, when config.yaml cannot be read", async () => {
+    const home = makeHome(tempDir());
+    const state = cli(home);
+    state.deps = { ...state.deps, loadConfig: () => { throw new Error("bad indentation of a mapping entry (3:1)"); } };
+
+    await runBackupRun({ json: true }, state.deps);
+
+    expect(json<RunReport>(state).directory).toBe(path.join(home, "backups"));
+    const note = take(state.err);
+    expect(note).toContain("config.yaml");
+    expect(note).toContain("既定");
+    expect(note).toContain("bad indentation of a mapping entry (3:1)");
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it("passes on a setting it had to ignore", async () => {
+    const home = makeHome(tempDir());
+    const state = cli(home, { backup: { retention: -3 } });
+
+    await runBackupRun({ json: true }, state.deps);
+
+    expect(take(state.err)).toMatch(/backup\.retention/);
+    expect(json<RunReport>(state).status).toBe("ok");
+  });
+});
+
+describe("ryoko backup list", () => {
+  it("says there is nothing yet, and where it looked", async () => {
+    const home = makeHome(tempDir());
+    const state = cli(home);
+
+    await runBackupList({}, state.deps);
+    expect(take(state.out)).toContain(path.join(home, "backups"));
+
+    await runBackupList({ json: true }, state.deps);
+    expect(json<Listing>(state)).toEqual({ directory: path.join(home, "backups"), backups: [] });
+  });
+
+  it("lists the newest first and marks the snapshots a restore took", async () => {
+    const home = makeHome(tempDir());
+    const state = cli(home);
+    await runBackupRun({ json: true }, state.deps);
+    later(state, 60);
+    fs.writeFileSync(path.join(home, "config.yaml"), "edited\n");
+    await runBackupRun({ json: true }, state.deps);
+    later(state, 60);
+    await runBackupRestore("home-20261012T030000Z", { json: true }, state.deps);
+    take(state.out);
+
+    await runBackupList({ json: true }, state.deps);
+
+    expect(json<Listing>(state).backups.map(({ id, preRestore }) => [id, preRestore])).toEqual([
+      ["pre-restore-20261012T050000Z", true],
+      ["home-20261012T040000Z", false],
+      ["home-20261012T030000Z", false],
+    ]);
+  });
+});
+
+describe("ryoko backup verify", () => {
+  it("exits non-zero and lists what is wrong with a damaged archive", async () => {
+    const home = makeHome(tempDir());
+    const state = cli(home);
+    await runBackupRun({ json: true }, state.deps);
+    take(state.out);
+    const file = path.join(home, "backups", "home-20261012T030000Z.tar.gz");
+    const whole = fs.readFileSync(file);
+    fs.writeFileSync(file, whole.subarray(0, whole.length - 30));
+
+    await runBackupVerify("home-20261012T030000Z", { json: true }, state.deps);
+
+    const verdict = json<{ ok: boolean; problems: string[] }>(state);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.problems).toHaveLength(1);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("checks a database copy with SQLite's own integrity check", async () => {
+    const home = makeHome(tempDir(), "home", { sessionRows: 4 });
+    const state = cli(home);
+    await runBackupRun({ json: true }, state.deps);
+    take(state.out);
+
+    await runBackupVerify("sessions-2026-10-12", { json: true }, state.deps);
+    expect(json<{ kind: string; ok: boolean }>(state)).toMatchObject({ kind: "sessions", ok: true });
+    expect(process.exitCode).toBeUndefined();
+
+    fs.writeFileSync(path.join(home, "backups", "sessions-2026-10-12.db"), "overwritten");
+    await runBackupVerify("sessions-2026-10-12", {}, state.deps);
+    expect(take(state.out)).toMatch(/^失敗\s+sessions-2026-10-12/);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("verifies an archive given by path, wherever it is kept", async () => {
+    const root = tempDir();
+    const home = makeHome(root);
+    const state = cli(home);
+    await runBackupRun({ json: true }, state.deps);
+    take(state.out);
+    const moved = path.join(root, "usb", "home-20261012T030000Z.tar.gz");
+    fs.mkdirSync(path.dirname(moved));
+    fs.renameSync(path.join(home, "backups", "home-20261012T030000Z.tar.gz"), moved);
+
+    await runBackupVerify(moved, { json: true }, state.deps);
+
+    expect(json<{ ok: boolean; file: string }>(state)).toMatchObject({ ok: true, file: moved });
+  });
+
+  it("tells the operator how to find the id when it does not exist", async () => {
+    const home = makeHome(tempDir());
+    const state = cli(home);
+
+    await runBackupVerify("home-20991231T000000Z", {}, state.deps);
+
+    expect(take(state.err)).toMatch(/home-20991231T000000Z.*ryoko backup list/s);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("reports an error as JSON when --json was asked for", async () => {
+    const home = makeHome(tempDir());
+    const state = cli(home);
+
+    await runBackupVerify("home-20991231T000000Z", { json: true }, state.deps);
+
+    expect(JSON.parse(take(state.err))).toEqual({ error: expect.stringContaining("home-20991231T000000Z") });
+    expect(take(state.out)).toBe("");
+  });
+});
+
+describe("ryoko backup restore", () => {
+  async function backedUp(options: Parameters<typeof makeHome>[2] = {}, config: Pick<JinnConfig, "backup"> = {}): Promise<Cli> {
+    const state = cli(makeHome(tempDir(), "home", options), config);
+    await runBackupRun({ json: true }, state.deps);
+    take(state.out);
+    later(state, 30);
+    return state;
+  }
+
+  it("restores only the kinds named with --only", async () => {
+    const state = await backedUp();
+    fs.writeFileSync(path.join(state.home, "config.yaml"), "broken\n");
+    fs.writeFileSync(path.join(state.home, "AGENTS.md"), "rewritten\n");
+    fs.writeFileSync(path.join(state.home, "cron", "jobs.json"), "[]\n");
+
+    await runBackupRestore("home-20261012T030000Z", { only: "config, cron", json: true }, state.deps);
+
+    expect(json<{ kinds: string[] }>(state).kinds).toEqual(["config", "cron"]);
+    expect(read(state.home, "config.yaml")).toBe(HOME_CONTENT["config.yaml"]);
+    expect(read(state.home, "cron/jobs.json")).toBe(HOME_CONTENT["cron/jobs.json"]);
+    expect(read(state.home, "AGENTS.md")).toBe("rewritten\n");
+  });
+
+  it("shows what would change and changes nothing with --dry-run", async () => {
+    const state = await backedUp();
+    fs.writeFileSync(path.join(state.home, "config.yaml"), "broken\n");
+
+    await runBackupRestore("home-20261012T030000Z", { dryRun: true }, state.deps);
+
+    const printed = take(state.out);
+    expect(printed).toMatch(/dry-run/);
+    expect(printed).toMatch(/置換\s+config\.yaml/);
+    expect(read(state.home, "config.yaml")).toBe("broken\n");
+    expect(listBackups(path.join(state.home, "backups")).filter((item) => item.preRestore)).toEqual([]);
+  });
+
+  it("tells a person where the previous state went and how to get it back", async () => {
+    const state = await backedUp();
+    fs.writeFileSync(path.join(state.home, "config.yaml"), "broken\n");
+    writeTree(state.home, { "knowledge/new.md": "written after the backup\n" });
+
+    await runBackupRestore("home-20261012T030000Z", {}, state.deps);
+
+    const printed = take(state.out);
+    expect(printed).toMatch(/置換\s+config\.yaml/);
+    expect(printed).toContain("ryoko backup restore pre-restore-20261012T033000Z");
+    expect(printed).toContain("knowledge/new.md");
+  });
+
+  it("rejects a kind it does not know, naming the ones it does", async () => {
+    const state = await backedUp();
+
+    await runBackupRestore("home-20261012T030000Z", { only: "config,secrets" }, state.deps);
+
+    expect(take(state.err)).toMatch(/secrets.*config.*cron.*persona.*memory/s);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("refuses a damaged archive and leaves the home as it was", async () => {
+    const state = await backedUp();
+    fs.writeFileSync(path.join(state.home, "config.yaml"), "broken\n");
+    const file = path.join(state.home, "backups", "home-20261012T030000Z.tar.gz");
+    fs.writeFileSync(file, fs.readFileSync(file).subarray(0, 200));
+
+    await runBackupRestore("home-20261012T030000Z", {}, state.deps);
+
+    expect(take(state.err)).toMatch(/failed verification/);
+    expect(process.exitCode).toBe(1);
+    expect(read(state.home, "config.yaml")).toBe("broken\n");
+  });
+
+  it("restores a database copy when no gateway is running", async () => {
+    const state = await backedUp({ sessionRows: 4 });
+    const live = path.join(state.home, "sessions", "registry.db");
+    const grow = new Database(live);
+    grow.prepare("INSERT INTO sessions (label) VALUES (?)").run("after the backup");
+    grow.close();
+
+    await runBackupRestore("sessions-2026-10-12", { json: true }, state.deps);
+
+    expect(json<{ name: string; preRestore: { id: string } }>(state)).toMatchObject({
+      name: "sessions", preRestore: { id: "pre-restore-20261012T033000Z-sessions" },
+    });
+    expect(rowCount(live, "sessions")).toBe(4);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it("refuses to restore a database while the gateway is running, and says to stop it", async () => {
+    const state = await backedUp({ sessionRows: 4 });
+    fs.writeFileSync(path.join(state.home, "gateway.json"), JSON.stringify({ port: 7901, pid: process.pid, secret: "s" }));
+    const live = path.join(state.home, "sessions", "registry.db");
+    const before = fs.readFileSync(live);
+
+    await runBackupRestore("sessions-2026-10-12", {}, state.deps);
+
+    expect(take(state.err)).toMatch(/gateway.*is running.*ryoko stop/s);
+    expect(process.exitCode).toBe(1);
+    expect(fs.readFileSync(live).equals(before)).toBe(true);
+  });
+
+  it("restores files while the gateway is running", async () => {
+    const state = await backedUp({ sessionRows: 4 });
+    fs.writeFileSync(path.join(state.home, "gateway.json"), JSON.stringify({ port: 7901, pid: process.pid, secret: "s" }));
+    fs.writeFileSync(path.join(state.home, "config.yaml"), "broken\n");
+
+    await runBackupRestore("home-20261012T030000Z", { only: "config", json: true }, state.deps);
+
+    expect(read(state.home, "config.yaml")).toBe(HOME_CONTENT["config.yaml"]);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it("does not take --only for a database, which is restored whole", async () => {
+    const state = await backedUp({ sessionRows: 4 });
+
+    await runBackupRestore("sessions-2026-10-12", { only: "config" }, state.deps);
+
+    expect(take(state.err)).toMatch(/--only/);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("keeps only the configured number of pre-restore snapshots", async () => {
+    const state = await backedUp({}, { backup: { retention: 2 } });
+
+    for (let round = 0; round < 3; round += 1) {
+      fs.writeFileSync(path.join(state.home, "config.yaml"), `broken ${round}\n`);
+      await runBackupRestore("home-20261012T030000Z", { json: true }, state.deps);
+      later(state, 10);
+    }
+
+    expect(listBackups(path.join(state.home, "backups")).filter((item) => item.preRestore).map((item) => item.id)).toEqual([
+      "pre-restore-20261012T035000Z", "pre-restore-20261012T034000Z",
+    ]);
+  });
+
+  it("recreates a symlink that leaves the home only with --allow-external-symlinks", async () => {
+    const root = tempDir();
+    const home = makeHome(root);
+    const outside = path.join(root, "shared-skill");
+    writeTree(outside, { "SKILL.md": "kept outside\n" });
+    fs.symlinkSync(outside, path.join(home, "skills", "shared"));
+    const state = cli(home);
+    await runBackupRun({ json: true }, state.deps);
+    take(state.out);
+    later(state, 30);
+    fs.rmSync(path.join(home, "skills", "shared"));
+
+    await runBackupRestore("home-20261012T030000Z", {}, state.deps);
+    expect(take(state.err)).toMatch(/--allow-external-symlinks/);
+    expect(process.exitCode).toBe(1);
+    expect(fs.existsSync(path.join(home, "skills", "shared"))).toBe(false);
+
+    process.exitCode = undefined;
+    await runBackupRestore("home-20261012T030000Z", { allowExternalSymlinks: true, json: true }, state.deps);
+    expect(fs.readlinkSync(path.join(home, "skills", "shared"))).toBe(outside);
+    expect(process.exitCode).toBeUndefined();
+  });
+});
