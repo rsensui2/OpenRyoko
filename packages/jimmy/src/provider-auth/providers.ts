@@ -15,15 +15,26 @@ export interface ProviderSpec {
   isAuthenticated(result: CommandResult): boolean;
 }
 
-/** `claude auth status --json` exits non-zero when logged out; an answer from
- *  a failed probe is not trusted either way. */
-function claudeLoggedIn(result: CommandResult): boolean {
-  if (result.exitCode !== 0) return false;
+/** What the status JSON says, when it can be read at all. */
+function statedLoggedIn(stdout: string): boolean | undefined {
   try {
-    return (JSON.parse(result.stdout) as { loggedIn?: unknown } | null)?.loggedIn === true;
+    const stated = (JSON.parse(stdout) as { loggedIn?: unknown } | null)?.loggedIn;
+    return typeof stated === "boolean" ? stated : undefined;
   } catch {
-    return false;
+    return undefined;
   }
+}
+
+/**
+ * `claude auth status --json` exits `loggedIn ? 0 : 1`, and the exit status is
+ * the answer of record. A non-zero exit is never a login, whatever was
+ * printed. The JSON cannot be relied on for a yes: the CLI draws it through
+ * Ink, which wraps at 80 columns when its output is piped, so a long value —
+ * an e-mail address, an organization name — is broken across lines and the
+ * output stops parsing. It is consulted only to hear an explicit no.
+ */
+function claudeLoggedIn(result: CommandResult): boolean {
+  return result.exitCode === 0 && statedLoggedIn(result.stdout) !== false;
 }
 
 export const PROVIDERS: Record<AuthProvider, ProviderSpec> = {

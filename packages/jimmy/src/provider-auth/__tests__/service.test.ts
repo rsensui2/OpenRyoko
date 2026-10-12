@@ -400,10 +400,10 @@ describe("ProviderAuthService — verification", () => {
   });
 
   it.each([
-    ["a logged-out answer", { stdout: JSON.stringify({ loggedIn: false }), exitCode: 0 }],
+    ["the CLI's logged-out answer", { stdout: JSON.stringify({ loggedIn: false }), exitCode: 1 }],
+    ["a logged-out answer with a clean exit", { stdout: JSON.stringify({ loggedIn: false }), exitCode: 0 }],
     ["a logged-in answer from a failed probe", { stdout: JSON.stringify({ loggedIn: true }), exitCode: 1 }],
-    ["an answer that is not the expected shape", { stdout: JSON.stringify({ loggedIn: "yes" }), exitCode: 0 }],
-    ["output that is not JSON", { stdout: "Logged in", exitCode: 0 }],
+    ["unreadable output from a failed probe", { stdout: "Error: something went wrong", exitCode: 1 }],
     ["a probe that could not run", new Error("spawn ENOENT")],
   ])("treats %s as not verified (Claude)", async (_name, answer) => {
     const harness = makeHarness({ status: { claude: answer } });
@@ -412,6 +412,37 @@ describe("ProviderAuthService — verification", () => {
     await settle();
 
     expect(flow.outcomes).toEqual([{ status: "failed", reason: "unverified" }]);
+  });
+
+  // `claude auth status --json` exits `loggedIn ? 0 : 1`. Its JSON is drawn
+  // through Ink, which wraps at 80 columns when piped: a long value is broken
+  // across lines and the output stops being JSON.
+  const WRAPPED_BY_INK = [
+    "{",
+    '  "loggedIn": true,',
+    '  "authMethod": "claude.ai",',
+    '  "apiProvider": "firstParty",',
+    '  "email": "an-operator-with-a-rather-long-mailbox-name@a-company-with-a-long-nam',
+    'e.example.com",',
+    '  "orgName": "An Organization Whose Name Is Longer Than The Eighty Columns Ink Wr',
+    'aps At When Its Output Is Piped",',
+    '  "subscriptionType": "max"',
+    "}",
+  ].join("\n");
+
+  it.each([
+    ["JSON broken by line wrapping", { stdout: WRAPPED_BY_INK, exitCode: 0 }],
+    ["output that is not JSON", { stdout: "Logged in", exitCode: 0 }],
+    ["an answer of an unexpected shape", { stdout: JSON.stringify({ loggedIn: "yes" }), exitCode: 0 }],
+    ["no output at all", { stdout: "", exitCode: 0 }],
+  ])("goes by the exit status when the answer is %s (Claude)", async (_name, answer) => {
+    expect(() => JSON.parse(WRAPPED_BY_INK)).toThrow();
+    const harness = makeHarness({ status: { claude: answer } });
+    const flow = await startFlow(harness, "claude");
+    flow.pty.emitExit(0);
+    await settle();
+
+    expect(flow.outcomes).toEqual([{ status: "succeeded" }]);
   });
 
   it("treats a non-zero `codex login status` as not verified", async () => {
