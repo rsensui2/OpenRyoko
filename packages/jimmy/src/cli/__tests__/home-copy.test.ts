@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { placeTree } from "../home-copy.js";
+import { placeTree, removePlacedTree } from "../home-copy.js";
 
 const roots: string[] = [];
 
@@ -219,5 +219,149 @@ describe("placeTree: nothing is written through what was planted in the home", (
     expect(temporaries).toHaveLength(2);
     expect(new Set(temporaries.map((name) => name.replace(/^(MIGRATION|notes)\.md\./, ""))).size).toBe(2);
     for (const name of temporaries) expect(name).toMatch(/\.[0-9a-f]{16}\.tmp$/);
+  });
+});
+
+describe("removePlacedTree: taking away again what was placed", () => {
+  /** The directory the staged copies are in, and everything under it. */
+  const staging = (home: string) => path.join(home, "migrations");
+  const remove = (t: ReturnType<typeof setup>) => removePlacedTree(path.dirname(t.source), t.home, "migrations");
+
+  it("removes the files that were placed, and the directories that leaves empty", () => {
+    const t = setup({ "MIGRATION.md": "# 1.0.0\n", "files/docs/new.md": "new doc\n", "files/memory/.gitkeep": "" });
+    t.place();
+
+    remove(t);
+
+    expect(fs.readdirSync(t.home)).toEqual([]);
+  });
+
+  it("takes several staged versions in one go, and passes over the ones that are not there", () => {
+    const t = setup();
+    const second = path.join(path.dirname(t.source), "2.0.0");
+    fs.mkdirSync(second);
+    fs.writeFileSync(path.join(second, "MIGRATION.md"), "# 2.0.0\n");
+    const never = path.join(path.dirname(t.source), "3.0.0");
+    fs.mkdirSync(never);
+    fs.writeFileSync(path.join(never, "MIGRATION.md"), "# 3.0.0\n");
+    t.place();
+    placeTree(second, t.home, "migrations", "2.0.0");
+
+    remove(t);
+
+    expect(fs.readdirSync(t.home)).toEqual([]);
+  });
+
+  it("leaves what the package does not have, and the directories that hold it", () => {
+    const t = setup();
+    t.place();
+    fs.writeFileSync(path.join(t.staged, "notes.md"), "mine");
+    fs.writeFileSync(path.join(t.staged, "files", "docs", "mine.md"), "mine");
+    fs.mkdirSync(path.join(staging(t.home), "0.9.9-my-own"));
+    fs.writeFileSync(path.join(staging(t.home), "0.9.9-my-own", "MIGRATION.md"), "mine");
+
+    remove(t);
+
+    expect(listed(staging(t.home))).toEqual(["0.9.9-my-own", "0.9.9-my-own/MIGRATION.md", "1.0.0", "1.0.0/files", "1.0.0/files/docs", "1.0.0/files/docs/mine.md", "1.0.0/notes.md"]);
+  });
+
+  it("unlinks a link left at a file's name, and not what it points at", () => {
+    const t = setup();
+    const secret = secretIn(t.outside);
+    t.place();
+    fs.rmSync(path.join(t.staged, "MIGRATION.md"));
+    fs.symlinkSync(secret, path.join(t.staged, "MIGRATION.md"));
+
+    remove(t);
+
+    expect(fs.readFileSync(secret, "utf8")).toBe("the user's notes\n");
+    expect(fs.readdirSync(t.home)).toEqual([]);
+  });
+
+  it.each([
+    ["migrations"],
+    ["migrations/1.0.0"],
+    ["migrations/1.0.0/files"],
+    ["migrations/1.0.0/files/docs"],
+  ])("does not go through a link where the directory %s belongs: files of the same names behind it stay", (relative) => {
+    const t = setup();
+    t.place();
+    // Somewhere else of the user's, holding a tree of the same shape with their own files in it.
+    const theirs = path.join(t.outside, "tree");
+    fs.cpSync(path.join(t.home, ...relative.split("/")), theirs, { recursive: true });
+    const before = listed(theirs);
+    const planted = path.join(t.home, ...relative.split("/"));
+    fs.renameSync(planted, path.join(t.root, "moved-away"));
+    fs.symlinkSync(theirs, planted);
+
+    remove(t);
+
+    expect(listed(theirs)).toEqual(before);
+    expect(fs.lstatSync(planted).isSymbolicLink()).toBe(true);
+  });
+
+  it("does not remove an empty directory of the user's from behind such a link", () => {
+    const t = setup();
+    t.place();
+    // Empty, and named like one of the package's: only where it is tells them apart.
+    const theirs = path.join(t.outside, "tree");
+    fs.mkdirSync(path.join(theirs, "docs"), { recursive: true });
+    const planted = path.join(t.staged, "files");
+    fs.renameSync(planted, path.join(t.root, "moved-away"));
+    fs.symlinkSync(theirs, planted);
+
+    remove(t);
+
+    expect(fs.existsSync(path.join(theirs, "docs"))).toBe(true);
+    expect(fs.lstatSync(planted).isSymbolicLink()).toBe(true);
+  });
+
+  it("leaves a directory that sits at a file's name, with what is in it", () => {
+    const t = setup();
+    fs.mkdirSync(path.join(t.staged, "MIGRATION.md"), { recursive: true });
+    fs.writeFileSync(path.join(t.staged, "MIGRATION.md", "mine.md"), "kept");
+
+    remove(t);
+
+    expect(fs.readFileSync(path.join(t.staged, "MIGRATION.md", "mine.md"), "utf8")).toBe("kept");
+  });
+
+  it("never walks the home to delete: one file by name at a time, and directories only when empty", () => {
+    const t = setup();
+    t.place();
+    fs.writeFileSync(path.join(t.staged, "notes.md"), "mine");
+    const rm = vi.spyOn(fs, "rmSync");
+    const rmdir = vi.spyOn(fs, "rmdirSync");
+    const listedInHome = vi.spyOn(fs, "readdirSync");
+
+    remove(t);
+
+    expect(rm).not.toHaveBeenCalled();
+    expect(rmdir.mock.calls.filter(([, options]) => options !== undefined)).toEqual([]);
+    // What is walked is the package's tree. The home is never listed.
+    expect(listedInHome.mock.calls.map((call) => String(call[0])).filter((dir) => dir.startsWith(t.home))).toEqual([]);
+  });
+
+  it("does nothing, and does not fail, when nothing was placed or the base is not there", () => {
+    const t = setup();
+
+    expect(() => remove(t)).not.toThrow();
+    expect(() => removePlacedTree(path.dirname(t.source), path.join(t.root, "no-such-home"), "migrations")).not.toThrow();
+    expect(() => removePlacedTree(path.join(t.root, "no-such-package"), t.home, "migrations")).not.toThrow();
+    expect(fs.readdirSync(t.home)).toEqual([]);
+  });
+
+  it("does not fail when a file cannot be removed, and goes on to the others", () => {
+    const t = setup();
+    t.place();
+    const unlink = fs.unlinkSync;
+    vi.spyOn(fs, "unlinkSync").mockImplementation((file) => {
+      if (String(file).endsWith("MIGRATION.md")) throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+      return unlink(file);
+    });
+
+    expect(() => remove(t)).not.toThrow();
+
+    expect(listed(staging(t.home))).toEqual(["1.0.0", "1.0.0/MIGRATION.md"]);
   });
 });

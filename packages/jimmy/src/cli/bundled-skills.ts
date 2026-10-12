@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { applyTemplateReplacements, isTemplateFile } from "../shared/templateReplacements.js";
+import { removePlacedTree } from "./home-copy.js";
 
 function entryExists(file: string): boolean {
   try { fs.lstatSync(file); return true; }
@@ -53,7 +54,10 @@ export function stageMissingBundledSkills(
       fs.renameSync(staged, destination);
       added.push(entry.name);
     } finally {
-      fs.rmSync(staging, { recursive: true, force: true });
+      // Empty by now if the skill went in. Otherwise what is in it is this call's own
+      // copy of the package's skill, and is taken away as that: one file at a time by
+      // name, and then the directories. No tree in the home is deleted by walking it.
+      removePlacedTree(skillSource, home, path.basename(staging), entry.name);
     }
   }
   return added;

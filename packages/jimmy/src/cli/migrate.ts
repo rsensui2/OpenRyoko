@@ -27,7 +27,7 @@ import {
 import { parseConfigPatch, applyPatchOps, type PatchOutcome } from "../shared/configPatch.js";
 import { stageMissingBundledSkills } from "./bundled-skills.js";
 import { auditGatewayReferences } from "./gateway-audit.js";
-import { placeTree } from "./home-copy.js";
+import { placeTree, removePlacedTree } from "./home-copy.js";
 import { migrationNeedsSession } from "./migration-declarations.js";
 import { syncInstanceBundledSkills } from "../skills-sync/instance.js";
 import { printable } from "../skills-sync/names.js";
@@ -675,7 +675,10 @@ async function applyAutoMigrations(
   console.log(`\n  ${GREEN}[version]${RESET} ${instanceVersion} → ${packageVersion}`);
   console.log(`\n${GREEN}Auto-migration complete.${RESET} ${applied} file(s) added, ${configChanges} config value(s) updated.`);
 
-  fs.rmSync(MIGRATIONS_DIR, { recursive: true, force: true });
+  // The staged copies are this command's own: copies of the package's migrations.
+  // They are taken away as that, one file at a time by name. No tree in the home is
+  // deleted by walking it, and anything else found there is left where it is.
+  removePlacedTree(path.join(TEMPLATE_DIR, "migrations"), JINN_HOME, "migrations");
 }
 
 /**

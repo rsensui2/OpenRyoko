@@ -52,6 +52,7 @@ vi.mock("../../skills-sync/instance.js", () => ({
 // Here it only has to be asked for the right tree in the right place.
 vi.mock("../home-copy.js", () => ({
   placeTree: vi.fn(),
+  removePlacedTree: vi.fn(),
 }));
 
 // config.yaml is read and written through the shared config writer, not
@@ -68,7 +69,7 @@ import type { BundledSkillSync } from "../../skills-sync/types.js";
 import { compareSemver } from "../../shared/version.js";
 import { JINN_HOME, MIGRATIONS_DIR, TEMPLATE_DIR } from "../../shared/paths.js";
 import {
-  createdInHome, dirent, mockExecFileSync, mockExistsSync, mockReaddirSync, mockRmSync, mockSync, mockWriteFileSync, output, rawOutput, resetMigrateMocks, stampedVersions, synced,
+  createdInHome, dirent, mockExecFileSync, mockExistsSync, mockReaddirSync, mockRemovePlacedTree, mockRmSync, mockSync, mockWriteFileSync, output, rawOutput, resetMigrateMocks, stampedVersions, synced,
 } from "./migrate-harness.js";
 
 describe("migrate: bundled skill sync", () => {
@@ -388,7 +389,10 @@ describe("migrate: bundled skill sync", () => {
     expect(mockExecFileSync).not.toHaveBeenCalled();
     expect(output()).not.toMatch(/needs AI merge/);
     expect(stampedVersions()).toEqual(["1.1.0"]);
-    expect(mockRmSync).toHaveBeenCalledWith(MIGRATIONS_DIR, { recursive: true, force: true });
+    // The staged copies are taken away as what they are, copies of the package's
+    // migrations, one file at a time. No tree in the home is deleted by walking it.
+    expect(mockRemovePlacedTree).toHaveBeenCalledExactlyOnceWith(path.join(TEMPLATE_DIR, "migrations"), JINN_HOME, "migrations");
+    expect(mockRmSync).not.toHaveBeenCalled();
   });
 
   it("--auto still leaves a customized skill's migration files to the AI merge", async () => {
@@ -400,6 +404,8 @@ describe("migrate: bundled skill sync", () => {
 
     expect(output()).toMatch(/\[skip\].*skills.migrate.SKILL\.md.*needs AI merge/);
     expect(stampedVersions()).toEqual([]);
+    // Not complete: the staged copies stay for the AI run that finishes it.
+    expect(mockRemovePlacedTree).not.toHaveBeenCalled();
     expect(mockRmSync).not.toHaveBeenCalled();
   });
 

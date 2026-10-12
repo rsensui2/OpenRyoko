@@ -52,6 +52,7 @@ vi.mock("../../skills-sync/instance.js", () => ({
 // Here it only has to be asked for the right tree in the right place.
 vi.mock("../home-copy.js", () => ({
   placeTree: vi.fn(),
+  removePlacedTree: vi.fn(),
 }));
 
 // config.yaml is read and written through the shared config writer, not

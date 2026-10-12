@@ -72,3 +72,69 @@ function placeFile(from: string, to: string): void {
     throw error;
   }
 }
+
+/**
+ * Take away again what was placed at <base>/<segments...> from `source`: the files
+ * `source` has, one at a time by name, and then each directory, if that left it empty.
+ *
+ * Nothing is removed by walking the tree in the home. A delete that does can be led,
+ * by a link swapped in as it goes, to empty a directory somewhere else, and it takes
+ * with it whatever else was put there. Here the tree that is walked is the package's,
+ * and the home is touched in two ways only, each by one name: a file's name is
+ * unlinked — the name, never what a link there points to — and a directory is removed
+ * if it is empty. Either happens only while the directory holding that name is, at
+ * that moment, a real directory where it is supposed to be. So nothing behind a link
+ * is reached, what the package does not have stays, and so do the directories that
+ * hold it.
+ *
+ * Never throws: clearing up is not a reason to fail.
+ */
+export function removePlacedTree(source: string, base: string, ...segments: string[]): void {
+  let root: string;
+  try { root = fs.realpathSync(base); }
+  catch { return; }
+  const directories = segments.map((_, depth) => path.join(root, ...segments.slice(0, depth + 1)));
+  const target = directories.at(-1);
+  if (target === undefined) return;
+  removeFrom(source, target);
+  for (const directory of [...directories].reverse()) removeIfEmpty(directory);
+}
+
+function removeFrom(source: string, directory: string): void {
+  let entries: fs.Dirent[];
+  try { entries = fs.readdirSync(source, { withFileTypes: true }); }
+  catch { return; }
+  for (const entry of entries) {
+    const placed = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      removeFrom(path.join(source, entry.name), placed);
+      removeIfEmpty(placed);
+    } else {
+      removeFile(placed);
+    }
+  }
+}
+
+/** Unlink the name, when a file or a link has it. A directory at the name is left. */
+function removeFile(file: string): void {
+  try {
+    if (!isPlainDirectory(path.dirname(file)) || fs.lstatSync(file).isDirectory()) return;
+    fs.unlinkSync(file);
+  } catch {
+    // Not there, or not removable: it stays.
+  }
+}
+
+/** rmdir takes a directory only when it is empty, and never follows a link to one. */
+function removeIfEmpty(directory: string): void {
+  try {
+    if (isPlainDirectory(path.dirname(directory))) fs.rmdirSync(directory);
+  } catch {
+    // It holds something, or is not there: it stays.
+  }
+}
+
+function isPlainDirectory(directory: string): boolean {
+  try { return fs.lstatSync(directory).isDirectory() && fs.realpathSync(directory) === directory; }
+  catch { return false; }
+}

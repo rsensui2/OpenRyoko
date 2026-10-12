@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { vi } from "vitest";
 import { updateConfigDocument } from "../../shared/config-file.js";
-import { placeTree } from "../home-copy.js";
+import { placeTree, removePlacedTree } from "../home-copy.js";
 import { syncInstanceBundledSkills } from "../../skills-sync/instance.js";
 import type { BundledSkillSync } from "../../skills-sync/types.js";
 
@@ -17,6 +17,7 @@ export const mockRmSync = vi.mocked(fs.rmSync);
 export const mockSync = vi.mocked(syncInstanceBundledSkills);
 export const mockLstatSync = vi.mocked(fs.lstatSync);
 export const mockPlaceTree = vi.mocked(placeTree);
+export const mockRemovePlacedTree = vi.mocked(removePlacedTree);
 export const mockUpdateConfigDocument = vi.mocked(updateConfigDocument);
 
 export const missing = (file: unknown) => Object.assign(new Error(`ENOENT: no such file or directory, lstat '${String(file)}'`), { code: "ENOENT" });
