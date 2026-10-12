@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { insufficientSpace, sameFilesystem, type DiskSpaceProbe } from "./space.js";
+import { TMP_DIR } from "../shared/paths.js";
 import {
   ArchiveTooLargeError,
   createHomeArchive,
@@ -13,9 +13,11 @@ import {
 } from "./archive.js";
 import { reserveArchiveName } from "./catalog.js";
 import { errorMessage } from "./format.js";
+import { inHome } from "./layout.js";
 import type { ArchiveLimits } from "./limits.js";
 import { findManifestEntry, type BackupManifest, type ManifestEntry } from "./manifest.js";
 import { DEFAULT_ARCHIVE_LIMITS } from "./settings.js";
+import { insufficientSpace, sameFilesystem, type DiskSpaceProbe } from "./space.js";
 import { BACKUP_KINDS, HOME_ARCHIVE_TARGETS, kindOfPath, unsafePathReason, type BackupKind } from "./targets.js";
 import { absolutePathOf, collectHomeEntries } from "./walk.js";
 
@@ -444,9 +446,31 @@ function applyPlan(home: string, plan: PlanItem[], staged: Map<string, string>):
   }
 }
 
+/**
+ * Where files are extracted before they are moved into place: the home's own
+ * tmp/. It has to be a real directory. A symlink there would have the contents
+ * of whatever is being restored - config.yaml and its tokens among them -
+ * written wherever it points, outside the home.
+ */
+function stagingParent(home: string): string {
+  const scratch = inHome(home, TMP_DIR);
+  const stat = lstatOrNull(scratch);
+  if (stat?.isSymbolicLink()) {
+    throw new Error(
+      `${scratch} is a symlink (to ${fs.readlinkSync(scratch)}). Files are extracted there on their way back and must not leave the home: `
+      + "replace it with a real directory and run the restore again; nothing was restored",
+    );
+  }
+  if (stat && !stat.isDirectory()) {
+    throw new Error(`${scratch} is not a directory, and files are extracted there on their way back; nothing was restored`);
+  }
+  return scratch;
+}
+
 async function writeIntoHome(options: RestoreOptions, home: string, plan: PlanItem[], preRestore: { id: string } | null): Promise<void> {
   fs.mkdirSync(home, { recursive: true, mode: 0o700 });
-  const scratch = path.join(home, "tmp");
+  // Asked again here, at the moment of use; the first time was before the snapshot.
+  const scratch = stagingParent(home);
   fs.mkdirSync(scratch, { recursive: true, mode: 0o700 });
   const staging = fs.mkdtempSync(path.join(scratch, "restore-"));
   try {
@@ -507,6 +531,7 @@ export async function restoreHomeArchive(options: RestoreOptions): Promise<Resto
   };
   if (result.dryRun || changes.length === 0) return result;
 
+  stagingParent(home);
   const staged = bytesToStage(plan);
   assertRoomToStage(options, home, staged);
   const snapshot = await snapshotCurrentState(options, home, staged);

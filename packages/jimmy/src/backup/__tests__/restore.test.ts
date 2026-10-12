@@ -632,6 +632,33 @@ describe("restoreHomeArchive, refusing what it must not trust", () => {
     expect(fs.readlinkSync(path.join(home, "skills", "shared"))).toBe(path.join(root, "somewhere-else"));
   });
 
+  it("will not stage what it extracts outside the home because tmp/ has been made a symlink", async () => {
+    // Files are extracted under <home>/tmp before they are moved into place.
+    // A link there would put the contents of config.yaml wherever it points.
+    const target = await scene();
+    const outside = path.join(target.root, "outside-tmp");
+    fs.mkdirSync(outside);
+    const scratch = path.join(target.home, "tmp");
+    fs.rmSync(scratch, { recursive: true });
+    fs.symlinkSync(outside, scratch);
+    fs.writeFileSync(path.join(target.home, "config.yaml"), "broken\n");
+
+    await expect(restoreHomeArchive(optionsFor(target))).rejects.toThrow(/tmp is a symlink.*nothing was restored/s);
+
+    expect(fs.readdirSync(outside)).toEqual([]);
+    expect(read(target.home, "config.yaml")).toBe("broken\n");
+    // Refused before the snapshot was taken, not after.
+    expect(listBackups(target.backups).filter((item) => item.preRestore)).toEqual([]);
+
+    fs.rmSync(scratch);
+    fs.writeFileSync(scratch, "a file where the directory should be\n");
+    await expect(restoreHomeArchive(optionsFor(target))).rejects.toThrow(/tmp is not a directory.*nothing was restored/s);
+    expect(read(target.home, "config.yaml")).toBe("broken\n");
+
+    // A dry run stages nothing, so it has nothing to object to.
+    await expect(restoreHomeArchive(optionsFor(target, { dryRun: true }))).resolves.toMatchObject({ dryRun: true });
+  });
+
   it("refuses to clear a directory out of the way of a file, and restores nothing at all", async () => {
     const target = await scene();
     fs.rmSync(path.join(target.home, "MEMORY.md"));
