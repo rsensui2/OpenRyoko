@@ -28,13 +28,13 @@ import { notifyDiscordChannel } from "../../sessions/callbacks.js";
 import { _resetUsageLimitAnnouncements, setEngineInstallProbe } from "../../sessions/engine-health-gate.js";
 import { _resetEngineLoginKnowledge, noteLoginWorked } from "../../sessions/engine-login.js";
 import { SessionManager } from "../../sessions/manager.js";
-import { getSession } from "../../sessions/registry.js";
+import { createSession, getSession, updateSession } from "../../sessions/registry.js";
 import { readEngineHealth, recordEngineUnavailable } from "../../shared/engine-health.js";
 import { invalidateModelRegistry } from "../../shared/models.js";
 import { CRON_RUNS, JINN_HOME } from "../../shared/paths.js";
 import { runCronJob } from "../runner.js";
 
-type RunEntry = { status: string; error: string | null; sessionId: string; durationMs: number };
+type RunEntry = { status: string; error: string | null; sessionId: string; durationMs: number; reason?: string; resetsAt?: string; waitingSessionId?: string };
 
 const HEALTH_PATH = path.join(JINN_HOME, "tmp", "engine-health.json");
 const MINUTE = 60_000;
@@ -85,7 +85,12 @@ function setup(options: Options = {}) {
   ]));
   // Results and notices are delivered through "slack"; failure alerts go out through "ops".
   const posted: string[] = [];
-  const post = async (_target: unknown, text: string) => { posted.push(text); return "ts"; };
+  const postedTo: Array<{ channel: string; text: string }> = [];
+  const post = vi.fn(async (target: { channel: string }, text: string) => {
+    posted.push(text);
+    postedTo.push({ channel: target.channel, text });
+    return "ts";
+  });
   const alert = vi.fn<Connector["sendMessage"]>(async () => "alert-ts");
   const getCapabilities = () => ({ threading: true, messageEdits: false, reactions: true, attachments: false });
   const connectors = new Map<string, Connector>([
@@ -94,7 +99,11 @@ function setup(options: Options = {}) {
   ]);
   const fire = () => runCronJob(job, manager, config, connectors);
   return {
-    job, claudeRun, codexRun, alert, posted, fire,
+    job, claudeRun, codexRun, alert, posted, post, connectors, fire,
+    /** What one delivery channel received. */
+    postedIn: (channel: string) => postedTo.filter((message) => message.channel === channel).map((message) => message.text),
+    /** Fire another job on the same gateway. */
+    fireJob: (other: CronJob) => runCronJob(other, manager, config, connectors),
     /** Fire the job this many minutes after START. */
     fireAt: async (minutes: number) => { vi.setSystemTime(START + minutes * MINUTE); await fire(); },
     /** Claude's allowance is spent until then, and it answers again afterwards. */
@@ -362,59 +371,212 @@ describe("cron fires while the only usable engine is out of allowance", () => {
     }
     // The same job failing for the same reason alerts once an hour …
     expect(f.alert).toHaveBeenCalledExactlyOnceWith({ channel: "C-alerts" }, expect.stringContaining(iso(reset)));
-    // … but its delivery channel is told on every fire.
-    expect(f.posted).toEqual(entries.map((entry) => entry.error));
+    // … and its delivery channel is told once for the whole limit period.
+    expect(f.posted).toEqual([entries[0]!.error]);
 
     await f.fireAt(75);
     expect(f.alert).toHaveBeenCalledTimes(2);
+    expect(f.posted).toHaveLength(1);
+    // A fire that posted nothing is still an error for the limit, not for a delivery that failed.
+    const last = runs(f.job.id).at(-1)!;
+    expect(last).toMatchObject({ status: "error", error: entries[0]!.error });
+    expect(getSession(last.sessionId)).toMatchObject({ status: "error", lastError: entries[0]!.error });
+  });
+
+  it("tell the delivery channel again when a new limit period begins", async () => {
+    const f = setup({ claudeFallback: [] });
+    const firstReset = START + 5 * 24 * HOUR;
+    const secondReset = firstReset + 7 * 24 * HOUR;
+    f.claudeRun.mockImplementation(async () => spentUntil(Date.now() < firstReset ? firstReset : secondReset, "7d"));
+
+    await f.fireAt(0);
+    await f.fireAt(15);
+    await f.fireAt(5 * 24 * 60 + 1); // the window reopened and was spent again
+    await f.fireAt(5 * 24 * 60 + 16);
+
+    expect(f.posted).toEqual([expect.stringContaining(iso(firstReset)), expect.stringContaining(iso(secondReset))]);
+    expect(outcomes(f.job.id)).toEqual(["error", "error", "error", "error"]);
+  });
+
+  // Once per limit period is counted per delivery channel: every channel that
+  // is waiting for a job's output learns why none is coming, and learns it once.
+  it("tell each delivery channel once, however many jobs deliver to it", async () => {
+    const f = setup({ claudeFallback: [] });
+    f.claudeSpentUntil(START + 5 * 24 * HOUR, "7d");
+    const sameChannel: CronJob = { ...f.job, id: `${f.job.id}-same-channel`, name: "Evening digest" };
+    const otherChannel: CronJob = { ...f.job, id: `${f.job.id}-other-channel`, name: "Sales report", delivery: { connector: "slack", channel: "C-sales" } };
+
+    for (const minutes of [0, 15]) {
+      vi.setSystemTime(START + minutes * MINUTE);
+      await f.fire();
+      await f.fireJob(sameChannel);
+      await f.fireJob(otherChannel);
+    }
+
+    expect(f.postedIn("C-briefing")).toHaveLength(1);
+    expect(f.postedIn("C-sales")).toHaveLength(1);
+    for (const job of [f.job, sameChannel, otherChannel]) expect(outcomes(job.id)).toEqual(["error", "error"]);
+  });
+
+  // A fire whose post was held back sent nothing, so nothing of it can have
+  // failed to arrive: it is not turned into a delivery failure by the checks
+  // that look for output that reached nobody.
+  it("stay errors for the limit, not for a delivery, when the channel's connector is gone while a repeat is held back", async () => {
+    const f = setup({ claudeFallback: [] });
+    f.claudeSpentUntil(START + 5 * 24 * HOUR, "7d");
+
+    await f.fireAt(0);
+    f.connectors.delete("slack");
+    await f.fireAt(15);
+
+    const [first, second] = runs(f.job.id);
+    expect(second).toMatchObject({ status: "error", error: first!.error });
+    expect(second!.error).not.toMatch(/deliver/i);
+    expect(getSession(second!.sessionId)).toMatchObject({ status: "error", lastError: first!.error });
+    expect(f.posted).toHaveLength(1);
+  });
+
+  // "Told" means the post went out. One the channel refused is tried again by the next fire.
+  it("try again with the next fire when the channel refused the message", async () => {
+    const f = setup({ claudeFallback: [] });
+    f.claudeSpentUntil(START + 5 * 24 * HOUR, "7d");
+    f.post.mockRejectedValueOnce(new Error("channel_not_found"));
+
+    await f.fireAt(0);
+    await f.fireAt(15);
+    await f.fireAt(30);
+
+    expect(f.posted).toEqual([expect.stringContaining("claude usage limit reached")]);
+    expect(outcomes(f.job.id)).toEqual(["error", "error", "error"]);
   });
 });
 
-describe("cron fires that wait for a reset near enough to wait for", () => {
+describe("cron fires while an earlier fire of the same job waits for a usage limit to reset", () => {
   // The scheduler does not wait for a fire to finish before the next one, and
-  // every fire is a session of its own. While one waits for the reset, the next
-  // fires of the same job spend a turn finding the same limit and wait beside it.
+  // every fire is a session of its own. Each fire that arrived while one was
+  // waiting used to spend a turn finding the same limit and then wait beside
+  // it — and all of them ran the job at the same moment when the limit reset.
+  //
   // (Six minutes stand in for any reset within the six hours a turn waits, and
   // a fire every two minutes for any schedule: each simulated half-second of
-  // waiting is a timer, and a registry read, that this test has to run.)
-  it("wait side by side when the same job fires again, and all run at once when the limit resets", { timeout: 20_000 }, async () => {
+  // waiting is a timer, and a registry read, that the test has to run.)
+  const RESET = START + 6 * MINUTE;
+  const WAITING_NOTICE = /^⏳ claude usage limit reached\. Resets .+ — I'll continue automatically\.$/;
+  const statusOfFire = (f: ReturnType<typeof setup>, index: number) => getSession(f.claudeRun.mock.calls[index]![0].sessionId!)?.status;
+
+  /** Fire the job and return once that fire is parked, waiting for the reset. `settled` resolves when it has run. */
+  async function fireAndPark(f: ReturnType<typeof setup>): Promise<{ settled: Promise<void> }> {
+    const index = f.claudeRun.mock.calls.length;
+    const settled = f.fire();
+    await vi.waitFor(() => expect(statusOfFire(f, index)).toBe("waiting"));
+    return { settled };
+  }
+
+  it("are not started: each is logged as skipped, and the job runs once when the limit resets", { timeout: 20_000 }, async () => {
     vi.useFakeTimers({ now: START });
     const f = setup({ claudeFallback: [] });
-    const reset = START + 6 * MINUTE;
-    // Out until the reset; after it, a turn that takes half a minute.
-    let inFlight = 0;
-    let mostAtOnce = 0;
-    f.claudeRun.mockImplementation(async () => {
-      if (Date.now() < reset) return spentUntil(reset, "5h");
-      mostAtOnce = Math.max(mostAtOnce, ++inFlight);
-      await new Promise((resolve) => setTimeout(resolve, 30_000));
-      inFlight--;
-      return answered("claude");
-    });
-    const waitingSessions = () => f.claudeRun.mock.calls.map(([opts]) => getSession(opts.sessionId!)?.status).filter((status) => status === "waiting");
+    f.claudeSpentUntil(RESET);
+    const waiting = await fireAndPark(f);
+    const waitingSessionId = f.claudeRun.mock.calls[0]![0].sessionId!;
 
-    const pending: Array<Promise<void>> = [];
-    for (const minutes of [0, 2, 4]) {
-      await vi.advanceTimersByTimeAsync(Math.max(0, START + minutes * MINUTE - Date.now()));
-      pending.push(f.fire());
-      await vi.waitFor(() => expect(waitingSessions()).toHaveLength(pending.length));
+    const firedAt: string[] = [];
+    for (const skippedSoFar of [1, 2]) {
+      await vi.advanceTimersByTimeAsync(2 * MINUTE);
+      firedAt.push(new Date().toISOString());
+      const fire = f.fire();
+      await vi.waitFor(() => expect(outcomes(f.job.id)).toEqual(Array(skippedSoFar).fill("skipped"))); // logged at once …
+      await fire; // … and over with: it does not wait as well
     }
 
-    expect(f.claudeRun).toHaveBeenCalledTimes(3);
-    expect(runs(f.job.id)).toEqual([]); // nothing is logged for a fire that is still waiting
+    expect(f.claudeRun).toHaveBeenCalledTimes(1); // no turn spent finding the same limit again
+    // A skipped run's line, in the shape the other skips have, with what it was skipped for.
+    expect(runs(f.job.id)).toEqual(firedAt.map((timestamp) => ({
+      timestamp, status: "skipped", durationMs: expect.any(Number),
+      reason: "previous-run-waiting-for-usage-limit", waitingSessionId, resetsAt: iso(RESET),
+    })));
+    // The channel and the operator were told once, by the fire that is waiting.
+    expect(f.posted).toEqual([expect.stringMatching(WAITING_NOTICE)]);
+    expect(notifyDiscordChannel).toHaveBeenCalledTimes(1);
     expect(f.alert).not.toHaveBeenCalled();
-    // Each of them told the delivery channel, and the operator, that it is waiting.
-    expect(f.posted).toEqual(Array(3).fill(expect.stringMatching(/^⏳ claude usage limit reached\. Resets .+ — I'll continue automatically\.$/)));
-    expect(vi.mocked(notifyDiscordChannel).mock.calls.map(([text]) => text)).toEqual(Array(3).fill(expect.stringContaining("paused until")));
 
-    await vi.advanceTimersByTimeAsync(reset + 2 * MINUTE - Date.now());
-    await Promise.all(pending);
+    await vi.advanceTimersByTimeAsync(RESET + MINUTE - Date.now());
+    await waiting.settled;
 
-    expect(f.claudeRun).toHaveBeenCalledTimes(6); // the three turns that found the limit, then all three again at the reset
-    expect(mostAtOnce).toBe(3); // the same job, three times over, at the same moment
-    expect(f.results()).toEqual(Array(3).fill("Briefing by claude."));
+    expect(f.claudeRun).toHaveBeenCalledTimes(2); // the turn that found the limit, and the same fire again at the reset
+    expect(f.results()).toEqual(["Briefing by claude."]);
+    expect(outcomes(f.job.id)).toEqual(["skipped", "skipped", "success"]);
+
+    // With nothing waiting any more, the next fire runs as usual.
+    await f.fire();
+    expect(f.claudeRun).toHaveBeenCalledTimes(3);
+    expect(outcomes(f.job.id)).toEqual(["skipped", "skipped", "success", "success"]);
+  });
+
+  // A long job overlapping its next fire is a different matter, and is left as it was.
+  it("still start while the earlier fire is simply running", async () => {
+    const f = setup();
+    let finish!: (result: EngineResult) => void;
+    f.claudeRun.mockImplementationOnce(() => new Promise<EngineResult>((resolve) => { finish = resolve; }));
+    const first = f.fire();
+    await vi.waitFor(() => expect(f.claudeRun).toHaveBeenCalledTimes(1));
+
+    await f.fire();
+
+    expect(f.claudeRun).toHaveBeenCalledTimes(2);
+    finish(answered("claude"));
+    await first;
+    expect(outcomes(f.job.id)).toEqual(["success", "success"]);
+  });
+
+  it("start again once the fire that was waiting has given up", { timeout: 20_000 }, async () => {
+    vi.useFakeTimers({ now: START });
+    const f = setup({ claudeFallback: [] });
+    const weekly = START + 5 * 24 * HOUR;
+    // Out until the reset; and at the reset, told that the weekly window is spent as well.
+    f.claudeRun.mockImplementation(async () => (Date.now() < RESET ? spentUntil(RESET, "5h") : spentUntil(weekly, "7d")));
+    const waiting = await fireAndPark(f);
+
+    await vi.advanceTimersByTimeAsync(RESET + MINUTE - Date.now());
+    await waiting.settled; // gave the wait up: the next reset is days away
+    await f.fire();
+
+    expect(f.claudeRun).toHaveBeenCalledTimes(3);
     const entries = runs(f.job.id);
-    expect(entries.map((entry) => entry.status)).toEqual(["success", "success", "success"]);
-    expect(entries.every((entry) => entry.durationMs >= 2 * MINUTE)).toBe(true); // each ran for as long as it waited
+    expect(entries.map((entry) => entry.status)).toEqual(["error", "error"]);
+    for (const entry of entries) expect(entry.error).toContain(iso(weekly));
+    // The channel heard that the job was waiting, then why it stopped — and not a second time from the fire after it.
+    expect(f.posted).toEqual([expect.stringMatching(WAITING_NOTICE), entries[0]!.error]);
+  });
+
+  // A session that was waiting when the gateway went down is still marked so,
+  // but nothing in the new process will resume it. It must not hold fires back.
+  it("are not held back by a session left waiting by a gateway that has since restarted", async () => {
+    const f = setup({ claudeFallback: [] });
+    const leftover = createSession({ engine: "claude", source: "cron", sourceRef: `cron:${f.job.id}:${START - HOUR}`,
+      connector: "cron", sessionKey: `cron:${f.job.id}:${START - HOUR}`, prompt: "Write the morning briefing" });
+    updateSession(leftover.id, { status: "waiting", lastError: `claude usage limit — resumes ${iso(START + HOUR)}` });
+
+    await f.fireAt(0);
+
+    expect(f.claudeRun).toHaveBeenCalledTimes(1);
+    expect(outcomes(f.job.id)).toEqual(["success"]);
+  });
+
+  it("do not hold back another job", { timeout: 20_000 }, async () => {
+    vi.useFakeTimers({ now: START });
+    const f = setup({ claudeFallback: [] });
+    f.claudeSpentUntil(RESET);
+    const waiting = await fireAndPark(f);
+    const other: CronJob = { ...f.job, id: `${f.job.id}-other`, name: "Evening digest" };
+
+    const otherFire = f.fireJob(other);
+    await vi.waitFor(() => expect(statusOfFire(f, 1)).toBe("waiting")); // it ran its own turn, and waits on its own
+
+    expect(f.claudeRun).toHaveBeenCalledTimes(2);
+    expect(runs(other.id)).toEqual([]);
+    await vi.advanceTimersByTimeAsync(RESET + MINUTE - Date.now());
+    await Promise.all([waiting.settled, otherFire]);
+    expect(outcomes(f.job.id)).toEqual(["success"]);
+    expect(outcomes(other.id)).toEqual(["success"]);
   });
 });

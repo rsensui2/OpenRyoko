@@ -88,9 +88,13 @@ Each job execution is logged to `~/.ryoko/cron/runs/<jobId>.jsonl`. Each line is
 
 `status` is `success`, `error` or `skipped` (with a `reason`). The `kind: "maintenance"` lines an update-notification job writes for its inspection use `notified`, not `success`, once the inspection report has been delivered. A prompt run is an `error`, with the reason in `error`, when its session ended in error, when its result was not delivered (the delivery connector was not running, or refused the message), or when the job names an engine the gateway does not have. It is not a `success` merely because the turn returned. `GET /api/cron/<id>/runs` lists runs oldest first; add `?limit=N` for only the newest N.
 
+A prompt run is `skipped`, with `reason: "previous-run-waiting-for-usage-limit"`, when an earlier fire of the same job is still waiting for an engine's usage limit to reset. `waitingSessionId` names the session that is waiting and `resetsAt`, when the wait knows it, the reset it is waiting for. That fire runs the job once when the limit resets; the fires skipped in the meantime are not made up. A job that is simply still running when its next fire comes is not skipped.
+
 ## Failure Alerts
 
 A failed prompt run is always written to the run log, and alerts `cron.alertConnector` / `cron.alertChannel` in `config.yaml` when both are set. While the same failure of a job repeats, the alert is sent once and then held back for `cron.alertThrottleMinutes` (default 60; `0` alerts on every failure). A new reason, or a success in between, alerts again at once. No new alert therefore does not mean the job recovered: check its run log. Command jobs alert as described in [Direct command jobs](cron-commands.md).
+
+When an engine's usage limit will not reset within six hours and no fallback engine can take the job, each fire fails at once instead of waiting, and is logged as an `error` that names the reset. The job's delivery channel is told once per limit period (an engine and the reset it stated), not on every fire. Silence in that channel does not mean the job recovered either: check its run log.
 
 ## Delegation Pattern
 

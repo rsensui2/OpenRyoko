@@ -93,6 +93,39 @@ describe("a usage limit with nowhere to switch to", () => {
     expect(f.claudeRun).toHaveBeenCalledTimes(1);
   });
 
+  // Somebody asked, so a conversation is told every time it asks. Nobody asks
+  // a cron job's delivery channel anything: it hears of a limit period once.
+  it("tells a conversation every time, on every message and in every thread", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const f = setup();
+    f.claudeRun.mockResolvedValue(limitedUntil(5 * 24 * HOUR));
+    const first = f.message();
+
+    await f.manager.route(first, f.connector);
+    await f.manager.route({ ...first, text: "もう一度お願いします", messageId: "message-2" }, f.connector);
+    await f.manager.route(f.message(), f.connector);
+
+    expect(f.replies()).toHaveLength(3);
+    expect(new Set(f.replies()).size).toBe(1);
+    expect(f.replies()[0]).toContain("claude usage limit reached");
+  });
+
+  it("tells a cron job's delivery channel once per limit period, and still records the failure of every fire", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const f = setup();
+    f.claudeRun.mockResolvedValue(limitedUntil(5 * 24 * HOUR));
+    const fire = (): IncomingMessage => ({ ...f.message("cron"), transportMeta: { cronJobId: "weekly-report", deliveryConnector: "slack", deliveryChannel: "C-wait" } });
+    const [first, second] = [fire(), fire()];
+
+    await f.manager.route(first, f.connector);
+    await f.manager.route(second, f.connector);
+
+    expect(f.replies()).toHaveLength(1);
+    for (const msg of [first, second]) {
+      expect(getSessionBySessionKey(msg.sessionKey)).toMatchObject({ status: "error", lastError: f.replies()[0] });
+    }
+  });
+
   it("does the same when a fallback is configured but cannot be used", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const f = setup({});
