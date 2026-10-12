@@ -26,7 +26,8 @@ import {
 } from "../shared/templateReplacements.js";
 import { parseConfigPatch, applyPatchOps, type PatchOutcome } from "../shared/configPatch.js";
 import { auditGatewayReferences } from "./gateway-audit.js";
-import { stageMissingBundledSkills } from "./bundled-skills.js";
+import { syncInstanceBundledSkills } from "../skills-sync/instance.js";
+import type { BundledSkillSync, KeepReason } from "../skills-sync/types.js";
 import { claudeAutoMemoryEnvFor } from "../shared/claude-auto-memory.js";
 
 const GREEN = "\x1b[32m";
@@ -68,6 +69,54 @@ function ensureSkillSymlinks(skillName: string): void {
       }
     }
   }
+}
+
+/** Skills left alone for a reason the user can act on. Symlinks, and edits with
+ *  no shipped update waiting, need nothing from them and are not listed. */
+const KEPT_SKILL_NOTES: Partial<Record<KeepReason, string>> = {
+  modified: "編集済み。同梱版に更新があります",
+  unmanaged: "同梱版と内容が違います",
+  "retired-modified": "同梱から外れましたが、編集済みのため残しました",
+};
+
+/**
+ * Run the bundled skill sync — the same one the gateway runs at start — and
+ * report it. Returns the skills that now match the shipped version. A sync that
+ * cannot run is reported and does not block the versioned migrations.
+ */
+function syncBundledSkillsStep(): Set<string> {
+  let result: BundledSkillSync;
+  try {
+    result = syncInstanceBundledSkills();
+  } catch (err: any) {
+    console.log(`  ${YELLOW}[skills]${RESET} 同梱スキルを同期できませんでした: ${err?.message ?? err}`);
+    return new Set();
+  }
+  for (const name of result.added) {
+    ensureSkillSymlinks(name);
+    console.log(`  ${GREEN}[new skill]${RESET} ${name}`);
+  }
+  for (const name of result.updated) console.log(`  ${GREEN}[updated skill]${RESET} ${name}`);
+  for (const name of result.retired) console.log(`  ${YELLOW}[retired skill]${RESET} ${name}`);
+  if (result.backupDir) console.log(`  ${DIM}置き換え・退役の前の内容: ${result.backupDir}${RESET}`);
+  for (const { name, reason } of result.kept) {
+    const note = KEPT_SKILL_NOTES[reason];
+    if (note) console.log(`  ${YELLOW}[skill kept]${RESET} ${name} (${note}。上書きしません)`);
+  }
+  for (const { name, error } of result.failed) console.log(`  ${RED}[skill failed]${RESET} ${name}: ${error}`);
+  if (result.skipped === "skills-root-symlink") {
+    console.log(`  ${DIM}[skills] skills/ が symlink（利用者管理）のため、同梱スキルは同期しません${RESET}`);
+  } else if (result.skipped === "newer-receipt") {
+    console.log(`  ${DIM}[skills] このホームはより新しい OpenRyoko が同期済みのため、同梱スキルは変更しません${RESET}`);
+  }
+  return new Set(result.inSync);
+}
+
+/** A migration's copy of a bundled skill's file needs no merge once that skill
+ *  matches the shipped version: the instance has that file, or a newer one. */
+function isSyncedSkillFile(relPath: string, syncedSkills: ReadonlySet<string>): boolean {
+  const parts = relPath.split(path.sep);
+  return parts.length >= 3 && parts[0] === "skills" && syncedSkills.has(parts[1]);
 }
 
 /**
@@ -191,15 +240,9 @@ export async function runMigrate(opts: { check?: boolean; auto?: boolean; fix?: 
   console.log(`\n${DIM}インスタンスバージョン:${RESET} ${instanceVersion}`);
   console.log(`${DIM}パッケージバージョン:${RESET}  ${packageVersion}\n`);
 
-  // New default skills are additive package content, independent of versioned
-  // config migrations. Keep --check read-only and preserve customized skills.
-  if (!opts.check) {
-    const replacements = buildTemplateReplacements(readPortalName());
-    for (const name of stageMissingBundledSkills(TEMPLATE_DIR, JINN_HOME, replacements)) {
-      ensureSkillSymlinks(name);
-      console.log(`  ${GREEN}[new skill]${RESET} ${name}`);
-    }
-  }
+  // Bundled skills are package content, independent of versioned config
+  // migrations. Keep --check read-only; edited skills are never overwritten.
+  const syncedSkills = opts.check ? new Set<string>() : syncBundledSkillsStep();
 
   // Already up to date
   if (compareSemver(instanceVersion, packageVersion) >= 0) {
@@ -259,7 +302,7 @@ export async function runMigrate(opts: { check?: boolean; auto?: boolean; fix?: 
   // --auto: apply safe changes deterministically without launching AI
   if (opts.auto) {
     console.log("\n安全な変更を自動適用中...");
-    await applyAutoMigrations(pending, instanceVersion, packageVersion);
+    await applyAutoMigrations(pending, instanceVersion, packageVersion, syncedSkills);
     return;
   }
 
@@ -303,11 +346,14 @@ export async function runMigrate(opts: { check?: boolean; auto?: boolean; fix?: 
 /**
  * Auto-migration: deterministically apply safe changes without AI.
  * Copies new files, adds new config keys. Does NOT modify user-customized files.
+ * Files of a bundled skill the sync already brought up to date count as applied;
+ * only skills the user edited are still left to the AI merge.
  */
 async function applyAutoMigrations(
   pending: string[],
   instanceVersion: string,
   packageVersion: string,
+  syncedSkills: ReadonlySet<string>,
 ): Promise<void> {
   let applied = 0;
 
@@ -359,6 +405,8 @@ async function applyAutoMigrations(
         if (parts[0] === "skills" && parts.length >= 2) {
           ensureSkillSymlinks(parts[1]);
         }
+      } else if (isSyncedSkillFile(entry.relPath, syncedSkills)) {
+        console.log(`  ${DIM}[ok]${RESET} ${entry.relPath} (bundled skill already in sync)`);
       } else {
         console.log(`  ${YELLOW}[skip]${RESET} ${entry.relPath} (exists — needs AI merge)`);
         skippedExisting++;

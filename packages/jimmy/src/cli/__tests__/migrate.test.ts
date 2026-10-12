@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Mock child_process before importing the module under test
 vi.mock("node:child_process", () => ({
@@ -41,15 +41,18 @@ vi.mock("../../shared/version.js", () => ({
   getPendingMigrations: vi.fn(() => ["1.1.0"]),
 }));
 
-vi.mock("../bundled-skills.js", () => ({
-  stageMissingBundledSkills: vi.fn(() => []),
+// Gateway start and `ryoko migrate` share one bundled-skill sync; its own suite
+// covers what it does to a home. Here it only has to be called and reported.
+vi.mock("../../skills-sync/instance.js", () => ({
+  syncInstanceBundledSkills: vi.fn(),
 }));
 
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
-import { stageMissingBundledSkills } from "../bundled-skills.js";
+import { syncInstanceBundledSkills } from "../../skills-sync/instance.js";
+import type { BundledSkillSync } from "../../skills-sync/types.js";
 import { compareSemver, getPendingMigrations } from "../../shared/version.js";
-import { CLAUDE_SKILLS_DIR, AGENTS_SKILLS_DIR } from "../../shared/paths.js";
+import { CLAUDE_SKILLS_DIR, AGENTS_SKILLS_DIR, CONFIG_PATH, JINN_HOME, MIGRATIONS_DIR } from "../../shared/paths.js";
 import path from "node:path";
 
 const mockExecFileSync = vi.mocked(execFileSync);
@@ -57,6 +60,11 @@ const mockExistsSync = vi.mocked(fs.existsSync);
 const mockReaddirSync = vi.mocked(fs.readdirSync);
 const mockWriteFileSync = vi.mocked(fs.writeFileSync);
 const mockRmSync = vi.mocked(fs.rmSync);
+const mockSync = vi.mocked(syncInstanceBundledSkills);
+
+function synced(overrides: Partial<BundledSkillSync> = {}): BundledSkillSync {
+  return { added: [], updated: [], adopted: [], retired: [], kept: [], notices: [], inSync: [], failed: [], backupDir: null, ...overrides };
+}
 
 describe("migrate: AI session launcher", () => {
   beforeEach(() => {
@@ -66,6 +74,8 @@ describe("migrate: AI session launcher", () => {
     // Empty directories (no files to copy)
     mockReaddirSync.mockReturnValue([]);
     vi.mocked(fs.readFileSync).mockReset();
+    mockSync.mockReset();
+    mockSync.mockReturnValue(synced());
   });
 
   it("should NOT pass --cwd as a CLI argument to the engine binary", async () => {
@@ -131,7 +141,7 @@ describe("migrate: AI session launcher", () => {
     vi.mocked(compareSemver).mockReturnValueOnce(0);
     const { runMigrate } = await import("../migrate.js");
     await runMigrate({ auto: true });
-    expect(stageMissingBundledSkills).toHaveBeenCalledOnce();
+    expect(syncInstanceBundledSkills).toHaveBeenCalledOnce();
     expect(mockExecFileSync).not.toHaveBeenCalled();
     expect(mockWriteFileSync).not.toHaveBeenCalled();
   });
@@ -141,20 +151,20 @@ describe("migrate: AI session launcher", () => {
     vi.mocked(fs.readFileSync).mockReturnValue("jinn:\n  version: 1.0.0\n");
     const { runMigrate } = await import("../migrate.js");
     await runMigrate({ auto: true });
-    expect(stageMissingBundledSkills).toHaveBeenCalledOnce();
+    expect(syncInstanceBundledSkills).toHaveBeenCalledOnce();
     expect(mockExecFileSync).not.toHaveBeenCalled();
   });
 
   it("keeps --check from installing bundled skills", async () => {
     const { runMigrate } = await import("../migrate.js");
     await runMigrate({ check: true });
-    expect(stageMissingBundledSkills).not.toHaveBeenCalled();
+    expect(syncInstanceBundledSkills).not.toHaveBeenCalled();
     expect(mockWriteFileSync).not.toHaveBeenCalled();
   });
 
   it("makes newly installed skills discoverable to Claude Code and Codex", async () => {
     vi.mocked(compareSemver).mockReturnValueOnce(0);
-    vi.mocked(stageMissingBundledSkills).mockReturnValueOnce(["openryoko-config"]);
+    mockSync.mockReturnValueOnce(synced({ added: ["openryoko-config"], inSync: ["openryoko-config"] }));
     const links = [CLAUDE_SKILLS_DIR, AGENTS_SKILLS_DIR].map((directory) => path.join(directory, "openryoko-config"));
     mockExistsSync.mockImplementation((file) => !links.includes(String(file)));
     const { runMigrate } = await import("../migrate.js");
@@ -162,5 +172,126 @@ describe("migrate: AI session launcher", () => {
     for (const link of links) {
       expect(fs.symlinkSync).toHaveBeenCalledWith(path.join("..", "..", "skills", "openryoko-config"), link);
     }
+  });
+});
+
+describe("migrate: bundled skill sync", () => {
+  const dirent = (name: string, directory: boolean) => ({
+    name,
+    isDirectory: () => directory,
+    isFile: () => !directory,
+    isSymbolicLink: () => false,
+  });
+
+  /** Migration 1.1.0 ships one file: a newer skills/migrate/SKILL.md. */
+  function shipMigrateSkillInMigration(): void {
+    const files = path.join(MIGRATIONS_DIR, "1.1.0", "files");
+    const tree: Record<string, ReturnType<typeof dirent>[]> = {
+      [files]: [dirent("skills", true)],
+      [path.join(files, "skills")]: [dirent("migrate", true)],
+      [path.join(files, "skills", "migrate")]: [dirent("SKILL.md", false)],
+    };
+    mockReaddirSync.mockImplementation(((dir: string) => tree[dir] ?? []) as never);
+    vi.mocked(fs.readFileSync).mockReturnValue("jinn:\n  version: 1.0.0\n");
+  }
+
+  const output = () => vi.mocked(console.log).mock.calls.map((call) => String(call[0])).join("\n");
+  const stampedVersions = () => mockWriteFileSync.mock.calls
+    .filter(([file]) => file === CONFIG_PATH)
+    .map(([, content]) => /version: (\S+)/.exec(String(content))?.[1]);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(true);
+    mockReaddirSync.mockReturnValue([]);
+    vi.mocked(fs.readFileSync).mockReset();
+    mockSync.mockReset();
+    mockSync.mockReturnValue(synced());
+    vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.mocked(console.log).mockRestore();
+  });
+
+  it("reports what the sync replaced, retired and left alone, and where the previous copies are", async () => {
+    vi.mocked(compareSemver).mockReturnValueOnce(0);
+    const backupDir = path.join(JINN_HOME, ".migration-backups", "1.1.0-2026-10-12T03-04-05-678Z");
+    mockSync.mockReturnValueOnce(synced({
+      updated: ["onboarding"],
+      retired: ["old-skill"],
+      kept: [
+        { name: "migrate", reason: "modified" },
+        { name: "status", reason: "symlink" },
+        { name: "self-heal", reason: "customized" },
+      ],
+      backupDir,
+    }));
+    const { runMigrate } = await import("../migrate.js");
+
+    await runMigrate({ auto: true });
+
+    const text = output();
+    expect(text).toMatch(/\[updated skill\].*onboarding/);
+    expect(text).toMatch(/\[retired skill\].*old-skill/);
+    expect(text).toContain(backupDir);
+    expect(text).toMatch(/\[skill kept\].*migrate/);
+    // A symlink or an edit with no shipped update pending needs nothing from the user.
+    expect(text).not.toMatch(/status|self-heal/);
+    expect(fs.symlinkSync).not.toHaveBeenCalled();
+  });
+
+  it("carries on with the migrations when the sync cannot run", async () => {
+    mockSync.mockImplementation(() => { throw new Error("receipt is unreadable"); });
+    const { runMigrate } = await import("../migrate.js");
+
+    await expect(runMigrate({})).resolves.toBeUndefined();
+
+    expect(output()).toContain("receipt is unreadable");
+    expect(mockExecFileSync).toHaveBeenCalledOnce();
+  });
+
+  it("--auto counts a migration's files for an in-sync bundled skill as applied and completes", async () => {
+    shipMigrateSkillInMigration();
+    mockSync.mockReturnValueOnce(synced({ updated: ["migrate"], inSync: ["migrate", "status"] }));
+    const { runMigrate } = await import("../migrate.js");
+
+    await runMigrate({ auto: true });
+
+    expect(mockExecFileSync).not.toHaveBeenCalled();
+    expect(output()).not.toMatch(/needs AI merge/);
+    expect(stampedVersions()).toEqual(["1.1.0"]);
+    expect(mockRmSync).toHaveBeenCalledWith(MIGRATIONS_DIR, { recursive: true, force: true });
+  });
+
+  it("--auto still leaves a customized skill's migration files to the AI merge", async () => {
+    shipMigrateSkillInMigration();
+    mockSync.mockReturnValueOnce(synced({ kept: [{ name: "migrate", reason: "modified" }], inSync: ["status"] }));
+    const { runMigrate } = await import("../migrate.js");
+
+    await runMigrate({ auto: true });
+
+    expect(output()).toMatch(/\[skip\].*skills.migrate.SKILL\.md.*needs AI merge/);
+    expect(stampedVersions()).toEqual([]);
+    expect(mockRmSync).not.toHaveBeenCalled();
+  });
+
+  it("--auto never mistakes a file outside skills/<name>/ for a synced skill file", async () => {
+    const files = path.join(MIGRATIONS_DIR, "1.1.0", "files");
+    const tree: Record<string, ReturnType<typeof dirent>[]> = {
+      [files]: [dirent("docs", true), dirent("skills", true), dirent("migrate", false)],
+      [path.join(files, "docs")]: [dirent("migrate", true)],
+      [path.join(files, "docs", "migrate")]: [dirent("SKILL.md", false)],
+      [path.join(files, "skills")]: [dirent("migrate", false)],
+    };
+    mockReaddirSync.mockImplementation(((dir: string) => tree[dir] ?? []) as never);
+    mockSync.mockReturnValueOnce(synced({ inSync: ["migrate", "docs", "skills"] }));
+    const { runMigrate } = await import("../migrate.js");
+
+    await runMigrate({ auto: true });
+
+    const skipped = output().split("\n").filter((line) => line.includes("needs AI merge"));
+    expect(skipped).toHaveLength(3);
+    expect(stampedVersions()).toEqual([]);
   });
 });
