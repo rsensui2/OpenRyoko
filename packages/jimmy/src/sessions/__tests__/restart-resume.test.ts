@@ -70,6 +70,20 @@ function interrupted(at = iso(MINUTE), overrides: Parameters<typeof slackSession
   return getSession(session.id)!;
 }
 
+/** A transcript entry at a chosen time (insertMessage would stamp the real clock). */
+function message(sessionId: string, role: "user" | "assistant" | "notification", msAgo: number, content: string = role): void {
+  initDb().prepare("INSERT INTO messages (id, session_id, role, content, timestamp) VALUES (?, ?, ?, ?, ?)")
+    .run(`m-${++sequence}`, sessionId, role, content, NOW - msAgo);
+}
+
+/** A queue row whose turn started at a chosen time and is still running. */
+function runningRow(session: Session, prompt: string, startedMsAgo: number): string {
+  const id = enqueueQueueItem(session.id, session.sessionKey, prompt);
+  initDb().prepare("UPDATE queue_items SET status = 'running', created_at = ?, started_at = ? WHERE id = ?")
+    .run(iso(startedMsAgo + 1_000), iso(startedMsAgo), id);
+  return id;
+}
+
 function markOf(sessionId: string) {
   return readRestartResumeState(getSession(sessionId)!.transportMeta);
 }
@@ -132,6 +146,32 @@ describe("restart interruption mark", () => {
     for (const untouched of [idle, waiting]) expect(markOf(untouched.id).interruptedAt).toBeUndefined();
   });
 
+  it("is not stamped at boot on a session that crashed after recording its reply", () => {
+    const delivering = slackSession({ status: "running" });
+    message(delivering.id, "user", 10 * MINUTE);
+    message(delivering.id, "assistant", 5_000);
+    const queued = slackSession({ status: "running" });
+    message(queued.id, "notification", 3 * MINUTE, "📩 child finished");
+    message(queued.id, "assistant", 2 * MINUTE, "the previous turn's reply");
+    runningRow(queued, "📩 child finished", MINUTE);
+
+    expect(prepareRestartResume(NOW).marked).toBe(1);
+
+    expect(markOf(delivering.id).interruptedAt).toBeUndefined();
+    expect(markOf(queued.id).interruptedAt).toBeDefined(); // a later turn was running: it never answered
+  });
+
+  it("dates a crash by the last sign of life — the heartbeat or the transcript, whichever is newer", () => {
+    // A connector turn has no heartbeat: lastActivity is when the turn began.
+    const crashed = slackSession({ status: "running", lastActivity: iso(7 * MINUTE) });
+    message(crashed.id, "user", 7 * MINUTE);
+    message(crashed.id, "notification", 2 * MINUTE, "📩 accepted while the turn ran");
+
+    prepareRestartResume(NOW);
+
+    expect(markOf(crashed.id).interruptedAt).toBe(iso(2 * MINUTE));
+  });
+
   it("is never stamped on a workflow attempt session", () => {
     const attempt = createSession({
       engine: "claude", source: "workflow", sourceRef: "workflow:w:r:n:1", connector: "workflow", sessionKey: "workflow:w:r:n:1",
@@ -169,6 +209,33 @@ describe("interruptRunningSessionsForShutdown — the graceful-shutdown half", (
       expect(after.lastActivity).toBe(before.lastActivity);
       expect(markOf(before.id).interruptedAt).toBeUndefined();
     }
+  });
+
+  it("does not stamp a turn that has already answered — only its delivery was still running", () => {
+    // A connector turn records its reply, then delivers it, then writes idle.
+    const delivering = slackSession({ status: "running" });
+    message(delivering.id, "user", 10 * MINUTE);
+    message(delivering.id, "assistant", 5_000);
+
+    expect(interruptRunningSessionsForShutdown(NOW)).toBe(1);
+
+    expect(getSession(delivering.id)?.status).toBe("interrupted"); // unchanged: every running session is preserved
+    expect(markOf(delivering.id).interruptedAt).toBeUndefined();
+  });
+
+  it("still stamps a queued turn whose input was recorded before the previous turn's reply", () => {
+    // A notification (or a web message) is persisted when it is ACCEPTED. If it
+    // waited behind a running turn, that turn's reply is the newer entry — but
+    // the turn running now is the queued one, and it has not answered.
+    const parent = slackSession({ status: "running" });
+    message(parent.id, "user", 10 * MINUTE);
+    message(parent.id, "notification", 3 * MINUTE, "📩 child finished");
+    message(parent.id, "assistant", 2 * MINUTE, "reply of the turn that was running when the child finished");
+    runningRow(parent, "📩 child finished", MINUTE);
+
+    interruptRunningSessionsForShutdown(NOW);
+
+    expect(markOf(parent.id).interruptedAt).toBe(iso(0));
   });
 
   it("leaves a workflow attempt to its own sweep", () => {
@@ -253,6 +320,22 @@ describe("selectRestartResumeCandidates", () => {
     expect(skipped).toEqual([{ sessionId: stale.id, reason: "too-old" }]);
     expect(markOf(stale.id).interruptedAt).toBeUndefined();
     expect(markOf(recent.id).interruptedAt).toBe(iso(119 * MINUTE)); // a candidate keeps its mark until it is nudged
+  });
+
+  it("leaves out a session whose conversation moved on after the mark", () => {
+    // The mark outlived its restart (the nudge could not be posted), and the user has since carried on.
+    const movedOn = interrupted(iso(10 * MINUTE), { status: "idle" });
+    message(movedOn.id, "user", 20 * MINUTE, "the request that was cut off");
+    message(movedOn.id, "user", 5 * MINUTE, "a new request, after the restart");
+    const waiting = interrupted(iso(10 * MINUTE), { status: "idle" });
+    message(waiting.id, "user", 20 * MINUTE, "the request that was cut off");
+    message(waiting.id, "notification", 5 * MINUTE, "not something the user said");
+
+    const { candidates, skipped } = select();
+
+    expect(candidates.map((s) => s.id)).toEqual([waiting.id]);
+    expect(skipped).toEqual([{ sessionId: movedOn.id, reason: "moved-on" }]);
+    expect(markOf(movedOn.id).interruptedAt).toBeUndefined();
   });
 
   it("leaves out a session that was nudged a moment ago (restart-loop guard)", () => {
@@ -416,6 +499,24 @@ describe("resumeRestartInterruptedSessions", () => {
 
     expect(run.post).not.toHaveBeenCalled();
     expect(markOf(session.id)).toEqual({ nudgedAt: [] });
+  });
+
+  it("does not retry a refused nudge once the user has carried on by themselves", async () => {
+    const session = interrupted(iso(MINUTE), { status: "idle" });
+    const refused = vi.fn<NonNullable<RestartResumeDeps["post"]>>(async () => { throw new Error("gateway responded 503"); });
+    await boot({ post: refused }).fire();
+    expect(markOf(session.id).interruptedAt).toBe(iso(MINUTE)); // still pending
+
+    // The user re-sends, gets an answer, and some time later the gateway restarts again.
+    const later = NOW + 20 * MINUTE;
+    message(session.id, "user", -5 * MINUTE, "もう一度お願いします");
+    message(session.id, "assistant", -6 * MINUTE, "完了しました");
+    const next = boot({ now: () => later });
+    await next.fire();
+
+    expect(next.summary).toMatchObject({ planned: 0, skipped: 1 });
+    expect(next.post).not.toHaveBeenCalled();
+    expect(markOf(session.id).interruptedAt).toBeUndefined();
   });
 
   it("keeps the mark when the gateway refuses the nudge, so the next boot can try again", async () => {

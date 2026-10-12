@@ -104,7 +104,7 @@ describe("restart resume — a Slack session interrupted mid-turn is nudged and 
   });
 
   /** A Slack conversation as a graceful shutdown leaves it once the killed connector turn has settled. */
-  function interruptedSlackSession(thread: string, interruptedAt: string) {
+  function interruptedSlackSession(thread: string): { sessionId: string; interruptedAt: string } {
     const session = registry.createSession({
       engine: "claude",
       source: "slack",
@@ -115,13 +115,14 @@ describe("restart resume — a Slack session interrupted mid-turn is nudged and 
       transportMeta: { channelExternal: false },
       prompt: "本番にデプロイして",
     });
+    // The connector turn: its request recorded, the engine at work…
     registry.insertMessage(session.id, "user", "本番にデプロイして");
-    registry.updateSession(session.id, {
-      status: "idle",
-      engineSessionId: "engine-before-restart",
-      transportMeta: restartResume.withRestartInterruptedMark(session.transportMeta, interruptedAt),
-    });
-    return session.id;
+    registry.updateSession(session.id, { status: "running", engineSessionId: "engine-before-restart" });
+    // …the gateway shuts down, and the killed turn's completion writes idle over the shutdown status.
+    restartResume.interruptRunningSessionsForShutdown();
+    registry.updateSession(session.id, { status: "idle", lastError: null });
+    const interruptedAt = restartResume.readRestartResumeState(registry.getSession(session.id)!.transportMeta).interruptedAt!;
+    return { sessionId: session.id, interruptedAt };
   }
 
   const bootDeps = () => ({
@@ -133,8 +134,8 @@ describe("restart resume — a Slack session interrupted mid-turn is nudged and 
   });
 
   it("boot → one nudge turn → the reply lands in the original channel and thread", async () => {
-    const interruptedAt = new Date(Date.now() - 30_000).toISOString();
-    const sessionId = interruptedSlackSession("111.222", interruptedAt);
+    const { sessionId, interruptedAt } = interruptedSlackSession("111.222");
+    expect(interruptedAt).toEqual(expect.any(String));
 
     const summary = restartResume.resumeRestartInterruptedSessions(bootDeps());
     expect(summary).toMatchObject({ planned: 1, skipped: 0, deferred: 0 });
@@ -176,7 +177,7 @@ describe("restart resume — a Slack session interrupted mid-turn is nudged and 
     engineRun.mockClear();
     replyMessage.mockClear();
     requests.length = 0;
-    const sessionId = interruptedSlackSession("333.444", new Date(Date.now() - 30_000).toISOString());
+    const { sessionId } = interruptedSlackSession("333.444");
     const key = registry.getSession(sessionId)!.sessionKey;
     // What resumePendingWebQueueItems leaves behind for a replayed wake-up:
     // the session is running again and its queue slot is taken.

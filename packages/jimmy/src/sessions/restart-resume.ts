@@ -25,7 +25,7 @@ import type { JinnConfig, JsonObject, Session } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
 import { postSessionNotification } from "./callbacks.js";
 import type { SessionQueue } from "./queue.js";
-import { getSession, initDb, listSessions, updateSession } from "./registry.js";
+import { getMessagePage, getSession, initDb, listSessions, updateSession, type SessionMessage } from "./registry.js";
 
 /** transportMeta key holding a session's {@link RestartResumeState}. */
 export const RESTART_RESUME_META_KEY = "restartResume";
@@ -55,7 +55,7 @@ export interface RestartResumeState {
   nudgedAt: string[];
 }
 
-export type RestartResumeSkip = "workflow" | "cron" | "active" | "too-old" | "recently-nudged";
+export type RestartResumeSkip = "workflow" | "cron" | "active" | "moved-on" | "too-old" | "recently-nudged";
 
 export interface RestartResumeSelection {
   candidates: Session[];
@@ -138,10 +138,34 @@ function clearRestartInterruptedMark(sessionId: string, nudgedAt?: string): void
   updateSession(sessionId, { transportMeta: withRestartResumeState(session.transportMeta, { nudgedAt: history }) });
 }
 
+const newestMessage = (sessionId: string): SessionMessage | undefined => getMessagePage(sessionId, { limit: 1 }).messages.at(-1);
+
+/**
+ * True when a "running" session has in fact answered its current turn and has
+ * nothing left to resume. A connector turn records its reply, THEN delivers
+ * it, and only then leaves "running" — a restart that lands in between must
+ * not be answered with a nudge, whose output would be posted into the thread
+ * as an unprompted second message.
+ *
+ * The newest transcript entry being the assistant's reply is the evidence,
+ * with one exception. A notification or web message is recorded when it is
+ * accepted, so when it waited behind a running turn, that turn's reply is the
+ * newer entry while the queued turn runs. A queue row that started running
+ * after the reply says so: the reply belongs to the turn before it.
+ */
+function turnAlreadyAnswered(sessionId: string, newest = newestMessage(sessionId)): boolean {
+  if (newest?.role !== "assistant") return false;
+  const running = initDb().prepare(
+    "SELECT started_at AS startedAt FROM queue_items WHERE session_id = ? AND status = 'running' ORDER BY started_at DESC LIMIT 1",
+  ).get(sessionId) as { startedAt: string | null } | undefined;
+  return !(running?.startedAt && Date.parse(running.startedAt) >= newest.timestamp);
+}
+
 /**
  * Graceful shutdown, right before the engines are killed: every session that
  * is mid-turn becomes "interrupted" (its engine session id is kept, so it can
- * be resumed) and gets the mark the next boot reads. Returns how many.
+ * be resumed) and, unless its turn has already answered, gets the mark the
+ * next boot reads. Returns how many were interrupted.
  *
  * Workflow attempts are skipped: recoverStaleWorkflowAttemptSessions(), which
  * the caller runs first, stamps their `gateway-restart` receipt — a plain
@@ -157,7 +181,7 @@ export function interruptRunningSessionsForShutdown(now = Date.now()): number {
       lastActivity: interruptedAt,
       lastError: "Interrupted: gateway shutting down gracefully",
       // The killed turn's completion overwrites the status; the mark is what the next boot reads.
-      transportMeta: withRestartInterruptedMark(session.transportMeta, interruptedAt),
+      ...(turnAlreadyAnswered(session.id) ? {} : { transportMeta: withRestartInterruptedMark(session.transportMeta, interruptedAt) }),
     });
     logger.info(`Marked session ${session.id} as interrupted for resume`);
     interrupted++;
@@ -170,8 +194,9 @@ export function interruptRunningSessionsForShutdown(now = Date.now()): number {
  * erase what this reads.
  *
  * - A session still "running" was never shut down cleanly (crash, SIGKILL, a
- *   shutdown that ran out of time). Its last sign of life is the best estimate
- *   of when it was cut off.
+ *   shutdown that ran out of time). Its last sign of life — the heartbeat or
+ *   the newest transcript entry, whichever is later — is the best estimate of
+ *   when it was cut off. One whose turn had already answered is not stamped.
  * - A nudge turn that was itself in flight is cancelled instead of going back
  *   to pending: replaying it is how a turn that restarts the gateway would
  *   loop. The session is interrupted again and falls under the cooldown.
@@ -186,8 +211,11 @@ export function prepareRestartResume(now = Date.now()): { marked: number; cancel
     for (const session of listSessions({ status: "running" })) {
       // Workflow attempts have their own restart recovery; a cron run has no conversation to answer in.
       if (session.workflowProvenance || session.source === "cron") continue;
-      const lastAlive = Date.parse(session.lastActivity);
-      const at = new Date(Number.isFinite(lastAlive) ? Math.min(lastAlive, now) : now).toISOString();
+      const newest = newestMessage(session.id);
+      if (turnAlreadyAnswered(session.id, newest)) continue;
+      const heartbeat = Date.parse(session.lastActivity);
+      const lastAlive = Math.max(Number.isFinite(heartbeat) ? heartbeat : 0, newest?.timestamp ?? 0);
+      const at = new Date(lastAlive > 0 ? Math.min(lastAlive, now) : now).toISOString();
       updateSession(session.id, { transportMeta: withRestartInterruptedMark(session.transportMeta, at) });
       marked++;
     }
@@ -219,12 +247,20 @@ function isActive(session: Session, isBusy?: (session: Session) => boolean): boo
   return session.status === "running" || session.status === "waiting" || isBusy?.(session) === true;
 }
 
+/** The user has said something in this session since `sinceMs`. */
+function hasUserMessageAfter(sessionId: string, sinceMs: number): boolean {
+  return !!initDb().prepare("SELECT 1 FROM messages WHERE session_id = ? AND role = 'user' AND timestamp > ? LIMIT 1").get(sessionId, sinceMs);
+}
+
 function skipReason(session: Session, input: SelectInput): RestartResumeSkip | null {
   const state = readRestartResumeState(session.transportMeta);
+  const interruptedAt = Date.parse(state.interruptedAt ?? "");
   if (session.workflowProvenance) return "workflow"; // recoverStaleWorkflowAttemptSessions owns these
   if (session.source === "cron") return "cron"; // its connector lived for one run — nowhere to deliver
   if (isActive(session, input.isBusy)) return "active"; // the queue replay, or a new message, is already driving it
-  if (input.now - Date.parse(state.interruptedAt ?? "") > input.maxAgeMs) return "too-old";
+  // A mark can outlive its restart (the nudge could not be posted). Once the user has carried on, it is history.
+  if (hasUserMessageAfter(session.id, interruptedAt)) return "moved-on";
+  if (input.now - interruptedAt > input.maxAgeMs) return "too-old";
   if (recentlyNudged(state.nudgedAt, input.now)) return "recently-nudged";
   return null;
 }

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionManager } from "../manager.js";
 import { getSession, getSessionBySessionKey } from "../registry.js";
-import { interruptRunningSessionsForShutdown, readRestartResumeState } from "../restart-resume.js";
+import { interruptRunningSessionsForShutdown, readRestartResumeState, selectRestartResumeCandidates } from "../restart-resume.js";
 import type { Connector, Engine, EngineRunOpts, IncomingMessage, JinnConfig } from "../../shared/types.js";
 
 vi.mock("../context.js", () => ({ buildContext: () => "Test context" }));
@@ -63,5 +63,52 @@ describe("restart interruption mark — survives the killed turn's completion", 
     expect(settled.transportMeta).toMatchObject({ channelExternal: false, channelName: "ops" });
     // An interrupted turn is not delivered: the thread got no reply, which is what the boot nudge is for.
     expect(replyMessage).not.toHaveBeenCalled();
+  });
+
+  // The other half of the same handler: a connector turn stays "running" after
+  // its engine has finished, until the reply has been delivered. A shutdown
+  // that lands in that window used to stamp the mark as well — the reply went
+  // out, the handler wrote idle, the mark stayed, and the next boot nudged a
+  // conversation that had nothing left to do. The nudge turn's output is
+  // posted into the original thread, so that was an unprompted message.
+  it("is not stamped on a turn that has already answered, when the shutdown lands during delivery", async () => {
+    const config = {
+      engines: { default: "codex", codex: { bin: "codex" } },
+      connectors: { slack: {} }, sessions: {}, logging: { level: "error", stdout: false },
+    } as unknown as JinnConfig;
+    const sessionKey = "slack:restart-mark-answered";
+    const run = vi.fn<Engine["run"]>(async () => ({ sessionId: "native-2", result: "デプロイが完了しました。" }));
+    const manager = new SessionManager(config, new Map<string, Engine>([["codex", { name: "codex", run } as Engine]]));
+    let statusAtShutdown: string | undefined;
+    // The engine is done and the reply is on its way out when the gateway shuts down.
+    const replyMessage = vi.fn(async () => {
+      interruptRunningSessionsForShutdown();
+      statusAtShutdown = getSessionBySessionKey(sessionKey)?.status;
+      return undefined;
+    });
+    const connector = {
+      name: "slack", replyMessage, sendMessage: replyMessage,
+      addReaction: vi.fn(async () => {}), removeReaction: vi.fn(async () => {}),
+      getCapabilities: () => ({ threading: true, messageEdits: false, reactions: true, attachments: false }),
+      reconstructTarget: () => ({ channel: "C-mark", thread: "2.1" }),
+    } as unknown as Connector;
+    const msg = {
+      connector: "slack", source: "slack", sessionKey, channel: "C-mark", thread: "2.1",
+      messageId: "2.2", user: "Test", userId: "U-test", text: "デプロイして", attachments: [], raw: {},
+      replyContext: { channel: "C-mark", thread: "2.1" },
+      transportMeta: { channelExternal: false },
+    } as IncomingMessage;
+
+    await manager.route(msg, connector);
+
+    const settled = getSessionBySessionKey(sessionKey)!;
+    expect(replyMessage).toHaveBeenCalledTimes(1);
+    expect(replyMessage.mock.calls[0]).toEqual([expect.anything(), "デプロイが完了しました。"]);
+    expect(statusAtShutdown).toBe("interrupted"); // the shutdown did see it as running
+    expect(settled.status).toBe("idle");
+    // Nothing is left to resume, so nothing is left for the next boot to find.
+    expect(readRestartResumeState(settled.transportMeta).interruptedAt).toBeUndefined();
+    const { candidates } = selectRestartResumeCandidates({ now: Date.now(), maxAgeMs: 120 * 60_000 });
+    expect(candidates.map((session) => session.id)).not.toContain(settled.id);
   });
 });
