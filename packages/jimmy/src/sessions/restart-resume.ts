@@ -139,6 +139,33 @@ function clearRestartInterruptedMark(sessionId: string, nudgedAt?: string): void
 }
 
 /**
+ * Graceful shutdown, right before the engines are killed: every session that
+ * is mid-turn becomes "interrupted" (its engine session id is kept, so it can
+ * be resumed) and gets the mark the next boot reads. Returns how many.
+ *
+ * Workflow attempts are skipped: recoverStaleWorkflowAttemptSessions(), which
+ * the caller runs first, stamps their `gateway-restart` receipt — a plain
+ * interrupt here would read as an operator stop on the next boot.
+ */
+export function interruptRunningSessionsForShutdown(now = Date.now()): number {
+  const interruptedAt = new Date(now).toISOString();
+  let interrupted = 0;
+  for (const session of listSessions({ status: "running" })) {
+    if (session.workflowProvenance?.kind === "phase") continue;
+    updateSession(session.id, {
+      status: "interrupted",
+      lastActivity: interruptedAt,
+      lastError: "Interrupted: gateway shutting down gracefully",
+      // The killed turn's completion overwrites the status; the mark is what the next boot reads.
+      transportMeta: withRestartInterruptedMark(session.transportMeta, interruptedAt),
+    });
+    logger.info(`Marked session ${session.id} as interrupted for resume`);
+    interrupted++;
+  }
+  return interrupted;
+}
+
+/**
  * Boot step, BEFORE recoverStaleSessions() and recoverStaleQueueItems() — both
  * erase what this reads.
  *

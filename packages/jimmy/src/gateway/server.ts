@@ -26,7 +26,7 @@ import type { PtyViewEngine } from "../engines/pty-view-engine.js";
 import { attachPtyWebSocket } from "./pty-ws.js";
 import { HookRegistry } from "./hook-registry.js";
 import { startStatusReconciler } from "./status-reconciler.js";
-import { prepareRestartResume, resumeRestartInterruptedSessions, withRestartInterruptedMark } from "../sessions/restart-resume.js";
+import { interruptRunningSessionsForShutdown, prepareRestartResume, resumeRestartInterruptedSessions } from "../sessions/restart-resume.js";
 import { writeGatewayInfo } from "./gateway-info.js";
 import { cleanupSessionSettings, seedTrust } from "../shared/claude-settings.js";
 import { GATEWAY_INFO_FILE, HOOK_RELAY_SCRIPT, CLAUDE_SETTINGS_DIR, JINN_HOME } from "../shared/paths.js";
@@ -1466,19 +1466,7 @@ export async function startGateway(
     if (stoppedWorkflowAttempts > 0) {
       logger.info(`Marked ${stoppedWorkflowAttempts} workflow attempt(s) with gateway-restart receipts for replacement on next boot`);
     }
-    const runningSessions = listSessions({ status: "running" });
-    for (const session of runningSessions) {
-      if (session.workflowProvenance?.kind === "phase") continue; // handled by the sweep above
-      const interruptedAt = new Date().toISOString();
-      updateSession(session.id, {
-        status: "interrupted",
-        lastActivity: interruptedAt,
-        lastError: "Interrupted: gateway shutting down gracefully",
-        // The killed turn's completion overwrites the status; the mark is what the next boot reads.
-        transportMeta: withRestartInterruptedMark(session.transportMeta, interruptedAt),
-      });
-      logger.info(`Marked session ${session.id} as interrupted for resume`);
-    }
+    interruptRunningSessionsForShutdown(); // every other running session; the sweep above owns the attempts
 
     // Terminate live engine subprocesses after marking sessions. When interactive
     // is active, interactiveClaudeEngine.killAll() also kills its headless fallback

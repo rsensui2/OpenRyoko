@@ -18,6 +18,7 @@ import {
   RESTART_NUDGE_WINDOW_LIMIT,
   RESTART_RESUME_META_KEY,
   RESTART_RESUME_STAGGER_MS,
+  interruptRunningSessionsForShutdown,
   planRestartResumes,
   prepareRestartResume,
   readRestartResumeState,
@@ -139,6 +140,48 @@ describe("restart interruption mark", () => {
     updateSession(attempt.id, { status: "running" });
 
     expect(prepareRestartResume(NOW).marked).toBe(0);
+    expect(markOf(attempt.id).interruptedAt).toBeUndefined();
+  });
+});
+
+describe("interruptRunningSessionsForShutdown — the graceful-shutdown half", () => {
+  it("marks a running session interrupted and stamps the restart mark", () => {
+    const running = slackSession({ status: "running" });
+
+    expect(interruptRunningSessionsForShutdown(NOW)).toBe(1);
+
+    const after = getSession(running.id)!;
+    expect(after.status).toBe("interrupted");
+    expect(after.lastActivity).toBe(iso(0));
+    expect(after.lastError).toBe("Interrupted: gateway shutting down gracefully");
+    expect(markOf(running.id).interruptedAt).toBe(iso(0));
+    expect(after.transportMeta).toMatchObject({ channelExternal: false }); // the rest of the meta is kept
+  });
+
+  it("leaves sessions that are not mid-turn exactly as they are", () => {
+    const others = (["idle", "waiting", "error", "interrupted"] as const).map((status) => slackSession({ status }));
+
+    expect(interruptRunningSessionsForShutdown(NOW)).toBe(0);
+
+    for (const before of others) {
+      const after = getSession(before.id)!;
+      expect(after.status).toBe(before.status);
+      expect(after.lastActivity).toBe(before.lastActivity);
+      expect(markOf(before.id).interruptedAt).toBeUndefined();
+    }
+  });
+
+  it("leaves a workflow attempt to its own sweep", () => {
+    const attempt = createSession({
+      engine: "claude", source: "workflow", sourceRef: "workflow:w:r:n:9", connector: "workflow", sessionKey: "workflow:w:r:n:9",
+      workflowProvenance: { kind: "phase", workflowId: "w", workflowName: "w", runId: "r", triggerSource: "manual", phase: { nodeId: "n", name: "n", index: 1, round: 1, attempt: 9 } },
+    });
+    updateSession(attempt.id, { status: "running" });
+
+    expect(interruptRunningSessionsForShutdown(NOW)).toBe(0);
+
+    // recoverStaleWorkflowAttemptSessions() stamps the gateway-restart receipt; a plain interrupt here would misclassify it.
+    expect(getSession(attempt.id)?.status).toBe("running");
     expect(markOf(attempt.id).interruptedAt).toBeUndefined();
   });
 });

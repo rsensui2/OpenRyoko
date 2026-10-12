@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionManager } from "../manager.js";
-import { getSession, getSessionBySessionKey, updateSession } from "../registry.js";
-import { readRestartResumeState, withRestartInterruptedMark } from "../restart-resume.js";
+import { getSession, getSessionBySessionKey } from "../registry.js";
+import { interruptRunningSessionsForShutdown, readRestartResumeState } from "../restart-resume.js";
 import type { Connector, Engine, EngineRunOpts, IncomingMessage, JinnConfig } from "../../shared/types.js";
 
 vi.mock("../context.js", () => ({ buildContext: () => "Test context" }));
@@ -24,19 +24,15 @@ describe("restart interruption mark — survives the killed turn's completion", 
       connectors: { slack: {} }, sessions: {}, logging: { level: "error", stdout: false },
     } as unknown as JinnConfig;
     const sessionKey = "slack:restart-mark-survival";
-    const interruptedAt = "2026-10-12T03:00:00.000Z";
+    const shutdownAt = Date.parse("2026-10-12T03:00:00.000Z");
+    const interruptedAt = new Date(shutdownAt).toISOString();
     let statusAtShutdown: string | undefined;
 
     // The engine turn during which the gateway shuts down.
     const run = vi.fn<Engine["run"]>(async (opts) => {
       // server.ts cleanup: mark every running session, then kill the engines.
-      const running = getSession(opts.sessionId!)!;
-      updateSession(running.id, {
-        status: "interrupted",
-        lastError: "Interrupted: gateway shutting down gracefully",
-        transportMeta: withRestartInterruptedMark(running.transportMeta, interruptedAt),
-      });
-      statusAtShutdown = getSession(running.id)?.status;
+      interruptRunningSessionsForShutdown(shutdownAt);
+      statusAtShutdown = getSession(opts.sessionId!)?.status;
       return { sessionId: "native-1", result: "", error: "Interrupted: gateway shutting down" };
     });
     const manager = new SessionManager(config, new Map<string, Engine>([["codex", { name: "codex", run } as Engine]]));
