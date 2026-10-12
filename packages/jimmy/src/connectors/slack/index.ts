@@ -21,6 +21,7 @@ import {
   formatResponse,
   resolveSlackFileAttachment,
 } from "./format.js";
+import { deliverChunks } from "../chunked-send.js";
 import { normalizeSpeakerInfo, type SpeakerInfo } from "./speaker.js";
 import { runTriage } from "./triage.js";
 import { readTriageHistory } from "./triage-context.js";
@@ -936,16 +937,14 @@ export class SlackConnector implements Connector {
     if (thread) {
       return this.replyMessage({ ...target, thread }, text);
     }
-    const chunks = formatResponse(text);
-    let lastTs: string | undefined;
-    for (const chunk of chunks) {
-      if (!chunk.trim()) continue;
+    const chunks = formatResponse(text).filter((chunk) => chunk.trim());
+    const lastTs = await deliverChunks("Slack sendMessage", chunks, async (chunk) => {
       const res = await this.app.client.chat.postMessage({
         channel: target.channel,
         text: chunk,
       });
-      lastTs = res.ts;
-    }
+      return res.ts;
+    });
     // A newly-posted root message will be the thread_ts for any follow-up replies,
     // so mark its future thread as bot-engaged. Only relevant when tracking is on.
     if (lastTs && this.conversationTrackingEnabled()) {
@@ -957,17 +956,15 @@ export class SlackConnector implements Connector {
   async replyMessage(target: Target, text: string): Promise<string | undefined> {
     if (!text || !text.trim()) return undefined;
     const threadTs = target.thread || target.messageTs;
-    const chunks = formatResponse(text);
-    let lastTs: string | undefined;
-    for (const chunk of chunks) {
-      if (!chunk.trim()) continue;
+    const chunks = formatResponse(text).filter((chunk) => chunk.trim());
+    const lastTs = await deliverChunks("Slack replyMessage", chunks, async (chunk) => {
       const res = await this.app.client.chat.postMessage({
         channel: target.channel,
         thread_ts: threadTs,
         text: chunk,
       });
-      lastTs = res.ts;
-    }
+      return res.ts;
+    });
     // Record the thread the bot just replied in. Subsequent user replies in
     // this same thread will carry thread_ts === threadTs and bypass triage
     // and the respondTo mention gate. Only relevant when tracking is on.
