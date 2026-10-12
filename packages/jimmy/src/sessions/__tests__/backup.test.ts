@@ -96,6 +96,27 @@ describe("daily database backup", () => {
     expect(fs.readdirSync(root)).toEqual(["sessions-2026-08-17.db"]);
   });
 
+  it("does not write through something planted where its temporary file used to go", async () => {
+    // The temporary name was the final name plus the process id: predictable.
+    // A symlink left there made SQLite write the copy into whatever it pointed at.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ryoko-backup-planted-"));
+    roots.push(root);
+    const victim = path.join(root, "victim.txt");
+    fs.writeFileSync(victim, "not the backup's to overwrite\n");
+    fs.symlinkSync(victim, path.join(root, `sessions-2026-08-17.db.tmp-${process.pid}`));
+    const database = new Database(":memory:");
+    database.exec("CREATE TABLE values_table (value TEXT); INSERT INTO values_table VALUES ('safe')");
+
+    const result = await createDailyDatabaseBackup(database, { directory: root, now: new Date("2026-08-17T12:00:00.000Z") });
+    database.close();
+
+    expect(fs.readFileSync(victim, "utf8")).toBe("not the backup's to overwrite\n");
+    expect(fs.lstatSync(result.file).isFile()).toBe(true);
+    const copy = new Database(result.file, { readonly: true });
+    expect(copy.prepare("SELECT value FROM values_table").pluck().get()).toBe("safe");
+    copy.close();
+  });
+
   it("removes an expired backup together with the sidecars reading it left behind", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ryoko-backup-sidecars-"));
     roots.push(root);

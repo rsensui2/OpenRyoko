@@ -68,12 +68,28 @@ export function writeBackupState(directory: string, state: BackupState): void {
   const file = path.join(directory, BACKUP_STATE_FILE);
   const temporary = `${file}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
   try {
-    fs.writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+    // Created exclusively: something already sitting under this name is not written through.
+    fs.writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600, flag: "wx" });
     fs.renameSync(temporary, file);
   } catch (error) {
     fs.rmSync(temporary, { force: true });
     throw error;
   }
+}
+
+/**
+ * When a target that did not fail was last really backed up.
+ *
+ * Normally that is this run. But a run that finds today's database copy already
+ * there has made nothing: the last success is the copy it found. Dating it
+ * from the run instead let a `ryoko backup run` late in the day push the next
+ * copy a full day past it - up to two days after the last one that was made.
+ * The record moves up to the existing copy if that is newer than what was
+ * known, and never past it.
+ */
+function lastSuccess(target: BackupRunReport["targets"][number], previous: TargetState | undefined, startedAt: string): string {
+  if (target.status !== "skipped" || !target.copiedAt) return startedAt;
+  return previous?.lastSuccessAt && previous.lastSuccessAt > target.copiedAt ? previous.lastSuccessAt : target.copiedAt;
 }
 
 /**
@@ -92,7 +108,7 @@ export function applyRunReport(state: BackupState, report: BackupRunReport): Bac
         lastError: target.error ?? "failed",
         ...(target.persistent ? { lastErrorPersistent: true as const } : {}),
       }
-      : { lastAttemptAt: report.startedAt, lastSuccessAt: report.startedAt };
+      : { lastAttemptAt: report.startedAt, lastSuccessAt: lastSuccess(target, previous, report.startedAt) };
   }
   return { version: 1, targets };
 }

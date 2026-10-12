@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { expectPosixMode } from "../../shared/test-support/posix-mode.js";
 import type { BackupRunReport } from "../run.js";
 import {
@@ -162,6 +162,34 @@ describe("applyRunReport", () => {
     expect(applyRunReport(next, report({ home: "failed" })).targets.home).toEqual({ lastAttemptAt: NOW.toISOString(), lastError: "home broke" });
   });
 
+  it("does not count finding today's copy already there as having made one", () => {
+    // The gateway copies the registry at 00:01. Someone runs `ryoko backup run`
+    // at 23:59, which finds today's copy and skips. Recorded as a success at
+    // 23:59, that put the next copy at 23:59 tomorrow: two days apart.
+    const copied = ago(23 * HOUR_MS);
+    const skip = (copiedAt: string): BackupRunReport => {
+      const run = report({ sessions: "skipped" });
+      return { ...run, targets: run.targets.map((target) => ({ ...target, copiedAt })) };
+    };
+    const before: BackupState = { version: 1, targets: { sessions: { lastAttemptAt: copied, lastSuccessAt: copied } } };
+
+    const next = applyRunReport(before, skip(copied));
+
+    expect(next.targets.sessions).toEqual({ lastAttemptAt: NOW.toISOString(), lastSuccessAt: copied });
+    // Due a day after the copy that was really made, an hour from now - not a day after the skip.
+    expect(dueTargets(next, new Date(NOW.getTime() + HOUR_MS))).toContain("sessions");
+    expect(dueTargets(next, NOW)).not.toContain("sessions");
+
+    // With no history, the existing copy's own time is the last success there is.
+    expect(applyRunReport({ version: 1, targets: {} }, skip(copied)).targets.sessions!.lastSuccessAt).toBe(copied);
+    // A copy made since the last recorded one moves the record up to it, never past it.
+    const stale: BackupState = { version: 1, targets: { sessions: { lastAttemptAt: ago(30 * HOUR_MS), lastSuccessAt: ago(30 * HOUR_MS) } } };
+    expect(applyRunReport(stale, skip(ago(2 * HOUR_MS))).targets.sessions!.lastSuccessAt).toBe(ago(2 * HOUR_MS));
+    // A skip also clears an earlier failure: the copy is there.
+    const failed: BackupState = { version: 1, targets: { sessions: { lastAttemptAt: ago(HOUR_MS), lastError: "disk full" } } };
+    expect(applyRunReport(failed, skip(copied)).targets.sessions).toEqual({ lastAttemptAt: NOW.toISOString(), lastSuccessAt: copied });
+  });
+
   it("leaves targets the run did not touch as they were", () => {
     const before: BackupState = { version: 1, targets: { sessions: { lastAttemptAt: ago(HOUR_MS), lastSuccessAt: ago(HOUR_MS) } } };
 
@@ -206,6 +234,17 @@ describe("backup state file", () => {
     expect(readBackupState(directory)).toEqual(state);
     expectPosixMode(path.join(directory, BACKUP_STATE_FILE), 0o600);
     expect(fs.readdirSync(directory)).toEqual([BACKUP_STATE_FILE]);
+  });
+
+  it("creates its temporary file exclusively, so it never writes through something planted under that name", () => {
+    const directory = tempDir();
+    const writes = vi.spyOn(fs, "writeFileSync");
+
+    writeBackupState(directory, { version: 1, targets: {} });
+    const options = writes.mock.calls.map((call) => call[2]);
+    writes.mockRestore();
+
+    expect(options).toEqual([expect.objectContaining({ flag: "wx", mode: 0o600 })]);
   });
 
   it("reads a missing, corrupt or foreign file as no history at all", () => {

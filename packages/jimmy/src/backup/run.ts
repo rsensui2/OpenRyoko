@@ -22,6 +22,8 @@ export interface BackupTargetReport {
   bytes?: number;
   /** Why a skipped target wrote nothing. */
   detail?: string;
+  /** For a database whose copy for today was already there: when that copy was made. */
+  copiedAt?: string;
   error?: string;
   /**
    * Set on a failure that trying again cannot change: a home over the size cap
@@ -147,7 +149,12 @@ async function backupDatabase(name: DatabaseBackupName, options: BackupRunOption
       name,
       beforeWrite: () => requireRoom(options, databaseBytes(handle.database), written),
     });
-    if (!result.created) return { name, status: "skipped", file: result.file, detail: "already copied today", warnings: [] };
+    if (!result.created) {
+      return {
+        name, status: "skipped", file: result.file, detail: "already copied today", warnings: [],
+        copiedAt: fs.statSync(result.file).mtime.toISOString(),
+      };
+    }
     return { name, status: "ok", file: result.file, bytes: fs.statSync(result.file).size, warnings: [] };
   } finally {
     handle.release();

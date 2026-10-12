@@ -72,6 +72,8 @@ describe("runBackup", () => {
     expect(again.status).toBe("ok");
     expect(byName(again).home!.status).toBe("ok");
     expect(byName(again).sessions).toMatchObject({ status: "skipped", detail: expect.stringMatching(/already/) });
+    // It says when the copy it found was made, so that is what gets remembered as the last one.
+    expect(byName(again).sessions!.copiedAt).toBe(fs.statSync(byName(again).sessions!.file!).mtime.toISOString());
     expect(byName(again).workflows!.status).toBe("skipped");
     expect(listBackups(path.join(home, "backups")).filter((item) => item.kind === "home")).toHaveLength(2);
   });

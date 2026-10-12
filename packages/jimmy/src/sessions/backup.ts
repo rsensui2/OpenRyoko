@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type Database from "better-sqlite3";
@@ -46,7 +47,9 @@ export async function createDailyDatabaseBackup(
   if (fs.existsSync(file)) return { created: false, file };
   options.beforeWrite?.();
 
-  const temporary = `${file}.tmp-${process.pid}`;
+  // SQLite creates this file itself and would follow a symlink left under its
+  // name, so the name must not be one anybody could have guessed.
+  const temporary = `${file}.tmp-${process.pid}-${crypto.randomBytes(8).toString("hex")}`;
   try {
     await database.backup(temporary);
     fs.chmodSync(temporary, 0o600);
