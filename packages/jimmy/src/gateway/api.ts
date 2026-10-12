@@ -2,7 +2,7 @@ import type { ModelManagement } from "../models/service.js";
 import { withConfigLock } from "../shared/config-lock.js";
 import { readConfigSnapshot, writeConfigDocument } from "../shared/config-file.js";
 import { CONFIG_CONFLICT_BODY, CONFIG_REVISION_HEADER, configForApi, isStaleConfigRevision } from "./config-revision.js";
-import { redactMcpApiKeys } from "./config-redaction.js";
+import { redactMcpSecrets, restoreCustomMcpSecrets } from "./config-redaction.js";
 import { validateCommandJob } from "../cron/command.js";
 import { validateCronSchedule } from "../cron/validation.js";
 import type { IncomingMessage as HttpRequest, ServerResponse } from "node:http";
@@ -1943,7 +1943,7 @@ Handle this as a priority request from a colleague.`;
       const sanitized = {
         ...config,
         connectors: sanitizedConnectors,
-        ...(config.mcp ? { mcp: redactMcpApiKeys(config.mcp) } : {}),
+        ...(config.mcp ? { mcp: redactMcpSecrets(config.mcp) } : {}),
       };
       return json(res, sanitized);
     }
@@ -2016,7 +2016,9 @@ Handle this as a priority request from a colleague.`;
         return json(res, CONFIG_CONFLICT_BODY, 409);
       }
       const existing = snapshot.document;
-      const merged = deepMerge(existing, body);
+      // A custom MCP server's env and headers come back from GET hidden value by
+      // value; the stored values are put back before the merge sees them.
+      const merged = deepMerge(existing, restoreCustomMcpSecrets(body, existing));
 
       // Compare AGAINST THE MERGED config, not the request body — partial
       // updates (e.g. saving only "portal.portalName") leave body.connectors

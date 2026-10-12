@@ -124,6 +124,101 @@ describe("GET /api/config and the MCP API key", () => {
   });
 });
 
+describe("GET /api/config and a custom MCP server's env and headers", () => {
+  /* A custom server keeps its secrets where no fixed key name can find them:
+   * they are the values of its environment (API keys, tokens) and of its HTTP
+   * headers (Authorization). So every value in those two blocks is hidden —
+   * the names stay — and PUT puts the stored value back wherever the body
+   * still carries the placeholder. */
+  const MCP = {
+    search: { enabled: true, provider: "brave", apiKey: "brave-SECRET-12" },
+    custom: {
+      notion: { command: "npx", args: ["-y", "@notionhq/notion-mcp-server"], env: { NOTION_TOKEN: "ntn-SECRET-A", LOG_LEVEL: "debug-SECRET-B", EMPTY: "" }, enabled: true },
+      linear: { type: "sse", url: "https://mcp.linear.app/sse", headers: { Authorization: "Bearer lin-SECRET-C", "X-Team": "ops-SECRET-D" } },
+      clock: { command: "uvx", args: ["mcp-server-time"] },
+    },
+  };
+  const text = () => fs.readFileSync(CONFIG_PATH, "utf-8");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const stored = () => (yaml.load(text()) as any).mcp;
+
+  beforeEach(() => {
+    fs.writeFileSync(CONFIG_PATH, yaml.dump({ ...CONFIG, mcp: MCP }));
+  });
+
+  it("hides every value of env and headers, and nothing else of the entry", async () => {
+    const got = await call("GET", "/api/config");
+    expect(got.body.mcp.custom).toEqual({
+      notion: { command: "npx", args: ["-y", "@notionhq/notion-mcp-server"], env: { NOTION_TOKEN: "***", LOG_LEVEL: "***", EMPTY: "" }, enabled: true },
+      linear: { type: "sse", url: "https://mcp.linear.app/sse", headers: { Authorization: "***", "X-Team": "***" } },
+      clock: { command: "uvx", args: ["mcp-server-time"] },
+    });
+    expect(got.text).not.toContain("SECRET");
+  });
+
+  it("hides a value that is not a string, and a block written in a shape nobody expects, whole", async () => {
+    const custom = {
+      odd: { command: "x", env: { PIN: 4242, NESTED: { token: "nested-SECRET" } }, headers: "Authorization: Bearer inline-SECRET" },
+      list: { command: "y", env: ["TOKEN=list-SECRET"] },
+    };
+    fs.writeFileSync(CONFIG_PATH, yaml.dump({ ...CONFIG, mcp: { custom } }));
+    const got = await call("GET", "/api/config");
+    expect(got.body.mcp.custom).toEqual({
+      odd: { command: "x", env: { PIN: "***", NESTED: "***" }, headers: "***" },
+      list: { command: "y", env: "***" },
+    });
+    expect(got.text).not.toContain("SECRET");
+    expect(got.text).not.toContain("4242");
+
+    // ...and the served document saved back leaves all of it as it was.
+    expect((await call("PUT", "/api/config", got.body)).status).toBe(200);
+    expect(stored().custom).toEqual(custom);
+  });
+
+  it("keeps the stored values when the served document is saved back", async () => {
+    const served = (await call("GET", "/api/config")).body;
+    expect((await call("PUT", "/api/config", { ...served, logging: { ...served.logging, level: "debug" } })).status).toBe(200);
+    expect(stored()).toEqual(MCP);
+    expect(text()).not.toContain("***");
+  });
+
+  it("changes the value a caller sets and keeps the ones it sent back hidden", async () => {
+    const served = (await call("GET", "/api/config")).body;
+    served.mcp.custom.notion.env.LOG_LEVEL = "info";
+    served.mcp.custom.linear.headers.Authorization = "Bearer lin-NEW";
+    expect((await call("PUT", "/api/config", served)).status).toBe(200);
+    expect(stored().custom.notion.env).toEqual({ NOTION_TOKEN: "ntn-SECRET-A", LOG_LEVEL: "info", EMPTY: "" });
+    expect(stored().custom.linear.headers).toEqual({ Authorization: "Bearer lin-NEW", "X-Team": "ops-SECRET-D" });
+  });
+
+  it("adds a variable, and removes one with null, without touching the others", async () => {
+    expect((await call("PUT", "/api/config", { mcp: { custom: { notion: { env: { NOTION_VERSION: "2026-01-01", LOG_LEVEL: null } } } } })).status).toBe(200);
+    expect(stored().custom.notion.env).toEqual({ NOTION_TOKEN: "ntn-SECRET-A", EMPTY: "", NOTION_VERSION: "2026-01-01" });
+  });
+
+  it("never writes the placeholder where nothing is stored behind it", async () => {
+    const saved = await call("PUT", "/api/config", {
+      mcp: {
+        custom: {
+          renamed: { command: "npx", env: { NOTION_TOKEN: "***" } }, // a server config.yaml does not have
+          notion: { env: { NEVER_SET: "***" } }, // a variable the entry does not have
+          clock: { env: { TZ: "***" }, headers: "***" }, // blocks the entry does not have
+        },
+      },
+    });
+    expect(saved.status).toBe(200);
+    expect(text()).not.toContain("***");
+    expect(stored().custom).toEqual({ ...MCP.custom, renamed: { command: "npx" } });
+  });
+
+  it("does the same when config.yaml has no mcp block at all", async () => {
+    fs.writeFileSync(CONFIG_PATH, yaml.dump({ ...CONFIG, mcp: undefined }));
+    const saved = await call("PUT", "/api/config", { mcp: { custom: { fresh: { type: "sse", url: "https://x.example/sse", headers: { Authorization: "***", Accept: "text/event-stream" } } } } });
+    expect(saved.status).toBe(200);
+    expect(stored().custom.fresh).toEqual({ type: "sse", url: "https://x.example/sse", headers: { Accept: "text/event-stream" } });
+  });
+});
+
 describe("GET /api/config served from disk", () => {
   /** What the handler has always answered for CONFIG — written out, so that a change to it has to be made here on purpose. */
   const EXPECTED = {
