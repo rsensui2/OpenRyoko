@@ -44,9 +44,9 @@ Required fields:
 - `displayName` — human-readable name
 - `department` — department this employee belongs to (must match parent directory name)
 - `rank` — one of: executive, manager, senior, employee
-- `engine` — AI engine to use: `claude` or `codex`
-- `model` — model identifier (e.g., `sonnet`, `opus`, `o3`)
+- `engine` — AI engine to use: `claude`, `codex`, or `gemini` when it is configured
 - `persona` — multiline description of who this employee is and how they behave
+- `model` — (optional) model identifier (e.g., `claude-opus-5-5`, `gpt-6-sol`). Leave it out to follow the default of the employee's engine
 - `reportsTo` — (optional) who this employee reports to (employee name)
 
 **Auto-determining `reportsTo`** when the user does not specify:
@@ -79,7 +79,7 @@ persona: |
 Steps:
 1. Confirm the target department exists under `org/`. If not, ask the user whether to create it first.
 2. Choose a kebab-case name for the employee (e.g., `lead-developer`, `seo-specialist`).
-3. Ask the user for displayName, rank, engine, model, and persona if not provided.
+3. Ask the user for displayName, rank, engine, and persona if not provided. Ask for a model only when they want one that differs from the engine's default.
 4. Write the YAML file to `org/<department>/<name>.yaml`.
 5. Confirm the hire to the user.
 
@@ -147,7 +147,8 @@ persona: |
   ## Delegation API
   - Create child session: POST /api/sessions with parentSessionId
   - Send follow-up: POST /api/sessions/:id/message
-  - Poll status: GET /api/sessions/:id
+  - Read a child's latest messages: GET /api/sessions/:id?last=N (when its
+    completion wakes you, or when asked; never poll or wait inside a turn)
   - List your reports: GET /api/org
 ```
 

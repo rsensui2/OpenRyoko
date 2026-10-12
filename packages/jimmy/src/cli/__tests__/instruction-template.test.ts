@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { TEMPLATE_DIR } from "../../shared/paths.js";
+import { applyTemplateReplacements, buildTemplateReplacements } from "../../shared/templateReplacements.js";
 
 const read = (rel: string) => fs.readFileSync(path.join(TEMPLATE_DIR, rel), "utf-8");
 const bytes = (text: string) => Buffer.byteLength(text, "utf-8");
@@ -113,5 +114,41 @@ describe("shipped instruction templates", () => {
     const migrate = read("skills/migrate/SKILL.md");
     expect(migrate).toContain("@AGENTS.md");
     expect(migrate).not.toContain("セクション全体を追記");
+  });
+
+  // `ryoko migrate --auto` fills the placeholders of a file it creates. The AI-driven
+  // run copies files/ as they are, and most of the docs carry placeholders: without
+  // this rule a replaced doc reads "{{portalName}} runs as a single Node.js process".
+  it("tells the migrate skill to fill the placeholders a migration's files still carry, the way --auto does", () => {
+    const migrate = read("skills/migrate/SKILL.md");
+    const rule = migrate.split("\n").find((line) => line.startsWith("**プレースホルダ**")) ?? "";
+    const filled = buildTemplateReplacements("My Portal");
+
+    expect(Object.keys(filled).sort()).toEqual(["{{portalName}}", "{{portalSlug}}"]);
+    for (const name of ["`portalName`", "`portalSlug`"]) expect(rule, name).toContain(name);
+    expect(rule).toContain("`config.yaml` の `portal.portalName`");
+    // The slug as the installer derives it: lower case, blanks to hyphens.
+    expect(filled["{{portalSlug}}"]).toBe("my-portal");
+    expect(rule).toContain("小文字にして空白を `-` に替えたもの");
+    expect(rule).toMatch(/docs を丸ごと置き換えるときも同じ/);
+  });
+
+  it("does not spell a placeholder out where the instruction itself would be filled in", () => {
+    // The skill is a template too: installed, every literal {{portalName}} in it has
+    // become the assistant's name. A rule that names the placeholder that way reaches
+    // the agent as "replace `Momo` with the portal name".
+    const migrate = read("skills/migrate/SKILL.md");
+    const body = migrate.slice(migrate.indexOf("\n---\n", 4));
+    const installed = applyTemplateReplacements(body, buildTemplateReplacements("Momo"));
+
+    expect(installed).toBe(body);
+  });
+
+  it("tells the migrate skill where a command it hands to the user has to be run", () => {
+    const migrate = read("skills/migrate/SKILL.md");
+    const rule = migrate.split("\n").find((line) => line.includes("gateway が動いている場所で実行するよう添える")) ?? "";
+
+    expect(rule).toContain("コンテナの中");
+    expect(rule).toMatch(/ホスト側の `ryoko` を、そのホームに向けない/);
   });
 });

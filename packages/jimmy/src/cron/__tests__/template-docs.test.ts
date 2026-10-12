@@ -78,3 +78,69 @@ describe("shipped cron documentation", () => {
     expect(read("skills/cron-manager/SKILL.md")).toContain("?limit=");
   });
 });
+
+// How a change to jobs.json reaches the scheduler was described as "cancel every
+// job, then reschedule", and an unreadable file as the loss of every job. The
+// scheduler does neither, and an agent that believed it wrote `[]` over a broken
+// file to "recover" — the one edit that really does remove every job.
+describe("shipped documentation of how cron/jobs.json is reloaded", () => {
+  const source = (rel: string) => fs.readFileSync(path.join(import.meta.dirname, "..", "..", ...rel.split("/")), "utf-8");
+
+  it("says in docs/cron.md that an unreadable file leaves the registered jobs scheduled, in the words the gateway logs", () => {
+    const logged = "Cron reload skipped; keeping previous registrations";
+
+    expect(source("cron/reconcile.ts")).toContain(logged);
+    expect(read("docs/cron.md")).toContain(logged);
+    expect(read("docs/cron.md")).toMatch(/A job that did not change keeps its registration/);
+  });
+
+  it.each(["docs/cron.md", "docs/self-modification.md"])("no longer says in %s that a reload cancels every job first", (file) => {
+    expect(read(file)).not.toMatch(/All existing scheduled jobs are cancelled|Cancel all scheduled jobs/);
+    expect(read(file)).not.toMatch(/will cancel all cron jobs/);
+  });
+
+  it.each(["docs/cron.md", "docs/self-modification.md"])("says in %s that a valid empty list is what unschedules every job", (file) => {
+    expect(read(file)).toMatch(/empty list `\[\]`[^\n]*unschedules every job/);
+  });
+
+  it("gives the interval of the comparison that catches a missed change as the watcher has it", () => {
+    expect(source("gateway/watcher.ts")).toMatch(/"cron reconciliation", \(\) => callbacks\.onCronReload\(\)\), 30_000\)/);
+    expect(read("docs/cron.md")).toContain("every 30 seconds compares the file with what is scheduled");
+  });
+
+  it("has an engine create a job through the API, not by rewriting the file", () => {
+    const text = read("docs/self-modification.md");
+
+    expect(text).toContain("ryoko api POST /api/cron");
+    expect(text).not.toContain("Write back to ~/.ryoko/cron/jobs.json");
+  });
+});
+
+describe("shipped documentation of when cron settings and engines apply", () => {
+  it("says the cron section of the config is read at each fire, naming every key of it", () => {
+    const text = read("docs/cron.md");
+
+    for (const key of ["alertConnector", "alertChannel", "alertThrottleMinutes", "defaultDelivery"]) expect(text, key).toContain(`\`${key}\``);
+    expect(text).toMatch(/are read each time a job fires/);
+  });
+
+  it("says that what was alerted is forgotten at a restart", () => {
+    expect(read("docs/cron.md")).toMatch(/kept in memory only, so the first failure after a gateway restart alerts again/);
+  });
+
+  it.each(["docs/cron.md", "skills/cron-manager/SKILL.md"])("says in %s that a job naming its engine or model is not moved off an engine that is out of allowance", (file) => {
+    const text = read(file);
+
+    expect(text).toMatch(/names neither/);
+    expect(text).toMatch(/is not moved/);
+    expect(text).toMatch(/fails a turn on the named engine/);
+  });
+
+  it("shows the engine of a job as optional", () => {
+    expect(read("docs/cron.md")).toMatch(/^  engine\?: string;/m);
+  });
+
+  it("does not promise a warning the gateway does not log for a job that delivers for an employee", () => {
+    expect(read("docs/cron.md")).not.toContain("The gateway will log a warning if it detects");
+  });
+});

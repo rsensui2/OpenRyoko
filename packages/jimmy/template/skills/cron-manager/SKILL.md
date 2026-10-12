@@ -80,6 +80,8 @@ Common fields are `id`, `name`, `enabled`, five-field `schedule`, and IANA `time
 }
 ```
 
+`engine` and `model` are optional. A job that names neither runs on its employee's engine or on the default one, and while that engine's usage limit is on record it starts on the fallback engine without a failed turn. A job that names either is not moved: during the limit every fire fails a turn on the named engine first. Keep an explicit engine or model only where the job needs it.
+
 The example model must be available to the configured account. Use the installed model registry for supported effort levels. Terra/medium is an example starting point for routine work; preserve the operator's selected model and use a stronger model only where the job needs it. Adjust the affected job when quality requires it; do not reset the global model to a costly default as routine maintenance.
 
 `employee` is optional and must match an existing persona. `delivery` is an optional approved destination for prompt output. Reporting and analytical output should follow the established review route. Preserve existing delivery requirements; lack of a destination does not require adding one.

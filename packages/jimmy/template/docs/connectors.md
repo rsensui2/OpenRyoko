@@ -9,21 +9,32 @@ interface Connector {
   name: string;
   start(): Promise<void>;
   stop(): Promise<void>;
-  sendMessage(sourceRef: string, text: string): Promise<void>;
-  addReaction(sourceRef: string, emoji: string): Promise<void>;
-  removeReaction(sourceRef: string, emoji: string): Promise<void>;
-  editMessage(sourceRef: string, text: string): Promise<void>;
+  getCapabilities(): ConnectorCapabilities;   // threading, messageEdits, reactions, attachments
+  getHealth(): ConnectorHealth;               // running | stopped | error | qr_pending
+  reconstructTarget(replyContext: ReplyContext): Target;
+  sendMessage(target: Target, text: string): Promise<string | void>;
+  replyMessage(target: Target, text: string): Promise<string | void>;
+  addReaction(target: Target, emoji: string): Promise<void>;
+  removeReaction(target: Target, emoji: string): Promise<void>;
+  editMessage(target: Target, text: string): Promise<void>;
   onMessage(handler: (msg: IncomingMessage) => void): void;
 }
 
 interface IncomingMessage {
-  sourceRef: string;     // Unique identifier for routing
-  text: string;          // Message content
-  userId: string;        // Platform user ID
-  userName: string;      // Display name
-  connector: string;     // Connector name
+  connector: string;           // Connector name
+  source: string;              // Platform the message arrived on
+  sessionKey: string;          // The session the message belongs to
+  channel: string;
+  thread?: string;
+  user: string;                // Display name
+  userId: string;              // Platform user ID
+  text: string;                // Message content
+  attachments: Attachment[];   // Files the connector downloaded
+  replyContext: ReplyContext;  // What a reply needs to find its way back
 }
 ```
+
+`sendMessage` and `replyMessage` report delivery. The promise resolves when the whole message reached the platform, and rejects when it did not. A long reply is sent in chunks; one that stops part-way rejects as a partial delivery and is not sent again from the top, because that would post the first chunks twice. `POST /api/connectors/<name>/send` answers `{"status":"sent"}` only when all of the message arrived. Otherwise it answers 500 with the reason — `only N of M chunks were delivered` for a partial delivery.
 
 ## Slack Connector
 
@@ -40,6 +51,8 @@ connectors:
 ```
 
 An attachment over `maxAttachmentMb` is not downloaded; the session is told which one and why, so it can say so in its reply. The same key works under `discord` and `whatsapp`.
+
+Files are fetched only for a message the bot is going to answer, and only from Slack's own file host (`files.slack.com`), the one place the bot token is sent. A file that Slack only links to — a Google Drive document or another remote file shared in the channel — is not downloaded. The session is told that it could not be retrieved, as for any attachment that fails.
 
 ### Response Gating (`respondTo`)
 
@@ -75,20 +88,21 @@ Modes per scope: `always` | `mention` | `never`.
 
 Slack messages are mapped to sessions based on conversation context:
 
-| Slack Context | Source Ref Format | Session Behavior |
+| Slack Context | Session Key | Session Behavior |
 |---|---|---|
 | Direct message | `slack:dm:<userId>` | One session per DM user |
-| Channel root message | `slack:<channelId>` | One session per channel |
-| Thread reply | `slack:<channelId>:<threadTs>` | One session per thread |
+| Thread inside a direct message | `slack:dm:<userId>:<threadTs>` | One session per thread |
+| Channel root message | `slack:<channelId>:<ts>` | One session per root message; replies in its thread continue it |
+| Thread reply | `slack:<channelId>:<threadTs>` | The session of that thread's root message |
 
 ### Reaction Workflow
 
 Reactions provide visual feedback during processing:
 
-1. Message received → add :eyes: reaction (acknowledged)
-2. Engine processing...
-3. On success → remove :eyes:, add :white_check_mark:
-4. On error → remove :eyes:, add :x:
+1. Message waits behind a turn that is still running → add :clock1:
+2. Its turn starts → remove :clock1:, add :eyes:
+3. The turn waits for a usage limit to reset → replace :eyes: with :hourglass_flowing_sand:
+4. The turn ends → remove the reaction. The reply, or the error, is the answer; no reaction marks success or failure
 
 ### Employee Routing
 
@@ -213,6 +227,8 @@ connectors:
     maxAttachmentMb: 200  # optional: largest attachment downloaded, in MB (default 200)
 ```
 
+`maxAttachmentMb` applies to messages this instance receives from Discord itself. An instance that receives messages forwarded by a primary (`proxyVia`, see `channelRouting` below) fetches a forwarded attachment only from Discord's CDN over https, at most ten per message and up to 50 MB each, whatever `maxAttachmentMb` says.
+
 ### Response Gating (`respondTo`)
 
 The Discord port of the Slack gate. By default the bot responds to every
@@ -299,14 +315,21 @@ connector (Slack, Discord, Telegram, WhatsApp).
 
 - **A gateway command** — answered by the gateway, never sent to the CLI.
   `/new`, `/status`, `/doctor`, `/cron list` and `/goal …` work for anyone
-  the connector lets in (they read, or touch only the one conversation). The
-  state-changing ones — `/model <name>`, and `/cron run|enable|disable` —
-  work only for the operator **when an operator ID is set**
-  (`portal.operatorSlackId` / `portal.operatorDiscordId`); from anyone else
-  they reach the assistant as an ordinary message instead. With no operator
-  ID configured, and on Telegram and WhatsApp (which have none), they stay
-  open to everyone, as before. (On Slack the model-settings panel has always
-  been operator-only; the text command now matches it.)
+  the connector lets in (they read, or touch only the one conversation). Who
+  may use the state-changing ones — `/model <name>`, and
+  `/cron run|enable|disable` — depends on whether an operator ID is set
+  (`portal.operatorSlackId` / `portal.operatorDiscordId`):
+  - **No operator ID set**: they stay open to everyone, on every connector,
+    as before.
+  - **An operator ID set**: only the operator runs them, and only on a
+    platform whose operator ID is configured. From anyone else they reach the
+    assistant as an ordinary message instead. A platform with no operator ID
+    has no operator: Telegram and WhatsApp always, and Discord while only
+    the Slack ID is set (or the reverse). On such an instance nobody can run
+    these commands from there — use Slack, Discord or the dashboard for them.
+
+  (On Slack the model-settings panel has always been operator-only; the text
+  command now matches it.)
 - **A Claude Code command the operator may run from chat** —
   `/compact [instructions]`, `/clear`. Passed to the CLI only when the
   sender's platform ID equals `portal.operatorSlackId` (Slack) or
@@ -332,7 +355,8 @@ messages.
 shared account out from under every session, so it is disabled at the source
 rather than left to chance. To log out, use a terminal on the machine. (The
 sign-in command is left on, so the operator can recover from the web live
-terminal.)
+terminal.) A turn that runs over SSH on an employee's own machine (`sshHost`)
+uses that machine's CLI, which the gateway does not change.
 
 The gateway does not answer "that command is not allowed" — the sender gets
 the assistant's reply to the message. Prompts from the web UI, the API and

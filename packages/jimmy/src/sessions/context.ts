@@ -1264,10 +1264,10 @@ ryoko api POST /api/sessions/<child-id>/message \\
 
 6. **Respond immediately**: tell the user you have delegated and will follow up when the child reports back, then end your turn. **Do NOT poll or sleep-loop inside your turn** waiting for the child — a turn has a hard time limit, and a blocked turn cannot answer anyone.
 
-7. **onComplete notification** (the primary wake-up — attempted, not guaranteed): when the child finishes, the gateway posts a notification into your session and you are woken with a preview and the child's session id. The notification is skipped silently when any of these hold:
+7. **onComplete notification** (the primary wake-up — attempted, not guaranteed): when the child finishes, the gateway posts a notification into your session and you are woken with a preview and the child's session id. Completions that arrive while you are busy reach you together as one turn (up to 32 at a time): read every child it names. The notification is skipped silently when either of these holds:
    - the child was spawned without your \`parentSessionId\` (an unlinked child never notifies anyone)
    - the employee sets \`alwaysNotify: false\`
-   - your session is already in \`error\`
+   If your session is in \`error\` when a child finishes (your own last turn failed, for example on a usage limit or a lost login), you are not woken: the notification is written into your transcript, marked "Not acted on". When you run again, read your recent messages (\`ryoko api GET /api/sessions/<your-session-id>?last=20\`) for children that finished in the meantime. A turn that failed because the engine process died does not count: you are woken as usual.
    If the POST itself fails (gateway restart, auth), a warning goes to the gateway log — not to you.
 
 8. **Safety net**: if the user asks about progress, or a reply is overdue, read the child yourself:

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { guardConnectorMessage, OPERATOR_NATIVE_COMMANDS } from "../connector-command-guard.js";
+import { guardConnectorMessage, OPERATOR_NATIVE_COMMANDS, senderMayManageSession } from "../connector-command-guard.js";
 import { TEMPLATE_DIR } from "../../shared/paths.js";
 import type { IncomingMessage, JinnConfig } from "../../shared/types.js";
 import { claudeReads, strictestClaudeReads } from "./claude-cli-reading.js";
@@ -249,6 +249,35 @@ describe("shipped documentation", () => {
     for (const refused of ["/logout", "/login", "/permissions", "/resume", "/config"]) expect(section).toContain(`\`${refused}\``);
     expect(section).toMatch(/portal\.operatorSlackId/);
     expect(section).toMatch(/portal\.operatorDiscordId/);
+  });
+
+  // `/model` and `/cron run|enable|disable`. The section used to say that Telegram
+  // and WhatsApp "stay open to everyone" — true only where no operator ID is set.
+  it("says who may run the state-changing gateway commands, as the gateway decides it", () => {
+    const section = read("docs/connectors.md").split("\n## Commands in Chat\n")[1]?.split("\n## ")[0] ?? "";
+    const from = (source: string, meta: IncomingMessage["transportMeta"]) => message("/model opus", { connector: source, source, transportMeta: meta });
+    const operatorOnSlack = from("slack", { isDM: true, speakerSlackId: OPERATOR_SLACK_ID });
+    const claimsToBeTheOperator = { isDM: true, speakerSlackId: OPERATOR_SLACK_ID, speakerDiscordId: OPERATOR_DISCORD_ID };
+
+    // No operator ID: everyone, everywhere.
+    const noOperator = configWith({ operatorName: "Ryosuke" });
+    for (const source of ["slack", "discord", "telegram", "whatsapp"]) expect(senderMayManageSession(from(source, { isDM: true }), noOperator), source).toBe(true);
+    expect(section).toMatch(/\*\*No operator ID set\*\*: they stay open to everyone, on every connector/);
+
+    // An operator ID: the operator, on a platform that has one. Nobody on Telegram or WhatsApp.
+    expect(senderMayManageSession(operatorOnSlack, CONFIG)).toBe(true);
+    expect(senderMayManageSession(message("/model opus"), CONFIG)).toBe(false);
+    for (const source of ["telegram", "whatsapp"]) expect(senderMayManageSession(from(source, claimsToBeTheOperator), CONFIG), source).toBe(false);
+    expect(section).toMatch(/\*\*An operator ID set\*\*: only the operator runs them, and only on a\s+platform whose operator ID is configured/);
+    expect(section).toMatch(/Telegram and WhatsApp always/);
+    expect(section).toMatch(/nobody can run\s+these commands from there/);
+
+    // Only the Slack ID set: Discord has no operator either.
+    const slackOnly = configWith({ operatorSlackId: OPERATOR_SLACK_ID });
+    expect(senderMayManageSession(from("discord", { isDM: true, speakerDiscordId: OPERATOR_DISCORD_ID }), slackOnly)).toBe(false);
+    expect(section).toMatch(/Discord while only\s+the Slack ID is set/);
+
+    expect(section).not.toMatch(/on Telegram and WhatsApp \(which have none\), they stay\s+open to everyone/);
   });
 
   it("says next to the operator IDs in the default config that they decide who may run them", () => {
