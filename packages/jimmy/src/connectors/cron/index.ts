@@ -16,11 +16,17 @@ const capabilities: ConnectorCapabilities = {
   attachments: false,
 };
 
+/** Delivery "connector" the settings page offers for results that only need to
+ *  be readable in the dashboard. It is never a running connector. */
+const DASHBOARD_DELIVERY = "web";
+
 export class CronConnector implements Connector {
   name = "cron";
   private handler: ((msg: IncomingMessage) => void) | null = null;
   private deliveredMessages = 0;
   private deliveredTexts: string[] = [];
+  private undeliveredMessages = 0;
+  private lastMessageUndelivered = false;
 
   constructor(
     private readonly connectors: Map<string, Connector>,
@@ -83,6 +89,19 @@ export class CronConnector implements Connector {
     return this.deliveredTexts.some((text) => text.includes(fragment));
   }
 
+  /** Messages dropped during this run because the chat connector the job
+   *  delivers to was not running. They reached nobody. */
+  getUndeliveredMessageCount(): number {
+    return this.undeliveredMessages;
+  }
+
+  /** True when the run's output did not reach the chat: the last message it
+   *  sent was dropped, or messages were dropped and none arrived. A notice lost
+   *  along the way (a connector reload) does not count once the result got through. */
+  isOutputUndelivered(): boolean {
+    return this.undeliveredMessages > 0 && (this.lastMessageUndelivered || this.deliveredMessages === 0);
+  }
+
   private async forward(target: Target, text: string, asReply: boolean): Promise<string | void> {
     if (!this.delivery) return undefined;
 
@@ -99,6 +118,10 @@ export class CronConnector implements Connector {
     const connector = this.connectors.get(this.delivery.connector);
     if (!connector) {
       logger.warn(`Cron delivery connector "${this.delivery.connector}" not found`);
+      if (this.delivery.connector !== DASHBOARD_DELIVERY) {
+        this.undeliveredMessages++;
+        this.lastMessageUndelivered = true;
+      }
       return undefined;
     }
 
@@ -111,13 +134,17 @@ export class CronConnector implements Connector {
 
     if (asReply) {
       const result = await connector.replyMessage(resolvedTarget, text);
-      this.deliveredMessages++;
-      this.deliveredTexts.push(text);
+      this.recordDelivered(text);
       return result;
     }
     const result = await connector.sendMessage(resolvedTarget, text);
+    this.recordDelivered(text);
+    return result;
+  }
+
+  private recordDelivered(text: string): void {
     this.deliveredMessages++;
     this.deliveredTexts.push(text);
-    return result;
+    this.lastMessageUndelivered = false;
   }
 }

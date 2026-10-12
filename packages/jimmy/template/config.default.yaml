@@ -95,6 +95,8 @@ mcp:
 cron:
   # alertConnector: slack
   # alertChannel: "#alerts"
+  # 同じジョブで同じ失敗が続く間、アラートを再送しない時間（分）。0 で毎回送る。
+  # alertThrottleMinutes: 60
 
 # portal.operatorSlackId / portal.operatorDiscordId = オペレータ本人の Slack ID と
 # Discord ユーザー ID（スノーフレーク。プロフィール右クリック → ユーザーIDをコピー）。
