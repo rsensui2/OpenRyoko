@@ -4,7 +4,7 @@ import { isInterruptibleEngine } from "../shared/types.js";
 import { resolveFallbackEngine, resolveSubstituteModel } from "../shared/engine-fallback.js";
 import { effortLevelsForModel, getModelRegistry } from "../shared/models.js";
 import { logger } from "../shared/logger.js";
-import { detectRateLimit } from "../shared/rateLimit.js";
+import { detectRateLimit, MAX_USAGE_LIMIT_WAIT_MS, usageLimitOutlastsWait } from "../shared/rateLimit.js";
 import { recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { redactText } from "../shared/redact.js";
 import { getMessages, getSession, updateSession, type UpdateSessionFields } from "./registry.js";
@@ -111,6 +111,37 @@ export async function waitForEngineRetry(delayMs: number, shouldStop: () => bool
     await new Promise<void>((resolve) => setTimeout(resolve, Math.min(500, deadline - Date.now())));
   }
   return !shouldStop();
+}
+
+const RESET_DAY_AND_TIME: Intl.DateTimeFormatOptions = { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" };
+
+/**
+ * The result a turn ends with after its engine and any fallback: unchanged,
+ * unless it is a usage limit that would now be waited for and that states a
+ * reset further off than a turn is kept waiting. That one is failed here, with
+ * the reset time for an answer, instead of being parked for days.
+ *
+ * Both wait paths (connector and web) take their result through this, so they
+ * park and refuse the same turns. `retryable: false` is what keeps the failed
+ * result out of the wait: it is no longer something to retry.
+ */
+export function failLimitThatOutlastsTheWait(
+  outcome: { result: EngineResult; engine: Engine; attempted: boolean; session?: Pick<Session, "id"> },
+  nowMs = Date.now(),
+): EngineResult {
+  const { result, engine } = outcome;
+  // The wait is only ever entered for a limit nothing was switched away from,
+  // and never for a turn that was interrupted.
+  if (outcome.attempted || result.error?.startsWith("Interrupted")) return result;
+  const limit = detectRateLimit(result);
+  if (!limit.limited || limit.resetsAt === undefined || !usageLimitOutlastsWait(limit.resetsAt, nowMs)) return result;
+  const resetsAt = new Date(limit.resetsAt * 1000);
+  if (engine.name === "claude") recordClaudeRateLimit(limit.resetsAt); // what entering the wait would have noted
+  logger.info(`Session ${outcome.session?.id ?? "(unknown)"} hit ${engine.name} usage limit that resets at ${resetsAt.toISOString()} — ` +
+    `further off than the ${Math.round(MAX_USAGE_LIMIT_WAIT_MS / 3_600_000)}h a turn waits, so it fails now instead of waiting`);
+  return { ...result, result: "", retryable: false,
+    error: `${engine.name} usage limit reached. It resets ${resetsAt.toLocaleString("en-GB", RESET_DAY_AND_TIME)} (${resetsAt.toISOString()}), ` +
+      "which is too far off to wait for. Please try again after that." };
 }
 
 /** Watch actual engine activity, underneath goal supervision. A timed-out process

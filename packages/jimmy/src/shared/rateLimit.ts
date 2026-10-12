@@ -144,6 +144,24 @@ export function detectRateLimit(result: EngineResult): RateLimitDetection {
   return { limited: false };
 }
 
+/**
+ * The longest a turn is kept waiting for a usage limit to reset. It was always
+ * the bound when the engine could not say when the reset is; a reset stated to
+ * be further off than this is not waited for at all (see usageLimitOutlastsWait).
+ */
+export const MAX_USAGE_LIMIT_WAIT_MS = 6 * 60 * 60_000;
+
+/**
+ * Whether a limit states a reset further off than a turn is kept waiting for.
+ * Such a wait is known in advance not to end in time: a weekly window can name
+ * a reset days out, and a turn parked for it only comes back as a stale request
+ * alongside every other turn parked in the meantime.
+ */
+export function usageLimitOutlastsWait(resetsAtSeconds: number | undefined, nowMs = Date.now()): boolean {
+  return typeof resetsAtSeconds === "number" && Number.isFinite(resetsAtSeconds)
+    && resetsAtSeconds * 1000 - nowMs > MAX_USAGE_LIMIT_WAIT_MS;
+}
+
 export function computeRateLimitDeadlineMs(resetsAtSeconds?: number, extraMs = 30 * 60_000): number {
   if (typeof resetsAtSeconds === "number" && Number.isFinite(resetsAtSeconds)) {
     return resetsAtSeconds * 1000 + extraMs;

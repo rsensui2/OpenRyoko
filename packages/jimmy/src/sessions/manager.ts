@@ -37,7 +37,7 @@ import { workflowAttemptInterruptionCause } from "./workflow-interruptions.js";
 import { recordTurnAccounting } from "./accounting.js";
 import { runWithSessionGoal, sessionGoalOptions } from "./goal-execution.js";
 import { conversationOutcome } from "./conversation-outcome.js";
-import { buildEngineSyncPrompt, clearEngineSyncMarker, engineFallbackFailure, engineSyncSince, isAwayFromEngine, maybeRevertEngineOverride, runEngineWithResponseTimeout, runFallbackAttempts, waitForEngineRetry } from "./engine-fallback.js";
+import { buildEngineSyncPrompt, clearEngineSyncMarker, engineFallbackFailure, engineSyncSince, failLimitThatOutlastsTheWait, isAwayFromEngine, maybeRevertEngineOverride, runEngineWithResponseTimeout, runFallbackAttempts, waitForEngineRetry } from "./engine-fallback.js";
 import { startOnHealthyEngine } from "./new-session-engine.js";
 import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "./callbacks.js";
 import { buildContext } from "./context.js";
@@ -48,7 +48,7 @@ import { JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 import { resolveEffort } from "../shared/effort.js";
 import { effortLevelsForModel } from "../shared/models.js";
-import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit, isDeadSessionError, isPoisonedTranscriptError, isTransientServerError } from "../shared/rateLimit.js";
+import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit, isDeadSessionError, isPoisonedTranscriptError, isTransientServerError, MAX_USAGE_LIMIT_WAIT_MS, usageLimitOutlastsWait } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt, isLikelyNearClaudeUsageLimit, recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { buildSpeakerPrefix, type SpeakerPrefixMeta } from "./speaker-prefix.js";
 import { loadJobs } from "../cron/jobs.js";
@@ -940,7 +940,7 @@ export class SessionManager {
             mcpConfigPath: targetEngine.name === "claude" ? mcpConfigPath : undefined };
         },
       });
-      result = fallback.result;
+      result = failLimitThatOutlastsTheWait(fallback);
       session = fallback.session;
       engine = fallback.engine;
       if (!getSession(session.id)) {
@@ -960,7 +960,7 @@ export class SessionManager {
         const { delayMs, resumeAt } = computeNextRetryDelayMs(rateLimit.resetsAt);
         const deadlineMs = computeRateLimitDeadlineMs(
           rateLimit.resetsAt,
-          rateLimit.resetsAt ? 30 * 60_000 : 6 * 60 * 60_000,
+          rateLimit.resetsAt ? 30 * 60_000 : MAX_USAGE_LIMIT_WAIT_MS,
         );
 
         const resumeText = resumeAt
@@ -1079,6 +1079,9 @@ export class SessionManager {
                   : `${session.engine} usage limit — waiting for reset`,
               });
 
+              // Now told a reset further off than a turn waits for: give up here
+              // rather than sleep until it, as a turn that starts that way does.
+              if (usageLimitOutlastsWait(retryRateLimit.resetsAt)) break;
               continue;
             }
 

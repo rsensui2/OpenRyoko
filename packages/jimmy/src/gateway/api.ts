@@ -13,7 +13,7 @@ import cron from "node-cron";
 import type { CronJob, Engine, EngineRunOpts, IncomingMessage, JinnConfig, Session, Target } from "../shared/types.js";
 import { isInterruptibleEngine } from "../shared/types.js";
 import { runWithSessionGoal, sessionGoalOptions } from "../sessions/goal-execution.js";
-import { buildEngineSyncPrompt, clearEngineSyncMarker, engineSyncSince, maybeRevertEngineOverride, runEngineWithResponseTimeout, runFallbackAttempts, waitForEngineRetry } from "../sessions/engine-fallback.js";
+import { buildEngineSyncPrompt, clearEngineSyncMarker, engineSyncSince, failLimitThatOutlastsTheWait, maybeRevertEngineOverride, runEngineWithResponseTimeout, runFallbackAttempts, waitForEngineRetry } from "../sessions/engine-fallback.js";
 import { cleanupMcpConfigFile, resolveMcpServers, writeMcpConfigFile } from "../mcp/resolver.js";
 import type { SessionManager } from "../sessions/manager.js";
 import { buildContext } from "../sessions/context.js";
@@ -61,7 +61,7 @@ import { handleHookPost, LOOPBACK as HOOK_LOOPBACK } from "./hook-endpoint.js";
 import { resolveEffort } from "../shared/effort.js";
 import { explicitThread } from "../shared/threading.js";
 import { effortLevelsForModel, invalidateModelRegistry } from "../shared/models.js";
-import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit } from "../shared/rateLimit.js";
+import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit, MAX_USAGE_LIMIT_WAIT_MS, usageLimitOutlastsWait } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt, recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { CronJobsReadError, loadJobs, saveJobs } from "../cron/jobs.js";
 import { getCronJobScheduleStatus, getSchedulerSnapshot, reloadScheduler } from "../cron/scheduler.js";
@@ -2982,7 +2982,7 @@ async function runWebSession(
       },
     });
     if (shouldStop()) return;
-    const result = fallback.result;
+    const result = failLimitThatOutlastsTheWait(fallback);
     const wasInterrupted = result.error?.startsWith("Interrupted");
     const rateLimit = !wasInterrupted ? detectRateLimit(result) : { limited: false as const };
 
@@ -2994,7 +2994,7 @@ async function runWebSession(
       const { delayMs, resumeAt } = computeNextRetryDelayMs(rateLimit.resetsAt);
       const deadlineMs = computeRateLimitDeadlineMs(
         rateLimit.resetsAt,
-        rateLimit.resetsAt ? 30 * 60_000 : 6 * 60 * 60_000,
+        rateLimit.resetsAt ? 30 * 60_000 : MAX_USAGE_LIMIT_WAIT_MS,
       );
 
       const resumeText = resumeAt
@@ -3085,6 +3085,9 @@ async function runWebSession(
                 : `${engineLabel} usage limit — waiting for reset`,
             });
 
+            // Now told a reset further off than a turn waits for: give up here
+            // rather than sleep until it, as a turn that starts that way does.
+            if (usageLimitOutlastsWait(retryRateLimit.resetsAt)) break;
             continue;
           }
 
