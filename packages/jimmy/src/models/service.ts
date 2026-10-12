@@ -12,7 +12,7 @@ import { scanOrg, updateEmployeeYaml } from "../gateway/org.js";
 import { loadJobs, saveJobs } from "../cron/jobs.js";
 import { discoverModels, type DiscoveredModel, type ManagedEngine } from "./discovery.js";
 import { compatibleEffort, defaultFamilyFallbacks, familyModel, modelFamilies, modelFamily } from "./families.js";
-import { resolveSubstituteModel } from "../shared/engine-fallback.js";
+import { engineFallbackChain, resolveSubstituteModel } from "../shared/engine-fallback.js";
 import type { WorkflowService } from "../workflows/service.js";
 import type { JinnConfig } from "../shared/types.js";
 
@@ -149,7 +149,7 @@ export class ModelManagement {
         return { ...pin, family: following, followPaused: Boolean(rule && !following),
           effective: this.state.catalogs[pin.engine as ManagedEngine]?.models.find(m => m.aliases?.includes(pin.effective))?.id ?? pin.effective };
       }),
-      fallbackEnabled: config.sessions?.rateLimitStrategy !== "wait" && engines.every(e => config.engines[e].fallback?.includes(e === "codex" ? "claude" : "codex")),
+      fallbackEnabled: config.sessions?.rateLimitStrategy !== "wait" && engines.every(e => engineFallbackChain(config, e).includes(e === "codex" ? "claude" : "codex")),
       notification: config.modelManagement?.notification ?? null,
       slackAdminConfigured: Boolean(config.portal?.operatorSlackId),
     };
@@ -413,7 +413,7 @@ export class ModelManagement {
           if (action.enabled) config.modelManagement.familyFallbacks ??= structuredClone(defaultFamilyFallbacks);
           for (const engine of engines) {
             const other: ManagedEngine = engine === "codex" ? "claude" : "codex";
-            config.engines[engine].fallback = action.enabled ? [...new Set([other, ...(config.engines[engine].fallback ?? [])])] : [];
+            config.engines[engine].fallback = action.enabled ? [...new Set([other, ...engineFallbackChain(config, engine)])] : [];
           }
           config.sessions ??= {};
           config.sessions.rateLimitStrategy = action.enabled ? "fallback" : "wait";

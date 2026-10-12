@@ -219,9 +219,12 @@ export function applyLegacyFallbackMigration(
   );
 }
 
-/** A chain that is not a list — a hand-edit the load-time check has already
- *  warned about — is no chain, rather than a throw in the middle of a turn. */
-function fallbackChain(config: JinnConfig, engine: string): EngineName[] {
+/**
+ * The chain configured for `engine`, as every reader should take it. A chain
+ * that is not a list — a hand-edit the load-time check has already warned
+ * about — is no chain, rather than a throw wherever it happens to be read.
+ */
+export function engineFallbackChain(config: JinnConfig, engine: string): EngineName[] {
   const chain: unknown = config.engines[engine as EngineName]?.fallback;
   return Array.isArray(chain) ? chain : [];
 }
@@ -240,14 +243,14 @@ export function resolveFallbackEngine(
   isUsable: (engine: EngineName) => boolean,
 ): EngineName | null {
   const visited = new Set<string>([from]);
-  const queue = [...fallbackChain(config, from)];
+  const queue = [...engineFallbackChain(config, from)];
 
   for (let i = 0; i < queue.length; i++) {
     const candidate = queue[i];
     if (visited.has(candidate)) continue;
     visited.add(candidate);
     if (isUsable(candidate)) return candidate;
-    queue.push(...fallbackChain(config, candidate));
+    queue.push(...engineFallbackChain(config, candidate));
   }
 
   return null;
