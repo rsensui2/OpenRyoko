@@ -21,6 +21,23 @@ export class ConfigFileUnreadableError extends Error {
   }
 }
 
+/**
+ * What may be logged about a failure to load config.yaml. js-yaml's message
+ * for a file it cannot parse quotes the lines around the error, and its reason
+ * can name an alias or a tag taken from them. The file holds the bot tokens
+ * and the log is kept, so of a parse error only the position is passed on.
+ * Any other failure is reported as it is.
+ */
+export function configErrorForLog(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  // By shape, not `instanceof`: the error may come from another copy of js-yaml.
+  if (err.name !== "YAMLException" && !("mark" in err)) return err.message;
+  const { line, column } = (err as { mark?: { line?: unknown; column?: unknown } }).mark ?? {};
+  return typeof line === "number" && typeof column === "number"
+    ? `config.yaml is not valid YAML (line ${line + 1}, column ${column + 1})`
+    : "config.yaml is not valid YAML";
+}
+
 /** config.yaml as one read saw it: the text, and the mapping parsed from it. */
 export interface ConfigSnapshot {
   /** The file's text; null when config.yaml does not exist yet. */

@@ -5,7 +5,7 @@ import path from "node:path";
 import yaml from "js-yaml";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { expectPosixMode, POSIX_MODES_SUPPORTED } from "../test-support/posix-mode.js";
-import { ConfigFileUnreadableError, readConfigSnapshot, writeConfigDocument } from "../config-file.js";
+import { ConfigFileUnreadableError, configErrorForLog, readConfigSnapshot, writeConfigDocument } from "../config-file.js";
 
 /* config.yaml is the one file every job and connection is defined in. The
  * property under test: a writer that cannot read it never replaces it, and a
@@ -187,5 +187,62 @@ describe("writeConfigDocument", () => {
     writeConfigDocument(snapshot, { engines: { default: "codex" } }, configPath);
     expect(yaml.load(fs.readFileSync(configPath, "utf-8"))).toEqual({ engines: { default: "codex" } });
     expect(fs.readdirSync(dir)).toEqual(["config.yaml"]);
+  });
+});
+
+describe("configErrorForLog", () => {
+  /* The gateway reloads config.yaml whenever the file changes, and logs why a
+   * reload failed. js-yaml's message for a file it cannot parse quotes the
+   * lines around the error — in a file that holds the bot tokens — and the log
+   * is kept, rotated, and pasted into bug reports. */
+  function parseError(raw: string): Error {
+    try {
+      yaml.load(raw);
+    } catch (err) {
+      return err as Error;
+    }
+    throw new Error("expected the YAML to be invalid");
+  }
+
+  it("says where a parse error is, and repeats nothing of the file", () => {
+    const err = parseError("connectors:\n  slack:\n    botToken: xoxb-SECRET-TOKEN\n   appToken: xapp-SECRET-TOKEN\n");
+    expect(err.message).toContain("xoxb-SECRET-TOKEN"); // what used to be logged
+
+    const logged = configErrorForLog(err);
+
+    expect(logged).toMatch(/^config\.yaml is not valid YAML \(line \d+, column \d+\)$/);
+    expect(logged).not.toContain("SECRET");
+    expect(logged).not.toContain("slack");
+  });
+
+  it("leaves out js-yaml's reason too, which can name something taken from the file", () => {
+    const err = parseError("portal:\n  password: *hunter2-SECRET\n");
+    expect(err.message).toContain("hunter2-SECRET"); // "unidentified alias ..."
+    expect(configErrorForLog(err)).not.toContain("hunter2");
+  });
+
+  it("recognises a parse error by what it is, not by which copy of js-yaml threw it", () => {
+    const foreign = Object.assign(new Error("bad indentation (2:1)\n\n 1 | botToken: xoxb-SECRET\n"), { name: "YAMLException", mark: { line: 1, column: 0 } });
+    expect(configErrorForLog(foreign)).toBe("config.yaml is not valid YAML (line 2, column 1)");
+    const unplaced = Object.assign(new Error("botToken: xoxb-SECRET"), { name: "YAMLException" });
+    expect(configErrorForLog(unplaced)).toBe("config.yaml is not valid YAML");
+  });
+
+  it("passes any other failure on as it is", () => {
+    expect(configErrorForLog(new Error("Ryoko config not found at /tmp/x/config.yaml"))).toBe("Ryoko config not found at /tmp/x/config.yaml");
+    expect(configErrorForLog(new ConfigFileUnreadableError("exists but could not be read (EACCES)"))).toContain("EACCES");
+    expect(configErrorForLog("plain string")).toBe("plain string");
+    expect(configErrorForLog(undefined)).toBe("undefined");
+  });
+
+  it("is what the gateway logs when a reload of config.yaml fails", () => {
+    // Wiring, checked in the source: the reload handler lives in the gateway's
+    // boot function, which no test can run in isolation. This is the line a
+    // merge is most likely to put back the way it was.
+    const server = fs.readFileSync(new URL("../../gateway/server.ts", import.meta.url), "utf-8");
+    const logged = server.split("\n").filter((line) => line.includes("Failed to reload config"));
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toContain("${configErrorForLog(err)}");
+    expect(logged[0]).not.toContain("err.message");
   });
 });

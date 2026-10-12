@@ -10,6 +10,7 @@ import { randomUUID, randomBytes } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { JinnConfig, Connector, Employee } from "../shared/types.js";
 import { loadConfig } from "../shared/config.js";
+import { configErrorForLog } from "../shared/config-file.js";
 import { claudeAutoMemoryEnvFor, configureClaudeAutoMemory } from "../shared/claude-auto-memory.js";
 import { resolveAssistantName } from "../shared/assistant-identity.js";
 import { getTriageCapabilities, invalidateTriageCapabilities } from "../shared/triage-capabilities.js";
@@ -1288,7 +1289,7 @@ export async function startGateway(
         }
       } catch (err) {
         logger.error(
-          `Failed to reload config: ${err instanceof Error ? err.message : err}`,
+          `Failed to reload config: ${configErrorForLog(err)}`,
         );
       }
     },
