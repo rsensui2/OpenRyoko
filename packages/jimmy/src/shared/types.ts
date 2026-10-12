@@ -873,5 +873,11 @@ export interface JinnConfig {
     language?: string;
     languages?: string[];
   };
+  skills?: {
+    /** Sync the skills the package ships into <home>/skills at gateway start:
+     *  add missing ones, replace unmodified ones, never overwrite edited ones.
+     *  Default: true. `ryoko migrate` syncs either way. */
+    autoSync?: boolean;
+  };
   remotes?: Record<string, { url: string; label?: string }>;
 }

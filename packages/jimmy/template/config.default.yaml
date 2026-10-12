@@ -96,6 +96,13 @@ cron:
   # alertConnector: slack
   # alertChannel: "#alerts"
 
+# 同梱スキル（パッケージに入っているスキル）は gateway の起動時に同期される。
+# 無いものを追加し、手を入れていないものだけを新しい版に置き換える。編集したスキルと
+# symlink には触れない（置き換える前の中身は .migration-backups/ に残る）。docs/skills.md を参照。
+# 起動時の同期を止めるときだけ指定する（ryoko migrate は指定に関係なく同期する）:
+# skills:
+#   autoSync: false
+
 # portal.operatorSlackId / portal.operatorDiscordId = オペレータ本人の Slack ID と
 # Discord ユーザー ID（スノーフレーク。プロフィール右クリック → ユーザーIDをコピー）。
 # どちらか一つでも設定すると本人確認が「発話元プラットフォームの ID の厳密一致」に

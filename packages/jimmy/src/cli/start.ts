@@ -3,6 +3,7 @@ import { JINN_HOME } from "../shared/paths.js";
 import { loadConfig } from "../shared/config.js";
 import { startForeground, startDaemon } from "../gateway/lifecycle.js";
 import { compareSemver, getPackageVersion, getInstanceVersion } from "../shared/version.js";
+import { syncBundledSkillsOnBoot } from "../skills-sync/instance.js";
 
 const YELLOW = "\x1b[33m";
 const DIM = "\x1b[2m";
@@ -26,6 +27,9 @@ export async function runStart(opts: { daemon?: boolean; port?: number }): Promi
       `${YELLOW}[migrate]${RESET} インスタンスは v${instanceVersion}、CLIは v${pkgVersion} です。${DIM}ryoko migrate${RESET} で更新してください。`
     );
   }
+
+  // 同梱スキルを同期（foreground / daemon 共通。失敗しても起動は続ける）
+  syncBundledSkillsOnBoot(config);
 
   // CLIの --port で config を上書き
   if (opts.port) {
