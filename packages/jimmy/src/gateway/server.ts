@@ -896,7 +896,7 @@ export async function startGateway(
   try { cronJobs = loadJobs(); } catch (error) {
     logger.error(`Cannot load cron jobs at startup: ${error instanceof Error ? error.message : "read failed"}`);
   }
-  startScheduler(cronJobs, sessionManager, config, connectorMap);
+  startScheduler(cronJobs, sessionManager, () => currentConfig, connectorMap);
   logger.info(`Loaded ${cronJobs.length} cron job(s)`);
 
   // Mutable config reference for hot-reload
