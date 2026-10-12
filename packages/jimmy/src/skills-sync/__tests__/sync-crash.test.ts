@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { RECEIPT_FILE } from "../receipt.js";
-import { fixture, NOW, removeFixtures, sha, snapshot, writeTree, type Files } from "./fixture.js";
+import { fixture, NOW, removeFixtures, sha, snapshot, STAMP, writeTree, type Files } from "./fixture.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -236,7 +236,10 @@ describe("bundled skill sync: staging directories a sync that died left in the h
     return f;
   }
 
-  it("removes one that was abandoned and holds nothing but bundled skills", () => {
+  /** Where this run puts the staging directories it takes out of the home. */
+  const setAsideIn = (backups: string, version = "2026.10.10") => path.join(backups, `${version}-${STAMP}`, "staging");
+
+  it("moves one that was abandoned and holds nothing but bundled skills into the backup directory, as it is", () => {
     const f = home();
     // A skill no release has shipped yet: this package is the first to stage it.
     f.ship("brand-new", { "SKILL.md": "v1" });
@@ -244,14 +247,63 @@ describe("bundled skill sync: staging directories a sync that died left in the h
     const stale = leftover(f.home, STALE, { "example/SKILL.md": "v", "retired/SKILL.md": "v1" }, 2 * HOUR);
     const newer = leftover(f.home, ".bundled-skill-zzzzzz", { "brand-new/SKILL.md": "v" }, 2 * HOUR);
     const empty = leftover(f.home, ".bundled-skill-000000", {}, 2 * HOUR);
+    const before = snapshot(stale);
 
     const result = f.sync();
 
     for (const gone of [stale, newer, empty]) expect(fs.existsSync(gone)).toBe(false);
-    expect(result.clearedStaging).toEqual([".bundled-skill-000000", STALE, ".bundled-skill-zzzzzz"]);
+    expect(result.stagingSetAside).toEqual([".bundled-skill-000000", STALE, ".bundled-skill-zzzzzz"]);
+    expect(result.backupDir).toBe(path.join(f.backups, `2026.10.10-${STAMP}`));
+    expect(fs.readdirSync(setAsideIn(f.backups)).sort()).toEqual([".bundled-skill-000000", STALE, ".bundled-skill-zzzzzz"]);
+    expect(snapshot(path.join(setAsideIn(f.backups), STALE))).toEqual(before);
     // And the run itself is unaffected.
     expect(result.added).toEqual(["brand-new", "example"]);
-    expect(fs.readdirSync(f.home).sort()).toEqual(["skills"]);
+    expect(fs.readdirSync(f.home).sort()).toEqual([".migration-backups", "skills"]);
+  });
+
+  it("moves a directory of the user's that only looks like one with everything in it, where it can be had back", () => {
+    const f = home();
+    f.sync();
+    // A copy the operator set aside before editing the skill, under a name of their own
+    // that happens to fit: six letters after the prefix.
+    const mine = leftover(f.home, ".bundled-skill-backup", { "example/SKILL.md": "v1, with my own notes", "example/references/a.md": "a1" }, 2 * HOUR);
+    const before = snapshot(mine);
+
+    const result = f.sync();
+
+    expect(result.stagingSetAside).toEqual([".bundled-skill-backup"]);
+    expect(snapshot(path.join(setAsideIn(f.backups), ".bundled-skill-backup"))).toEqual(before);
+    expect(result.backupDir).toBe(path.join(f.backups, `2026.10.10-${STAMP}`));
+  });
+
+  it("follows nothing inside it: a directory swapped for a link at the last moment goes along as a link", () => {
+    const f = home();
+    const outside = path.join(f.root, "outside");
+    writeTree(outside, { "keep.md": "the user's", "more/keep.md": "the user's" });
+    const kept = snapshot(outside);
+    const stale = leftover(f.home, STALE, { "example/SKILL.md": "v", "example/references/a.md": "a" }, 2 * HOUR);
+    const rename = fs.renameSync;
+    let swapped = false;
+    vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      // Looked over and found to be a sync's own; then, before it is dealt with:
+      if (!swapped && String(from) === stale) {
+        swapped = true;
+        fs.unlinkSync(path.join(stale, "example", "references", "a.md"));
+        fs.rmdirSync(path.join(stale, "example", "references"));
+        fs.symlinkSync(outside, path.join(stale, "example", "references"));
+      }
+      return rename(from, to);
+    });
+    const removals = vi.spyOn(fs, "rmSync");
+
+    const result = f.sync();
+
+    expect(swapped).toBe(true);
+    // A recursive delete walks into such a link and empties what it points at.
+    expect(snapshot(outside)).toEqual(kept);
+    expect(removals.mock.calls.filter(([, options]) => options?.recursive)).toEqual([]);
+    expect(fs.readlinkSync(path.join(setAsideIn(f.backups), STALE, "example", "references"))).toBe(outside);
+    expect(result.stagingSetAside).toEqual([STALE]);
   });
 
   it("leaves a recent one: another sync may be staging into it right now", () => {
@@ -261,7 +313,8 @@ describe("bundled skill sync: staging directories a sync that died left in the h
     const result = f.sync();
 
     expect(fs.readFileSync(path.join(fresh, "example", "SKILL.md"), "utf8")).toBe("v1");
-    expect(result.clearedStaging).toBeUndefined();
+    expect(result.stagingSetAside).toBeUndefined();
+    expect(fs.existsSync(f.backups)).toBe(false);
   });
 
   it.each<[string, Files]>([
@@ -273,7 +326,7 @@ describe("bundled skill sync: staging directories a sync that died left in the h
     const kept = leftover(f.home, STALE, files, 2 * HOUR);
     const before = snapshot(kept);
 
-    expect(f.sync().clearedStaging).toBeUndefined();
+    expect(f.sync().stagingSetAside).toBeUndefined();
 
     expect(snapshot(kept)).toEqual(before);
   });
@@ -320,30 +373,77 @@ describe("bundled skill sync: staging directories a sync that died left in the h
     },
   );
 
-  it("clears a bounded number in one run, and the rest in the next", () => {
+  it("moves a bounded number in one run, and the rest in the next", () => {
     const f = home();
     for (let index = 0; index < 40; index++) leftover(f.home, `.bundled-skill-${String(index).padStart(6, "0")}`, {}, 2 * HOUR);
     const remaining = () => fs.readdirSync(f.home).filter((name) => name.startsWith(".bundled-skill-")).length;
 
-    expect(f.sync().clearedStaging).toHaveLength(32);
+    expect(f.sync().stagingSetAside).toHaveLength(32);
     expect(remaining()).toBe(8);
-    expect(f.sync().clearedStaging).toHaveLength(8);
+    expect(f.sync().stagingSetAside).toHaveLength(8);
     expect(remaining()).toBe(0);
   });
 
-  it("carries on with the sync when one cannot be removed", () => {
+  it("carries on with the sync when one cannot be moved, and leaves no empty backup directory for it", () => {
     const f = home();
     const stale = leftover(f.home, STALE, { "example/SKILL.md": "v" }, 2 * HOUR);
-    const rm = fs.rmSync;
-    vi.spyOn(fs, "rmSync").mockImplementation((target, options) => {
-      if (String(target) === stale) throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
-      return rm(target, options);
+    const rename = fs.renameSync;
+    vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (String(from) === stale) throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+      return rename(from, to);
     });
 
     const result = f.sync();
 
+    expect(result).toMatchObject({ added: ["example"], failed: [], backupDir: null });
+    expect(result.stagingSetAside).toBeUndefined();
+    expect(fs.readFileSync(path.join(stale, "example", "SKILL.md"), "utf8")).toBe("v");
+    expect(fs.existsSync(f.backups)).toBe(false);
+  });
+
+  it.each<[string, (stale: string, room: string) => fs.PathLike]>([
+    ["as it is made", (_stale, room) => room],
+    ["while the directory to be moved is being looked at", (stale) => stale],
+  ])("does not move one out of the home when the place it goes to is swapped for a link %s", (_label, moment) => {
+    const f = home();
+    const stale = leftover(f.home, STALE, { "example/SKILL.md": "v" }, 2 * HOUR);
+    const room = setAsideIn(f.backups);
+    const outside = path.join(f.root, "outside");
+    fs.mkdirSync(outside);
+    const realpath = fs.realpathSync;
+    let swapped = false;
+    // Both ends are checked before the move, the one it could leave the home through last.
+    vi.spyOn(fs, "realpathSync").mockImplementation(((target: fs.PathLike, ...rest: unknown[]) => {
+      if (!swapped && String(target) === String(moment(stale, room)) && fs.existsSync(room)) {
+        swapped = true;
+        fs.rmdirSync(room);
+        fs.symlinkSync(outside, room);
+      }
+      return (realpath as (...args: unknown[]) => string)(target, ...rest);
+    }) as typeof fs.realpathSync);
+
+    const result = f.sync();
+
+    expect(swapped).toBe(true);
+    expect(fs.readdirSync(outside)).toEqual([]);
+    expect(fs.readFileSync(path.join(stale, "example", "SKILL.md"), "utf8")).toBe("v");
+    expect(result.stagingSetAside).toBeUndefined();
     expect(result).toMatchObject({ added: ["example"], failed: [] });
-    expect(result.clearedStaging).toBeUndefined();
+  });
+
+  it("does not move one when the backup directory is not a place to put it", () => {
+    const f = home();
+    const stale = leftover(f.home, STALE, { "example/SKILL.md": "v" }, 2 * HOUR);
+    const elsewhere = path.join(f.root, "elsewhere");
+    fs.mkdirSync(elsewhere);
+    fs.symlinkSync(elsewhere, f.backups);
+
+    const result = f.sync();
+
+    // Clearing up is never a reason for the sync to fail, or to leave the home.
+    expect(result).toMatchObject({ added: ["example"], failed: [] });
+    expect(result.stagingSetAside).toBeUndefined();
+    expect(fs.readdirSync(elsewhere)).toEqual([]);
     expect(fs.existsSync(stale)).toBe(true);
   });
 

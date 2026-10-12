@@ -106,11 +106,12 @@ describe("migrate: bundled skill sync", () => {
     expect(fs.symlinkSync).not.toHaveBeenCalled();
   });
 
-  it("names a skill the sync could not read or found too large, and what it cleared away", async () => {
+  it("names a skill the sync could not read or found too large, and what it moved out of the home", async () => {
     vi.mocked(compareSemver).mockReturnValueOnce(0);
     mockSync.mockReturnValueOnce(synced({
       kept: [{ name: "locked", reason: "unreadable" }, { name: "huge", reason: "too-large" }],
-      clearedStaging: [".bundled-skill-Ab3xYz"],
+      stagingSetAside: [".bundled-skill-Ab3xYz"],
+      backupDir: path.join(JINN_HOME, ".migration-backups", "1.1.0-x"),
     }));
     const { runMigrate } = await import("../migrate.js");
 
@@ -118,7 +119,7 @@ describe("migrate: bundled skill sync", () => {
 
     expect(output()).toMatch(/\[skill kept\] locked \(.*読めない/);
     expect(output()).toMatch(/\[skill kept\] huge \(.*上限を超え/);
-    expect(output()).toMatch(/\[skills\] .*中断.*\.bundled-skill-Ab3xYz/);
+    expect(output()).toMatch(/\[skills\] .*1\.1\.0-x.staging へ移しました（削除はしていません）: \.bundled-skill-Ab3xYz/);
   });
 
   it.each([{}, { auto: true }, { fix: true }])("leaves skills the operator deleted out, like a gateway start (%j)", async (opts) => {

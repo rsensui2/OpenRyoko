@@ -92,8 +92,10 @@ bundled skill it placed.
   `~/.ryoko/.migration-backups/<version>-<time>/skills/<name>/`. Remove old backups by
   hand when you no longer need them.
 - A sync that is cut short (the machine goes down, the process is killed) can leave a
-  `.bundled-skill-XXXXXX` directory in `~/.ryoko`. A later sync removes it once it is an
-  hour old, provided it holds nothing but bundled skills, and says that it did.
+  `.bundled-skill-XXXXXX` directory in `~/.ryoko`. A later sync moves it to
+  `~/.ryoko/.migration-backups/<version>-<time>/staging/` once it is an hour old,
+  provided it holds nothing but bundled skills, and says that it did. The copy of a
+  skill that could not be installed goes to the same place. The sync deletes neither.
 - On the first start after upgrading to a release with this sync there is no receipt
   yet. Missing skills are added (including any you had deleted before, once). For the
   rest, the package carries fingerprints of every version of every bundled skill that

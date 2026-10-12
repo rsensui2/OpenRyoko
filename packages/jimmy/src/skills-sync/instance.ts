@@ -1,3 +1,4 @@
+import path from "node:path";
 import { logger } from "../shared/logger.js";
 import { JINN_HOME, TEMPLATE_DIR } from "../shared/paths.js";
 import { buildTemplateReplacements, readPortalName } from "../shared/templateReplacements.js";
@@ -77,8 +78,9 @@ function reportChanges(result: BundledSkillSync): void {
   if (changes.length > 0) {
     logger.info(`Bundled skills synced: ${changes.join("; ")}.${result.backupDir ? ` Previous copies are in ${printable(result.backupDir)}.` : ""}`);
   }
-  if (result.clearedStaging && result.clearedStaging.length > 0) {
-    logger.info(`Removed staging directories that a bundled skill sync which did not finish left in the home: ${result.clearedStaging.join(", ")}.`);
+  if (result.stagingSetAside && result.stagingSetAside.length > 0) {
+    const where = result.backupDir === null ? "the backup directory" : printable(path.join(result.backupDir, "staging"));
+    logger.info(`Bundled skill staging directories left in the home were moved, not deleted, to ${where}: ${result.stagingSetAside.join(", ")}.`);
   }
 }
 

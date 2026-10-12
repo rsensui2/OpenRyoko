@@ -343,7 +343,7 @@ describe("bundled skill sync: staying inside skills/", () => {
 });
 
 describe("bundled skill sync: failures and odd states", () => {
-  it("leaves no partial skill and no staging directory when a skill cannot be staged", () => {
+  it("leaves no partial skill in skills/ and no staging directory in the home when a skill cannot be staged", () => {
     const f = fixture();
     f.ship("example", { "SKILL.md": "v1", "references/a.md": "a1" });
     const write = fs.writeFileSync;
@@ -356,7 +356,12 @@ describe("bundled skill sync: failures and odd states", () => {
 
     expect(result.added).toEqual([]);
     expect(result.failed).toEqual([{ name: "example", error: expect.stringContaining("disk full") }]);
-    expect(fs.readdirSync(f.home)).toEqual([]);
+    // What was written of it is not deleted either: it is out of the way, in the backup directory.
+    expect(fs.readdirSync(f.home)).toEqual([".migration-backups"]);
+    expect(result.stagingSetAside).toHaveLength(1);
+    const partial = path.join(result.backupDir!, "staging", result.stagingSetAside![0], "example");
+    expect(fs.readFileSync(path.join(partial, "SKILL.md"), "utf8")).toBe("v1");
+    expect(fs.existsSync(path.join(partial, "references", "a.md"))).toBe(false);
   });
 
   it("still syncs the other skills when one of them fails", () => {
@@ -375,7 +380,9 @@ describe("bundled skill sync: failures and odd states", () => {
     expect(result.failed.map((failure) => failure.name)).toEqual(["broken"]);
     expect(fs.existsSync(path.join(f.skills, "broken"))).toBe(false);
     expect(Object.keys(f.receipt().skills)).toEqual(["fine"]);
-    expect(fs.readdirSync(f.home).sort()).toEqual(["skills"]);
+    // The half-written copy of the one that failed is kept under the backup directory.
+    expect(fs.readdirSync(f.home).sort()).toEqual([".migration-backups", "skills"]);
+    expect(fs.readdirSync(path.join(result.backupDir!, "staging", result.stagingSetAside![0]))).toEqual(["broken"]);
   });
 
   it("puts the previous copy back when the replacement cannot be moved into place", () => {
@@ -385,18 +392,28 @@ describe("bundled skill sync: failures and odd states", () => {
     const recorded = f.receipt().skills.example;
     f.ship("example", { "SKILL.md": "v2" });
     const rename = fs.renameSync;
+    let refused = 0;
+    // The new copy cannot go in; the previous one, on its way back, can.
     vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
-      if (String(from).includes(".bundled-skill-")) throw new Error("rename refused");
+      if (String(from).includes(".bundled-skill-") && String(to) === path.join(f.skills, "example")) {
+        refused += 1;
+        throw new Error("rename refused");
+      }
       return rename(from, to);
     });
 
     const result = f.sync("2026.10.11");
 
+    expect(refused).toBe(1);
     expect(result.updated).toEqual([]);
     expect(result.failed).toEqual([{ name: "example", error: expect.stringContaining("rename refused") }]);
     expect(f.read("example", "SKILL.md")).toBe("v1");
     expect(f.receipt().skills.example).toEqual(recorded);
     expect(fs.readdirSync(f.home).filter((name) => name.startsWith(".bundled-skill-"))).toEqual([]);
+    // The copy that could not go in is kept; the previous one is back in skills/, not in the backup.
+    const run = path.join(f.backups, `2026.10.11-${STAMP}`);
+    expect(fs.readdirSync(run)).toEqual(["staging"]);
+    expect(fs.readFileSync(path.join(run, "staging", result.stagingSetAside![0], "example", "SKILL.md"), "utf8")).toBe("v2");
   });
 
   it("does not mistake a skill it lost in a failed update for one the operator deleted", () => {
@@ -443,7 +460,8 @@ describe("bundled skill sync: failures and odd states", () => {
     expect(result.updated).toEqual([]);
     expect(result.failed).toEqual([{ name: "example", error: expect.stringMatching(/changed/) }]);
     expect(f.read("example", "SKILL.md")).toBe("edited mid-sync");
-    expect(fs.existsSync(f.backups)).toBe(false);
+    // The skill never went to the backup directory. Only the copy staged for it did.
+    expect(fs.readdirSync(path.join(f.backups, `2026.10.11-${STAMP}`))).toEqual(["staging"]);
   });
 
   it("does not follow skills/ if it is swapped for a symlink while the sync is running", () => {

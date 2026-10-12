@@ -265,8 +265,9 @@ function syncBundledSkillsStep(restoreDeleted: boolean | readonly string[]): Syn
   for (const name of result.updated) console.log(`  ${GREEN}[updated skill]${RESET} ${name}`);
   for (const name of result.retired) console.log(`  ${YELLOW}[retired skill]${RESET} ${name}`);
   if (result.backupDir) console.log(`  ${DIM}置き換え・退役の前の内容: ${printable(result.backupDir)}${RESET}`);
-  if (result.clearedStaging && result.clearedStaging.length > 0) {
-    console.log(`  ${DIM}[skills] 中断した同期が残した作業ディレクトリを片付けました: ${result.clearedStaging.join(", ")}${RESET}`);
+  if (result.stagingSetAside && result.stagingSetAside.length > 0) {
+    const where = result.backupDir ? printable(path.join(result.backupDir, "staging")) : "退避先";
+    console.log(`  ${DIM}[skills] ホームに残っていた同期の作業ディレクトリを ${where} へ移しました（削除はしていません）: ${result.stagingSetAside.join(", ")}${RESET}`);
   }
   for (const { name, reason } of result.kept) {
     const note = KEPT_SKILL_NOTES[reason];

@@ -49,11 +49,13 @@ export interface BundledSkillSync {
   inSync: string[];
   /** Skills whose change could not be applied; they are as they were before the run. */
   failed: FailedSkill[];
-  /** Where replaced and retired copies went, when there were any. */
+  /** Where what this run took out of the way went, when there was any: replaced and
+   *  retired skills under skills/, staging directories under staging/. */
   backupDir: string | null;
-  /** Staging directories that a sync which died left in the home, removed by this
-   *  run: their names, sorted. Absent when there were none. */
-  clearedStaging?: string[];
+  /** Staging directories this run moved out of the home into <backupDir>/staging/:
+   *  ones a sync that died left behind, and its own when the copy of a skill that
+   *  failed was still in it. Their names, sorted. Absent when there were none. */
+  stagingSetAside?: string[];
   /** Why the receipt could not be saved, when it could not. Everything above was
    *  still done and is reported as done; the next run records it. */
   receiptError?: string;

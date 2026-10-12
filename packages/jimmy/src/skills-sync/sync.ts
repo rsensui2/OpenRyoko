@@ -2,13 +2,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { buildTemplateReplacements } from "../shared/templateReplacements.js";
 import { compareSemver } from "../shared/version.js";
-import { applyPlans, assertBackupRootUsable, needsBackup, type Applied, type ApplyContext } from "./apply.js";
+import { applyPlans, needsBackup, type Applied, type ApplyContext } from "./apply.js";
+import { assertBackupRootUsable, backupRun, type BackupRun } from "./backup-run.js";
 import { loadBundledSkills, shippedHashes } from "./bundled.js";
 import { loadShippedHistory } from "./history.js";
 import { own } from "./names.js";
 import { planSkillSync, type SkillPlan } from "./plan.js";
 import { markDeleted, markReplacing, NewerReceiptFormat, RECEIPT_FILE, readReceipt, receiptSkill, serializeReceipt, writeReceipt, type Receipt, type ReceiptSkill } from "./receipt.js";
-import { removeAbandonedStaging } from "./staging.js";
+import { setAsideAbandonedStaging } from "./staging.js";
 import type { BundledSkillSync, KeepReason, KeptSkill } from "./types.js";
 
 export interface SyncBundledSkillsOptions {
@@ -72,8 +73,14 @@ export function syncBundledSkills(options: SyncBundledSkillsOptions): BundledSki
 
   const history = loadShippedHistory(options.templateDir);
   const run: Run = { home, skillsRoot, receiptPath, packageVersion: options.packageVersion, now: options.now ?? new Date() };
+  const backup = backupRun(run);
   // What an earlier run left behind when it died, before this one stages anything.
-  const clearedStaging = removeAbandonedStaging(home, new Set([...bundled.map((skill) => skill.name), ...history.names]), run.now);
+  const abandoned = setAsideAbandonedStaging(
+    home,
+    new Set([...bundled.map((skill) => skill.name), ...history.names]),
+    run.now,
+    (directory) => { backup.setAside(directory); },
+  );
   const plans = planSkillSync({
     skillsRoot,
     bundled,
@@ -83,8 +90,10 @@ export function syncBundledSkills(options: SyncBundledSkillsOptions): BundledSki
     // As configured now, as packaged (never filled in), or under an installer default.
     renderings: [options.replacements, {}, ...(options.legacyPortalNames ?? []).map(buildTemplateReplacements)],
   });
-  const result = summarise(plans, receipt, carryOut(plans, receipt, run), run);
-  return clearedStaging.length > 0 ? { ...result, clearedStaging } : result;
+  const outcome = carryOut(plans, receipt, run, backup);
+  const stagingSetAside = [...abandoned, ...(outcome.stagingSetAside === null ? [] : [outcome.stagingSetAside])].sort();
+  const result = summarise(plans, receipt, outcome, run, backup.finish());
+  return stagingSetAside.length > 0 ? { ...result, stagingSetAside } : result;
 }
 
 interface Run extends ApplyContext {
@@ -102,27 +111,27 @@ interface Outcome extends Applied {
  * is no skill, and a process that dies there must not leave something that reads as
  * the operator's deletion. A replacement that cannot be announced is not started.
  */
-function carryOut(plans: readonly SkillPlan[], receipt: Receipt | null, run: Run): Outcome {
+function carryOut(plans: readonly SkillPlan[], receipt: Receipt | null, run: Run, backup: BackupRun): Outcome {
   // Checked before the receipt is touched: a run that will be refused writes nothing.
   if (needsBackup(plans)) assertBackupRootUsable(run.home);
   const replacing = plans.filter((plan) => plan.action === "update" && own(receipt?.skills, plan.name) !== undefined).map((plan) => plan.name);
-  if (!receipt || replacing.length === 0) return { ...applyPlans(plans, run), onDisk: receipt };
+  if (!receipt || replacing.length === 0) return { ...applyPlans(plans, run, backup), onDisk: receipt };
 
   const announced: Receipt = {
     ...receipt,
     skills: { ...receipt.skills, ...Object.fromEntries(replacing.map((name) => [name, markReplacing(receipt.skills[name], true)])) },
   };
   const error = saveReceipt(run.receiptPath, run.skillsRoot, receipt, announced);
-  if (error === null) return { ...applyPlans(plans, run), onDisk: announced };
+  if (error === null) return { ...applyPlans(plans, run, backup), onDisk: announced };
 
   const unannounced = replacing.map((name) => ({ name, error: `the receipt could not be updated before replacing it, so it was left alone (${error})` }));
-  const applied = applyPlans(plans.filter((plan) => !replacing.includes(plan.name)), run);
+  const applied = applyPlans(plans.filter((plan) => !replacing.includes(plan.name)), run, backup);
   const failed = [...applied.failed, ...unannounced].sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
   return { ...applied, failed, onDisk: receipt };
 }
 
 /** Bring the receipt up to date with what was done, and report it. */
-function summarise(plans: readonly SkillPlan[], receipt: Receipt | null, outcome: Outcome, run: Run): BundledSkillSync {
+function summarise(plans: readonly SkillPlan[], receipt: Receipt | null, outcome: Outcome, run: Run, backupDir: string | null): BundledSkillSync {
   const failed = new Set(outcome.failed.map((failure) => failure.name));
   const done = plans.filter((plan) => !failed.has(plan.name));
   const kept = done
@@ -149,7 +158,7 @@ function summarise(plans: readonly SkillPlan[], receipt: Receipt | null, outcome
     notices: announced.filter((skill) => own(receipt?.notices, skill.name) !== run.packageVersion),
     inSync: names("install", "update", "adopt", "current"),
     failed: outcome.failed,
-    backupDir: outcome.backupDir,
+    backupDir,
     ...(receiptError === null ? {} : { receiptError }),
   };
 }

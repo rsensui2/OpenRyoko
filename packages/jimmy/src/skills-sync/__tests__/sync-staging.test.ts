@@ -223,7 +223,8 @@ describe("bundled skill sync: what is moved into skills/ is what was staged, fro
     expect(result.failed).toEqual([{ name: "example", error: expect.stringContaining("staged copy") }]);
     expect(f.read("example", "SKILL.md")).toBe("v1");
     // Not moved out and back: it never left.
-    expect(renames.mock.calls.filter(([, to]) => String(to).startsWith(f.backups))).toEqual([]);
+    expect(renames.mock.calls.filter(([from]) => String(from) === path.join(f.skills, "example"))).toEqual([]);
+    expect(fs.existsSync(path.join(f.backups, `2026.10.11-${STAMP}`, "skills"))).toBe(false);
   });
 });
 
@@ -284,5 +285,167 @@ describe("bundled skill sync: skills/ is the last thing checked before a skill l
     expect(result.updated).toEqual([]);
     expect(result.failed).toEqual([{ name: "example", error: expect.stringContaining("is not a plain directory") }]);
     expect(fs.readFileSync(path.join(f.root, "real-skills", "example", "SKILL.md"), "utf8")).toBe("v1");
+  });
+});
+
+/** As the sync makes its staging directory, the user creates this skill themselves. */
+function createdByTheUserMidSync(skill: string): void {
+  const mkdtemp = fs.mkdtempSync;
+  vi.spyOn(fs, "mkdtempSync").mockImplementation(((prefix: string) => {
+    fs.mkdirSync(skill, { recursive: true });
+    fs.writeFileSync(path.join(skill, "SKILL.md"), "created by the user just now");
+    return mkdtemp(prefix);
+  }) as typeof fs.mkdtempSync);
+}
+
+describe("bundled skill sync: a staged copy that could not be installed is kept, not deleted", () => {
+  const RUN = `2026.10.10-${STAMP}`;
+
+  /** An install that fails once its copy is staged: at that moment the user creates the skill themselves. */
+  function failingInstall() {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1", "references/a.md": "a1" });
+    createdByTheUserMidSync(path.join(f.skills, "example"));
+    return f;
+  }
+
+  it("moves the staging directory, with the copy in it, to the backup directory", () => {
+    const f = failingInstall();
+    const removals = vi.spyOn(fs, "rmSync");
+
+    const result = f.sync();
+
+    expect(result.failed).toEqual([{ name: "example", error: expect.stringContaining("appeared at its path") }]);
+    expect(stagingOf(f.home)).toEqual([]);
+    expect(result.stagingSetAside).toHaveLength(1);
+    const kept = path.join(f.backups, RUN, "staging", result.stagingSetAside![0], "example");
+    expect(fs.readFileSync(path.join(kept, "SKILL.md"), "utf8")).toBe("v1");
+    expect(fs.readFileSync(path.join(kept, "references", "a.md"), "utf8")).toBe("a1");
+    expect(result.backupDir).toBe(path.join(f.backups, RUN));
+    expect(removals.mock.calls.filter(([, options]) => options?.recursive)).toEqual([]);
+    expect(f.read("example", "SKILL.md")).toBe("created by the user just now");
+  });
+
+  it("removes its staging directory, and makes no backup directory, when every copy was moved into place", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1", "references/a.md": "a1" });
+    const removals = vi.spyOn(fs, "rmSync");
+
+    const result = f.sync();
+
+    expect(result).toMatchObject({ added: ["example"], failed: [], backupDir: null });
+    expect(result.stagingSetAside).toBeUndefined();
+    expect(fs.readdirSync(f.home)).toEqual(["skills"]);
+    expect(removals).not.toHaveBeenCalled();
+  });
+
+  it("leaves a staging path that has been turned into a link as it is, with what it points at", () => {
+    const f = failingInstall();
+    const elsewhere = path.join(f.root, "elsewhere");
+    writeTree(path.join(elsewhere, "example"), { "SKILL.md": "the user's own" });
+    const kept = snapshot(elsewhere);
+    const swapped = afterCreating((dir) => dir === f.skills, () => {
+      const [staging] = stagingOf(f.home);
+      fs.renameSync(staging, path.join(f.root, "real-staging"));
+      fs.symlinkSync(elsewhere, staging);
+    });
+
+    const result = f.sync();
+
+    expect(swapped()).toBe(true);
+    expect(result.failed).toHaveLength(1);
+    // Not removed through, not moved, not followed.
+    expect(snapshot(elsewhere)).toEqual(kept);
+    expect(stagingOf(f.home).map((link) => fs.readlinkSync(link))).toEqual([elsewhere]);
+    expect(result.stagingSetAside).toBeUndefined();
+    expect(fs.existsSync(f.backups)).toBe(false);
+  });
+
+  it("leaves the staging directory in the home when it cannot be moved either, and no empty backup directory", () => {
+    const f = failingInstall();
+    const rename = fs.renameSync;
+    vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (path.basename(String(from)).startsWith(".bundled-skill-")) throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+      return rename(from, to);
+    });
+
+    const result = f.sync();
+
+    expect(result.failed).toHaveLength(1);
+    expect(result.stagingSetAside).toBeUndefined();
+    expect(result.backupDir).toBeNull();
+    const [staging] = stagingOf(f.home);
+    expect(fs.readFileSync(path.join(staging, "example", "SKILL.md"), "utf8")).toBe("v1");
+    expect(fs.existsSync(f.backups)).toBe(false);
+  });
+
+  const cannotBeDenied = process.platform === "win32" || process.getuid?.() === 0;
+
+  it.skipIf(cannotBeDenied)("stages nothing for a skill when skills/ cannot be written to", () => {
+    const f = fixture();
+    f.ship("other", { "SKILL.md": "v1" });
+    f.sync();
+    f.ship("example", { "SKILL.md": "v1" });
+    fs.chmodSync(f.skills, 0o555);
+    let result;
+    try { result = f.sync(); }
+    finally { fs.chmodSync(f.skills, 0o755); }
+
+    // Staged and then not movable, its copy would be kept: one more at every start.
+    expect(result.failed).toEqual([{ name: "example", error: expect.stringContaining("not writable") }]);
+    expect(result.stagingSetAside).toBeUndefined();
+    expect(stagingOf(f.home)).toEqual([]);
+    expect(fs.existsSync(f.backups)).toBe(false);
+  });
+
+  it.skipIf(cannotBeDenied)("stages nothing for a skill whose own directory cannot be moved away", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync();
+    f.ship("example", { "SKILL.md": "v2" });
+    fs.chmodSync(path.join(f.skills, "example"), 0o555);
+    let result;
+    try { result = f.sync("2026.10.11"); }
+    finally { fs.chmodSync(path.join(f.skills, "example"), 0o755); }
+
+    expect(result.failed).toEqual([{ name: "example", error: expect.stringContaining("not writable") }]);
+    expect(result.stagingSetAside).toBeUndefined();
+    expect(stagingOf(f.home)).toEqual([]);
+    expect(fs.existsSync(f.backups)).toBe(false);
+    expect(f.read("example", "SKILL.md")).toBe("v1");
+  });
+});
+
+describe("bundled skill sync: it never deletes a directory tree in the home", () => {
+  it("moves what is in its way, and removes only directories that are empty", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.ship("old", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    f.ship("example", { "SKILL.md": "v2" });
+    f.unship("old");
+    f.ship("blocked", { "SKILL.md": "v1" });
+    // Left by a sync that died long ago.
+    const stale = path.join(f.home, ".bundled-skill-Ab3xYz");
+    writeTree(stale, { "example/SKILL.md": "half" });
+    fs.utimesSync(stale, new Date(0), new Date(0));
+    createdByTheUserMidSync(path.join(f.skills, "blocked"));
+    const rm = vi.spyOn(fs, "rmSync");
+    const rmdir = vi.spyOn(fs, "rmdirSync");
+    const unlink = vi.spyOn(fs, "unlinkSync");
+
+    const result = f.sync("2026.10.11");
+
+    // One run that updated, retired, failed to install, and found an old staging directory.
+    expect(result).toMatchObject({ updated: ["example"], retired: ["old"], failed: [{ name: "blocked" }] });
+    expect(result.stagingSetAside).toHaveLength(2);
+    expect(rm).not.toHaveBeenCalled();
+    expect(unlink).not.toHaveBeenCalled();
+    expect(rmdir.mock.calls.filter(([, options]) => options !== undefined)).toEqual([]);
+    // Everything that was in the way is under the backup directory, not gone.
+    const run = path.join(f.backups, `2026.10.11-${STAMP}`);
+    expect(fs.readdirSync(run).sort()).toEqual(["skills", "staging"]);
+    expect(fs.readdirSync(path.join(run, "skills")).sort()).toEqual(["example", "old"]);
+    expect(fs.readdirSync(path.join(run, "staging")).sort()).toEqual(result.stagingSetAside);
   });
 });

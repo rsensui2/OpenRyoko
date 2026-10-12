@@ -146,12 +146,15 @@ describe("what gateway start logs about the bundled skill sync", () => {
     expect(said("warn")).toEqual([]);
   });
 
-  it("says which abandoned staging directories it removed from the home", () => {
-    ran({ clearedStaging: [".bundled-skill-Ab3xYz", ".bundled-skill-000000"] });
+  it("says in one line which staging directories it moved out of the home, and where to", () => {
+    ran({ stagingSetAside: [".bundled-skill-000000", ".bundled-skill-Ab3xYz"], backupDir: "/home/.migration-backups/2026.10.11-x" });
 
     syncBundledSkillsOnBoot({});
 
-    expect(said("info")).toEqual([expect.stringMatching(/did not finish.*\.bundled-skill-Ab3xYz, \.bundled-skill-000000/)]);
+    expect(said("info")).toEqual([
+      expect.stringMatching(/moved, not deleted, to \/home\/\.migration-backups\/2026\.10\.11-x\/staging: \.bundled-skill-000000, \.bundled-skill-Ab3xYz\./),
+    ]);
+    expect(said("warn")).toEqual([]);
   });
 
   it("warns once for each skill that could not be synced", () => {
