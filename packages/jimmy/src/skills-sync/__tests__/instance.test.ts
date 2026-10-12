@@ -134,6 +134,9 @@ describe("bundled skill sync at gateway start", () => {
 
     expect(log.error).toHaveBeenCalledTimes(1);
     expect(log.error.mock.calls[0][0]).toMatch(/startup continues/);
+    expect(log.error.mock.calls[0][0]).toContain(`${path.join(fs.realpathSync(JINN_HOME), "skills")} is not a directory`);
+    // The error repeats on every start until fixed, so it names the way to silence it.
+    expect(log.error.mock.calls[0][0]).toContain("skills.autoSync: false");
     expect(fs.readFileSync(SKILLS_DIR, "utf8")).toBe("not a directory");
   });
 

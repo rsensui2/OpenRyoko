@@ -27,7 +27,10 @@ export function syncBundledSkillsOnBoot(config: Pick<JinnConfig, "skills">): voi
   try {
     report(syncInstanceBundledSkills());
   } catch (error) {
-    logger.error(`Bundled skills were not synced (startup continues): ${error instanceof Error ? error.message : String(error)}`);
+    logger.error(
+      `Bundled skills were not synced (startup continues): ${error instanceof Error ? error.message : String(error)} `
+      + "— skills.autoSync: false in config.yaml turns this start-up sync off.",
+    );
   }
 }
 
