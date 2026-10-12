@@ -125,6 +125,12 @@ export interface Connector {
   getCapabilities(): ConnectorCapabilities;
   getHealth(): ConnectorHealth;
   reconstructTarget(replyContext: ReplyContext): Target;
+  /**
+   * The promise is the delivery outcome: resolve = the message reached the
+   * platform (the value is the last message id, when the platform gives one),
+   * reject = it was not delivered. Callers retry a rejected send or record the
+   * conversation as unanswered, so never resolve a send that did not leave.
+   */
   sendMessage(target: Target, text: string): Promise<string | void>;
   replyMessage(target: Target, text: string): Promise<string | void>;
   addReaction(target: Target, emoji: string): Promise<void>;

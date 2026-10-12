@@ -10,6 +10,7 @@ import type {
 } from "../../shared/types.js";
 import { deriveSessionKey, buildReplyContext, isOldTelegramMessage } from "./threads.js";
 import { formatResponse } from "./format.js";
+import { deliverChunks } from "../chunked-send.js";
 import { logger } from "../../shared/logger.js";
 
 function isMarkdownParseError(err: unknown): boolean {
@@ -159,11 +160,16 @@ export class TelegramConnector implements Connector {
     };
   }
 
+  /**
+   * Send one chunk, falling back to plain text when Telegram cannot parse the
+   * Markdown. Any other failure is thrown, not retried: the request may have
+   * reached Telegram, and a blind retry could post the chunk twice.
+   */
   private async safeSend(
     chatId: string,
     text: string,
     opts: Omit<SendMessageParams, "chat_id" | "text"> = {},
-  ): Promise<string | undefined> {
+  ): Promise<string> {
     try {
       const result = await this.bot.api.sendMessage({
         chat_id: chatId,
@@ -175,7 +181,7 @@ export class TelegramConnector implements Connector {
     } catch (err) {
       if (!isMarkdownParseError(err)) {
         logger.error(`[telegram] Send failed: ${err}`);
-        return undefined;
+        throw err;
       }
       logger.warn(`[telegram] Markdown parse failed, retrying as plain text: ${err}`);
       try {
@@ -183,21 +189,17 @@ export class TelegramConnector implements Connector {
         return String(result.message_id);
       } catch (retryErr) {
         logger.error(`[telegram] Send failed: ${retryErr}`);
-        return undefined;
+        throw retryErr;
       }
     }
   }
 
+  // sendMessage / replyMessage follow the Connector delivery contract: they
+  // reject when nothing reached Telegram (see deliverChunks for partial sends).
   async sendMessage(target: Target, text: string): Promise<string | undefined> {
     if (!text || !text.trim()) return undefined;
-    const chunks = formatResponse(text);
-    let lastMessageId: string | undefined;
-    for (const chunk of chunks) {
-      if (!chunk.trim()) continue;
-      const id = await this.safeSend(target.channel, chunk);
-      if (id) lastMessageId = id;
-    }
-    return lastMessageId;
+    const chunks = formatResponse(text).filter((chunk) => chunk.trim());
+    return deliverChunks("[telegram] sendMessage", chunks, (chunk) => this.safeSend(target.channel, chunk));
   }
 
   async replyMessage(target: Target, text: string): Promise<string | undefined> {
@@ -210,14 +212,8 @@ export class TelegramConnector implements Connector {
     if (replyToId) {
       opts.reply_parameters = { message_id: replyToId };
     }
-    const chunks = formatResponse(text);
-    let lastMessageId: string | undefined;
-    for (const chunk of chunks) {
-      if (!chunk.trim()) continue;
-      const id = await this.safeSend(target.channel, chunk, opts);
-      if (id) lastMessageId = id;
-    }
-    return lastMessageId;
+    const chunks = formatResponse(text).filter((chunk) => chunk.trim());
+    return deliverChunks("[telegram] replyMessage", chunks, (chunk) => this.safeSend(target.channel, chunk, opts));
   }
 
   async setTypingStatus(channelId: string, _threadTs: string | undefined, status: string): Promise<void> {

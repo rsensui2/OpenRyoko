@@ -159,11 +159,11 @@ export class RemoteDiscordConnector implements Connector {
   }
 
   async sendMessage(target: Target, text: string): Promise<string | undefined> {
-    return this.proxyAction("sendMessage", { target, text });
+    return this.proxyAction("sendMessage", { target, text }, true);
   }
 
   async replyMessage(target: Target, text: string): Promise<string | undefined> {
-    return this.proxyAction("replyMessage", { target, text });
+    return this.proxyAction("replyMessage", { target, text }, true);
   }
 
   async editMessage(target: Target, text: string): Promise<void> {
@@ -182,7 +182,17 @@ export class RemoteDiscordConnector implements Connector {
     await this.proxyAction("setTypingStatus", { channelId, threadTs, status });
   }
 
-  private async proxyAction(action: string, params: Record<string, unknown>): Promise<string | undefined> {
+  /**
+   * Sends pass `mustDeliver` and reject when the primary did not take the
+   * message (Connector delivery contract). Decorations — edits, reactions,
+   * typing — stay best-effort and only log.
+   */
+  private async proxyAction(
+    action: string,
+    params: Record<string, unknown>,
+    mustDeliver = false,
+  ): Promise<string | undefined> {
+    let failure: string;
     try {
       const res = await fetch(`${this.baseUrl}/api/connectors/discord/proxy`, {
         method: "POST",
@@ -193,15 +203,17 @@ export class RemoteDiscordConnector implements Connector {
         },
         body: JSON.stringify({ action, ...params }),
       });
-      if (!res.ok) {
-        logger.error(`Remote Discord proxy ${action} failed: ${res.status}`);
-        return undefined;
+      if (res.ok) {
+        // The primary took the action; a body we cannot read only costs the id.
+        const data = (await res.json().catch(() => ({}))) as { messageId?: string };
+        return data.messageId;
       }
-      const data = (await res.json()) as { messageId?: string };
-      return data.messageId;
+      failure = `Remote Discord proxy ${action} failed: ${res.status}`;
     } catch (err) {
-      logger.error(`Remote Discord proxy ${action} error: ${err instanceof Error ? err.message : err}`);
-      return undefined;
+      failure = `Remote Discord proxy ${action} error: ${err instanceof Error ? err.message : err}`;
     }
+    logger.error(failure);
+    if (mustDeliver) throw new Error(failure);
+    return undefined;
   }
 }
