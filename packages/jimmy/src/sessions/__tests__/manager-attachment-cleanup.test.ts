@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionManager } from "../manager.js";
 import { ATTACHMENTS_DIR, attachmentSlot, newAttachmentDir } from "../../shared/attachments.js";
 import { TMP_DIR } from "../../shared/paths.js";
+import { confineRemovals, type ConfinedRemovals } from "../../shared/test-support/confined-removals.js";
 import type { Attachment, Connector, Engine, EngineRunOpts, IncomingMessage, JinnConfig } from "../../shared/types.js";
 
 vi.mock("../context.js", () => ({ buildContext: () => "Test context" }));
@@ -15,9 +16,14 @@ vi.mock("../goal-execution.js", () => ({
 /* When a turn ends, the session removes the attachments that were downloaded
  * for it. It used to delete each `localPath` it was given, whatever that path
  * was. It now removes the message's own directory under tmp/attachments/ and
- * nothing else. */
+ * nothing else.
+ *
+ * This drives code that deletes, so fs.rmSync is confined to tmp/attachments/
+ * of the test home for every test: a removal asked for anywhere else is
+ * recorded and dropped, and shows up as a failed assertion. */
 
 const stateFile = path.join(TMP_DIR, "engine-health.json");
+let removals: ConfinedRemovals;
 let sequence = 0;
 
 function setup(attachments: Attachment[]) {
@@ -56,14 +62,15 @@ function saved(dir: string, slot: number, name: string): string {
 }
 
 beforeEach(() => {
-  fs.mkdirSync(TMP_DIR, { recursive: true });
+  removals = confineRemovals(ATTACHMENTS_DIR);
+  fs.mkdirSync(ATTACHMENTS_DIR, { recursive: true });
   fs.writeFileSync(stateFile, '{"engines":{}}');
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
-  fs.rmSync(ATTACHMENTS_DIR, { recursive: true, force: true });
-  fs.rmSync(stateFile, { force: true });
+  for (const entry of fs.readdirSync(ATTACHMENTS_DIR)) removals.remove(path.join(ATTACHMENTS_DIR, entry), { recursive: true, force: true });
+  if (fs.existsSync(stateFile)) fs.unlinkSync(stateFile);
 });
 
 describe("attachment cleanup at the end of a turn", () => {
@@ -76,6 +83,7 @@ describe("attachment cleanup at the end of a turn", () => {
     await manager.route(msg, connector);
 
     expect(seen).toEqual([{ paths: files, existed: [true, true] }]);
+    expect(removals.requests).toEqual([dir]);
     expect(fs.existsSync(dir)).toBe(false);
     expect(fs.existsSync(other)).toBe(true);
   });
@@ -89,6 +97,7 @@ describe("attachment cleanup at the end of a turn", () => {
     await expect(manager.route(msg, connector)).rejects.toThrow("queue unavailable");
 
     expect(seen).toEqual([]); // no turn ran, so no turn cleaned up after itself
+    expect(removals.requests).toEqual([dir]);
     expect(fs.existsSync(dir)).toBe(false);
   });
 
@@ -97,6 +106,7 @@ describe("attachment cleanup at the end of a turn", () => {
 
     await manager.route(msg, connector);
 
+    expect(removals.requests).toEqual([]);
     expect(fs.readFileSync(stateFile, "utf-8")).toBe('{"engines":{}}');
   });
 });

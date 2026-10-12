@@ -41,16 +41,21 @@ export function attachmentSlot(messageDir: string, slot: number): string {
  * say-so anything but an attachment directory.
  */
 export function removeAttachmentDirs(filePaths: readonly string[]): void {
-  const root = path.resolve(ATTACHMENTS_DIR);
+  // Nothing here may depend on the working directory: a relative path is not
+  // resolved, it is skipped. Attachment paths are always absolute.
+  if (!path.isAbsolute(ATTACHMENTS_DIR)) return;
+  const root = path.normalize(ATTACHMENTS_DIR);
   const directories = new Set<string>();
   for (const filePath of filePaths) {
-    if (!filePath) continue;
-    const relative = path.relative(root, path.resolve(filePath));
+    if (typeof filePath !== "string" || !path.isAbsolute(filePath)) continue;
+    const relative = path.relative(root, path.normalize(filePath));
     const [messageDir] = relative.split(path.sep);
     if (!messageDir || messageDir === ".." || path.isAbsolute(relative)) continue;
     directories.add(path.join(root, messageDir));
   }
   for (const directory of directories) {
+    // Checked once more where it counts: only a direct child of tmp/attachments/.
+    if (path.dirname(directory) !== root) continue;
     try {
       fs.rmSync(directory, { recursive: true, force: true });
     } catch {

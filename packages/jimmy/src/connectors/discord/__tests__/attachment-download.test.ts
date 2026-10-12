@@ -56,14 +56,25 @@ describe("downloadAttachment file names", () => {
     ["../../escaped.txt"],
     ["nested/../../escaped.txt"],
     ["..\\..\\escaped.txt"],
-    [path.join(os.tmpdir(), "ryoko-absolute-escape.txt")],
   ])("never writes outside the download directory for the name %j", async (name) => {
     const saved = await downloadAttachment(CDN, dest, name).catch(() => null);
     // Whether the name was reduced to its last segment or refused outright,
     // every file this produced is inside the download directory.
     expect(everyFileUnder(root).every((file) => path.dirname(file) === dest)).toBe(true);
     if (saved !== null) expect(path.dirname(saved)).toBe(dest);
-    expect(fs.existsSync(path.join(os.tmpdir(), "ryoko-absolute-escape.txt"))).toBe(false);
+  });
+
+  it("never writes outside the download directory for a name that is an absolute path", async () => {
+    // Somewhere else inside this test's own directory: were the name taken as
+    // a path, the write would still land in the sandbox.
+    const elsewhere = path.join(root, "elsewhere", "absolute-escape.txt");
+    fs.mkdirSync(path.dirname(elsewhere), { recursive: true });
+
+    const saved = await downloadAttachment(CDN, dest, elsewhere).catch(() => null);
+
+    expect(fs.existsSync(elsewhere)).toBe(false);
+    expect(everyFileUnder(root).every((file) => path.dirname(file) === dest)).toBe(true);
+    if (saved !== null) expect(saved).toBe(path.join(dest, "absolute-escape.txt"));
   });
 
   const notFileNames: unknown[][] = [[""], ["."], [".."], ["dir/"], ["dir/.."], ["a\u0000b"], [undefined], [{ toString: (): string => "../x" }]];
