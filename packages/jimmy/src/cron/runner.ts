@@ -213,10 +213,14 @@ export async function runCronJob(
       if (failure) throw new Error(failure);
 
       // A turn can succeed and still reach nobody: when the delivery connector
-      // is not running, the cron connector can only drop what it is given.
+      // is not running, the cron connector can only drop what it is given. A
+      // notice lost along the way is logged, not failed, once the result arrived.
       const undelivered = connector.getUndeliveredMessageCount();
-      if (undelivered > 0) {
+      if (connector.isOutputUndelivered()) {
         throw new Error(`Delivery connector "${delivery?.connector}" is not available: ${undelivered} message${undelivered === 1 ? " was" : "s were"} not delivered`);
+      }
+      if (undelivered > 0) {
+        logger.warn(`Cron job "${job.name}" delivered its result, but ${undelivered} earlier message${undelivered === 1 ? " was" : "s were"} not delivered: connector "${delivery?.connector}" was not available`);
       }
 
       if (updateVersion && (

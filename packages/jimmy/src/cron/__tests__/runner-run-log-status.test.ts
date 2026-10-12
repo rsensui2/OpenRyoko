@@ -24,6 +24,7 @@ import { handleApiRequest } from "../../gateway/api.js";
 import { SessionManager } from "../../sessions/manager.js";
 import { recordFailedOriginDelivery } from "../../sessions/origin-delivery.js";
 import { createSession, getSession } from "../../sessions/registry.js";
+import { logger } from "../../shared/logger.js";
 import { invalidateModelRegistry } from "../../shared/models.js";
 import { CRON_RUNS } from "../../shared/paths.js";
 import { runCronJob } from "../runner.js";
@@ -172,6 +173,47 @@ describe("cron run log reflects how the session actually ended", () => {
     expect(getSession(entry!.sessionId!)?.status).toBe("idle");
     expect(f.deliver).not.toHaveBeenCalled();
     expect(f.alert).toHaveBeenCalledExactlyOnceWith({ channel: "C-alerts" }, expect.stringContaining('"slack"'));
+  });
+
+  // A connector reload takes the connector out of the map for a moment. A
+  // notice sent in that moment ("Switching to codex") is lost, but the result
+  // that follows is delivered: the run did reach its channel.
+  it("keeps a run green when only a notice along the way was dropped and the result was delivered", async () => {
+    const f = setup({}, { claude: ["codex"] });
+    const slack = f.connectors.get("slack")!;
+    const warn = vi.spyOn(logger, "warn");
+    f.claudeRun.mockImplementation(async () => {
+      f.connectors.delete("slack");
+      return { sessionId: "claude-1", result: "", error: "Usage limit reached" };
+    });
+    f.codexRun.mockImplementation(async () => {
+      f.connectors.set("slack", slack);
+      return { sessionId: "codex-1", result: "Briefing is ready (Codex).", cost: 0.01, numTurns: 1 };
+    });
+    await f.run();
+    const warnings = warn.mock.calls.map(([message]) => message);
+    warn.mockRestore();
+
+    expect(f.deliver).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ channel: "C-briefing" }), "Briefing is ready (Codex).");
+    expect(runs(f.job.id)).toEqual([expect.objectContaining({ status: "success", error: null })]);
+    expect(f.alert).not.toHaveBeenCalled();
+    expect(warnings).toContainEqual(expect.stringMatching(new RegExp(`${f.job.name}.*not delivered`)));
+  });
+
+  it("fails a run whose result was dropped, though an earlier notice had been delivered", async () => {
+    const f = setup({}, { claude: ["codex"] });
+    f.claudeRun.mockResolvedValue({ sessionId: "claude-1", result: "", error: "Usage limit reached" });
+    f.codexRun.mockImplementation(async () => {
+      f.connectors.delete("slack");
+      return { sessionId: "codex-1", result: "Briefing is ready (Codex).", cost: 0.01, numTurns: 1 };
+    });
+    await f.run();
+
+    expect(f.deliver).toHaveBeenCalledExactlyOnceWith(expect.anything(), expect.stringContaining("Switching to codex"));
+    const [entry] = runs(f.job.id);
+    expect(entry).toMatchObject({ status: "error" });
+    expect(entry!.error).toContain('"slack"');
+    expect(f.alert).toHaveBeenCalledTimes(1);
   });
 
   // The session manager answers an unknown engine with a chat message and
