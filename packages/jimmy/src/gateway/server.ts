@@ -964,7 +964,12 @@ export async function startGateway(
 
   // Backstop for lost completion events: unstick sessions stuck at
   // status:"running" with no live turn (see status-reconciler.ts).
-  const stopStatusReconciler = startStatusReconciler({ engines, emit });
+  const stopStatusReconciler = startStatusReconciler({
+    engines,
+    emit,
+    isOwned: (session) => sessionManager.getQueue().isRunning(session.sessionKey),
+    alwaysNotifyFor: (session) => (session.employee ? employeeRegistry.get(session.employee)?.alwaysNotify : undefined),
+  });
 
   // --- Workflow engine (upstream port). Opt-in via config.workflows.enabled;
   // absent flag = no workflow DB, no trigger arming, no /api/workflows routes.
