@@ -149,22 +149,39 @@ export function findBackup(directory: string, reference: string): BackupItem {
   return item;
 }
 
-function reserve(directory: string, build: (suffix: string) => string): string {
-  for (let attempt = 1; ; attempt += 1) {
-    const name = build(attempt === 1 ? "" : `-${attempt}`);
+/**
+ * A name no backup of this second holds, numbered one past the highest that is
+ * there. `build("")` is the first of a second, `build("-2")` the second, and
+ * so on; `numbered` matches those names and captures the number.
+ *
+ * Not the first number that is free. Within a second the number is the order,
+ * and one that pruning has freed belonged to a backup older than every one
+ * still there: a new backup given it would be named as the oldest of its
+ * second, and be the next the rule removes.
+ */
+function reserve(directory: string, numbered: RegExp, build: (suffix: string) => string): string {
+  let highest = 0;
+  for (const name of matchingNames(directory, (candidate) => numbered.test(candidate), MAX_LISTED_BACKUPS)) {
+    highest = Math.max(highest, Number(numbered.exec(name)?.[1] ?? 1));
+  }
+  for (let sequence = highest + 1; ; sequence += 1) {
+    const name = build(sequence === 1 ? "" : `-${sequence}`);
+    // Still asked of each: a directory flooded past what was listed may hold the name after all.
     if (!fs.existsSync(path.join(directory, name))) return name;
   }
 }
 
 /** A name no archive holds yet, so two taken in the same second sit side by side. */
 export function reserveArchiveName(directory: string, prefix: "home" | "pre-restore", when: Date): { id: string; file: string } {
-  const name = reserve(directory, (suffix) => `${prefix}-${archiveStamp(when)}${suffix}.tar.gz`);
+  const stem = `${prefix}-${archiveStamp(when)}`;
+  const name = reserve(directory, new RegExp(`^${stem}(?:-(\\d+))?\\.tar\\.gz$`), (suffix) => `${stem}${suffix}.tar.gz`);
   return { id: idOf(name), file: path.join(directory, name) };
 }
 
 /** A name for the copy of a live database taken before a restore replaces it. */
 export function reserveDatabaseSnapshotName(directory: string, name: DatabaseBackupName, when: Date): { id: string; file: string } {
-  const fileName = reserve(directory, (suffix) => `pre-restore-${archiveStamp(when)}${suffix}-${name}.db`);
+  const stem = `pre-restore-${archiveStamp(when)}`;
+  const fileName = reserve(directory, new RegExp(`^${stem}(?:-(\\d+))?-${name}\\.db$`), (suffix) => `${stem}${suffix}-${name}.db`);
   return { id: idOf(fileName), file: path.join(directory, fileName) };
 }
 
@@ -224,9 +241,17 @@ function expired(members: BackupItem[], days: number): BackupItem[] {
  * daily history. The daily database copies are not touched here - their writer
  * keeps its own seven, one a day - and anything unrecognised is left exactly
  * as it is.
+ *
+ * `keep` is what the run that is pruning has just written, and none of it is
+ * removed whatever the rule says. The rule goes by the time in a file's name.
+ * With a clock that has fallen behind the backups already there, the newest
+ * backup is by its name the oldest, and a run would report it written and
+ * then delete it. It is still judged with the rest, so that on an ordinary
+ * day it takes its place and its day keeps to its share.
  */
-export function pruneBackups(directory: string, options: { retention: number; now: Date }): string[] {
+export function pruneBackups(directory: string, options: { retention: number; now: Date; keep?: readonly string[] }): string[] {
   const removed: string[] = [];
+  const kept = new Set((options.keep ?? []).map((file) => path.resolve(file)));
   const items = listBackups(directory);
   const pools: { members: BackupItem[]; days: number }[] = [
     { members: items.filter((item) => item.kind === "home" && !item.preRestore), days: options.retention },
@@ -235,7 +260,9 @@ export function pruneBackups(directory: string, options: { retention: number; no
     { members: items.filter((item) => item.kind === "workflows" && item.preRestore), days: DATABASE_BACKUP_RETENTION },
   ];
   for (const pool of pools) {
-    for (const item of expired(pool.members, pool.days)) removeWithSidecars(item.file, removed);
+    for (const item of expired(pool.members, pool.days)) {
+      if (!kept.has(path.resolve(item.file))) removeWithSidecars(item.file, removed);
+    }
   }
   sweepStaleTemporaries(directory, options.now, removed);
   return removed;

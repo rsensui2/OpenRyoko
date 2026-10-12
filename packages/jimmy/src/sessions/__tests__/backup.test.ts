@@ -241,6 +241,22 @@ describe("daily database backup", () => {
     expect(fs.readdirSync(backups)).toEqual(["sessions-2026-08-17.db"]);
   });
 
+  it("does not remove the copy it has just made because the clock is behind the copies already there", async () => {
+    // Seven copies dated after "today": by its name the new one is the eighth and oldest.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ryoko-backup-clock-"));
+    roots.push(root);
+    for (let day = 10; day <= 16; day += 1) fs.writeFileSync(path.join(root, `sessions-2026-08-${day}.db`), "a copy from before the clock moved");
+    const database = new Database(":memory:");
+    database.exec("CREATE TABLE t (id INTEGER)");
+
+    const result = await createDailyDatabaseBackup(database, { directory: root, now: new Date("2026-07-01T00:00:00Z") });
+    database.close();
+
+    expect(result.created).toBe(true);
+    expect(fs.existsSync(result.file)).toBe(true);
+    expect(fs.readdirSync(root)).toHaveLength(8);
+  });
+
   it("removes an expired backup together with the sidecars reading it left behind", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ryoko-backup-sidecars-"));
     roots.push(root);

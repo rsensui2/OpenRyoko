@@ -246,6 +246,44 @@ describe("runBackup", () => {
     expect(report.pruned.map((file) => path.basename(file)).sort()).toEqual(older.slice(0, 2).sort());
   });
 
+  it("keeps the archive it has just written when the clock is behind the archives already there", async () => {
+    // A fortnight of archives, and then a clock that has jumped back a month.
+    // By its name the new archive is the oldest there and past its keep; it
+    // was written, reported as ok, counted as today's - and deleted.
+    const home = makeHome(tempDir(), "home", { sessionRows: 2 });
+    const directory = path.join(home, "backups");
+    const existing = Array.from({ length: 14 }, (_, daysAgo) => `home-${archiveStamp(new Date(NOW.getTime() - daysAgo * DAY_MS))}.tar.gz`);
+    writeTree(directory, Object.fromEntries(existing.map((name) => [name, "an archive from before the clock moved"])));
+
+    const report = await runBackup(optionsFor(home, {}, { now: new Date(NOW.getTime() - 30 * DAY_MS) }));
+
+    const written = byName(report).home!;
+    expect(written.status).toBe("ok");
+    expect(fs.existsSync(written.file!)).toBe(true);
+    expect((await inspectHomeArchive(written.file!)).ok).toBe(true);
+    expect(fs.existsSync(byName(report).sessions!.file!)).toBe(true);
+    expect(report.pruned).toEqual([]);
+    expect(listBackups(directory).filter((item) => item.kind === "home")).toHaveLength(15);
+  });
+
+  it("leaves each of five backups taken in the same second in place when its own run ends", async () => {
+    const home = makeHome(tempDir(), "home");
+    const directory = path.join(home, "backups");
+    const written: string[] = [];
+
+    for (let round = 1; round <= 5; round += 1) {
+      const report = await runBackup(optionsFor(home));
+      const file = byName(report).home!.file!;
+      expect(fs.existsSync(file), `the archive of round ${round}`).toBe(true);
+      expect(report.pruned).not.toContain(file);
+      written.push(file);
+    }
+
+    // No name handed out twice, and of the five the three most recent are what is left.
+    expect(new Set(written).size).toBe(5);
+    expect(listBackups(directory).filter((item) => item.kind === "home").map((item) => item.file)).toEqual(written.slice(2).reverse());
+  });
+
   it("runs only the targets it is asked for", async () => {
     const home = makeHome(tempDir(), "home", { sessionRows: 1, workflowRows: 1 });
 

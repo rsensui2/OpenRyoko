@@ -200,9 +200,11 @@ async function runTarget(name: BackupTargetName, options: BackupRunOptions, writ
   }
 }
 
-function prune(options: BackupRunOptions): string[] {
+/** Trims the directory to its retention, sparing whatever this run has just put there. */
+function prune(options: BackupRunOptions, targets: BackupTargetReport[]): string[] {
+  const keep = targets.flatMap((target) => (target.status === "ok" && target.file ? [target.file] : []));
   try {
-    return pruneBackups(options.settings.directory, { retention: options.settings.retention, now: options.now });
+    return pruneBackups(options.settings.directory, { retention: options.settings.retention, now: options.now, keep });
   } catch {
     return [];
   }
@@ -240,6 +242,6 @@ export async function runBackup(options: BackupRunOptions): Promise<BackupRunRep
     finishedAt: new Date().toISOString(),
     status: statusOf(targets),
     targets,
-    pruned: prune(options),
+    pruned: prune(options, targets),
   };
 }

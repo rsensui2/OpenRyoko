@@ -342,12 +342,15 @@ export async function runBackupRestore(reference: string, options: BackupRestore
   await guarded(deps, options.json, async ({ home, io, now, settings, json }) => {
     const item = findBackup(settings.directory, reference);
     const kinds = parseKinds(options.only);
+    /** What this restore saved before it replaced anything. */
+    let saved: string | undefined;
     if (item.kind !== "home") {
       if (kinds) throw new Error("--only はホームのアーカイブにだけ使えます。DB のバックアップは丸ごと復元します。");
       const result = await restoreDatabase({
         backup: item.file, name: item.kind, home, backupDirectory: settings.directory, now, dryRun: options.dryRun,
         gatewayStopped: options.gatewayStopped,
       });
+      saved = result.preRestore?.file;
       if (json) printJson(io, result);
       else printDatabaseRestore(io, result);
     } else {
@@ -356,12 +359,14 @@ export async function runBackupRestore(reference: string, options: BackupRestore
         allowExternalSymlinks: options.allowExternalSymlinks, backupDirectory: settings.directory, now,
         limits: archiveLimits(settings),
       });
+      saved = result.preRestore?.file;
       if (json) printJson(io, result);
       else printFileRestore(io, result);
     }
     if (options.dryRun) return;
     try {
-      pruneBackups(settings.directory, { retention: settings.retention, now });
+      // What was just saved is the way back from this restore: not this run's to trim, whatever the time in its name.
+      pruneBackups(settings.directory, { retention: settings.retention, now, keep: saved ? [saved] : [] });
     } catch { /* the restore is done; trimming old snapshots can wait for the next run */ }
   });
 }

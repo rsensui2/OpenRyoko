@@ -136,6 +136,22 @@ describe("reserveArchiveName", () => {
       id: "pre-restore-20261012T030000Z-sessions", file: path.join(directory, "pre-restore-20261012T030000Z-sessions.db"),
     });
   });
+
+  it("does not hand out again a number that pruning has freed", () => {
+    // Within a second the number is the order. The first of five taken in one
+    // second is pruned to make room; a sixth that took its place would be
+    // named as the oldest and be the next to go.
+    const directory = tempDir();
+    for (const suffix of ["-2", "-3", "-4"]) seed(directory, `home-20261012T030000Z${suffix}.tar.gz`);
+    seed(directory, "pre-restore-20261012T030000Z-3-sessions.db");
+    // Another second's, another kind's and another database's numbers are no concern of these.
+    seed(directory, "home-20261012T030001Z-9.tar.gz");
+    seed(directory, "pre-restore-20261012T030000Z-7.tar.gz");
+    seed(directory, "pre-restore-20261012T030000Z-8-workflows.db");
+
+    expect(reserveArchiveName(directory, "home", NOW).id).toBe("home-20261012T030000Z-5");
+    expect(reserveDatabaseSnapshotName(directory, "sessions", NOW).id).toBe("pre-restore-20261012T030000Z-4-sessions");
+  });
 });
 
 describe("findBackup", () => {
@@ -264,6 +280,34 @@ describe("pruneBackups", () => {
     pruneBackups(directory, { retention: 1, now: NOW });
 
     expect(fs.readdirSync(directory).sort()).toEqual([...kept, archiveName("home", 0)].sort());
+  });
+
+  it("never removes a file the run that is pruning has just written, whatever its timestamp says", () => {
+    // A clock a month behind the archives already there: by its name the new
+    // one is the oldest in the directory, and by the rule the first to go.
+    const directory = tempDir();
+    for (let daysAgo = 0; daysAgo < 3; daysAgo += 1) seed(directory, archiveName("home", daysAgo));
+    const written = seed(directory, archiveName("home", 30));
+    const older = seed(directory, archiveName("home", 31));
+    const snapshot = seed(directory, archiveName("pre-restore", 30));
+    for (let daysAgo = 0; daysAgo < 3; daysAgo += 1) seed(directory, archiveName("pre-restore", daysAgo));
+
+    const removed = pruneBackups(directory, { retention: 3, now: new Date(NOW.getTime() - 30 * DAY_MS), keep: [written, snapshot] });
+
+    expect(fs.existsSync(written)).toBe(true);
+    expect(fs.existsSync(snapshot)).toBe(true);
+    // The rule is otherwise as it was: what is past its keep and was not just written goes.
+    expect(removed).toEqual([older]);
+  });
+
+  it("still counts a file it must keep against its day, so the day does not grow past its share", () => {
+    const directory = tempDir();
+    const sameSecond = ["", "-2", "-3", "-4"].map((suffix) => seed(directory, archiveName("home", 0, suffix)));
+
+    const removed = pruneBackups(directory, { retention: 14, now: NOW, keep: [sameSecond[3]!] });
+
+    expect(removed).toEqual([sameSecond[0]]);
+    expect(SAME_DAY_BACKUPS_KEPT).toBe(3);
   });
 
   it("sweeps temporary files a killed run left behind, once they are a day old", () => {

@@ -15,7 +15,7 @@ import {
   writeRawArchive,
   writeTree,
 } from "../../backup/__tests__/fixture.js";
-import { listBackups } from "../../backup/catalog.js";
+import { archiveStamp, listBackups } from "../../backup/catalog.js";
 import { BACKUP_STATE_FILE, readBackupState } from "../../backup/state.js";
 import type { JinnConfig } from "../../shared/types.js";
 import { runBackupList, runBackupRestore, runBackupRun, runBackupVerify, type BackupCliDeps } from "../backup.js";
@@ -826,6 +826,32 @@ describe("ryoko backup restore", () => {
       "pre-restore-20261012T041000Z", "pre-restore-20261012T040000Z", "pre-restore-20261012T035000Z",
     ]);
     expect(kept.filter((item) => !item.preRestore).map((item) => item.id)).toEqual(["home-20261012T030000Z"]);
+  });
+
+  it("does not prune away the snapshot it has just taken, nor the copy of the database it has just replaced", async () => {
+    // A clock behind what is already in the directory: by their names the new
+    // ones are the oldest there, and the first the rule would remove.
+    const state = await backedUp({ sessionRows: 4 });
+    const backups = path.join(state.home, "backups");
+    const later = (days: number): string => archiveStamp(new Date(START.getTime() + days * 24 * 60 * 60_000));
+    for (let days = 1; days <= 14; days += 1) {
+      writeTree(backups, {
+        [`pre-restore-${later(days)}.tar.gz`]: "a snapshot from before the clock moved",
+        [`pre-restore-${later(days)}-sessions.db`]: "a copy from before the clock moved",
+      });
+    }
+    fs.writeFileSync(path.join(state.home, "config.yaml"), "broken\n");
+
+    // Each is looked for as its own command ends: the promise is that a run never removes what it wrote itself.
+    await runBackupRestore("home-20261012T030000Z", { json: true }, state.deps);
+    const files = json<{ preRestore: { id: string } }>(state);
+    expect(fs.existsSync(path.join(backups, `${files.preRestore.id}.tar.gz`))).toBe(true);
+
+    idle(state, path.join(state.home, "sessions", "registry.db"));
+    await runBackupRestore("sessions-2026-10-12", { gatewayStopped: true, json: true }, state.deps);
+    const database = json<{ preRestore: { id: string } }>(state);
+    expect(fs.existsSync(path.join(backups, `${database.preRestore.id}.db`))).toBe(true);
+    expect(process.exitCode).toBeUndefined();
   });
 
   it("recreates a symlink that leaves the home only with --allow-external-symlinks", async () => {

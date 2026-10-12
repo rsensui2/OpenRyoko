@@ -81,13 +81,19 @@ export function dailyDatabaseBackupFile(directory: string, name: DatabaseBackupN
   return path.join(directory, `${name}-${now.toISOString().slice(0, 10)}.db`);
 }
 
-function removeExpired(directory: string, name: DatabaseBackupName, retention: number): void {
+/**
+ * Removes the copies past their keep, never the one just written. The order is
+ * the date in the name, and with a clock that has fallen behind the copies
+ * already there, today's copy is by its name the oldest of them.
+ */
+function removeExpired(directory: string, name: DatabaseBackupName, retention: number, written: string): void {
   const pattern = databaseBackupPattern(name);
   const backups = fs.readdirSync(directory)
     .filter((entry) => pattern.test(entry))
     .sort()
     .reverse();
   for (const expired of backups.slice(retention)) {
+    if (expired === path.basename(written)) continue;
     for (const suffix of ["", ...SQLITE_SIDECAR_SUFFIXES]) fs.rmSync(path.join(directory, `${expired}${suffix}`), { force: true });
   }
 }
@@ -131,6 +137,6 @@ export async function createDailyDatabaseBackup(
     for (const suffix of SQLITE_SIDECAR_SUFFIXES) fs.rmSync(`${temporary}${suffix}`, { force: true });
   }
 
-  removeExpired(directory, name, retention);
+  removeExpired(directory, name, retention, file);
   return { created: true, file, ...(unchecked === undefined ? {} : { unchecked }) };
 }
