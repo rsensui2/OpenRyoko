@@ -408,7 +408,9 @@ export class SlackConnector implements Connector {
         await respond({ text: error instanceof Error ? error.message : "設定を変更できませんでした。", response_type: "ephemeral", replace_original: false });
       }
     });
-    this.app.message(async ({ event }) => {
+    this.app.message(async ({ event, context }) => {
+      // start() may have failed to learn the bot's user ID; an authorized event carries it.
+      this.botUserId ??= context?.botUserId ?? null;
       logger.info(`[slack] Received message event: user=${(event as any).user} channel=${(event as any).channel} channel_type=${(event as any).channel_type ?? "-"} thread_ts=${(event as any).thread_ts ?? "-"} subtype=${(event as any).subtype ?? "-"} text="${((event as any).text || "").slice(0, 50)}"`);
       // Skip bot's own messages
       if ((event as any).bot_id) {
@@ -708,16 +710,17 @@ export class SlackConnector implements Connector {
       logger.warn(`[slack] Failed to get bot user ID: ${err}`);
     }
     // Fail closed: without our own user ID, mention detection is impossible,
-    // so mention-gated scopes will drop everything (except engaged threads).
-    // That honors "never barge in un-mentioned" at the cost of missed
-    // mentions until the next successful start — surface it loudly.
+    // so mention-gated scopes would drop everything (except engaged threads).
+    // The listeners therefore take the ID from the first event Bolt
+    // authorizes; this only says that the start-up lookup did not provide it.
     if (!this.botUserId && hasMentionScope(this.respondTo)) {
       logger.warn(
-        "[slack] respondTo mention gate is configured but the bot user ID could not be resolved — un-mentioned messages in mention scopes will be dropped",
+        "[slack] respondTo mention gate is configured but the bot user ID could not be resolved at start — it will be taken from the first incoming event",
       );
     }
 
-    this.app.event("reaction_added", async ({ event }) => {
+    this.app.event("reaction_added", async ({ event, context }) => {
+      this.botUserId ??= context?.botUserId ?? null;
       // Only handle reactions on messages (not files, etc.)
       if (event.item.type !== "message") return;
 
