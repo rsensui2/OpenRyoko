@@ -6,6 +6,13 @@ type Mapping = Record<string, unknown>;
 
 const isMapping = (value: unknown): value is Mapping => typeof value === "object" && value !== null && !Array.isArray(value);
 
+/**
+ * What `mapping` itself holds under `key`. Never what every object answers to
+ * without holding it — "constructor", "toString", "__proto__": a key in a
+ * request is the caller's choice of name, and a built-in is not a stored value.
+ */
+const own = (mapping: Mapping, key: string): unknown => (Object.hasOwn(mapping, key) ? mapping[key] : undefined);
+
 /** Nothing to hide in an empty value — and nothing to put back for it later. */
 const holdsSomething = (value: unknown): boolean => value !== undefined && value !== null && value !== "";
 
@@ -105,7 +112,8 @@ function restoreBlock(sent: unknown, stored: unknown): unknown {
   const held = isMapping(stored) ? stored : {};
   const entries = Object.entries(sent).flatMap(([name, value]): [string, unknown][] => {
     if (value !== REDACTED) return [[name, value]];
-    return holdsSomething(held[name]) ? [[name, held[name]]] : [];
+    const kept = own(held, name);
+    return holdsSomething(kept) ? [[name, kept]] : [];
   });
   const onlyPlaceholders = entries.length === 0 && Object.keys(sent).length > 0;
   return onlyPlaceholders && !isMapping(stored) ? undefined : Object.fromEntries(entries);
@@ -126,11 +134,11 @@ export function restoreCustomMcpSecrets(body: Mapping, onDisk: Mapping): Mapping
   const custom = Object.fromEntries(
     Object.entries(mcp.custom).map(([name, server]) => {
       if (!isMapping(server)) return [name, server];
-      const storedServer = stored[name];
+      const storedServer = own(stored, name);
       const held = isMapping(storedServer) ? storedServer : {};
       const restored = Object.entries(server).flatMap(([key, value]): [string, unknown][] => {
         if (!CUSTOM_SERVER_SECRET_BLOCKS.has(key)) return [[key, value]];
-        const block = restoreBlock(value, held[key]);
+        const block = restoreBlock(value, own(held, key));
         return block === undefined ? [] : [[key, block]];
       });
       return [name, Object.fromEntries(restored)];

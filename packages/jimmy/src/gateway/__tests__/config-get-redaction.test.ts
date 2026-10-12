@@ -219,6 +219,46 @@ describe("GET /api/config and a custom MCP server's env and headers", () => {
   });
 });
 
+describe("a custom MCP server's env and names every object already has", () => {
+  /* "constructor", "toString", "__proto__": every JavaScript object answers to
+   * these without having them. A placeholder sent under such a name found the
+   * built-in instead of a stored value and tried to save that — the request
+   * failed with a 500. Only what config.yaml itself holds counts as stored. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const stored = () => (yaml.load(fs.readFileSync(CONFIG_PATH, "utf-8")) as any).mcp.custom;
+  const inherited = () => JSON.parse('{"constructor":"***","toString":"***","valueOf":"***","hasOwnProperty":"***","__proto__":"***"}');
+
+  it("drops a placeholder under such a name like any other with nothing stored behind it", async () => {
+    const custom = { notion: { command: "npx", env: { NOTION_TOKEN: "ntn-SECRET-A" } } };
+    fs.writeFileSync(CONFIG_PATH, yaml.dump({ ...CONFIG, mcp: { custom } }));
+
+    const saved = await call("PUT", "/api/config", { mcp: { custom: { notion: { env: { ...inherited(), NOTION_TOKEN: "***" }, headers: inherited() } } } });
+
+    expect(saved.status).toBe(200);
+    expect(stored()).toEqual(custom);
+  });
+
+  it("does the same for a server, or a block, config.yaml does not have", async () => {
+    fs.writeFileSync(CONFIG_PATH, yaml.dump({ ...CONFIG, mcp: { custom: { plain: { command: "uvx" } } } }));
+
+    const saved = await call("PUT", "/api/config", { mcp: { custom: { plain: { env: inherited() }, constructor: { command: "x", env: inherited() } } } });
+
+    expect(saved.status).toBe(200);
+    expect(stored()).toEqual({ plain: { command: "uvx" }, constructor: { command: "x" } });
+  });
+
+  it("still puts back a value that really is stored under such a name", async () => {
+    const custom = { odd: { command: "x", env: { constructor: "real-SECRET", toString: "also-SECRET" } } };
+    fs.writeFileSync(CONFIG_PATH, yaml.dump({ ...CONFIG, mcp: { custom } }));
+
+    const served = (await call("GET", "/api/config")).body;
+    expect(served.mcp.custom.odd.env).toEqual({ constructor: "***", toString: "***" });
+    expect((await call("PUT", "/api/config", served)).status).toBe(200);
+
+    expect(stored()).toEqual(custom);
+  });
+});
+
 describe("placeholders and lists", () => {
   /* A hidden value is put back by finding the stored item it was taken from.
    * Under a key that is easy; a list item has no name, only an `id` when it
