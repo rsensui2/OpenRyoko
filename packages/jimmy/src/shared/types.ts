@@ -853,6 +853,16 @@ export interface JinnConfig {
     alertChannel?: string;
     alertConnector?: string;
   };
+  /** Daily backups of the instance home and its databases. On unless `enabled` is false. */
+  backup?: {
+    enabled?: boolean;
+    /** Where backups are written. Default: `<home>/backups`. May point outside the home. */
+    directory?: string;
+    /** Home archive generations to keep. Default: 14. */
+    retention?: number;
+    /** Largest home, in MB of file content, one archive may hold; a larger one is refused. Default: 512. */
+    maxArchiveMb?: number;
+  };
   notifications?: {
     connector?: string;  // defaults to "discord"
     channel?: string;    // Discord channel ID for admin notifications
