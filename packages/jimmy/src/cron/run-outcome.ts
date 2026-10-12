@@ -15,18 +15,23 @@ function recordedReason(session: Session): string {
  * Why the turn a cron fire just ran did not end in a result, or null when it
  * did. Meant for the session row as it reads the moment route() returns.
  *
- * `error` is a failed turn and `idle` a finished one. `running` means a wake-up
- * queued behind the cron turn (child-session callback, detached job) has
- * already started: starting a turn does not touch `lastError`, so that field
- * still holds what the cron turn left — a reason if it failed, nothing if it
- * finished. `waiting` and `interrupted` are a turn that never settled.
+ * A recorded `lastError` is a failure whatever the status says: a turn that
+ * ends cleanly resets it to null, and a reply that could not be delivered can
+ * leave the session `idle` with the failure noted only there. The wording is
+ * never inspected.
+ *
+ * With nothing recorded, `idle` is a finished turn. So is `running`: it means a
+ * wake-up queued behind the cron turn (child-session callback, detached job)
+ * has already started, and starting a turn does not touch `lastError`. `error`,
+ * `waiting` and `interrupted` are failures that left no reason behind.
  */
 export function sessionRunFailure(session: Session | undefined): string | null {
-  if (!session || session.status === "idle") return null;
+  if (!session) return null;
   const reason = recordedReason(session);
-  if (session.status === "error") return reason || "Session ended in error without reporting a reason";
-  if (session.status === "running") return reason || null;
-  return reason || `Session did not settle (status: ${session.status})`;
+  if (reason) return reason;
+  if (session.status === "idle" || session.status === "running") return null;
+  if (session.status === "error") return "Session ended in error without reporting a reason";
+  return `Session did not settle (status: ${session.status})`;
 }
 
 /** Failure of the session route() reported for this fire. An unreadable

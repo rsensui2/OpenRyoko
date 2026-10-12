@@ -16,8 +16,19 @@ const session = (fields: Partial<Session>): Session =>
 beforeEach(() => vi.clearAllMocks());
 
 describe("what a settled cron session says about its run", () => {
-  it("is a success when the turn ended idle", () => {
-    expect(sessionRunFailure(session({ status: "idle" }))).toBeNull();
+  it.each([null, "", "   "])("is a success when the turn ended idle with no error recorded: %j", (lastError) => {
+    expect(sessionRunFailure(session({ status: "idle", lastError }))).toBeNull();
+  });
+
+  // A reply that cannot be delivered may leave the engine result in place: the
+  // session stays idle and only lastError says so. A clean turn resets it to
+  // null, so anything recorded there is a failure — whatever it is worded as.
+  it.each([
+    "origin delivery failed — reply not posted to the original conversation",
+    "Background turn failed: unknown",
+    "any reason the gateway recorded",
+  ])("is a failure when an idle session still carries an error: %s", (lastError) => {
+    expect(sessionRunFailure(session({ status: "idle", lastError }))).toBe(lastError);
   });
 
   it("reports the session's own reason when the turn ended in error", () => {

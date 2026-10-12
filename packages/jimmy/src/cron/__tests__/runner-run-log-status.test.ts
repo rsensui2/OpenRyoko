@@ -4,7 +4,7 @@ import path from "node:path";
 import type { AddressInfo } from "node:net";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiContext } from "../../gateway/api.js";
-import type { Connector, CronJob, Engine, EngineResult, JinnConfig } from "../../shared/types.js";
+import type { Connector, CronJob, Engine, EngineResult, IncomingMessage, JinnConfig } from "../../shared/types.js";
 
 // The run log used to say "success" the moment route() resolved, whatever the
 // turn did: runSession settles a failed turn as `status: "error"` and returns
@@ -22,7 +22,8 @@ vi.mock("../../sessions/callbacks.js", async (importOriginal) => ({
 
 import { handleApiRequest } from "../../gateway/api.js";
 import { SessionManager } from "../../sessions/manager.js";
-import { getSession } from "../../sessions/registry.js";
+import { recordFailedOriginDelivery } from "../../sessions/origin-delivery.js";
+import { createSession, getSession } from "../../sessions/registry.js";
 import { invalidateModelRegistry } from "../../shared/models.js";
 import { CRON_RUNS } from "../../shared/paths.js";
 import { runCronJob } from "../runner.js";
@@ -116,13 +117,43 @@ describe("cron run log reflects how the session actually ended", () => {
     expect(f.alert.mock.calls[0]![1]).toContain(`Cron job "${f.job.name}" failed`);
   });
 
-  it("records a run whose result never reached its delivery channel", async () => {
-    const f = setup();
-    f.deliver.mockRejectedValue(new Error("channel_not_found"));
-    await f.run();
+  // A reply the chat connector refuses. Today that throws inside the turn and
+  // the session ends in error. Once the gateway keeps the engine result instead,
+  // the session stays idle and only lastError records it. Both are failed runs.
+  describe("a result that never reached its delivery channel", () => {
+    it("is recorded when the turn ends in error because of it", async () => {
+      const f = setup();
+      f.deliver.mockRejectedValue(new Error("channel_not_found"));
+      await f.run();
 
-    expect(runs(f.job.id)).toEqual([expect.objectContaining({ status: "error", error: "channel_not_found" })]);
-    expect(f.alert).toHaveBeenCalledExactlyOnceWith({ channel: "C-alerts" }, expect.stringContaining("channel_not_found"));
+      const [entry, ...rest] = runs(f.job.id);
+      expect(rest).toEqual([]);
+      expect(getSession(entry!.sessionId!)?.status).toBe("error");
+      expect(entry).toMatchObject({ status: "error", error: "channel_not_found" });
+      expect(f.alert).toHaveBeenCalledExactlyOnceWith({ channel: "C-alerts" }, expect.stringContaining("channel_not_found"));
+    });
+
+    it("is recorded when the session is left idle with the failure only in lastError", async () => {
+      const f = setup();
+      // What route() leaves behind once a failed delivery no longer fails the turn.
+      const route = vi.fn(async (msg: IncomingMessage) => {
+        const session = createSession({
+          engine: "claude", source: "cron", sourceRef: msg.sessionKey, connector: "cron",
+          sessionKey: msg.sessionKey, replyContext: msg.replyContext,
+        });
+        recordFailedOriginDelivery(session);
+        return { sessionId: session.id };
+      });
+      await runCronJob(f.job, { route, getEngine: () => undefined } as never, f.config, f.connectors);
+
+      const [entry, ...rest] = runs(f.job.id);
+      expect(rest).toEqual([]);
+      const settled = getSession(entry!.sessionId!)!;
+      expect(settled.status).toBe("idle");
+      expect(settled.lastError).toBeTruthy();
+      expect(entry).toMatchObject({ status: "error", error: settled.lastError });
+      expect(f.alert).toHaveBeenCalledExactlyOnceWith({ channel: "C-alerts" }, expect.stringContaining(settled.lastError!));
+    });
   });
 
   // The cron connector only drops what it is given when the delivery connector
@@ -226,6 +257,55 @@ describe("cron run log reflects how the session actually ended", () => {
     await pending;
     expect(runs(f.job.id)).toEqual([expect.objectContaining({ status: "error", error: "claude usage limit did not clear in time" })]);
     expect(f.alert).toHaveBeenCalledTimes(1);
+  });
+
+  // While it waits the session carries the usage-limit note in lastError. A
+  // turn that then finishes resets it, so that note must not fail the run.
+  it("is a success when the turn resumes after a usage limit, though an error was noted while it waited", async () => {
+    vi.useFakeTimers();
+    const f = setup({ rateLimitStrategy: "wait" });
+    f.claudeRun
+      .mockImplementationOnce(async () => ({
+        sessionId: "claude-1", result: "", error: "Rate limited",
+        rateLimit: { status: "rejected", resetsAt: Math.floor(Date.now() / 1000) + 60 },
+      }))
+      .mockResolvedValue({ sessionId: "claude-1", result: "Briefing is ready.", cost: 0.01, numTurns: 1 });
+    const pending = f.run();
+    await vi.waitFor(() => expect(f.claudeRun).toHaveBeenCalledTimes(1));
+    const sessionId = f.claudeRun.mock.calls[0]![0].sessionId!;
+    await vi.waitFor(() => expect(getSession(sessionId)).toMatchObject({ status: "waiting", lastError: expect.stringContaining("usage limit") }));
+
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+    await pending;
+    expect(f.claudeRun).toHaveBeenCalledTimes(2);
+    expect(getSession(sessionId)).toMatchObject({ status: "idle", lastError: null });
+    expect(runs(f.job.id)).toEqual([expect.objectContaining({ status: "success", error: null })]);
+    expect(f.alert).not.toHaveBeenCalled();
+  });
+
+  // The two places that note something in lastError without changing the
+  // status are both background hooks, and both can land while the reply is
+  // still being delivered. The turn's own final write follows and clears the
+  // note. If that order ever changes, a clean run would be read as failed.
+  it.each([
+    ["a late Stop whose own delivery has nowhere to go", { hook_event_name: "Stop", last_assistant_message: "Background task finished." }],
+    ["a StopFailure", { hook_event_name: "StopFailure", error: "overloaded" }],
+  ])("is not failed by %s arriving while the reply is being delivered", async (_label, hook) => {
+    const f = setup();
+    let notedMeanwhile: string | null | undefined;
+    f.deliver.mockImplementationOnce(async () => {
+      const sessionId = f.claudeRun.mock.calls[0]![0].sessionId!;
+      await f.manager.handleOrphanHook(sessionId, hook);
+      notedMeanwhile = getSession(sessionId)?.lastError;
+      return "delivery-ts";
+    });
+    await f.run();
+
+    expect(notedMeanwhile).toBeTruthy();
+    const [entry] = runs(f.job.id);
+    expect(getSession(entry!.sessionId!)).toMatchObject({ status: "idle", lastError: null });
+    expect(entry).toMatchObject({ status: "success", error: null });
+    expect(f.alert).not.toHaveBeenCalled();
   });
 
   // A child-session callback or detached-job notification that arrives during
