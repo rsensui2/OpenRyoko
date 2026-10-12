@@ -90,7 +90,10 @@ export function syncBundledSkills(options: SyncBundledSkillsOptions): BundledSki
     skills: recordedSkills(receipt, done, options.packageVersion, applied.lost),
     notices: Object.fromEntries(announced.map((skill) => [skill.name, options.packageVersion])),
   };
-  saveReceipt(receiptPath, skillsRoot, receipt, next);
+  // The skills are already in their new state. A receipt that cannot be saved must
+  // not turn that into an exception: the caller would lose what was done, and what
+  // was found deleted. The next run sees the same skills and records them then.
+  const receiptError = saveReceipt(receiptPath, skillsRoot, receipt, next);
 
   const names = (...actions: SkillPlan["action"][]) => done.filter((plan) => actions.includes(plan.action)).map((plan) => plan.name).sort();
   return {
@@ -103,6 +106,7 @@ export function syncBundledSkills(options: SyncBundledSkillsOptions): BundledSki
     inSync: names("install", "update", "adopt", "current"),
     failed: applied.failed,
     backupDir: applied.backupDir,
+    ...(receiptError === null ? {} : { receiptError }),
   };
 }
 
@@ -144,10 +148,16 @@ function shippedHashes(skill: BundledSkill): Record<string, string> {
   return Object.fromEntries(Object.entries(skill.files).map(([relative, file]) => [relative, file.sha256]));
 }
 
-/** Written only when it says something new, so a run with nothing to do writes nothing. */
-function saveReceipt(file: string, skillsRoot: string, previous: Receipt | null, next: Receipt): void {
-  if (skillsRootKind(skillsRoot) !== "directory") return;
-  const text = serializeReceipt(next);
-  if (previous && serializeReceipt(previous) === text) return;
-  writeReceipt(file, text);
+/** Written only when it says something new, so a run with nothing to do writes
+ *  nothing. Returns why it could not be saved, or null. */
+function saveReceipt(file: string, skillsRoot: string, previous: Receipt | null, next: Receipt): string | null {
+  try {
+    if (skillsRootKind(skillsRoot) !== "directory") return null;
+    const text = serializeReceipt(next);
+    if (previous && serializeReceipt(previous) === text) return null;
+    writeReceipt(file, text);
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
 }

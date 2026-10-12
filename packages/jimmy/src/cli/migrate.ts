@@ -90,6 +90,12 @@ const KEPT_SKILL_NOTES: Partial<Record<KeepReason, (name: string) => string>> = 
  * each one in its final state, and a stray file would undo that.
  */
 interface SyncedSkills {
+  /**
+   * False when the sync could not run or stood back (skills/ is the user's symlink, or
+   * a newer OpenRyoko owns the home). Then nobody knows which skills were deleted,
+   * retired or edited, so this command creates nothing under skills/ at all.
+   */
+  available: boolean;
   /** Skills that now match the shipped version. One more file would make them look edited. */
   inSync: ReadonlySet<string>;
   /** Shipped skills the operator deleted. Nothing in this command may put them back. */
@@ -100,7 +106,9 @@ interface SyncedSkills {
   kept: readonly KeptSkill[];
 }
 
-const NO_SYNCED_SKILLS: SyncedSkills = { inSync: new Set(), deleted: new Set(), retired: new Set(), kept: [] };
+/** --check: nothing is synced, and nothing is written either. */
+const NO_SYNCED_SKILLS: SyncedSkills = { available: true, inSync: new Set(), deleted: new Set(), retired: new Set(), kept: [] };
+const SYNC_UNAVAILABLE: SyncedSkills = { ...NO_SYNCED_SKILLS, available: false };
 
 /** What the AI should do about a bundled skill the sync left untouched, by reason. */
 const KEPT_SKILL_GUIDANCE: Record<Exclude<KeepReason, "deleted">, string> = {
@@ -121,6 +129,9 @@ const KEPT_SKILL_GUIDANCE: Record<Exclude<KeepReason, "deleted">, string> = {
  * the sync existed — so the state of every bundled skill is spelled out here.
  */
 function bundledSkillPromptLines(skills: SyncedSkills): string[] {
+  if (!skills.available) {
+    return ["The bundled skill sync did not run, so the state of skills/ is unknown. Do not create, replace or delete anything under skills/, even if a migration ships files for it."];
+  }
   const listed = (label: string, names: ReadonlySet<string>) => (names.size > 0 ? [`- ${label}: ${[...names].sort().join(", ")}`] : []);
   const settled = [
     ...listed("already up to date", skills.inSync),
@@ -153,7 +164,8 @@ function syncBundledSkillsStep(restoreDeleted: boolean | readonly string[]): Syn
     result = syncInstanceBundledSkills({ restoreDeleted });
   } catch (err: any) {
     console.log(`  ${YELLOW}[skills]${RESET} 同梱スキルを同期できませんでした: ${err?.message ?? err}`);
-    return NO_SYNCED_SKILLS;
+    console.log(`  ${YELLOW}[skills]${RESET} スキルの状態が分からないため、この実行では skills/ 配下に何も作成しません`);
+    return SYNC_UNAVAILABLE;
   }
   for (const name of result.added) {
     ensureSkillSymlinks(name);
@@ -171,12 +183,17 @@ function syncBundledSkillsStep(restoreDeleted: boolean | readonly string[]): Syn
     if (!result.added.includes(name)) console.log(`  ${YELLOW}[skills]${RESET} ${name}: 削除済みの同梱スキルではないため、何も配置していません`);
   }
   for (const { name, error } of result.failed) console.log(`  ${RED}[skill failed]${RESET} ${name}: ${error}`);
-  if (result.skipped === "skills-root-symlink") {
-    console.log(`  ${DIM}[skills] skills/ が symlink（利用者管理）のため、同梱スキルは同期しません${RESET}`);
-  } else if (result.skipped === "newer-receipt") {
-    console.log(`  ${DIM}[skills] このホームはより新しい OpenRyoko が同期済みのため、同梱スキルは変更しません${RESET}`);
+  if (result.receiptError) {
+    console.log(`  ${YELLOW}[skills]${RESET} 受領証を保存できませんでした（${result.receiptError}）。スキル自体は配置済みで、次回の実行で記録されます`);
   }
+  if (result.skipped === "skills-root-symlink") {
+    console.log(`  ${DIM}[skills] skills/ が symlink（利用者管理）のため、同梱スキルは同期せず、skills/ 配下には何も作成しません${RESET}`);
+  } else if (result.skipped === "newer-receipt") {
+    console.log(`  ${DIM}[skills] このホームはより新しい OpenRyoko が同期済みのため、同梱スキルは変更せず、skills/ 配下には何も作成しません${RESET}`);
+  }
+  if (result.skipped) return SYNC_UNAVAILABLE;
   return {
+    available: true,
     inSync: new Set(result.inSync),
     deleted: new Set(result.kept.filter((skill) => skill.reason === "deleted").map((skill) => skill.name)),
     retired: new Set(result.retired),
@@ -190,7 +207,9 @@ function syncBundledSkillsStep(restoreDeleted: boolean | readonly string[]): Syn
  */
 function settledSkillNote(relPath: string, skills: SyncedSkills): string | null {
   const parts = relPath.split(path.sep);
-  if (parts.length < 2 || parts[0] !== "skills") return null;
+  if (parts[0] !== "skills") return null;
+  if (!skills.available) return "bundled skill sync did not run";
+  if (parts.length < 2) return null;
   if (skills.deleted.has(parts[1])) return "bundled skill deleted by the operator";
   if (skills.retired.has(parts[1])) return "bundled skill retired";
   // The instance already has this file or a newer one — or the skill dropped it since.
@@ -377,11 +396,13 @@ export async function runMigrate(opts: {
   }
 
   // Also ensure the migrate skill is available in the instance — unless the
-  // operator deleted it. Then it stays deleted and the AI reads the packaged copy.
+  // operator deleted it, or the sync could not say whether they did. Then nothing
+  // is put there and the AI reads the packaged copy.
   const migrateSkillSrc = path.join(TEMPLATE_DIR, "skills", "migrate");
   const migrateSkillDest = path.join(SKILLS_DIR, "migrate");
   const migrateSkillDeleted = skills.deleted.has("migrate");
-  if (!migrateSkillDeleted && fs.existsSync(migrateSkillSrc) && !fs.existsSync(migrateSkillDest)) {
+  const readPackagedMigrateSkill = migrateSkillDeleted || (!skills.available && !fs.existsSync(migrateSkillDest));
+  if (skills.available && !migrateSkillDeleted && fs.existsSync(migrateSkillSrc) && !fs.existsSync(migrateSkillDest)) {
     copyDirRecursive(migrateSkillSrc, migrateSkillDest);
     ensureSkillSymlinks("migrate");
     console.log(`  ${GREEN}[staged]${RESET} migrate スキル`);
@@ -404,7 +425,7 @@ export async function runMigrate(opts: {
   try {
     const prompt = [
       `Apply all pending migrations in ${MIGRATIONS_DIR}.`,
-      `Follow the migrate skill instructions at ${path.join(migrateSkillDeleted ? migrateSkillSrc : migrateSkillDest, "SKILL.md")}.`,
+      `Follow the migrate skill instructions at ${path.join(readPackagedMigrateSkill ? migrateSkillSrc : migrateSkillDest, "SKILL.md")}.`,
       `Current instance version: ${instanceVersion}`,
       `Target version: ${packageVersion}`,
       `Pending versions: ${pending.join(", ")}`,
@@ -472,6 +493,8 @@ async function applyAutoMigrations(
       const settled = settledSkillNote(entry.relPath, skills);
       if (settled) {
         if (entry.type === "file") console.log(`  ${DIM}[skip]${RESET} ${entry.relPath} (${settled})`);
+        // Left out because nobody knows the skill's state is not the same as applied.
+        if (entry.type === "file" && !skills.available) skippedExisting++;
         continue;
       }
 

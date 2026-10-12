@@ -397,6 +397,75 @@ describe("migrate: bundled skill sync", () => {
     });
   });
 
+  describe.each([
+    ["the sync fails", () => mockSync.mockImplementation(() => { throw new Error("receipt is unreadable"); })],
+    ["skills/ is the user's own symlink", () => mockSync.mockReturnValue(synced({ skipped: "skills-root-symlink" }))],
+    ["a newer OpenRyoko owns the home", () => mockSync.mockReturnValue(synced({ skipped: "newer-receipt" }))],
+  ])("when %s, migrate creates nothing under skills/", (_label, arrange) => {
+    const skillsDir = path.join(JINN_HOME, "skills");
+    const createdUnderSkills = () => [
+      ...vi.mocked(fs.mkdirSync).mock.calls.map((call) => String(call[0])),
+      ...mockWriteFileSync.mock.calls.map((call) => String(call[0])),
+      ...vi.mocked(fs.copyFileSync).mock.calls.map((call) => String(call[1])),
+    ].filter((file) => file === skillsDir || file.startsWith(skillsDir + path.sep));
+
+    beforeEach(() => {
+      // Migration 1.1.0 ships a skill file; the home has no skills/migrate at all.
+      shipMigrateSkillInMigration();
+      mockExistsSync.mockImplementation((file) => !String(file).startsWith(path.join(skillsDir, "migrate")));
+      arrange();
+    });
+
+    it("--auto neither stages the migrate skill nor copies the migration's skill files, and does not call the update done", async () => {
+      const { runMigrate } = await import("../migrate.js");
+
+      await runMigrate({ auto: true });
+
+      // Without the sync's word on which skills were deleted or retired, any of these
+      // files might put back something the operator removed.
+      expect(createdUnderSkills()).toEqual([]);
+      expect(fs.symlinkSync).not.toHaveBeenCalled();
+      expect(output()).not.toMatch(/\[staged\] migrate|\[new\] skills/);
+      expect(stampedVersions()).toEqual([]);
+    });
+
+    it("the AI run is told to leave skills/ alone and reads the packaged migrate skill", async () => {
+      const { runMigrate } = await import("../migrate.js");
+
+      await runMigrate({});
+
+      expect(createdUnderSkills()).toEqual([]);
+      const prompt = (mockExecFileSync.mock.calls[0][1] as string[]).at(-1)!;
+      expect(prompt).toMatch(/did not run/i);
+      expect(prompt).toMatch(/[Dd]o not create.* under skills\//);
+      expect(prompt).toContain(path.join(TEMPLATE_DIR, "skills", "migrate", "SKILL.md"));
+    });
+  });
+
+  it("uses the instance's migrate skill when the sync did not run but the skill is there", async () => {
+    mockSync.mockImplementation(() => { throw new Error("receipt is unreadable"); });
+    const { runMigrate } = await import("../migrate.js");
+
+    await runMigrate({});
+
+    const prompt = (mockExecFileSync.mock.calls[0][1] as string[]).at(-1)!;
+    expect(prompt).toContain(path.join(JINN_HOME, "skills", "migrate", "SKILL.md"));
+  });
+
+  it("says so when the receipt could not be saved, and still honours what the sync found", async () => {
+    shipMigrateSkillInMigration();
+    mockExistsSync.mockImplementation((file) => !String(file).startsWith(path.join(JINN_HOME, "skills", "migrate")));
+    mockSync.mockReturnValue(synced({ kept: [{ name: "migrate", reason: "deleted" }], receiptError: "EROFS: read-only file system" }));
+    const { runMigrate } = await import("../migrate.js");
+
+    await runMigrate({ auto: true });
+
+    expect(output()).toMatch(/受領証.*保存できません.*EROFS/);
+    // The deletion is still known, so the deleted skill is still not recreated.
+    expect(vi.mocked(fs.mkdirSync).mock.calls.map((call) => String(call[0])).filter((dir) => dir.startsWith(path.join(JINN_HOME, "skills", "migrate")))).toEqual([]);
+    expect(stampedVersions()).toEqual(["1.1.0"]);
+  });
+
   it("points the AI at the instance's own migrate skill and mentions no deletions when there are none", async () => {
     const { runMigrate } = await import("../migrate.js");
 

@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import { MAX_RECEIPT_BYTES, readBounded } from "./bounded-read.js";
 import { sha256 } from "./bundled.js";
@@ -136,14 +137,14 @@ export function serializeReceipt(receipt: Receipt): string {
 
 /**
  * Replace the receipt in one step: a reader sees the old file or the new one.
- * The temporary file is created exclusively, after clearing whatever sits at its
- * path, so a link left there (the name is predictable) is removed, never written through.
+ * The temporary file has a random name and is created exclusively, so nothing can be
+ * waiting at its path — not a link to write through, not a directory to make the
+ * save fail. Only a file this call created is ever removed.
  */
 export function writeReceipt(file: string, text: string): void {
-  const temporary = `${file}.tmp-${process.pid}`;
+  const temporary = `${file}.${crypto.randomBytes(8).toString("hex")}.tmp`;
+  fs.writeFileSync(temporary, text, { flag: "wx" });
   try {
-    fs.rmSync(temporary, { force: true });
-    fs.writeFileSync(temporary, text, { flag: "wx" });
     fs.renameSync(temporary, file);
   } catch (error) {
     fs.rmSync(temporary, { force: true });

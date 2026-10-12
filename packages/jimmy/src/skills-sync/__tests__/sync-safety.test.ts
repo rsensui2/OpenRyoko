@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { POSIX_MODES_SUPPORTED } from "../../shared/test-support/posix-mode.js";
@@ -140,22 +141,98 @@ describe("bundled skill sync: staying inside skills/", () => {
     expect(snapshot(f.root)).toEqual(before);
   });
 
-  it("never writes the receipt through a link left where its temporary file goes", () => {
+  it("saves the receipt whatever has been left at the path its temporary file used to take", () => {
+    // The temporary file was once named after the PID, which is the same on every
+    // container start. A link planted there was written through; a directory there
+    // made the save fail after the skills had already been replaced.
+    for (const plant of ["link", "directory"] as const) {
+      const f = fixture();
+      f.ship("example", { "SKILL.md": "v1" });
+      f.sync("2026.10.10");
+      const outside = path.join(f.root, "outside.json");
+      fs.writeFileSync(outside, "the user's file");
+      const guessed = path.join(f.skills, `${RECEIPT_FILE}.tmp-${process.pid}`);
+      if (plant === "link") fs.symlinkSync(outside, guessed);
+      else fs.mkdirSync(guessed);
+      f.ship("example", { "SKILL.md": "v2" });
+
+      const result = f.sync("2026.10.11");
+
+      expect(result, plant).toMatchObject({ updated: ["example"], failed: [] });
+      expect(result.receiptError, plant).toBeUndefined();
+      expect(f.receipt().skills.example.version, plant).toBe("2026.10.11");
+      expect(fs.readFileSync(outside, "utf8"), plant).toBe("the user's file");
+      // What was planted is not the sync's: it is neither used nor removed.
+      expect(fs.readdirSync(f.skills).sort(), plant).toEqual([RECEIPT_FILE, path.basename(guessed), "example"].sort());
+    }
+  });
+
+  it("names its temporary file unpredictably and leaves none behind", () => {
     const f = fixture();
     f.ship("example", { "SKILL.md": "v1" });
-    fs.mkdirSync(f.skills);
+    const rename = vi.spyOn(fs, "renameSync");
+
+    f.sync("2026.10.10");
+    f.ship("example", { "SKILL.md": "v2" });
+    f.sync("2026.10.11");
+
+    const temporaries = rename.mock.calls.filter(([, to]) => String(to) === path.join(f.skills, RECEIPT_FILE)).map(([from]) => path.basename(String(from)));
+    expect(temporaries).toHaveLength(2);
+    expect(new Set(temporaries).size).toBe(2);
+    for (const name of temporaries) expect(name).not.toContain(String(process.pid));
+    expect(fs.readdirSync(f.skills).sort()).toEqual([RECEIPT_FILE, "example"]);
+  });
+
+  it("does not write through a link even at the very name its temporary file is about to take", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    f.ship("example", { "SKILL.md": "v2" });
     const outside = path.join(f.root, "outside.json");
     fs.writeFileSync(outside, "the user's file");
-    // The gateway is often the same PID on every container start, so this name is predictable.
-    fs.symlinkSync(outside, path.join(f.skills, `${RECEIPT_FILE}.tmp-${process.pid}`));
+    // Not something anyone can arrange — the name is random — but if the path is
+    // taken, the file must be refused rather than followed.
+    vi.spyOn(crypto, "randomBytes").mockImplementation((() => Buffer.alloc(8, 0xab)) as unknown as typeof crypto.randomBytes);
+    fs.symlinkSync(outside, path.join(f.skills, `${RECEIPT_FILE}.${"ab".repeat(8)}.tmp`));
 
-    const result = f.sync();
+    const result = f.sync("2026.10.11");
 
-    expect(result.added).toEqual(["example"]);
     expect(fs.readFileSync(outside, "utf8")).toBe("the user's file");
-    expect(Object.keys(f.receipt().skills)).toEqual(["example"]);
-    expect(fs.lstatSync(path.join(f.skills, RECEIPT_FILE)).isFile()).toBe(true);
+    expect(result.updated).toEqual(["example"]);
+    expect(result.receiptError).toMatch(/EEXIST/);
+    expect(fs.readlinkSync(path.join(f.skills, `${RECEIPT_FILE}.${"ab".repeat(8)}.tmp`))).toBe(outside);
+  });
+
+  it("reports what it did even when the receipt cannot be saved, and records it on the next run", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.ship("gone", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    fs.rmSync(path.join(f.skills, "gone"), { recursive: true });
+    f.ship("example", { "SKILL.md": "v2" });
+    const rename = fs.renameSync;
+    vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (String(to) === path.join(f.skills, RECEIPT_FILE)) throw new Error("read-only file system");
+      return rename(from, to);
+    });
+
+    const result = f.sync("2026.10.11");
+
+    // The skill is in place and the caller is told so — and told which skills were
+    // deleted, which a caller that only saw an exception would have had to guess.
+    expect(result.updated).toEqual(["example"]);
+    expect(result.kept).toEqual([{ name: "gone", reason: "deleted" }]);
+    expect(result.receiptError).toContain("read-only file system");
+    expect(f.read("example", "SKILL.md")).toBe("v2");
+    expect(f.receipt().skills.example.version).toBe("2026.10.10");
     expect(fs.readdirSync(f.skills).sort()).toEqual([RECEIPT_FILE, "example"]);
+
+    vi.restoreAllMocks();
+    const next = f.sync("2026.10.11");
+    expect(next).toMatchObject({ adopted: ["example"], updated: [], kept: [{ name: "gone", reason: "deleted" }] });
+    expect(next.receiptError).toBeUndefined();
+    expect(f.receipt().skills.example.version).toBe("2026.10.11");
+    expect(f.receipt().skills.gone.deleted).toBe(true);
   });
 
   it("refuses a receipt that is itself a link", () => {

@@ -50,6 +50,9 @@ export interface BundledSkillSync {
   failed: FailedSkill[];
   /** Where replaced and retired copies went, when there were any. */
   backupDir: string | null;
+  /** Why the receipt could not be saved, when it could not. Everything above was
+   *  still done and is reported as done; the next run records it. */
+  receiptError?: string;
   /** Set when the run changed nothing by policy rather than by failure. */
   skipped?: "skills-root-symlink" | "newer-receipt";
 }

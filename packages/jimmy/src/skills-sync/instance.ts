@@ -95,6 +95,9 @@ function report(result: BundledSkillSync): void {
     logger.info(`Bundled skills not reinstalled because they were removed from this home: ${removed.join(", ")}. Run ${RESTORE_BY_NAME} to put one back.`);
   }
   for (const failure of result.failed) logger.warn(`Bundled skill "${failure.name}" was not synced: ${failure.error}`);
+  if (result.receiptError) {
+    logger.warn(`The bundled skill receipt could not be saved (${result.receiptError}). The skills themselves are in place; the next start records them.`);
+  }
   if (result.skipped === "skills-root-symlink") logger.debug("Bundled skills not synced: skills/ is a symlink the user manages.");
   if (result.skipped === "newer-receipt") logger.debug("Bundled skills not synced: this home was last synced by a newer OpenRyoko.");
 }

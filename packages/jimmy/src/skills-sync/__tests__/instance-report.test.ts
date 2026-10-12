@@ -135,6 +135,16 @@ describe("what gateway start logs about the bundled skill sync", () => {
     ]);
   });
 
+  it("warns when the receipt could not be saved, after saying what was done", () => {
+    ran({ updated: ["migrate"], receiptError: "EROFS: read-only file system" });
+
+    syncBundledSkillsOnBoot({});
+
+    expect(said("info")).toEqual([expect.stringContaining("updated migrate")]);
+    expect(said("warn")).toEqual([expect.stringMatching(/receipt.*not.*saved.*EROFS/)]);
+    expect(said("error")).toEqual([]);
+  });
+
   it.each(["skills-root-symlink", "newer-receipt"] as const)("only mentions a %s skip at debug level", (skipped) => {
     ran({ skipped });
 
