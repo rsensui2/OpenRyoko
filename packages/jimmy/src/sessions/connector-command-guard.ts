@@ -72,7 +72,7 @@ const TERMINAL_CONTROLS = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g;
 
 // Both patterns are anchored at the start and scan once: a long run of blanks
 // in a message costs its length, not its square.
-const INVISIBLE = String.raw`[\s\p{Cf}\p{Default_Ignorable_Code_Point}⠀]`;
+const INVISIBLE = String.raw`[\s\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]`;
 const LEADING_INVISIBLE = new RegExp(`^${INVISIBLE}+`, "u");
 /** The whole message is one of the words the CLI quits on: exit, quit, :q, :q!, :wq, :wq!. */
 const EXIT_WORD = new RegExp(`^(?:exit|quit|:q!?|:wq!?)${INVISIBLE}*$`, "iu");

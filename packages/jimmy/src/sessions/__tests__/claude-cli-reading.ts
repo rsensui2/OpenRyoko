@@ -33,7 +33,7 @@ export function claudeReads(prompt: string): string {
  * that a later version which starts doing either does not reopen the hole.
  */
 export function strictestClaudeReads(prompt: string): string {
-  const visible = prompt.normalize("NFKC").replace(/^[\s\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}⠀]+/u, "");
+  const visible = prompt.normalize("NFKC").replace(/^[\s\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]+/u, "");
   if (CLAUDE_EXIT_WORDS.includes(visible.trim().toLowerCase())) return "/exit";
   return claudeReads(visible);
 }

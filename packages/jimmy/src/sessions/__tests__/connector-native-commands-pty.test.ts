@@ -195,9 +195,9 @@ describe("a chat message from somebody who is not the operator", () => {
   it.each([
     ["leading spaces", "   /logout"],
     ["a leading newline", "\n/logout"],
-    ["a leading full-width space", "　/logout"],
-    ["a leading byte-order mark", "﻿/logout"],
-    ["a leading zero-width space", "​/logout"],
+    ["a leading full-width space", "\u3000/logout"],
+    ["a leading byte-order mark", "\ufeff/logout"],
+    ["a leading zero-width space", "\u200b/logout"],
     ["a leading control character", "\u0001/logout"],
     ["a full-width slash", "／logout"],
     ["a doubled slash", "//logout"],

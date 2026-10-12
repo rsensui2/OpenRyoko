@@ -67,14 +67,14 @@ describe("a message from somebody who is not the operator", () => {
     ["leading spaces", "   /logout"],
     ["a leading tab", "\t/logout"],
     ["a leading newline", "\n/logout"],
-    ["a leading full-width space", "　/logout"],
-    ["a leading no-break space", " /logout"],
-    ["a leading byte-order mark", "﻿/logout"],
-    ["a leading zero-width space", "​/logout"],
-    ["a leading word joiner", "⁠/logout"],
-    ["a leading soft hyphen", "­/logout"],
-    ["a leading right-to-left mark", "‏/logout"],
-    ["a leading blank braille cell", "⠀/logout"],
+    ["a leading full-width space", "\u3000/logout"],
+    ["a leading no-break space", "\u00a0/logout"],
+    ["a leading byte-order mark", "\ufeff/logout"],
+    ["a leading zero-width space", "\u200b/logout"],
+    ["a leading word joiner", "\u2060/logout"],
+    ["a leading soft hyphen", "\u00ad/logout"],
+    ["a leading right-to-left mark", "\u200f/logout"],
+    ["a leading blank braille cell", "\u2800/logout"],
     ["a full-width slash", "／logout"],
     ["a doubled slash", "//logout"],
     ["capitals", "/LOGOUT"],
@@ -92,17 +92,17 @@ describe("a message from somebody who is not the operator", () => {
     expectDeliveredAsText(message(text));
   });
 
-  it.each(["!rm -rf ~", " !ls", "！ls", "​!ls"])("cannot reach bash mode: %j", (text) => {
+  it.each(["!rm -rf ~", " !ls", "！ls", "\u200b!ls"])("cannot reach bash mode: %j", (text) => {
     expectDeliveredAsText(message(text));
   });
 
-  it.each(["exit", "quit", ":q", ":q!", ":wq", ":wq!", "  exit  ", "exit\n", "EXIT", "Quit", "ｅｘｉｔ", "​exit​"])(
+  it.each(["exit", "quit", ":q", ":q!", ":wq", ":wq!", "  exit  ", "exit\n", "EXIT", "Quit", "ｅｘｉｔ", "\u200bexit\u200b"])(
     "cannot quit the CLI with %j", (text) => {
       expectDeliveredAsText(message(text));
     });
 
   it("is never read as anything but text, whatever is put in front of the command", () => {
-    const fronts = ["", " ", "\n", "\t", "\r\n", "　", "﻿", "​", "⁠", "­", "͏", "⠀", "\u0000", "\u0001", "\u001b", "\u009b", "\u007f"];
+    const fronts = ["", " ", "\n", "\t", "\r\n", "\u3000", "\ufeff", "\u200b", "\u2060", "\u00ad", "\u034f", "\u2800", "\u0000", "\u0001", "\u001b", "\u009b", "\u007f"];
     const leads = ["/", "／", "//", "-", "--", "－", "!", "！"];
     const words = ["logout", "LOGOUT", "compact", "permissions add Bash", "goalie", "mcp-config=x", "ls"];
     for (const first of fronts) for (const second of fronts) for (const lead of leads) for (const word of words) {
@@ -193,14 +193,14 @@ describe("a message from the operator", () => {
     ["another case", "/Compact"],
     ["a doubled slash", "//compact"],
     ["a full-width slash", "／compact"],
-    ["something invisible in front", "​/compact"],
+    ["something invisible in front", "\u200b/compact"],
     ["a longer name", "/compact-all"],
     ["a suffix", "/compact:x"],
     ["a second line", "/compact\n/logout"],
     ["a second line after its text", "/compact 要点だけ\n/logout"],
     ["text after a command that takes none", "/clear すべて"],
     ["text after /usage", "/usage --all"],
-    ["a no-break space before its text", "/compact 要点だけ"],
+    ["a no-break space before its text", "/compact\u00a0要点だけ"],
   ])("does not pass an allowed command written with %s", (_shape, text) => {
     expectDeliveredAsText(fromOperator(text));
   });
@@ -220,7 +220,7 @@ describe("/goal, which the gateway hands to the CLI itself", () => {
       expect(guardConnectorMessage(onTelegram, CONFIG)).toBe(onTelegram);
     });
 
-  it.each(["/goalie", "/goal/logout", "/goal-x", "​/goal 条件", "／goal 条件", "//goal"])("is only /goal: %j is not", (text) => {
+  it.each(["/goalie", "/goal/logout", "/goal-x", "\u200b/goal 条件", "／goal 条件", "//goal"])("is only /goal: %j is not", (text) => {
     expectDeliveredAsText(message(text));
   });
 });
