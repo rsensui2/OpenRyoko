@@ -83,7 +83,7 @@ A status alone does not show that a session is stuck:
 
 - `running`: a turn is in progress. Long turns are normal. When the engine process behind a turn is gone, the gateway notices by itself, within about a minute at most: it records the turn as failed or lost, with the reason, and tells the parent session.
 - `waiting`: the turn met a usage limit and waits for it to reset, for up to six hours. It continues by itself, also after a restart.
-- `interrupted`: the turn was cut off, usually by a restart. After a restart the gateway wakes the session itself, and a new message continues it at once.
+- `interrupted`: the turn was cut off, usually by a restart. By default the gateway wakes such sessions itself after it starts: up to 10 per start, and only an interruption of the last 120 minutes (see `docs/architecture.md`, "Session Lifecycle"). One that was not woken stays `interrupted` until a new message continues it.
 - `error`: the last turn failed, and `lastError` says why. The next message starts a new turn.
 - `idle`: nothing is running.
 
@@ -102,7 +102,7 @@ ryoko stop
 ryoko start
 ```
 
-When it runs as a service or in a container, the service or the container is restarted instead. A restart ends every turn that is running, yours included. Do not restart the gateway yourself unless the user asked you to. By default, sessions that were cut off are resumed after the next start.
+When it runs as a service or in a container, the service or the container is restarted instead. A restart ends every turn that is running, yours included. Do not restart the gateway yourself unless the user asked you to. By default, sessions that were cut off are woken after the next start, within the limits given under "Check Sessions".
 
 ### Restore a File from a Backup
 

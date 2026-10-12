@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { GATEWAY_STOPPED_FLAG } from "../../backup/database-restore.js";
 import { BACKUP_KINDS } from "../../backup/targets.js";
 import { createSession, getMessages, getSession, insertMessage, updateSession } from "../../sessions/registry.js";
+import { DEFAULT_RESUME_MAX_AGE_MINUTES, MAX_RESTART_RESUMES } from "../../sessions/restart-resume.js";
 import { ATTACHMENTS_DIR, STALE_ATTACHMENTS_AFTER_MS } from "../../shared/attachments.js";
 import { JINN_HOME, TEMPLATE_DIR } from "../../shared/paths.js";
 import { MAX_USAGE_LIMIT_WAIT_MS } from "../../shared/rateLimit.js";
@@ -126,6 +127,17 @@ describe("skills/self-heal — sessions are handled through the API", () => {
   it("gives the wait for a usage limit the length the gateway uses", () => {
     expect(MAX_USAGE_LIMIT_WAIT_MS).toBe(6 * 60 * 60_000);
     expect(skill()).toMatch(/`waiting`: [^\n]*for up to six hours/);
+  });
+
+  it("does not promise that every interrupted session is woken: it gives the limits the gateway has", () => {
+    const interrupted = skill().split("\n").find((line) => line.startsWith("- `interrupted`: ")) ?? "";
+
+    expect(interrupted).toContain(`up to ${MAX_RESTART_RESUMES} per start`);
+    expect(interrupted).toContain(`an interruption of the last ${DEFAULT_RESUME_MAX_AGE_MINUTES} minutes`);
+    // What an agent needs to know about the ones left behind.
+    expect(interrupted).toMatch(/One that was not woken stays `interrupted` until a new message continues it/);
+    // Where the sentence sends the reader has to exist.
+    expect(read("docs/architecture.md")).toContain("\n## Session Lifecycle\n");
   });
 
   it("names a stop that keeps the conversation and a reset that keeps the transcript — and both do", async () => {
