@@ -26,6 +26,12 @@ export function sha256(bytes: Buffer | string): string {
   return crypto.createHash("sha256").update(bytes).digest("hex");
 }
 
+/** Is a file with this hash the shipped one: as installed, or as packaged (placeholders
+ *  unfilled)? A migration applied by an AI copies files without filling them in. */
+export function isShippedFile(file: BundledFile, hash: string): boolean {
+  return hash === file.sha256 || hash === file.rawSha256;
+}
+
 /** The sha256 of every file of the skill, as it is once installed. */
 export function shippedHashes(skill: BundledSkill): Record<string, string> {
   return Object.fromEntries(Object.entries(skill.files).map(([relative, file]) => [relative, file.sha256]));

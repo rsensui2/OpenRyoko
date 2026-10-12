@@ -49,3 +49,14 @@ export function own<T>(record: Record<string, T> | null | undefined, key: string
 export function sameList(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
+
+/**
+ * What `paths` holds beyond `known`, or null when one of `known` is not among them:
+ * a tree with a file missing is not that tree with something added.
+ */
+export function pathsBeyond(paths: readonly string[], known: readonly string[]): string[] | null {
+  const present = new Set(paths);
+  if (!known.every((file) => present.has(file))) return null;
+  const expected = new Set(known);
+  return paths.filter((file) => !expected.has(file));
+}
