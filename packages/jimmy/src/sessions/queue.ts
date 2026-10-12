@@ -120,11 +120,16 @@ export class SessionQueue {
     };
     const next = prev.then(runTask, runTask);
     this.queues.set(sessionKey, next);
-    void next.finally(() => {
+    const forget = () => {
       if (this.queues.get(sessionKey) === next) {
         this.queues.delete(sessionKey);
       }
-    });
+    };
+    // then(), not finally(): the promise finally() returns rejects along with
+    // `next` when the task throws, and that one nobody handles — an unhandled
+    // rejection, which ends a process that has no handler for it. `next`
+    // itself is the caller's to handle.
+    next.then(forget, forget);
     return next;
   }
 
