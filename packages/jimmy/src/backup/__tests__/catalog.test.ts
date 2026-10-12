@@ -1,7 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { archiveStamp, findBackup, listBackups, pruneBackups, reserveArchiveName, reserveDatabaseSnapshotName } from "../catalog.js";
+import {
+  archiveStamp,
+  findBackup,
+  listBackups,
+  pruneBackups,
+  reserveArchiveName,
+  reserveDatabaseSnapshotName,
+  SAME_DAY_BACKUPS_KEPT,
+} from "../catalog.js";
 import { removeTempDirs, tempDir } from "./fixture.js";
 
 const NOW = new Date("2026-10-12T03:00:00.000Z");
@@ -85,7 +93,8 @@ describe("listBackups", () => {
     // been dropped into it must not be read in as one array of names.
     const directory = tempDir();
     seed(directory, "home-20261012T030000Z.tar.gz");
-    for (let index = 0; index < 300; index += 1) seed(directory, `dropped-here-${index}.bin`, 1);
+    // A few dozen are enough to show how it reads; how many there are is not what is being tested.
+    for (let index = 0; index < 40; index += 1) fs.writeFileSync(path.join(directory, `dropped-here-${index}.bin`), "x");
     const wholeListing = vi.spyOn(fs, "readdirSync");
 
     const items = listBackups(directory);
@@ -153,8 +162,12 @@ describe("findBackup", () => {
   });
 });
 
+/** An archive name for a moment `hoursAgo` hours before NOW (03:00 UTC), so several can share a day. */
+const archiveAt = (prefix: string, hoursAgo: number): string =>
+  `${prefix}-${archiveStamp(new Date(NOW.getTime() - hoursAgo * 60 * 60 * 1000))}.tar.gz`;
+
 describe("pruneBackups", () => {
-  it("keeps the configured number of archives and removes the oldest beyond it", () => {
+  it("keeps as many days of archives as retention says, and removes the days before them", () => {
     const directory = tempDir();
     for (let daysAgo = 0; daysAgo < 6; daysAgo += 1) seed(directory, archiveName("home", daysAgo));
 
@@ -162,6 +175,44 @@ describe("pruneBackups", () => {
 
     expect(removed.map((file) => path.basename(file)).sort()).toEqual([archiveName("home", 4), archiveName("home", 5)].sort());
     expect(fs.readdirSync(directory).sort()).toEqual([0, 1, 2, 3].map((daysAgo) => archiveName("home", daysAgo)).sort());
+  });
+
+  it("does not let a burst of backups in one day push out the days before it", () => {
+    // Retention used to be a count. Fourteen `ryoko backup run` in an afternoon
+    // - an agent being careful before each change - and yesterday's archive was
+    // gone, along with every day before it.
+    const directory = tempDir();
+    seed(directory, archiveName("home", 2));
+    seed(directory, archiveName("home", 1));
+    const today = Array.from({ length: 14 }, (_, index) => archiveAt("home", index * 0.2));
+    for (const name of today) seed(directory, name);
+
+    const removed = pruneBackups(directory, { retention: 14, now: NOW });
+
+    // Both earlier days are still there, and of today only the three most recent.
+    expect(fs.readdirSync(directory).sort()).toEqual([archiveName("home", 2), archiveName("home", 1), ...today.slice(0, 3)].sort());
+    expect(removed).toHaveLength(11);
+    expect(SAME_DAY_BACKUPS_KEPT).toBe(3);
+  });
+
+  it("counts days that have a backup, so a gap in the dates costs nothing", () => {
+    const directory = tempDir();
+    for (const daysAgo of [0, 1, 20, 21, 40]) seed(directory, archiveName("home", daysAgo));
+
+    pruneBackups(directory, { retention: 3, now: NOW });
+
+    // Three days of history, however long ago the third one was.
+    expect(fs.readdirSync(directory).sort()).toEqual([0, 1, 20].map((daysAgo) => archiveName("home", daysAgo)).sort());
+  });
+
+  it("keeps the latest of every day it keeps, whatever else it trims from that day", () => {
+    const directory = tempDir();
+    const yesterday = Array.from({ length: 5 }, (_, index) => archiveAt("home", 24 + index * 0.5));
+    for (const name of [archiveAt("home", 0), archiveAt("home", 1), ...yesterday, archiveAt("home", 72)]) seed(directory, name);
+
+    pruneBackups(directory, { retention: 2, now: NOW });
+
+    expect(fs.readdirSync(directory).sort()).toEqual([archiveAt("home", 0), archiveAt("home", 1), ...yesterday.slice(0, 3)].sort());
   });
 
   it("counts pre-restore snapshots apart from the daily archives", () => {
@@ -178,7 +229,7 @@ describe("pruneBackups", () => {
     ].sort());
   });
 
-  it("keeps seven pre-restore database copies and takes their sidecars with the ones it drops", () => {
+  it("keeps seven days of pre-restore database copies and takes their sidecars with the ones it drops", () => {
     const directory = tempDir();
     const stamps = Array.from({ length: 9 }, (_, daysAgo) => archiveStamp(new Date(NOW.getTime() - daysAgo * DAY_MS)));
     for (const stamp of stamps) seed(directory, `pre-restore-${stamp}-sessions.db`);
@@ -191,6 +242,17 @@ describe("pruneBackups", () => {
       ...stamps.slice(0, 7).map((stamp) => `pre-restore-${stamp}-sessions.db`),
       `pre-restore-${stamps[0]}-workflows.db`,
     ].sort());
+  });
+
+  it("holds pre-restore snapshots to the same rule: three of a day, however many restores there were", () => {
+    const directory = tempDir();
+    const archives = Array.from({ length: 6 }, (_, index) => archiveAt("pre-restore", index * 0.1));
+    const copies = Array.from({ length: 5 }, (_, index) => `pre-restore-${archiveStamp(new Date(NOW.getTime() - index * 60_000))}-sessions.db`);
+    for (const name of [...archives, ...copies, archiveName("pre-restore", 1)]) seed(directory, name);
+
+    pruneBackups(directory, { retention: 14, now: NOW });
+
+    expect(fs.readdirSync(directory).sort()).toEqual([...archives.slice(0, 3), ...copies.slice(0, 3), archiveName("pre-restore", 1)].sort());
   });
 
   it("leaves the daily database backups and anything it does not recognise alone", () => {

@@ -181,25 +181,56 @@ function sweepStaleTemporaries(directory: string, now: Date, removed: string[]):
 }
 
 /**
- * Trims the backup directory to its generations.
+ * How many backups of one kind are kept from a single day. The newest is the
+ * day's backup; the two before it are for whoever takes one before each risky
+ * change and wants the last few steps back.
+ */
+export const SAME_DAY_BACKUPS_KEPT = 3;
+
+/**
+ * The members of one pool that have outlived their keep. `members` is newest
+ * first. Kept: the newest `days` days that have a backup at all, and of each of
+ * those days its most recent {@link SAME_DAY_BACKUPS_KEPT}.
+ *
+ * Days, not a count. A count let fourteen backups taken in one afternoon push
+ * out fourteen days of history; here a day's worth of them can only ever
+ * displace each other. And days that have a backup, not days on the calendar:
+ * an instance that was switched off for a month still has its `days` of
+ * history when it comes back, rather than none.
+ */
+function expired(members: BackupItem[], days: number): BackupItem[] {
+  const keptPerDay = new Map<string, number>();
+  return members.filter((item) => {
+    const day = item.createdAt.slice(0, 10);
+    const keptToday = keptPerDay.get(day);
+    if (keptToday === undefined && keptPerDay.size >= Math.max(1, days)) return true;
+    if ((keptToday ?? 0) >= SAME_DAY_BACKUPS_KEPT) return true;
+    keptPerDay.set(day, (keptToday ?? 0) + 1);
+    return false;
+  });
+}
+
+/**
+ * Trims the backup directory to the days it is meant to hold.
  *
  * Only files this feature names are ever candidates: the directory may be one
  * the operator shares with other things. Daily archives and pre-restore
  * snapshots are counted apart, so a burst of restores cannot push out the
  * daily history. The daily database copies are not touched here - their writer
- * keeps its own seven - and anything unrecognised is left exactly as it is.
+ * keeps its own seven, one a day - and anything unrecognised is left exactly
+ * as it is.
  */
 export function pruneBackups(directory: string, options: { retention: number; now: Date }): string[] {
   const removed: string[] = [];
   const items = listBackups(directory);
-  const pools: { members: BackupItem[]; keep: number }[] = [
-    { members: items.filter((item) => item.kind === "home" && !item.preRestore), keep: options.retention },
-    { members: items.filter((item) => item.kind === "home" && item.preRestore), keep: options.retention },
-    { members: items.filter((item) => item.kind === "sessions" && item.preRestore), keep: DATABASE_BACKUP_RETENTION },
-    { members: items.filter((item) => item.kind === "workflows" && item.preRestore), keep: DATABASE_BACKUP_RETENTION },
+  const pools: { members: BackupItem[]; days: number }[] = [
+    { members: items.filter((item) => item.kind === "home" && !item.preRestore), days: options.retention },
+    { members: items.filter((item) => item.kind === "home" && item.preRestore), days: options.retention },
+    { members: items.filter((item) => item.kind === "sessions" && item.preRestore), days: DATABASE_BACKUP_RETENTION },
+    { members: items.filter((item) => item.kind === "workflows" && item.preRestore), days: DATABASE_BACKUP_RETENTION },
   ];
   for (const pool of pools) {
-    for (const expired of pool.members.slice(Math.max(1, pool.keep))) removeWithSidecars(expired.file, removed);
+    for (const item of expired(pool.members, pool.days)) removeWithSidecars(item.file, removed);
   }
   sweepStaleTemporaries(directory, options.now, removed);
   return removed;

@@ -858,7 +858,7 @@ export interface JinnConfig {
     enabled?: boolean;
     /** Where backups are written. Default: `<home>/backups`. May point outside the home. */
     directory?: string;
-    /** Home archive generations to keep. Default: 14. */
+    /** Days of home archives to keep: the latest of each day, and up to two more taken the same day. Default: 14. */
     retention?: number;
     /** Largest home, in MB of file content, one archive may hold; a larger one is refused. Default: 512. */
     maxArchiveMb?: number;

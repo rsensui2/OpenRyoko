@@ -109,7 +109,7 @@ function printRun(io: BackupCliIo, report: BackupRunReport): void {
     for (const warning of target.warnings.slice(0, MAX_LISTED_PATHS)) io.out(`  警告: ${warning}`);
     if (target.warnings.length > MAX_LISTED_PATHS) io.out(`  警告: ほか ${target.warnings.length - MAX_LISTED_PATHS} 件`);
   }
-  if (report.pruned.length > 0) io.out(`保持数を超えたバックアップを ${report.pruned.length} 件削除しました`);
+  if (report.pruned.length > 0) io.out(`保持の範囲を外れたバックアップを ${report.pruned.length} 件削除しました`);
 }
 
 /** `ryoko backup run`: back everything up now, whatever the daily schedule says. */

@@ -174,7 +174,7 @@ describe("ryoko backup run", () => {
     expect(json<RunReport>(state).targets[0]).toMatchObject({ name: "home", status: "ok" });
   });
 
-  it("writes where the config says, and trims to the configured generations", async () => {
+  it("writes where the config says, and keeps the configured number of days", async () => {
     const root = tempDir();
     const home = makeHome(root);
     const outside = path.join(root, "external");
@@ -182,11 +182,29 @@ describe("ryoko backup run", () => {
 
     for (let round = 0; round < 3; round += 1) {
       await runBackupRun({ json: true }, state.deps);
-      later(state, 60);
+      later(state, 24 * 60);
     }
 
-    expect(listBackups(outside).map((item) => item.id)).toEqual(["home-20261012T050000Z", "home-20261012T040000Z"]);
+    expect(listBackups(outside).map((item) => item.id)).toEqual(["home-20261014T030000Z", "home-20261013T030000Z"]);
     expect(fs.existsSync(path.join(outside, BACKUP_STATE_FILE))).toBe(true);
+  });
+
+  it("can be run as often as anyone likes without costing the days already kept", async () => {
+    // The doc tells people to run it before a big change. An agent that takes
+    // that to heart must not shorten the history to an afternoon.
+    const home = makeHome(tempDir());
+    const state = cli(home, { backup: { retention: 3 } });
+    await runBackupRun({ json: true }, state.deps);
+    later(state, 24 * 60);
+
+    for (let round = 0; round < 8; round += 1) {
+      await runBackupRun({ json: true }, state.deps);
+      later(state, 5);
+    }
+
+    expect(listBackups(path.join(home, "backups")).map((item) => item.id)).toEqual([
+      "home-20261013T033500Z", "home-20261013T033000Z", "home-20261013T032500Z", "home-20261012T030000Z",
+    ]);
   });
 
   it("falls back to the default directory, and says so, when config.yaml cannot be read", async () => {
@@ -565,18 +583,20 @@ describe("ryoko backup restore", () => {
     expect(process.exitCode).toBe(1);
   });
 
-  it("keeps only the configured number of pre-restore snapshots", async () => {
-    const state = await backedUp({}, { backup: { retention: 2 } });
+  it("keeps the three most recent pre-restore snapshots of a day, and the archive it restored from", async () => {
+    const state = await backedUp();
 
-    for (let round = 0; round < 3; round += 1) {
+    for (let round = 0; round < 5; round += 1) {
       fs.writeFileSync(path.join(state.home, "config.yaml"), `broken ${round}\n`);
       await runBackupRestore("home-20261012T030000Z", { json: true }, state.deps);
       later(state, 10);
     }
 
-    expect(listBackups(path.join(state.home, "backups")).filter((item) => item.preRestore).map((item) => item.id)).toEqual([
-      "pre-restore-20261012T035000Z", "pre-restore-20261012T034000Z",
+    const kept = listBackups(path.join(state.home, "backups"));
+    expect(kept.filter((item) => item.preRestore).map((item) => item.id)).toEqual([
+      "pre-restore-20261012T041000Z", "pre-restore-20261012T040000Z", "pre-restore-20261012T035000Z",
     ]);
+    expect(kept.filter((item) => !item.preRestore).map((item) => item.id)).toEqual(["home-20261012T030000Z"]);
   });
 
   it("recreates a symlink that leaves the home only with --allow-external-symlinks", async () => {

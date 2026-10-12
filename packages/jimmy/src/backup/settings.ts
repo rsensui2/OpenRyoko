@@ -30,7 +30,7 @@ export interface BackupSettings {
   directory: string;
   /** True when `directory` is the instance's own `<home>/backups`. */
   defaultDirectory: boolean;
-  /** Home archive generations to keep. */
+  /** Days of home archives to keep. */
   retention: number;
   maxArchiveBytes: number;
   maxEntries: number;

@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { DATABASE_BACKUP_RETENTION } from "../../sessions/backup.js";
 import { TEMPLATE_DIR } from "../../shared/paths.js";
+import { SAME_DAY_BACKUPS_KEPT } from "../catalog.js";
 import { GATEWAY_STOPPED_FLAG } from "../database-restore.js";
 import { DEFAULT_ARCHIVE_RETENTION, DEFAULT_MAX_ARCHIVE_MB, DEFAULT_MAX_ENTRIES } from "../settings.js";
 import { BACKUP_KINDS } from "../targets.js";
@@ -52,6 +53,13 @@ describe("docs/backup.md", () => {
     expect(doc()).toContain(`maxArchiveMb: ${DEFAULT_MAX_ARCHIVE_MB}`);
     expect(doc()).toContain(`maxEntries: ${DEFAULT_MAX_ENTRIES}`);
     expect(doc()).toContain(`${DATABASE_BACKUP_RETENTION} 世代`);
+  });
+
+  it("says retention is counted in days, and how many of one day are kept", () => {
+    // It recommends taking a backup before a big change, so it owes the reader
+    // what doing that often does to the history: nothing.
+    expect(doc()).toMatch(/retention: \d+\s+# アーカイブを残す日数/);
+    expect(doc()).toContain(`直近 ${SAME_DAY_BACKUPS_KEPT} 個`);
   });
 });
 
