@@ -24,9 +24,10 @@ export function redactText(input: string): string {
   text = text.replace(/\b((?:sk|pk|rk|xox[baprs]|xapp|gh[pousr]|glpat|hf|api)[-_][A-Za-z0-9._-]{8,})\b/g, "[REDACTED]");
   // Telegram bot token: in an API URL (/bot<id>:<secret>/method), or on its own.
   text = text.replace(/(\bbot)\d{5,}:[A-Za-z0-9_-]{20,}/g, "$1[REDACTED]");
-  // On its own the shape is loose, so it is narrowed to what a token is: a bot
-  // id of 8-10 digits, and a 35-character secret that is not a plain hex hash.
-  text = text.replace(/\b\d{8,10}:(?![0-9a-fA-F]{35}(?![A-Za-z0-9_-]))[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])/g, "[REDACTED]");
+  // On its own the shape is loose. What keeps a "<number>:<hash>" from being
+  // masked is the secret: 35 characters that are not a plain hex string. The
+  // bot id only has to be a number of plausible length (ids keep growing).
+  text = text.replace(/\b\d{8,16}:(?![0-9a-fA-F]{35}(?![A-Za-z0-9_-]))[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])/g, "[REDACTED]");
   // Discord bot token: base64 of the bot's numeric id, a timestamp, a signature.
   // Only masked when the first part really decodes to an id — any long dotted
   // name starting with M, N or O has the same outline.
