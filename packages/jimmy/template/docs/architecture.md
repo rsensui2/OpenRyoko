@@ -22,7 +22,7 @@
 │  │           Engine Abstraction                │  │
 │  │  ┌──────────────┐  ┌───────────────────┐   │  │
 │  │  │ Claude Engine │  │   Codex Engine    │   │  │
-│  │  │ (spawns CLI)  │  │   (uses SDK)      │   │  │
+│  │  │ (spawns CLI)  │  │   (spawns CLI)    │   │  │
 │  │  └──────────────┘  └───────────────────┘   │  │
 │  └────────────────────────────────────────────┘  │
 │                                                  │
@@ -45,7 +45,8 @@ Central router. Receives messages from connectors, resolves the target employee 
 ### Engine Abstraction
 Uniform interface over different AI backends:
 - **Claude Engine**: Spawns `claude` CLI as a child process with `--resume` for session continuity
-- **Codex Engine**: Uses the Codex SDK directly in-process
+- **Codex Engine**: Spawns the `codex` CLI as a child process
+- **Gemini Engine** (optional): Spawns the `gemini` CLI as a child process
 
 ### Connector System
 Modular adapters that implement a standard interface. Each connector translates between its platform's message format and {{portalName}}'s internal message format. See `connectors.md`.
@@ -62,13 +63,22 @@ Uses `chokidar` to watch `~/.ryoko/` for changes and trigger appropriate reloads
 ### SQLite Session Registry
 Stores session metadata (id, engine, employee, connector source, timestamps) in `sessions/registry.db`.
 
+### Backup Scheduler
+While the gateway runs, takes a daily archive of the home (config, cron, persona, memory, org, skills, docs, knowledge) and a copy of each database. See `backup.md`.
+
+### Bundled Skill Sync
+When the gateway starts, brings the skills the package ships up to date in `skills/`: new ones are added and unedited ones replaced, while edited, symlinked and deleted ones are left alone. See `skills.md`.
+
+### Process Safety Net
+An error that escapes every handler is logged and counted, and the gateway keeps running. The counts are in `process` of `GET /api/status`; anything above zero means the gateway is running on after such an error.
+
 ## Data Flow
 
 1. Connector receives an external message (e.g., Slack message)
 2. Connector normalizes the message and calls session manager
 3. Session manager resolves the target employee and engine
 4. Session manager creates or reuses a session for the source reference
-5. Engine processes the message (Claude CLI or Codex SDK)
+5. Engine processes the message (the Claude, Codex or Gemini CLI)
 6. Engine streams or returns the result
 7. Session manager delivers the result back through the originating connector
 8. WebSocket server broadcasts the event to any connected web UI clients
