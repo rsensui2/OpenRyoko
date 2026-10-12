@@ -877,7 +877,7 @@ export interface JinnConfig {
     /** Sync the skills the package ships into <home>/skills at gateway start:
      *  add newly shipped ones, replace unmodified ones, never overwrite edited
      *  ones or bring back deleted ones. Default: true. `ryoko migrate` syncs
-     *  either way, and does bring back deleted ones. */
+     *  either way, under the same rules. */
     autoSync?: boolean;
   };
   remotes?: Record<string, { url: string; label?: string }>;

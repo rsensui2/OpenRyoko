@@ -18,8 +18,9 @@ export interface SyncBundledSkillsOptions {
   packageVersion: string;
   /**
    * Put back shipped skills the operator deleted. Off by default: a skill the sync
-   * placed and later finds gone was removed on purpose, and starting the gateway
-   * must not undo that. An explicit `ryoko migrate` turns it on.
+   * placed and later finds gone was removed on purpose, and neither starting the
+   * gateway nor updating may undo that. Only `ryoko migrate --restore-deleted-skills`
+   * turns it on.
    */
   restoreDeleted?: boolean;
   now?: Date;

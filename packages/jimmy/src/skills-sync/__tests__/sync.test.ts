@@ -259,7 +259,7 @@ describe("bundled skill sync: what happens to each skill", () => {
     expect(Object.keys(f.receipt().skills)).toEqual(["example"]);
   });
 
-  it("lets an empty directory keep a shipped skill out, with or without a receipt", () => {
+  it("does not take an empty directory for a missing or deleted skill", () => {
     const f = fixture();
     f.ship("unwanted", { "SKILL.md": "v1" });
     f.ship("dropped-later", { "SKILL.md": "v1" });
@@ -268,8 +268,8 @@ describe("bundled skill sync: what happens to each skill", () => {
     fs.rmSync(path.join(f.skills, "dropped-later"), { recursive: true });
     fs.mkdirSync(path.join(f.skills, "dropped-later"));
 
-    // Neither a gateway start nor an explicit ryoko migrate fills them in.
-    for (const result of [f.sync("2026.10.10"), f.migrate("2026.10.10")]) {
+    // Not missing, so not deleted: neither an ordinary run nor a restore fills them in.
+    for (const result of [f.sync("2026.10.10"), f.restore("2026.10.10")]) {
       expect(result.added).toEqual([]);
       expect(result.kept).toEqual([{ name: "dropped-later", reason: "customized" }, { name: "unwanted", reason: "unmanaged" }]);
     }
@@ -425,7 +425,7 @@ describe("bundled skill sync: skills the operator deleted", () => {
     expect(fs.existsSync(path.join(f.skills, "example"))).toBe(false);
   });
 
-  it("puts the skill back on an explicit ryoko migrate, and tracks it again", () => {
+  it("puts the skill back only when asked to restore deleted skills, and tracks it again", () => {
     const f = fixture();
     f.ship("example", { "SKILL.md": "v1" });
     f.sync("2026.10.10");
@@ -433,7 +433,7 @@ describe("bundled skill sync: skills the operator deleted", () => {
     f.sync("2026.10.10");
     f.ship("example", { "SKILL.md": "v2" });
 
-    const result = f.migrate("2026.10.11");
+    const result = f.restore("2026.10.11");
 
     expect(result).toMatchObject({ added: ["example"], kept: [], notices: [], inSync: ["example"] });
     expect(f.read("example", "SKILL.md")).toBe("v2");
@@ -458,13 +458,13 @@ describe("bundled skill sync: skills the operator deleted", () => {
     expect(fs.existsSync(path.join(f.skills, "example"))).toBe(false);
   });
 
-  it("puts a deleted skill back on ryoko migrate even if no start has seen the deletion", () => {
+  it("restores a deleted skill on request even if no earlier run has seen the deletion", () => {
     const f = fixture();
     f.ship("example", { "SKILL.md": "v1" });
     f.sync("2026.10.10");
     fs.rmSync(path.join(f.skills, "example"), { recursive: true });
 
-    expect(f.migrate("2026.10.10").added).toEqual(["example"]);
+    expect(f.restore("2026.10.10").added).toEqual(["example"]);
     expect(f.read("example", "SKILL.md")).toBe("v1");
   });
 

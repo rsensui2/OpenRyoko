@@ -9,9 +9,9 @@ import type { BundledSkillSync, KeepReason } from "./types.js";
 /**
  * Sync the skills this package ships into this instance's home. Gateway start and
  * `ryoko migrate` both go through here, so they can never disagree about a skill.
- * They differ in one thing: only `ryoko migrate` passes `restoreDeleted`, so a
- * bundled skill the operator deleted comes back on the explicit command and never
- * just because the gateway restarted.
+ * Both leave out a bundled skill the operator deleted: neither a restart nor an
+ * update brings it back. `restoreDeleted` is set by one caller only,
+ * `ryoko migrate --restore-deleted-skills`.
  */
 export function syncInstanceBundledSkills(options: { restoreDeleted?: boolean } = {}): BundledSkillSync {
   return syncBundledSkills({
@@ -42,9 +42,11 @@ export function syncBundledSkillsOnBoot(config: Pick<JinnConfig, "skills">): voi
 
 const listed = (label: string, names: readonly string[]): string[] => (names.length > 0 ? [`${label} ${names.join(", ")}`] : []);
 
-// Not "and restart": a skill the sync placed that goes missing counts as deleted, and
-// a restart leaves it out. The explicit command installs it.
-const TAKE_SHIPPED = 'To take the shipped version, move the skill\'s directory aside and run "ryoko migrate"; see docs/skills.md.';
+const RESTORE_DELETED_SKILLS = '"ryoko migrate --restore-deleted-skills"';
+
+// A skill the sync placed that goes missing counts as deleted, and neither a restart
+// nor a plain `ryoko migrate` puts it back. Hence the option, not "and restart".
+const TAKE_SHIPPED = `To take the shipped version, move the skill's directory aside and run ${RESTORE_DELETED_SKILLS}; see docs/skills.md.`;
 
 /** A run that changed nothing logs nothing, and a skill left untouched is mentioned
  *  once per package version (the sync keeps that tally), so restarts stay quiet. */
@@ -74,7 +76,7 @@ function report(result: BundledSkillSync): void {
     );
   }
   if (removed.length > 0) {
-    logger.info(`Bundled skills not reinstalled because they were removed from this home: ${removed.join(", ")}. Run "ryoko migrate" to put them back.`);
+    logger.info(`Bundled skills not reinstalled because they were removed from this home: ${removed.join(", ")}. Run ${RESTORE_DELETED_SKILLS} to put them back.`);
   }
   for (const failure of result.failed) logger.warn(`Bundled skill "${failure.name}" was not synced: ${failure.error}`);
   if (result.skipped === "skills-root-symlink") logger.debug("Bundled skills not synced: skills/ is a symlink the user manages.");

@@ -34,7 +34,7 @@ export function planSkillSync(input: {
   skillsRoot: string;
   bundled: readonly BundledSkill[];
   receipt: Receipt | null;
-  /** Put back shipped skills the operator deleted. Only an explicit `ryoko migrate` asks for this. */
+  /** Put back shipped skills the operator deleted. Only `ryoko migrate --restore-deleted-skills` asks for this. */
   restoreDeleted: boolean;
 }): SkillPlan[] {
   const recorded = input.receipt?.skills ?? {};

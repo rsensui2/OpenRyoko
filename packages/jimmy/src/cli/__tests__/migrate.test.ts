@@ -52,7 +52,7 @@ import fs from "node:fs";
 import { syncInstanceBundledSkills } from "../../skills-sync/instance.js";
 import type { BundledSkillSync } from "../../skills-sync/types.js";
 import { compareSemver, getPendingMigrations } from "../../shared/version.js";
-import { CLAUDE_SKILLS_DIR, AGENTS_SKILLS_DIR, CONFIG_PATH, JINN_HOME, MIGRATIONS_DIR } from "../../shared/paths.js";
+import { CLAUDE_SKILLS_DIR, AGENTS_SKILLS_DIR, CONFIG_PATH, JINN_HOME, MIGRATIONS_DIR, TEMPLATE_DIR } from "../../shared/paths.js";
 import path from "node:path";
 
 const mockExecFileSync = vi.mocked(execFileSync);
@@ -222,6 +222,7 @@ describe("migrate: bundled skill sync", () => {
       retired: ["old-skill"],
       kept: [
         { name: "migrate", reason: "modified" },
+        { name: "new", reason: "deleted" },
         { name: "status", reason: "symlink" },
         { name: "self-heal", reason: "customized" },
       ],
@@ -236,20 +237,98 @@ describe("migrate: bundled skill sync", () => {
     expect(text).toMatch(/\[retired skill\].*old-skill/);
     expect(text).toContain(backupDir);
     expect(text).toMatch(/\[skill kept\].*migrate/);
+    // A skill the operator deleted is left out, with the one way to get it back.
+    expect(text).toMatch(/\[skill kept\].* new \(.*ryoko migrate --restore-deleted-skills\)/);
     // A symlink or an edit with no shipped update pending needs nothing from the user.
     expect(text).not.toMatch(/status|self-heal/);
     expect(fs.symlinkSync).not.toHaveBeenCalled();
   });
 
-  it.each([{}, { auto: true }, { fix: true }])("asks the sync to put back skills the operator deleted (%j)", async (opts) => {
+  it.each([{}, { auto: true }, { fix: true }])("leaves skills the operator deleted out, like a gateway start (%j)", async (opts) => {
     // --auto finishes by stamping the version, so there has to be a config to stamp.
     vi.mocked(fs.readFileSync).mockReturnValue("jinn:\n  version: 1.0.0\n");
     const { runMigrate } = await import("../migrate.js");
 
     await runMigrate(opts);
 
-    // Gateway start leaves a deleted skill out; the explicit command is how it comes back.
+    // `ryoko update` runs `migrate --auto`: an update must not undo a deletion either.
+    expect(mockSync).toHaveBeenCalledExactlyOnceWith({ restoreDeleted: false });
+  });
+
+  it.each([{}, { auto: true }, { fix: true }])("puts deleted skills back only with --restore-deleted-skills (%j)", async (opts) => {
+    vi.mocked(fs.readFileSync).mockReturnValue("jinn:\n  version: 1.0.0\n");
+    const { runMigrate } = await import("../migrate.js");
+
+    await runMigrate({ ...opts, restoreDeletedSkills: true });
+
     expect(mockSync).toHaveBeenCalledExactlyOnceWith({ restoreDeleted: true });
+  });
+
+  it("stays read-only under --check even when asked to restore", async () => {
+    const { runMigrate } = await import("../migrate.js");
+
+    await runMigrate({ check: true, restoreDeletedSkills: true });
+
+    expect(mockSync).not.toHaveBeenCalled();
+  });
+
+  describe("when the operator deleted the migrate skill and a migration ships it", () => {
+    const deletedSkill = path.join(JINN_HOME, "skills", "migrate");
+    const touched = (mock: { mock: { calls: unknown[][] } }) => mock.mock.calls.map((call) => String(call[0])).filter((file) => file.startsWith(deletedSkill));
+    const prompt = () => (mockExecFileSync.mock.calls[0][1] as string[]).at(-1)!;
+
+    beforeEach(() => {
+      shipMigrateSkillInMigration();
+      mockExistsSync.mockImplementation((file) => !String(file).startsWith(deletedSkill));
+      mockSync.mockReturnValue(synced({ kept: [{ name: "migrate", reason: "deleted" }, { name: "status", reason: "deleted" }] }));
+    });
+
+    it("--auto does not recreate it from the migration's files, and has nothing left to merge", async () => {
+      const { runMigrate } = await import("../migrate.js");
+
+      await runMigrate({ auto: true });
+
+      expect(touched(vi.mocked(fs.mkdirSync))).toEqual([]);
+      expect(touched(vi.mocked(fs.copyFileSync))).toEqual([]);
+      expect(touched(mockWriteFileSync)).toEqual([]);
+      expect(fs.symlinkSync).not.toHaveBeenCalled();
+      expect(output()).not.toMatch(/needs AI merge|\[new\]|\[staged\] migrate/);
+      // Nothing was skipped for the AI, so the update is complete.
+      expect(stampedVersions()).toEqual(["1.1.0"]);
+    });
+
+    it("the AI run reads the packaged migrate skill instead of putting the deleted one back", async () => {
+      const { runMigrate } = await import("../migrate.js");
+
+      await runMigrate({});
+
+      expect(touched(vi.mocked(fs.mkdirSync))).toEqual([]);
+      expect(touched(vi.mocked(fs.copyFileSync))).toEqual([]);
+      expect(output()).not.toMatch(/\[staged\] migrate/);
+      expect(mockExecFileSync).toHaveBeenCalledOnce();
+      expect(prompt()).toContain(path.join(TEMPLATE_DIR, "skills", "migrate", "SKILL.md"));
+      expect(prompt()).not.toContain(path.join(deletedSkill, "SKILL.md"));
+    });
+
+    it("the AI is told which skills the operator deleted, so it does not copy them back", async () => {
+      const { runMigrate } = await import("../migrate.js");
+
+      await runMigrate({});
+
+      // The instance may still hold an older migrate skill that predates tombstones.
+      expect(prompt()).toMatch(/deleted.*: migrate, status\b/);
+      expect(prompt()).toMatch(/do not recreate/i);
+    });
+  });
+
+  it("points the AI at the instance's own migrate skill and mentions no deletions when there are none", async () => {
+    const { runMigrate } = await import("../migrate.js");
+
+    await runMigrate({});
+
+    const prompt = (mockExecFileSync.mock.calls[0][1] as string[]).at(-1)!;
+    expect(prompt).toContain(path.join(JINN_HOME, "skills", "migrate", "SKILL.md"));
+    expect(prompt).not.toMatch(/deleted/i);
   });
 
   it("carries on with the migrations when the sync cannot run", async () => {

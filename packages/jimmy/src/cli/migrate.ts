@@ -71,29 +71,44 @@ function ensureSkillSymlinks(skillName: string): void {
   }
 }
 
+/** The only thing that puts back a bundled skill the operator deleted. */
+const RESTORE_DELETED_SKILLS = "ryoko migrate --restore-deleted-skills";
+
 /** Skills left alone for a reason the user can act on. Symlinks, and edits with
  *  no shipped update waiting, need nothing from them and are not listed. */
 const KEPT_SKILL_NOTES: Partial<Record<KeepReason, string>> = {
-  modified: "編集済み。同梱版に更新があります",
-  unmanaged: "同梱版と内容が違います。導入時の記録が無く、古い同梱版か編集済みかを区別できません",
+  modified: "編集済み。同梱版に更新があります。上書きしません",
+  unmanaged: "同梱版と内容が違います。導入時の記録が無く、古い同梱版か編集済みかを区別できません。上書きしません",
   "retired-modified": "同梱から外れましたが、編集済みのため残しました",
+  deleted: `削除済みのため配置しません。戻すには ${RESTORE_DELETED_SKILLS}`,
 };
+
+/** What the bundled skill sync left behind, as far as the migrations care. */
+interface SyncedSkills {
+  /** Skills that now match the shipped version. */
+  inSync: ReadonlySet<string>;
+  /** Shipped skills the operator deleted. Nothing in this command may put them back. */
+  deleted: ReadonlySet<string>;
+}
+
+const NO_SYNCED_SKILLS: SyncedSkills = { inSync: new Set(), deleted: new Set() };
 
 /**
  * Run the bundled skill sync — the same one the gateway runs at start — and
- * report it. Returns the skills that now match the shipped version. A sync that
- * cannot run is reported and does not block the versioned migrations.
+ * report it. A sync that cannot run is reported and does not block the versioned
+ * migrations.
  *
- * Unlike gateway start, this explicit command puts back a bundled skill the
- * operator deleted: it is how a removed skill is restored.
+ * Like gateway start, this leaves out a bundled skill the operator deleted:
+ * `ryoko update` runs `ryoko migrate --auto`, and an update must not undo a
+ * deletion. Only `--restore-deleted-skills` asks for those skills back.
  */
-function syncBundledSkillsStep(): Set<string> {
+function syncBundledSkillsStep(restoreDeleted: boolean): SyncedSkills {
   let result: BundledSkillSync;
   try {
-    result = syncInstanceBundledSkills({ restoreDeleted: true });
+    result = syncInstanceBundledSkills({ restoreDeleted });
   } catch (err: any) {
     console.log(`  ${YELLOW}[skills]${RESET} 同梱スキルを同期できませんでした: ${err?.message ?? err}`);
-    return new Set();
+    return NO_SYNCED_SKILLS;
   }
   for (const name of result.added) {
     ensureSkillSymlinks(name);
@@ -104,7 +119,7 @@ function syncBundledSkillsStep(): Set<string> {
   if (result.backupDir) console.log(`  ${DIM}置き換え・退役の前の内容: ${result.backupDir}${RESET}`);
   for (const { name, reason } of result.kept) {
     const note = KEPT_SKILL_NOTES[reason];
-    if (note) console.log(`  ${YELLOW}[skill kept]${RESET} ${name} (${note}。上書きしません)`);
+    if (note) console.log(`  ${YELLOW}[skill kept]${RESET} ${name} (${note})`);
   }
   for (const { name, error } of result.failed) console.log(`  ${RED}[skill failed]${RESET} ${name}: ${error}`);
   if (result.skipped === "skills-root-symlink") {
@@ -112,7 +127,10 @@ function syncBundledSkillsStep(): Set<string> {
   } else if (result.skipped === "newer-receipt") {
     console.log(`  ${DIM}[skills] このホームはより新しい OpenRyoko が同期済みのため、同梱スキルは変更しません${RESET}`);
   }
-  return new Set(result.inSync);
+  return {
+    inSync: new Set(result.inSync),
+    deleted: new Set(result.kept.filter((skill) => skill.reason === "deleted").map((skill) => skill.name)),
+  };
 }
 
 /** A migration's copy of a bundled skill's file needs no merge once that skill
@@ -120,6 +138,12 @@ function syncBundledSkillsStep(): Set<string> {
 function isSyncedSkillFile(relPath: string, syncedSkills: ReadonlySet<string>): boolean {
   const parts = relPath.split(path.sep);
   return parts.length >= 3 && parts[0] === "skills" && syncedSkills.has(parts[1]);
+}
+
+/** Is this path the directory of one of these skills, or anything inside it? */
+function isInsideSkill(relPath: string, skills: ReadonlySet<string>): boolean {
+  const parts = relPath.split(path.sep);
+  return parts.length >= 2 && parts[0] === "skills" && skills.has(parts[1]);
 }
 
 /**
@@ -212,7 +236,13 @@ export function migrateChildEnv(engine: string, cwd: string): NodeJS.ProcessEnv 
   return engine === "claude" ? { ...process.env, ...claudeAutoMemoryEnvFor(cwd) } : process.env;
 }
 
-export async function runMigrate(opts: { check?: boolean; auto?: boolean; fix?: boolean }): Promise<void> {
+export async function runMigrate(opts: {
+  check?: boolean;
+  auto?: boolean;
+  fix?: boolean;
+  /** Put back bundled skills the operator deleted. Without it they stay deleted. */
+  restoreDeletedSkills?: boolean;
+}): Promise<void> {
   // Ensure instance exists
   if (!fs.existsSync(JINN_HOME)) {
     console.error(`${RED}エラー:${RESET} ${JINN_HOME} が存在しません。"ryoko setup" を実行してください。`);
@@ -245,7 +275,7 @@ export async function runMigrate(opts: { check?: boolean; auto?: boolean; fix?: 
 
   // Bundled skills are package content, independent of versioned config
   // migrations. Keep --check read-only; edited skills are never overwritten.
-  const syncedSkills = opts.check ? new Set<string>() : syncBundledSkillsStep();
+  const skills = opts.check ? NO_SYNCED_SKILLS : syncBundledSkillsStep(opts.restoreDeletedSkills === true);
 
   // Already up to date
   if (compareSemver(instanceVersion, packageVersion) >= 0) {
@@ -293,10 +323,12 @@ export async function runMigrate(opts: { check?: boolean; auto?: boolean; fix?: 
     console.log(`  ${GREEN}[staged]${RESET} ${version}`);
   }
 
-  // Also ensure the migrate skill is available in the instance
+  // Also ensure the migrate skill is available in the instance — unless the
+  // operator deleted it. Then it stays deleted and the AI reads the packaged copy.
   const migrateSkillSrc = path.join(TEMPLATE_DIR, "skills", "migrate");
   const migrateSkillDest = path.join(SKILLS_DIR, "migrate");
-  if (fs.existsSync(migrateSkillSrc) && !fs.existsSync(migrateSkillDest)) {
+  const migrateSkillDeleted = skills.deleted.has("migrate");
+  if (!migrateSkillDeleted && fs.existsSync(migrateSkillSrc) && !fs.existsSync(migrateSkillDest)) {
     copyDirRecursive(migrateSkillSrc, migrateSkillDest);
     ensureSkillSymlinks("migrate");
     console.log(`  ${GREEN}[staged]${RESET} migrate スキル`);
@@ -305,7 +337,7 @@ export async function runMigrate(opts: { check?: boolean; auto?: boolean; fix?: 
   // --auto: apply safe changes deterministically without launching AI
   if (opts.auto) {
     console.log("\n安全な変更を自動適用中...");
-    await applyAutoMigrations(pending, instanceVersion, packageVersion, syncedSkills);
+    await applyAutoMigrations(pending, instanceVersion, packageVersion, skills);
     return;
   }
 
@@ -319,7 +351,7 @@ export async function runMigrate(opts: { check?: boolean; auto?: boolean; fix?: 
   try {
     const prompt = [
       `Apply all pending migrations in ${MIGRATIONS_DIR}.`,
-      `Follow the migrate skill instructions at ${path.join(SKILLS_DIR, "migrate", "SKILL.md")}.`,
+      `Follow the migrate skill instructions at ${path.join(migrateSkillDeleted ? migrateSkillSrc : migrateSkillDest, "SKILL.md")}.`,
       `Current instance version: ${instanceVersion}`,
       `Target version: ${packageVersion}`,
       `Pending versions: ${pending.join(", ")}`,
@@ -327,6 +359,10 @@ export async function runMigrate(opts: { check?: boolean; auto?: boolean; fix?: 
       `For each version in order, read its MIGRATION.md and apply the changes.`,
       `After all migrations, update jinn.version in config.yaml to "${packageVersion}".`,
       `Clean up the migrations/ directory when done.`,
+      // Said here, not only in the skill: an instance may hold a migrate skill older than this rule.
+      ...(skills.deleted.size > 0
+        ? [`The operator deleted these bundled skills: ${[...skills.deleted].sort().join(", ")}. Do not recreate them, even if a migration ships files for them.`]
+        : []),
     ].join("\n");
 
     const args = buildMigrateArgs(defaultEngine, prompt);
@@ -350,13 +386,14 @@ export async function runMigrate(opts: { check?: boolean; auto?: boolean; fix?: 
  * Auto-migration: deterministically apply safe changes without AI.
  * Copies new files, adds new config keys. Does NOT modify user-customized files.
  * Files of a bundled skill the sync already brought up to date count as applied;
- * only skills the user edited are still left to the AI merge.
+ * only skills the user edited are still left to the AI merge. Files of a bundled
+ * skill the operator deleted are not applied at all: the skill stays deleted.
  */
 async function applyAutoMigrations(
   pending: string[],
   instanceVersion: string,
   packageVersion: string,
-  syncedSkills: ReadonlySet<string>,
+  skills: SyncedSkills,
 ): Promise<void> {
   let applied = 0;
 
@@ -381,6 +418,11 @@ async function applyAutoMigrations(
     const entries = collectEntries(filesDir, filesDir);
     for (const entry of entries) {
       const destPath = path.join(JINN_HOME, entry.relPath);
+
+      if (isInsideSkill(entry.relPath, skills.deleted)) {
+        if (entry.type === "file") console.log(`  ${DIM}[skip]${RESET} ${entry.relPath} (bundled skill deleted by the operator)`);
+        continue;
+      }
 
       if (entry.type === "dir") {
         if (!fs.existsSync(destPath)) {
@@ -408,7 +450,7 @@ async function applyAutoMigrations(
         if (parts[0] === "skills" && parts.length >= 2) {
           ensureSkillSymlinks(parts[1]);
         }
-      } else if (isSyncedSkillFile(entry.relPath, syncedSkills)) {
+      } else if (isSyncedSkillFile(entry.relPath, skills.inSync)) {
         console.log(`  ${DIM}[ok]${RESET} ${entry.relPath} (bundled skill already in sync)`);
       } else {
         console.log(`  ${YELLOW}[skip]${RESET} ${entry.relPath} (exists — needs AI merge)`);

@@ -243,6 +243,7 @@ program
   .option("--check", "未適用のマイグレーションをチェックのみ（適用はしない）")
   .option("--auto", "安全な変更のみをAI起動なしで自動適用")
   .option("--fix", "旧gateway URLをバックアップ後に安全なloopback URLへ置換")
+  .option("--restore-deleted-skills", "削除した同梱スキルを配置し直す（指定しない限り、再起動でも更新でも戻らない）")
   .action(async (opts) => {
     const { runMigrate } = await import("../src/cli/migrate.js");
     await runMigrate(opts);

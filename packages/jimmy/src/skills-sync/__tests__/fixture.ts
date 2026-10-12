@@ -64,10 +64,10 @@ export function fixture() {
     place: (name: string, files: Files) => writeTree(path.join(skills, name), files),
     read: (...relative: string[]) => fs.readFileSync(path.join(skills, ...relative), "utf8"),
     receipt: () => JSON.parse(fs.readFileSync(path.join(skills, RECEIPT_FILE), "utf8")),
-    /** The sync as the gateway runs it at start. */
+    /** The sync as gateway start and a plain `ryoko migrate` run it. */
     sync: (packageVersion = "2026.10.10", portalName = "Momo") => run(packageVersion, portalName, false),
-    /** The sync as an explicit `ryoko migrate` runs it: skills the operator deleted come back. */
-    migrate: (packageVersion = "2026.10.10", portalName = "Momo") => run(packageVersion, portalName, true),
+    /** The sync as `ryoko migrate --restore-deleted-skills` runs it: deleted skills come back. */
+    restore: (packageVersion = "2026.10.10", portalName = "Momo") => run(packageVersion, portalName, true),
   };
 
   function run(packageVersion: string, portalName: string, restoreDeleted: boolean) {

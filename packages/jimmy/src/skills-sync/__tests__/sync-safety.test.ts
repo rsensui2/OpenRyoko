@@ -100,7 +100,7 @@ describe("bundled skill sync: staying inside skills/", () => {
     fs.rmSync(path.join(f.skills, "example"), { recursive: true });
     const before = snapshot(f.root);
 
-    expect(() => f.migrate("2026.10.10")).toThrow(RECEIPT_FILE);
+    expect(() => f.restore("2026.10.10")).toThrow(RECEIPT_FILE);
     expect(snapshot(f.root)).toEqual(before);
   });
 
