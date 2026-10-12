@@ -149,12 +149,66 @@ export function formatResponse(text: string): string[] {
 }
 
 /**
+ * Where Slack serves the files uploaded to it: url_private and
+ * url_private_download of a hosted file are
+ * https://files.slack.com/files-pri/<team>-<file>/… (Slack's file object and
+ * "working with files" documentation, Enterprise Grid included). These are the
+ * only URLs the bot token belongs on.
+ */
+const SLACK_FILE_HOSTS: ReadonlySet<string> = new Set(["files.slack.com"]);
+const MAX_SLACK_FILE_REDIRECTS = 3;
+
+/** `url` as a URL, if it is an https URL on Slack's file host; null otherwise. */
+function slackFileUrl(url: string): URL | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  const plainHttps = parsed.protocol === "https:" && parsed.port === "" && parsed.username === "" && parsed.password === "";
+  return plainHttps && SLACK_FILE_HOSTS.has(parsed.hostname) ? parsed : null;
+}
+
+/**
+ * GET a Slack file with the bot token — from Slack's file host and from
+ * nowhere else.
+ *
+ * The URL comes from the file object in the event, and not every file is
+ * Slack's: a remote file (files.remote.add — Google Drive, Dropbox, any app's
+ * own) has a url_private that is whatever external URL was registered for it.
+ * Sending `Authorization: Bearer <bot token>` there hands the token to that
+ * host. So a URL elsewhere is refused before any request is made — it is not
+ * fetched without the token either — and redirects are followed by hand, each
+ * hop held to the same rule. The errors never quote a URL.
+ */
+async function fetchSlackFile(url: string, token: string): Promise<Response> {
+  const first = slackFileUrl(url);
+  if (!first) throw new Error("Slack attachment is not hosted on Slack's file host; it was not downloaded");
+  let target: URL = first;
+  for (let hop = 0; ; hop++) {
+    const response: Response = await fetch(target, { headers: { Authorization: `Bearer ${token}` }, redirect: "manual" });
+    if (response.status < 300 || response.status >= 400) return response;
+    await response.body?.cancel().catch(() => {});
+    const location: string | null = response.headers.get("location");
+    const next: URL | null = location ? slackFileUrl(new URL(location, target).href) : null;
+    if (!next) {
+      // What Slack does for a token it will not serve the file to: the sign-in page.
+      throw new Error("Slack answered the attachment download with a redirect away from its file host (does the bot token have the files:read scope?)");
+    }
+    if (hop >= MAX_SLACK_FILE_REDIRECTS) throw new Error("Slack attachment download was redirected too many times");
+    target = next;
+  }
+}
+
+/**
  * Download a Slack file attachment to a local directory.
  * Returns the local file path.
  *
  * The file is written as it arrives and refused past `maxBytes` (50 MB unless
  * said otherwise); `destDir` is created once there is something to save, and
- * a download that fails leaves nothing behind.
+ * a download that fails leaves nothing behind. Only a file on Slack's own
+ * file host is downloaded (see {@link fetchSlackFile}).
  */
 export async function downloadAttachment(
   url: string,
@@ -162,9 +216,7 @@ export async function downloadAttachment(
   destDir: string,
   maxBytes: number = MAX_ATTACHMENT_BYTES,
 ): Promise<string> {
-  const response = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const response = await fetchSlackFile(url, token);
 
   if (!response.ok) {
     throw new Error(`Failed to download attachment: ${response.status} ${response.statusText}`);

@@ -67,3 +67,84 @@ describe("Slack downloadAttachment", () => {
     expect(fs.statSync(saved).size).toBe(1024);
   });
 });
+
+/* Slack serves the files uploaded to it from files.slack.com, and those URLs
+ * need the bot token. But a file in a message need not be one of those: a
+ * "remote file" (files.remote.add; Google Drive, Dropbox and the like) has a
+ * url_private that is whatever external URL was registered for it. The token
+ * was sent along to any of them — to any host a workspace app or member could
+ * name. It now goes to Slack's file host only, and nothing else is fetched. */
+describe("Slack downloadAttachment and the bot token", () => {
+  const sentTo = () => outbound.mock.calls.map(([target]) => String(target));
+  const authorization = (call: number) => new Headers(outbound.mock.calls[call][1]?.headers).get("authorization");
+
+  it("sends the token to Slack's file host", async () => {
+    await downloadAttachment(FILE_URL, TOKEN, dest);
+    expect(sentTo()).toEqual([FILE_URL]);
+    expect(authorization(0)).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it.each([
+    ["a remote file kept on Google Drive", "https://docs.google.com/document/d/1e8LtkvCSe/edit?tab=t.0"],
+    ["any other host", "https://attacker.example/files-pri/T0001-F0001/download/report.pdf"],
+    ["a host that only starts like Slack's", "https://files.slack.com.attacker.example/report.pdf"],
+    ["a host that only ends like Slack's", "https://attacker-files.slack.com.example/report.pdf"],
+    ["another Slack host", "https://acme.slack.com/files/U1/F1/report.pdf"],
+    ["Slack's public-link host, which takes no token", "https://slack-files.com/T0001-F0001-abcdef"],
+    ["Slack's file host named in the user part of the URL", "https://files.slack.com@attacker.example/report.pdf"],
+    ["Slack's file host over plain http", "http://files.slack.com/files-pri/T0001-F0001/report.pdf"],
+    ["Slack's file host on another port", "https://files.slack.com:8443/files-pri/T0001-F0001/report.pdf"],
+    ["an address on the local network", "https://169.254.169.254/latest/meta-data/"],
+    ["a local file", "file:///etc/passwd"],
+    ["something that is not a URL", "files.slack.com/report.pdf"],
+  ])("neither sends the token to nor fetches %s", async (_what, url) => {
+    const failure = await downloadAttachment(url, TOKEN, dest).catch((err: unknown) => err);
+
+    expect(failure).toBeInstanceOf(Error);
+    expect(outbound).not.toHaveBeenCalled();
+    expect(everythingUnder(root)).toEqual([]);
+    // What is logged about it names neither the URL (it may carry a secret of its own) nor the token.
+    expect((failure as Error).message).not.toContain("attacker");
+    expect((failure as Error).message).not.toContain("docs.google.com");
+    expect((failure as Error).message).not.toContain(TOKEN);
+  });
+
+  it("does not follow a redirect that leaves Slack's file host, with or without the token", async () => {
+    outbound.mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: "https://attacker.example/collect" } }));
+
+    await expect(downloadAttachment(FILE_URL, TOKEN, dest)).rejects.toThrow(/redirect/i);
+
+    expect(sentTo()).toEqual([FILE_URL]); // one request, to Slack; none to where it pointed
+    expect(everythingUnder(root)).toEqual([]);
+  });
+
+  it("does not save the sign-in page Slack redirects to when the token may not read files", async () => {
+    outbound.mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: "https://acme.slack.com/?redir=%2Ffiles-pri%2FT0001-F0001%2Freport.pdf" } }));
+    await expect(downloadAttachment(FILE_URL, TOKEN, dest)).rejects.toThrow(/files:read/);
+    expect(sentTo()).toEqual([FILE_URL]);
+    expect(everythingUnder(root)).toEqual([]);
+  });
+
+  it("follows a redirect that stays on Slack's file host", async () => {
+    const moved = "https://files.slack.com/files-pri/T0001-F0001/report-v2.pdf";
+    outbound
+      .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: "/files-pri/T0001-F0001/report-v2.pdf" } }))
+      .mockResolvedValueOnce(new Response("moved-bytes"));
+
+    const saved = await downloadAttachment(FILE_URL, TOKEN, dest);
+
+    expect(sentTo()).toEqual([FILE_URL, moved]);
+    expect(fs.readFileSync(saved, "utf-8")).toBe("moved-bytes");
+  });
+
+  it("gives up on a chain of redirects", async () => {
+    outbound.mockImplementation(async () => new Response(null, { status: 302, headers: { location: FILE_URL } }));
+    await expect(downloadAttachment(FILE_URL, TOKEN, dest)).rejects.toThrow(/redirect/i);
+    expect(outbound.mock.calls.length).toBeLessThanOrEqual(5);
+  });
+
+  it("never lets fetch follow a redirect on its own", async () => {
+    await downloadAttachment(FILE_URL, TOKEN, dest);
+    expect(outbound.mock.calls[0][1]?.redirect).toBe("manual");
+  });
+});
