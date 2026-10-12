@@ -63,6 +63,12 @@ connectors:
     #   engine: codex
     #   model: gpt-5-nano
     #   timeoutMs: 30000
+    #
+    # Claude / Codex のログインが切れたとき、オペレータ本人が自分の DM から
+    # ログインし直せるようにする。デフォルトはオフ。portal.operatorSlackId が必須。
+    # 使い方と注意点は docs/connectors.md の「Provider Re-login」を参照。
+    # providerAuth:
+    #   enabled: true
 
 # MCPサーバーは従業員にブラウザ・検索・メッセージング機能を提供する。
 # Claude Codeセッションに --mcp-config 経由で自動注入される。

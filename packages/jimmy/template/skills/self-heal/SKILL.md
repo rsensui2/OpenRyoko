@@ -41,6 +41,8 @@ Check that the configured AI engine is installed and accessible:
 
 If the engine command is not found, inform the user that the engine is not installed or not on their PATH.
 
+If the engine is installed but its turns fail with an authentication error, its login has expired. The operator can log in again on the host with the CLI's own login command, or — where the Slack connector has `providerAuth` enabled — by sending `ログイン` to the bot in their own DM (see `docs/connectors.md`, "Provider Re-login").
+
 ### 4. Check Session Database
 
 Look at the session registry for stuck sessions:

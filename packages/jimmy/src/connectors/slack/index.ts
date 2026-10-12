@@ -43,6 +43,7 @@ import type { TriageCapabilitySnapshot } from "../../shared/triage-capabilities.
 import { explicitThread } from "../../shared/threading.js";
 import { ConversationTracker } from "./conversation-tracker.js";
 import { AgentsCanvasUpdater } from "./agents-canvas.js";
+import { createSlackProviderAuth, type SlackProviderAuth } from "./provider-auth.js";
 import { startsWithSlashCommand } from "../../sessions/manager.js";
 import type { SlackTriageConfig } from "../../shared/types.js";
 import { JINN_HOME, TMP_DIR } from "../../shared/paths.js";
@@ -86,6 +87,8 @@ export class SlackConnector implements Connector {
   private readonly operatorAliases: string[] | undefined;
   private readonly conversations: ConversationTracker;
   private readonly agentsCanvas: AgentsCanvasUpdater | null;
+  /** Operator-only Claude / Codex re-login from a DM. Absent unless `providerAuth.enabled`. */
+  private readonly providerAuth: SlackProviderAuth | undefined;
   private static CHANNEL_CACHE_TTL_MS = 3600_000; // 1 hour
   private static USER_CACHE_TTL_MS = 3600_000; // 1 hour
 
@@ -185,6 +188,11 @@ export class SlackConnector implements Connector {
     this.agentsCanvas = config.agentsCanvas?.enabled
       ? new AgentsCanvasUpdater(this.app, config.agentsCanvas)
       : null;
+    this.providerAuth = createSlackProviderAuth(this.app.client, config, {
+      getOperatorSlackId: context.getOperatorSlackId,
+      isAllowedUser: (user) => !this.allowedUsers || this.allowedUsers.has(user),
+      isStaleEvent: (ts) => this.ignoreOldMessagesOnBoot && isOldSlackMessage(ts, this.bootTimeMs),
+    });
   }
 
   /**
@@ -408,9 +416,13 @@ export class SlackConnector implements Connector {
         await respond({ text: error instanceof Error ? error.message : "設定を変更できませんでした。", response_type: "ephemeral", replace_original: false });
       }
     });
+    this.providerAuth?.register(this.app);
     this.app.message(async ({ event, context }) => {
       // start() may have failed to learn the bot's user ID; an authorized event carries it.
       this.botUserId ??= context?.botUserId ?? null;
+      // Before the log line below: a login command or a pasted login code is
+      // handled here and must never be logged, routed, or stored.
+      if (await this.providerAuth?.handleMessage(event as any)) return;
       logger.info(`[slack] Received message event: user=${(event as any).user} channel=${(event as any).channel} channel_type=${(event as any).channel_type ?? "-"} thread_ts=${(event as any).thread_ts ?? "-"} subtype=${(event as any).subtype ?? "-"} text="${((event as any).text || "").slice(0, 50)}"`);
       // Skip bot's own messages
       if ((event as any).bot_id) {
@@ -861,6 +873,7 @@ export class SlackConnector implements Connector {
   }
 
   async stop() {
+    await this.providerAuth?.stop();
     this.agentsCanvas?.stop();
     this.conversations.flush();
     for (const interval of this.typingIntervals.values()) {
