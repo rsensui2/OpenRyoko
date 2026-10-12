@@ -36,6 +36,8 @@ function fixture(options: {
     isAllowedUser: options.allowed ?? (() => true),
     isStaleEvent: () => options.stale === true,
     logger: { info: record, warn: record, error: record },
+    // One clock for the flow engine and the connector, as in production.
+    clock: core.clock,
   });
   auth.register(app);
 
@@ -523,6 +525,68 @@ describe("Slack provider login — endings", () => {
     expect(JSON.stringify(f.update.mock.calls.at(-1)![0])).not.toContain(CODEX_DEVICE_CODE);
 
     finishEdit();
+    await stopping;
+    expect(stopped).toBe(true);
+  });
+
+  it("does not wait again at connector stop for an edit that gateway shutdown has already given up on", async () => {
+    const f = fixture();
+    const pty = await startLogin(f, "codex");
+    pty.emitData(CODEX_LOGIN_OUTPUT);
+    await settle();
+    // Slack never answers the edit that would blank the message.
+    f.update.mockImplementation(() => new Promise(() => {}));
+
+    // Shutdown, step one: the flow engine stops and gives the blanking 1.5 seconds.
+    const gatewayStop = f.core.service.stop();
+    f.core.clock.advance(1_500);
+    await gatewayStop;
+
+    // Later in the same shutdown the connector stops. The same unfinished edit
+    // must not buy another 1.5 seconds out of the five the gateway has.
+    let connectorStopped = false;
+    const connectorStop = f.auth.stop().then(() => { connectorStopped = true; });
+    await settle();
+    expect(connectorStopped).toBe(true);
+    await connectorStop;
+  });
+
+  it("on a connector reload, still gives a login it stops 1.5 seconds to have its message blanked", async () => {
+    const f = fixture();
+    const pty = await startLogin(f, "codex");
+    pty.emitData(CODEX_LOGIN_OUTPUT);
+    await settle();
+    f.update.mockImplementation(() => new Promise(() => {}));
+
+    let stopped = false;
+    const stopping = f.auth.stop().then(() => { stopped = true; });
+    expect(pty.kill).toHaveBeenCalledWith("SIGKILL");
+    f.core.clock.advance(1_499);
+    await settle();
+    expect(stopped).toBe(false);
+
+    f.core.clock.advance(1);
+    await stopping;
+    expect(stopped).toBe(true);
+  });
+
+  it("gives a login that ended on its own only what is left of its 1.5 seconds", async () => {
+    const f = fixture();
+    const pty = await startLogin(f, "codex");
+    pty.emitData(CODEX_LOGIN_OUTPUT);
+    await settle();
+    f.update.mockImplementation(() => new Promise(() => {}));
+    pty.emitExit(1);
+    await settle();
+    f.core.clock.advance(1_000);
+
+    let stopped = false;
+    const stopping = f.auth.stop().then(() => { stopped = true; });
+    f.core.clock.advance(499);
+    await settle();
+    expect(stopped).toBe(false);
+
+    f.core.clock.advance(1);
     await stopping;
     expect(stopped).toBe(true);
   });

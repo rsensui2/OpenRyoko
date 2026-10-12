@@ -1,5 +1,5 @@
-import { containsAuthCode, getProviderAuthService, isOAuthInput, PROVIDERS } from "../../provider-auth/index.js";
-import type { AuthProvider, FlowOutcome, FlowPrompt, ProviderAuthPort } from "../../provider-auth/index.js";
+import { containsAuthCode, getProviderAuthService, isOAuthInput, PROVIDERS, SYSTEM_CLOCK } from "../../provider-auth/index.js";
+import type { AuthClock, AuthProvider, FlowOutcome, FlowPrompt, ProviderAuthPort } from "../../provider-auth/index.js";
 import { logger as sharedLogger } from "../../shared/logger.js";
 import type { SlackConnectorConfig } from "../../shared/types.js";
 import {
@@ -66,6 +66,8 @@ export interface SlackProviderAuthOptions {
   /** A message replayed from before this boot. */
   isStaleEvent: (ts: string | undefined) => boolean;
   logger?: Logger;
+  /** The flow engine's clock, so both count the same seconds at shutdown. */
+  clock?: AuthClock;
 }
 
 interface Destination {
@@ -85,11 +87,15 @@ interface FlowView {
   verifying: boolean;
   outcome?: FlowOutcome;
   lastDrawn?: string;
+  /** Until when `stop()` waits for this message to be blanked: set once, when the login ends. */
+  blankBy?: number;
   /** Draws run one at a time, in order, so an edit never races the post it edits. */
   queue: Promise<void>;
 }
 
 const LOGIN_COMMANDS = new Set(["ログイン", "再ログイン", "/login", "login"]);
+/** How long a login message has, from the moment its login ends, to be blanked
+ *  before a stop gives up waiting. The flow engine waits the same at shutdown. */
 const STOP_DRAIN_MS = 1_500;
 const TAG = "[slack] provider-auth:";
 
@@ -136,6 +142,7 @@ export class SlackProviderAuth {
   private readonly client: SlackAuthClient;
   private readonly service: ProviderAuthPort;
   private readonly log: Logger;
+  private readonly clock: AuthClock;
   /** Logins this connector is showing, each until its final state has been drawn. */
   private readonly views = new Set<FlowView>();
   private removeNotifier?: () => void;
@@ -145,6 +152,7 @@ export class SlackProviderAuth {
     this.client = options.client;
     this.service = options.service;
     this.log = options.logger ?? sharedLogger;
+    this.clock = options.clock ?? SYSTEM_CLOCK;
   }
 
   register(app: SlackAuthApp): void {
@@ -182,16 +190,32 @@ export class SlackProviderAuth {
     return true;
   }
 
-  /** Stop every login this connector is showing and wait briefly for the messages to be blanked. */
+  /**
+   * Stop every login this connector is showing and wait briefly for the
+   * messages to be blanked.
+   *
+   * Each message has STOP_DRAIN_MS from the moment its login ended, and that
+   * allowance is spent only once. A login stopped here (a connector reload)
+   * gets all of it. One that gateway shutdown already stopped — and already
+   * waited on — has none left, so an edit Slack never answers cannot hold
+   * shutdown up a second time.
+   */
   async stop(): Promise<void> {
     this.stopped = true;
     this.removeNotifier?.();
     const views = [...this.views];
     for (const view of views) if (view.flowId) this.service.abort(view.provider, view.flowId);
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const deadline = new Promise<void>((resolve) => { timer = setTimeout(resolve, STOP_DRAIN_MS); });
-    await Promise.race([Promise.all(views.map((view) => view.queue)), deadline]);
-    clearTimeout(timer);
+    const now = this.clock.now();
+    const waiting = views.filter((view) => view.blankBy !== undefined && view.blankBy > now);
+    if (waiting.length === 0) return;
+    const remaining = Math.max(...waiting.map((view) => (view.blankBy ?? now) - now));
+    await new Promise<void>((resolve) => {
+      const deadline = this.clock.setTimeout(resolve, remaining);
+      void Promise.all(waiting.map((view) => view.queue)).then(() => {
+        this.clock.clearTimeout(deadline);
+        resolve();
+      });
+    });
   }
 
   private isOperator(userId: string | undefined): boolean {
@@ -224,7 +248,12 @@ export class SlackProviderAuth {
       onStalled: () => { view.stalled = true; this.draw(view); },
       onVerifying: () => { view.verifying = true; this.draw(view); },
       // Returning the draw lets the flow engine wait, at shutdown, for the message to be blanked.
-      onSettled: (outcome) => { view.outcome = outcome; this.draw(view); return view.queue; },
+      onSettled: (outcome) => {
+        view.outcome = outcome;
+        view.blankBy = this.clock.now() + STOP_DRAIN_MS;
+        this.draw(view);
+        return view.queue;
+      },
     });
     if (!result.ok) {
       await this.say(destination, startRefusedMessage(provider, result.reason));

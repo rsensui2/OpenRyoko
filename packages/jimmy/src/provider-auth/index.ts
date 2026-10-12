@@ -5,9 +5,11 @@ import { ProviderAuthService } from "./service.js";
 
 export { PROVIDERS, AUTH_PROVIDERS, isAuthProvider } from "./providers.js";
 export { containsAuthCode, isOAuthInput, parseAuthInput } from "./input.js";
+export { SYSTEM_CLOCK } from "./runtime.js";
 export { ProviderAuthService } from "./service.js";
 export type {
-  AuthFailureNotifier, AuthProvider, FlowListener, FlowOutcome, FlowPrompt, InputResult, ProviderAuthPort, StartResult,
+  AuthClock, AuthFailureNotifier, AuthProvider, FlowListener, FlowOutcome, FlowPrompt, InputResult, ProviderAuthPort,
+  StartResult,
 } from "./types.js";
 
 let shared: ProviderAuthService | undefined;
