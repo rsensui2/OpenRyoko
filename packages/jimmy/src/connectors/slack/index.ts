@@ -22,6 +22,7 @@ import {
   resolveSlackFileAttachment,
 } from "./format.js";
 import { deliverChunks } from "../chunked-send.js";
+import { rememberAuthTest } from "./auth-test-cache.js";
 import { normalizeSpeakerInfo, type SpeakerInfo } from "./speaker.js";
 import { runTriage } from "./triage.js";
 import { readTriageHistory } from "./triage-context.js";
@@ -157,6 +158,8 @@ export class SlackConnector implements Connector {
       // start() resolves the bot user ID with its own awaited auth.test.
       tokenVerificationEnabled: false,
     });
+    // Without this, Bolt would call auth.test before every incoming event.
+    rememberAuthTest(this.app.client.auth);
     if (context.getModelManagement && context.getOperatorSlackId) this.modelControls = new SlackModelControls(context.getModelManagement, context.getOperatorSlackId, (config as { id?: string }).id || "slack");
     this.ignoreOldMessagesOnBoot = config.ignoreOldMessagesOnBoot !== false;
     const allowFrom = Array.isArray(config.allowFrom)

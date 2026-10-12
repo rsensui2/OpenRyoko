@@ -67,3 +67,78 @@ describe("SlackConnector construction — Bolt token verification", () => {
     expect(unhandled).toEqual([]);
   });
 });
+
+// Bolt runs its authorize function before every incoming event. With the
+// constructor-time check off, Bolt 4.7 answers each of those with a fresh
+// auth.test: the ack waits for it, and when it fails no listener is called and
+// socket mode acks the event away — the message is lost without a trace.
+describe("SlackConnector — auth.test for incoming events", () => {
+  const identity = { ok: true, user_id: "U-BOT", bot_id: "B-BOT" };
+  let apiCall: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    apiCall = vi.spyOn(webApi.WebClient.prototype, "apiCall").mockResolvedValue(identity);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** What Bolt does before it dispatches one event. */
+  const authorizeEvent = (connector: InstanceType<typeof SlackConnector>) =>
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (connector as any).app.authorize({ isEnterpriseInstall: false }, {}) as Promise<Record<string, unknown>>;
+  const authTestCalls = () =>
+    (apiCall.mock.calls as Array<[string, { token?: string }?]>).filter(([method]) => method === "auth.test");
+
+  it("asks Slack once, however many events arrive", async () => {
+    const connector = new SlackConnector(CONFIG);
+    expect(authTestCalls()).toHaveLength(0);
+
+    for (let event = 0; event < 5; event++) {
+      await expect(authorizeEvent(connector)).resolves.toMatchObject({ botUserId: "U-BOT", botId: "B-BOT" });
+    }
+
+    expect(authTestCalls()).toHaveLength(1);
+  });
+
+  it("keeps trying while Slack is failing, and stops once it has an answer", async () => {
+    const connector = new SlackConnector(CONFIG);
+    apiCall
+      .mockRejectedValueOnce(new Error("request timed out"))
+      .mockRejectedValueOnce(new Error("request timed out"));
+
+    await expect(authorizeEvent(connector)).rejects.toThrow("request timed out");
+    await expect(authorizeEvent(connector)).rejects.toThrow("request timed out");
+    await expect(authorizeEvent(connector)).resolves.toMatchObject({ botUserId: "U-BOT" });
+    await authorizeEvent(connector);
+    await authorizeEvent(connector);
+
+    // Two failed attempts, the one that succeeded, and nothing after it.
+    expect(authTestCalls()).toHaveLength(3);
+  });
+
+  it("reuses the answer the connector fetched for itself while starting", async () => {
+    const connector = new SlackConnector(CONFIG);
+
+    // start() resolves the bot user ID through the same client.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await expect((connector as any).app.client.auth.test()).resolves.toMatchObject({ user_id: "U-BOT" });
+    await authorizeEvent(connector);
+    await authorizeEvent(connector);
+
+    expect(authTestCalls()).toHaveLength(1);
+  });
+
+  it("keeps each connector's answer to itself", async () => {
+    const first = new SlackConnector(CONFIG);
+    const second = new SlackConnector({ botToken: "xoxb-other-token", appToken: "xapp-other-token" });
+
+    await authorizeEvent(first);
+    await authorizeEvent(second);
+    await authorizeEvent(first);
+    await authorizeEvent(second);
+
+    expect(authTestCalls().map(([, args]) => args?.token)).toEqual([CONFIG.botToken, "xoxb-other-token"]);
+  });
+});
