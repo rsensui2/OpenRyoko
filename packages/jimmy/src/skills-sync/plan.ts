@@ -64,8 +64,11 @@ function planShipped(input: PlanInput, skill: BundledSkill, entry: ReceiptSkill 
   const home = inspectHomeSkill(directory);
   if (home.kind === "missing") {
     // No record of placing it: a skill this home never had (or a first run), so it is
-    // installed. A record means the operator removed what we placed, and that stands.
-    return entry && !isRestoreRequested(input.restoreDeleted, name) ? { action: "keep", name, reason: "deleted" } : { action: "install", name, skill };
+    // installed. A record means the operator removed what we placed, and that stands —
+    // unless the record says we were in the middle of replacing it: then the process
+    // died between moving the old copy out and the new one in, and it is put back.
+    const deleted = entry !== undefined && !entry.replacing && !isRestoreRequested(input.restoreDeleted, name);
+    return deleted ? { action: "keep", name, reason: "deleted" } : { action: "install", name, skill };
   }
   if (home.kind !== "directory") return { action: "keep", name, reason: home.kind };
 

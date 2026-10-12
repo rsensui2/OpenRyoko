@@ -45,7 +45,7 @@ export function applyPlans(plans: readonly SkillPlan[], context: ApplyContext): 
   if (changes.length === 0) return { failed: [], lost: [], backupDir: null };
 
   const backup = backupRun(context);
-  if (changes.some((plan) => plan.action !== "install")) backup.assertUsable();
+  if (needsBackup(plans)) assertBackupRootUsable(context.home);
   const staging = changes.some((plan) => plan.action !== "retire")
     ? fs.mkdtempSync(path.join(context.home, STAGING_PREFIX))
     : null;
@@ -66,6 +66,23 @@ export function applyPlans(plans: readonly SkillPlan[], context: ApplyContext): 
   } finally {
     if (staging) fs.rmSync(staging, { recursive: true, force: true });
   }
+}
+
+/** Does the plan move any existing skill away? */
+export function needsBackup(plans: readonly SkillPlan[]): boolean {
+  return plans.some((plan) => plan.action === "update" || plan.action === "retire");
+}
+
+/** A backup root that is already a link refuses the whole run, before any write. */
+export function assertBackupRootUsable(home: string): void {
+  const root = path.join(home, BACKUP_ROOT);
+  let stat: fs.Stats;
+  try { stat = fs.lstatSync(root); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (!stat.isDirectory()) throw new Error(`${root} is not a plain directory, so nothing can be backed up into it`);
 }
 
 /**
@@ -145,16 +162,6 @@ function backupRun(context: ApplyContext) {
   let run: { directory: string; skills: string; createdRoot: boolean } | null = null;
   let held = 0;
   return {
-    /** A backup root that is already a link refuses the whole run, before any write. */
-    assertUsable(): void {
-      let stat: fs.Stats;
-      try { stat = fs.lstatSync(root); }
-      catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-        throw error;
-      }
-      if (!stat.isDirectory()) throw new Error(`${root} is not a plain directory, so nothing can be backed up into it`);
-    },
     /** Move a skill out of skills/ and return where it went. */
     take(name: string, source: string): string {
       run ??= createRun(root, context);

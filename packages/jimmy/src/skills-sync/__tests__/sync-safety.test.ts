@@ -211,8 +211,9 @@ describe("bundled skill sync: staying inside skills/", () => {
     f.sync("2026.10.11");
 
     const temporaries = rename.mock.calls.filter(([, to]) => String(to) === path.join(f.skills, RECEIPT_FILE)).map(([from]) => path.basename(String(from)));
-    expect(temporaries).toHaveLength(2);
-    expect(new Set(temporaries).size).toBe(2);
+    // One write for the install; two for the replacement, which is announced and then closed.
+    expect(temporaries).toHaveLength(3);
+    expect(new Set(temporaries).size).toBe(3);
     for (const name of temporaries) expect(name).not.toContain(String(process.pid));
     expect(fs.readdirSync(f.skills).sort()).toEqual([RECEIPT_FILE, "example"]);
   });
@@ -232,7 +233,10 @@ describe("bundled skill sync: staying inside skills/", () => {
     const result = f.sync("2026.10.11");
 
     expect(fs.readFileSync(outside, "utf8")).toBe("the user's file");
-    expect(result.updated).toEqual(["example"]);
+    // The receipt could not be written, so the replacement was never announced, so it was not started.
+    expect(result.updated).toEqual([]);
+    expect(result.failed).toEqual([{ name: "example", error: expect.stringContaining("EEXIST") }]);
+    expect(f.read("example", "SKILL.md")).toBe("v1");
     expect(result.receiptError).toMatch(/EEXIST/);
     expect(fs.readlinkSync(path.join(f.skills, `${RECEIPT_FILE}.${"ab".repeat(8)}.tmp`))).toBe(outside);
   });
@@ -245,8 +249,11 @@ describe("bundled skill sync: staying inside skills/", () => {
     fs.rmSync(path.join(f.skills, "gone"), { recursive: true });
     f.ship("example", { "SKILL.md": "v2" });
     const rename = fs.renameSync;
+    let receiptWrites = 0;
+    // The replacement is announced in the receipt, carried out, and then the receipt
+    // cannot be written a second time.
     vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
-      if (String(to) === path.join(f.skills, RECEIPT_FILE)) throw new Error("read-only file system");
+      if (String(to) === path.join(f.skills, RECEIPT_FILE) && ++receiptWrites > 1) throw new Error("read-only file system");
       return rename(from, to);
     });
 

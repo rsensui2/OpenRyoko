@@ -2,6 +2,7 @@ import { logger } from "../shared/logger.js";
 import { JINN_HOME, TEMPLATE_DIR } from "../shared/paths.js";
 import { buildTemplateReplacements, readPortalName } from "../shared/templateReplacements.js";
 import type { JinnConfig } from "../shared/types.js";
+import { printable } from "./names.js";
 import { getPackageVersion } from "../shared/version.js";
 import { syncBundledSkills } from "./sync.js";
 import type { BundledSkillSync, KeepReason } from "./types.js";
@@ -47,7 +48,7 @@ export function syncBundledSkillsOnBoot(config: Pick<JinnConfig, "skills">): voi
     report(syncInstanceBundledSkills());
   } catch (error) {
     logger.error(
-      `Bundled skills were not synced (startup continues): ${error instanceof Error ? error.message : String(error)} `
+      `Bundled skills were not synced (startup continues): ${printable(error instanceof Error ? error.message : String(error))} `
       + "— skills.autoSync: false in config.yaml turns this start-up sync off.",
     );
   }
@@ -68,7 +69,7 @@ function report(result: BundledSkillSync): void {
     ...(result.adopted.length > 0 ? [`now tracking ${result.adopted.length} unmodified (${result.adopted.join(", ")})`] : []),
   ];
   if (changes.length > 0) {
-    logger.info(`Bundled skills synced: ${changes.join("; ")}.${result.backupDir ? ` Previous copies are in ${result.backupDir}.` : ""}`);
+    logger.info(`Bundled skills synced: ${changes.join("; ")}.${result.backupDir ? ` Previous copies are in ${printable(result.backupDir)}.` : ""}`);
   }
   // Only a receipt proves an edit. Without one, a skill that differs may simply be the
   // copy an earlier release installed, so it is not described as the user's change.
@@ -94,9 +95,9 @@ function report(result: BundledSkillSync): void {
   if (removed.length > 0) {
     logger.info(`Bundled skills not reinstalled because they were removed from this home: ${removed.join(", ")}. Run ${RESTORE_BY_NAME} to put one back.`);
   }
-  for (const failure of result.failed) logger.warn(`Bundled skill "${failure.name}" was not synced: ${failure.error}`);
+  for (const failure of result.failed) logger.warn(`Bundled skill "${failure.name}" was not synced: ${printable(failure.error)}`);
   if (result.receiptError) {
-    logger.warn(`The bundled skill receipt could not be saved (${result.receiptError}). The skills themselves are in place; the next start records them.`);
+    logger.warn(`The bundled skill receipt could not be saved (${printable(result.receiptError)}). The skills themselves are in place; the next start records them.`);
   }
   if (result.skipped === "skills-root-symlink") logger.debug("Bundled skills not synced: skills/ is a symlink the user manages.");
   if (result.skipped === "newer-receipt" || result.skipped === "newer-format") {

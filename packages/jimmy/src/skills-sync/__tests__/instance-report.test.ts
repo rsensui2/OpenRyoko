@@ -135,6 +135,28 @@ describe("what gateway start logs about the bundled skill sync", () => {
     ]);
   });
 
+  it("keeps control characters that came from the home out of every line it logs", () => {
+    // A file name inside a skill ends up in an fs error message; so does a path in the home.
+    const forged = "EACCES: open '/home/skills/migrate/a\n2026-10-12T00:00:00.000Z [ERROR] gateway compromised\u001b[2K'";
+    ran({ added: ["sync"], failed: [{ name: "migrate", error: forged }], receiptError: "EROFS\r\n[ERROR] also forged", backupDir: "/home/.migration-backups/x\ny" });
+
+    syncBundledSkillsOnBoot({});
+
+    const lines = [...said("info"), ...said("warn")];
+    expect(lines.join(" ")).toContain("gateway compromised");
+    for (const line of lines) expect(line).not.toMatch(/[\u0000-\u001f\u007f]/);
+  });
+
+  it("does the same for the line that says the sync could not run", () => {
+    vi.mocked(syncBundledSkills).mockImplementation(() => { throw new Error("Cannot use receipt\n2026-10-12T00:00:00.000Z [ERROR] forged\u001b[2K"); });
+
+    syncBundledSkillsOnBoot({});
+
+    expect(said("error")).toHaveLength(1);
+    expect(said("error")[0]).toContain("forged");
+    expect(said("error")[0]).not.toMatch(/[\u0000-\u001f\u007f]/);
+  });
+
   it("warns when the receipt could not be saved, after saying what was done", () => {
     ran({ updated: ["migrate"], receiptError: "EROFS: read-only file system" });
 

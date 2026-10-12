@@ -523,6 +523,23 @@ describe("migrate: bundled skill sync", () => {
     });
   });
 
+  it("prints nothing from the home that could redraw the terminal or pass for a line of its own", async () => {
+    vi.mocked(compareSemver).mockReturnValueOnce(0);
+    mockSync.mockReturnValue(synced({
+      failed: [{ name: "migrate", error: "EACCES: open 'a\n[done] everything is fine\u001b[2K\u001b[1A'" }],
+      receiptError: "EROFS\r\nforged",
+    }));
+    const { runMigrate } = await import("../migrate.js");
+
+    await runMigrate({ auto: true });
+
+    const skillLines = output().split("\n").filter((line) => line.includes("skill"));
+    expect(skillLines.join(" ")).toContain("everything is fine");
+    // Only the colour codes this command itself adds, never one from the data.
+    for (const line of skillLines) expect(line.replace(/\u001b\[\d+m/g, "")).not.toMatch(/[\u0000-\u001f\u007f]/);
+    expect(output().split("\n").filter((line) => line.includes("forged") && !line.includes("EROFS"))).toEqual([]);
+  });
+
   it("carries on with the migrations when the sync cannot run", async () => {
     mockSync.mockImplementation(() => { throw new Error("receipt is unreadable"); });
     const { runMigrate } = await import("../migrate.js");

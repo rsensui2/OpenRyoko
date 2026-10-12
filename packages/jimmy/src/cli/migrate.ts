@@ -27,6 +27,7 @@ import {
 import { parseConfigPatch, applyPatchOps, type PatchOutcome } from "../shared/configPatch.js";
 import { auditGatewayReferences } from "./gateway-audit.js";
 import { syncInstanceBundledSkills } from "../skills-sync/instance.js";
+import { printable } from "../skills-sync/names.js";
 import type { BundledSkillSync, KeepReason, KeptSkill } from "../skills-sync/types.js";
 import { claudeAutoMemoryEnvFor } from "../shared/claude-auto-memory.js";
 
@@ -163,7 +164,7 @@ function syncBundledSkillsStep(restoreDeleted: boolean | readonly string[]): Syn
   try {
     result = syncInstanceBundledSkills({ restoreDeleted });
   } catch (err: any) {
-    console.log(`  ${YELLOW}[skills]${RESET} 同梱スキルを同期できませんでした: ${err?.message ?? err}`);
+    console.log(`  ${YELLOW}[skills]${RESET} 同梱スキルを同期できませんでした: ${printable(String(err?.message ?? err))}`);
     console.log(`  ${YELLOW}[skills]${RESET} スキルの状態が分からないため、この実行では skills/ 配下に何も作成しません`);
     return SYNC_UNAVAILABLE;
   }
@@ -173,18 +174,18 @@ function syncBundledSkillsStep(restoreDeleted: boolean | readonly string[]): Syn
   }
   for (const name of result.updated) console.log(`  ${GREEN}[updated skill]${RESET} ${name}`);
   for (const name of result.retired) console.log(`  ${YELLOW}[retired skill]${RESET} ${name}`);
-  if (result.backupDir) console.log(`  ${DIM}置き換え・退役の前の内容: ${result.backupDir}${RESET}`);
+  if (result.backupDir) console.log(`  ${DIM}置き換え・退役の前の内容: ${printable(result.backupDir)}${RESET}`);
   for (const { name, reason } of result.kept) {
     const note = KEPT_SKILL_NOTES[reason];
     if (note) console.log(`  ${YELLOW}[skill kept]${RESET} ${name} (${note(name)})`);
   }
   // A name that restored nothing was a typo or a skill that was never deleted: say so.
   for (const name of Array.isArray(restoreDeleted) ? restoreDeleted : []) {
-    if (!result.added.includes(name)) console.log(`  ${YELLOW}[skills]${RESET} ${name}: 削除済みの同梱スキルではないため、何も配置していません`);
+    if (!result.added.includes(name)) console.log(`  ${YELLOW}[skills]${RESET} ${printable(name)}: 削除済みの同梱スキルではないため、何も配置していません`);
   }
-  for (const { name, error } of result.failed) console.log(`  ${RED}[skill failed]${RESET} ${name}: ${error}`);
+  for (const { name, error } of result.failed) console.log(`  ${RED}[skill failed]${RESET} ${name}: ${printable(error)}`);
   if (result.receiptError) {
-    console.log(`  ${YELLOW}[skills]${RESET} 受領証を保存できませんでした（${result.receiptError}）。スキル自体は配置済みで、次回の実行で記録されます`);
+    console.log(`  ${YELLOW}[skills]${RESET} 受領証を保存できませんでした（${printable(result.receiptError)}）。スキル自体は配置済みで、次回の実行で記録されます`);
   }
   if (result.skipped === "skills-root-symlink") {
     console.log(`  ${DIM}[skills] skills/ が symlink（利用者管理）のため、同梱スキルは同期せず、skills/ 配下には何も作成しません${RESET}`);

@@ -20,6 +20,13 @@ export interface ReceiptSkill {
   /** A tombstone: the sync placed this skill and later found it gone, so the
    *  operator removed it. `files` still says what was placed, in case it returns. */
   deleted?: true;
+  /**
+   * Written before a replacement starts and cleared when it is over. Replacing a
+   * skill moves the old copy away and the new one in, and for a moment between the
+   * two there is no skill. If the process dies there, this mark is what tells the
+   * next run that the skill is missing by the sync's doing, not the operator's.
+   */
+  replacing?: true;
 }
 
 /**
@@ -48,6 +55,12 @@ export function receiptSkill(files: Record<string, string>, version: string): Re
 export function markDeleted(skill: ReceiptSkill, deleted: boolean): ReceiptSkill {
   const { deleted: _mark, ...placed } = skill;
   return deleted ? { ...placed, deleted: true } : placed;
+}
+
+/** The same record with or without the mark of a replacement in progress. */
+export function markReplacing(skill: ReceiptSkill, replacing: boolean): ReceiptSkill {
+  const { replacing: _mark, ...settled } = skill;
+  return replacing ? { ...settled, replacing: true } : settled;
 }
 
 /**
@@ -125,13 +138,17 @@ function parseSkill(name: string, entry: unknown): ReceiptSkill {
   }
   const files = Object.fromEntries(Object.entries(entry.files).map(([relative, hash]) => {
     assertSkillFilePath(relative, "it");
-    if (typeof hash !== "string" || !SHA256_HEX.test(hash)) throw new Error(`its entry for "${name}/${relative}" is not a sha256`);
+    // Quoted: the path is whatever the file says, and a newline or an escape sequence
+    // in it would otherwise land in the log as a line of its own.
+    if (typeof hash !== "string" || !SHA256_HEX.test(hash)) throw new Error(`its entry for ${JSON.stringify(`${name}/${relative}`)} is not a sha256`);
     return [relative, hash];
   }));
   // Every skill the sync places has one, so an entry without it was not written here.
   if (!Object.hasOwn(files, "SKILL.md")) throw new Error(`its entry for "${name}" lists no SKILL.md`);
-  if (entry.deleted !== undefined && entry.deleted !== true) throw new Error(`its "deleted" mark for "${name}" is not true`);
-  return markDeleted(receiptSkill(files, entry.version), entry.deleted === true);
+  for (const mark of ["deleted", "replacing"] as const) {
+    if (entry[mark] !== undefined && entry[mark] !== true) throw new Error(`its "${mark}" mark for "${name}" is not true`);
+  }
+  return markReplacing(markDeleted(receiptSkill(files, entry.version), entry.deleted === true), entry.replacing === true);
 }
 
 const sortedByKey = <T>(record: Record<string, T>): Record<string, T> =>
@@ -140,8 +157,8 @@ const sortedByKey = <T>(record: Record<string, T>): Record<string, T> =>
 /** Stable key order, so an unchanged receipt serializes to the same bytes. */
 export function serializeReceipt(receipt: Receipt): string {
   const skills = Object.fromEntries(Object.keys(receipt.skills).sort().map((name) => {
-    const { version, sha256: digest, files, deleted } = receipt.skills[name];
-    return [name, { version, sha256: digest, ...(deleted ? { deleted } : {}), files: sortedByKey(files) }];
+    const { version, sha256: digest, files, deleted, replacing } = receipt.skills[name];
+    return [name, { version, sha256: digest, ...(deleted ? { deleted } : {}), ...(replacing ? { replacing } : {}), files: sortedByKey(files) }];
   }));
   const body = { schemaVersion: SCHEMA_VERSION, packageVersion: receipt.packageVersion, skills, notices: sortedByKey(receipt.notices) };
   return `${JSON.stringify(body, null, 2)}\n`;

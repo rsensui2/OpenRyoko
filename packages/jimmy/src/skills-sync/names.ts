@@ -32,6 +32,15 @@ export function assertSkillFilePath(relative: unknown, origin: string): asserts 
   }
 }
 
+/**
+ * Text that came from the home — a path, a file name inside an fs error — made safe
+ * to put in a log line or on a terminal. A newline there would pass for a line of its
+ * own, and an escape sequence could redraw what is already on screen.
+ */
+export function printable(text: string): string {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
+}
+
 /** Own-property lookup: skill and file names are data, and "constructor" is a legal one. */
 export function own<T>(record: Record<string, T> | null | undefined, key: string): T | undefined {
   return record && Object.hasOwn(record, key) ? record[key] : undefined;

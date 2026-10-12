@@ -2,12 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { buildTemplateReplacements } from "../shared/templateReplacements.js";
 import { compareSemver } from "../shared/version.js";
-import { applyPlans } from "./apply.js";
+import { applyPlans, assertBackupRootUsable, needsBackup, type Applied, type ApplyContext } from "./apply.js";
 import { loadBundledSkills, type BundledSkill } from "./bundled.js";
 import { loadShippedHistory } from "./history.js";
 import { own } from "./names.js";
 import { planSkillSync, type SkillPlan } from "./plan.js";
-import { markDeleted, NewerReceiptFormat, RECEIPT_FILE, readReceipt, receiptSkill, serializeReceipt, writeReceipt, type Receipt, type ReceiptSkill } from "./receipt.js";
+import { markDeleted, markReplacing, NewerReceiptFormat, RECEIPT_FILE, readReceipt, receiptSkill, serializeReceipt, writeReceipt, type Receipt, type ReceiptSkill } from "./receipt.js";
 import { forgetStandBack, shouldAnnounceStandBack } from "./stand-back.js";
 import type { BundledSkillSync, KeepReason, KeptSkill } from "./types.js";
 
@@ -79,23 +79,61 @@ export function syncBundledSkills(options: SyncBundledSkillsOptions): BundledSki
     // As configured now, as packaged (never filled in), or under an installer default.
     renderings: [options.replacements, {}, ...(options.legacyPortalNames ?? []).map(buildTemplateReplacements)],
   });
-  const applied = applyPlans(plans, { home, skillsRoot, packageVersion: options.packageVersion, now: options.now ?? new Date() });
-  const failed = new Set(applied.failed.map((failure) => failure.name));
-  const done = plans.filter((plan) => !failed.has(plan.name));
+  const run: Run = { home, skillsRoot, receiptPath, packageVersion: options.packageVersion, now: options.now ?? new Date() };
+  return summarise(plans, receipt, carryOut(plans, receipt, run), run);
+}
 
+interface Run extends ApplyContext {
+  receiptPath: string;
+}
+
+interface Outcome extends Applied {
+  /** The receipt as it stands on disk once the changes are made. */
+  onDisk: Receipt | null;
+}
+
+/**
+ * Apply the plan. A skill about to be replaced is first marked in the receipt, on
+ * disk, as being replaced: between moving its old copy out and its new one in there
+ * is no skill, and a process that dies there must not leave something that reads as
+ * the operator's deletion. A replacement that cannot be announced is not started.
+ */
+function carryOut(plans: readonly SkillPlan[], receipt: Receipt | null, run: Run): Outcome {
+  // Checked before the receipt is touched: a run that will be refused writes nothing.
+  if (needsBackup(plans)) assertBackupRootUsable(run.home);
+  const replacing = plans.filter((plan) => plan.action === "update" && own(receipt?.skills, plan.name) !== undefined).map((plan) => plan.name);
+  if (!receipt || replacing.length === 0) return { ...applyPlans(plans, run), onDisk: receipt };
+
+  const announced: Receipt = {
+    ...receipt,
+    skills: { ...receipt.skills, ...Object.fromEntries(replacing.map((name) => [name, markReplacing(receipt.skills[name], true)])) },
+  };
+  const error = saveReceipt(run.receiptPath, run.skillsRoot, receipt, announced);
+  if (error === null) return { ...applyPlans(plans, run), onDisk: announced };
+
+  const unannounced = replacing.map((name) => ({ name, error: `the receipt could not be updated before replacing it, so it was left alone (${error})` }));
+  const applied = applyPlans(plans.filter((plan) => !replacing.includes(plan.name)), run);
+  const failed = [...applied.failed, ...unannounced].sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+  return { ...applied, failed, onDisk: receipt };
+}
+
+/** Bring the receipt up to date with what was done, and report it. */
+function summarise(plans: readonly SkillPlan[], receipt: Receipt | null, outcome: Outcome, run: Run): BundledSkillSync {
+  const failed = new Set(outcome.failed.map((failure) => failure.name));
+  const done = plans.filter((plan) => !failed.has(plan.name));
   const kept = done
     .flatMap((plan): KeptSkill[] => (plan.action === "keep" ? [{ name: plan.name, reason: plan.reason }] : []))
     .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
   const announced = kept.filter((skill) => ANNOUNCED.has(skill.reason));
   const next: Receipt = {
-    packageVersion: options.packageVersion,
-    skills: recordedSkills(receipt, done, options.packageVersion, applied.lost),
-    notices: Object.fromEntries(announced.map((skill) => [skill.name, options.packageVersion])),
+    packageVersion: run.packageVersion,
+    skills: recordedSkills(receipt, done, run.packageVersion, outcome.lost),
+    notices: Object.fromEntries(announced.map((skill) => [skill.name, run.packageVersion])),
   };
   // The skills are already in their new state. A receipt that cannot be saved must
   // not turn that into an exception: the caller would lose what was done, and what
   // was found deleted. The next run sees the same skills and records them then.
-  const receiptError = saveReceipt(receiptPath, skillsRoot, receipt, next);
+  const receiptError = saveReceipt(run.receiptPath, run.skillsRoot, outcome.onDisk, next);
 
   const names = (...actions: SkillPlan["action"][]) => done.filter((plan) => actions.includes(plan.action)).map((plan) => plan.name).sort();
   return {
@@ -104,10 +142,10 @@ export function syncBundledSkills(options: SyncBundledSkillsOptions): BundledSki
     adopted: names("adopt"),
     retired: names("retire"),
     kept,
-    notices: announced.filter((skill) => own(receipt?.notices, skill.name) !== options.packageVersion),
+    notices: announced.filter((skill) => own(receipt?.notices, skill.name) !== run.packageVersion),
     inSync: names("install", "update", "adopt", "current"),
-    failed: applied.failed,
-    backupDir: applied.backupDir,
+    failed: outcome.failed,
+    backupDir: outcome.backupDir,
     ...(receiptError === null ? {} : { receiptError }),
   };
 }
@@ -147,9 +185,10 @@ function skillsRootKind(skillsRoot: string): "missing" | "directory" | "symlink"
 /**
  * The receipt after this run: what was placed or adopted is recorded, what was
  * retired is dropped, and everything else keeps the entry it had — with a tombstone
- * exactly when the skill was found deleted. A skill the sync itself lost in a failed
- * update is dropped as well, so the next run reinstalls it rather than taking its
- * absence for the operator's doing.
+ * exactly when the skill was found deleted, and never with the mark of a replacement
+ * in progress: every replacement is over by now, one way or the other. A skill the
+ * sync itself lost in a failed update is dropped, so the next run reinstalls it
+ * rather than taking its absence for the operator's doing.
  */
 function recordedSkills(previous: Receipt | null, done: readonly SkillPlan[], version: string, lost: readonly string[]): Record<string, ReceiptSkill> {
   const dropped = new Set([...lost, ...done.filter((plan) => plan.action === "retire" || plan.action === "forget").map((plan) => plan.name)]);
@@ -162,7 +201,10 @@ function recordedSkills(previous: Receipt | null, done: readonly SkillPlan[], ve
   const foundDeleted = new Map(done.map((plan) => [plan.name, plan.action === "keep" && plan.reason === "deleted"]));
   const carried = Object.entries(previous?.skills ?? {})
     .filter(([name]) => !dropped.has(name))
-    .map(([name, skill]): [string, ReceiptSkill] => [name, foundDeleted.has(name) ? markDeleted(skill, foundDeleted.get(name) === true) : skill]);
+    .map(([name, skill]): [string, ReceiptSkill] => [
+      name,
+      markReplacing(foundDeleted.has(name) ? markDeleted(skill, foundDeleted.get(name) === true) : skill, false),
+    ]);
   return Object.fromEntries([...carried, ...placed]);
 }
 
