@@ -293,6 +293,14 @@ describe("migrate: bundled skill sync", () => {
       return (mockExecFileSync.mock.calls[0][1] as string[]).at(-1)!;
     };
 
+    it("says that the sync ran even with nothing to list, so silence only ever means it was not asked", async () => {
+      // The migrate skill treats a prompt that says nothing about the sync as "started
+      // from chat": this command must never leave that impression.
+      const prompt = await promptFor({});
+
+      expect(prompt).toMatch(/Bundled skills were synced before this session started/);
+    });
+
     it("names the skills that are already up to date, so it applies nothing to them", async () => {
       const prompt = await promptFor({ added: ["sync"], updated: ["status"], inSync: ["cron-manager", "status", "sync"] });
 

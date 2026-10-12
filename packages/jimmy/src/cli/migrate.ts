@@ -192,9 +192,10 @@ function bundledSkillPromptLines(skills: SyncedSkills): string[] {
   ];
   const kept = skills.kept.map(({ name, reason }) => `- ${name}: ${KEPT_SKILL_GUIDANCE[reason as Exclude<KeepReason, "deleted">]}`);
   return [
-    ...(settled.length > 0
-      ? ["Bundled skills were synced before this session started. Apply nothing from a migration's files/skills/ to these:", ...settled]
-      : []),
+    // Always said: the migrate skill reads a prompt that is silent about the sync as
+    // one that did not come from this command, and then does not touch skills.
+    "Bundled skills were synced before this session started.",
+    ...(settled.length > 0 ? ["Apply nothing from a migration's files/skills/ to these:", ...settled] : []),
     ...(kept.length > 0
       ? ["The sync left these bundled skills untouched. They are the only bundled skills that may need merging:", ...kept]
       : []),

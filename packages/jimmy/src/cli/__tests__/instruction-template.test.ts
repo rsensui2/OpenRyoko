@@ -92,6 +92,23 @@ describe("shipped instruction templates", () => {
     expect(migrate).toMatch(/追記が無ければ.*そのまま/);
   });
 
+  it("tells the migrate skill what to do when its prompt says nothing about the sync", () => {
+    const migrate = read("skills/migrate/SKILL.md");
+    // Started from chat with /migrate there is no list. Guessing a skill's state could
+    // bring back one the operator deleted, or mark an untouched one as edited.
+    const rule = migrate.split("\n").find((line) => /プロンプトに.*記載が無い/.test(line)) ?? "";
+    expect(rule).toMatch(/\/migrate/);
+    expect(rule).toMatch(/推測しません/);
+    expect(rule).toMatch(/何も適用せず.*ターミナルで `ryoko migrate`/);
+  });
+
+  it("tells the migrate skill how to treat skills in a home the sync does not run in", () => {
+    const migrate = read("skills/migrate/SKILL.md");
+    // `ryoko migrate` says so in the prompt and points here for the rules.
+    expect(migrate).toMatch(/同期が動かないホーム.*symlink/);
+    expect(migrate).toMatch(/無いスキルディレクトリ.*丸ごとコピー/);
+  });
+
   it("tells the migrate skill not to append sections to an entry-point CLAUDE.md", () => {
     const migrate = read("skills/migrate/SKILL.md");
     expect(migrate).toContain("@AGENTS.md");
