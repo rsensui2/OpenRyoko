@@ -891,6 +891,9 @@ export async function startGateway(
     return reloadInFlight;
   }
 
+  // Mutable config reference for hot-reload
+  let currentConfig = config;
+
   // Start cron scheduler
   let cronJobs: ReturnType<typeof loadJobs> = [];
   try { cronJobs = loadJobs(); } catch (error) {
@@ -899,8 +902,6 @@ export async function startGateway(
   startScheduler(cronJobs, sessionManager, () => currentConfig, connectorMap);
   logger.info(`Loaded ${cronJobs.length} cron job(s)`);
 
-  // Mutable config reference for hot-reload
-  let currentConfig = config;
   // Tracks the config version that was last successfully applied to connectors.
   // The watcher diffs against THIS (not currentConfig) so that a failed reload
   // does not poison the next chokidar event into thinking "nothing changed".
