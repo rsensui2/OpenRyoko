@@ -73,9 +73,11 @@ export function fixture() {
     sync: (packageVersion = "2026.10.10", portalName = "Momo") => run(packageVersion, portalName, false),
     /** The sync as `ryoko migrate --restore-deleted-skills` runs it: deleted skills come back. */
     restore: (packageVersion = "2026.10.10", portalName = "Momo") => run(packageVersion, portalName, true),
+    /** The same with names: `ryoko migrate --restore-deleted-skills <name>...` */
+    restoreOnly: (names: string[], packageVersion = "2026.10.10") => run(packageVersion, "Momo", names),
   };
 
-  function run(packageVersion: string, portalName: string, restoreDeleted: boolean) {
+  function run(packageVersion: string, portalName: string, restoreDeleted: boolean | string[]) {
     return syncBundledSkills({
       templateDir: template,
       home,

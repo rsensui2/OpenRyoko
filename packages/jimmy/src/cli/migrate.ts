@@ -76,11 +76,12 @@ const RESTORE_DELETED_SKILLS = "ryoko migrate --restore-deleted-skills";
 
 /** Skills left alone for a reason the user can act on. Symlinks, and edits with
  *  no shipped update waiting, need nothing from them and are not listed. */
-const KEPT_SKILL_NOTES: Partial<Record<KeepReason, string>> = {
-  modified: "編集済み。同梱版に更新があります。上書きしません",
-  unmanaged: "同梱版と内容が違います。導入時の記録が無く、古い同梱版か編集済みかを区別できません。上書きしません",
-  "retired-modified": "同梱から外れましたが、編集済みのため残しました",
-  deleted: `削除済みのため配置しません。戻すには ${RESTORE_DELETED_SKILLS}`,
+const KEPT_SKILL_NOTES: Partial<Record<KeepReason, (name: string) => string>> = {
+  modified: () => "編集済み。同梱版に更新があります。上書きしません",
+  unmanaged: () => "どの同梱版とも内容が違います。導入時の記録が無く、古い同梱版か編集済みかを区別できません。上書きしません",
+  "retired-modified": () => "同梱から外れましたが、編集済みのため残しました",
+  // Named, so the other skills the operator deleted are not brought back with it.
+  deleted: (name) => `削除済みのため配置しません。戻すには ${RESTORE_DELETED_SKILLS} ${name}`,
 };
 
 /**
@@ -145,7 +146,7 @@ function bundledSkillPromptLines(skills: SyncedSkills): string[] {
  * `ryoko update` runs `ryoko migrate --auto`, and an update must not undo a
  * deletion. Only `--restore-deleted-skills` asks for those skills back.
  */
-function syncBundledSkillsStep(restoreDeleted: boolean): SyncedSkills {
+function syncBundledSkillsStep(restoreDeleted: boolean | readonly string[]): SyncedSkills {
   let result: BundledSkillSync;
   try {
     result = syncInstanceBundledSkills({ restoreDeleted });
@@ -162,7 +163,11 @@ function syncBundledSkillsStep(restoreDeleted: boolean): SyncedSkills {
   if (result.backupDir) console.log(`  ${DIM}置き換え・退役の前の内容: ${result.backupDir}${RESET}`);
   for (const { name, reason } of result.kept) {
     const note = KEPT_SKILL_NOTES[reason];
-    if (note) console.log(`  ${YELLOW}[skill kept]${RESET} ${name} (${note})`);
+    if (note) console.log(`  ${YELLOW}[skill kept]${RESET} ${name} (${note(name)})`);
+  }
+  // A name that restored nothing was a typo or a skill that was never deleted: say so.
+  for (const name of Array.isArray(restoreDeleted) ? restoreDeleted : []) {
+    if (!result.added.includes(name)) console.log(`  ${YELLOW}[skills]${RESET} ${name}: 削除済みの同梱スキルではないため、何も配置していません`);
   }
   for (const { name, error } of result.failed) console.log(`  ${RED}[skill failed]${RESET} ${name}: ${error}`);
   if (result.skipped === "skills-root-symlink") {
@@ -286,8 +291,9 @@ export async function runMigrate(opts: {
   check?: boolean;
   auto?: boolean;
   fix?: boolean;
-  /** Put back bundled skills the operator deleted. Without it they stay deleted. */
-  restoreDeletedSkills?: boolean;
+  /** Put back bundled skills the operator deleted: every one (`true`) or the ones
+   *  named. Without it they stay deleted. */
+  restoreDeletedSkills?: boolean | string[];
 }): Promise<void> {
   // Ensure instance exists
   if (!fs.existsSync(JINN_HOME)) {
@@ -321,7 +327,7 @@ export async function runMigrate(opts: {
 
   // Bundled skills are package content, independent of versioned config
   // migrations. Keep --check read-only; edited skills are never overwritten.
-  const skills = opts.check ? NO_SYNCED_SKILLS : syncBundledSkillsStep(opts.restoreDeletedSkills === true);
+  const skills = opts.check ? NO_SYNCED_SKILLS : syncBundledSkillsStep(opts.restoreDeletedSkills ?? false);
 
   // Already up to date
   if (compareSemver(instanceVersion, packageVersion) >= 0) {

@@ -124,7 +124,7 @@ describe("bundled skill sync at gateway start", () => {
     expect(fs.existsSync(path.join(SKILLS_DIR, "status"))).toBe(false);
     expect(receipt().skills.status.deleted).toBe(true);
     expect(log.info.mock.calls.map((call) => call[0])).toEqual([expect.stringMatching(/removed from this home: status\./)]);
-    expect(log.info.mock.calls[0][0]).toContain("ryoko migrate --restore-deleted-skills");
+    expect(log.info.mock.calls[0][0]).toContain("ryoko migrate --restore-deleted-skills <name>");
     expect(log.warn).not.toHaveBeenCalled();
 
     for (const spy of Object.values(log)) spy.mockClear();
@@ -139,6 +139,11 @@ describe("bundled skill sync at gateway start", () => {
     syncBundledSkillsOnBoot({});
 
     expect(syncInstanceBundledSkills()).toMatchObject({ added: [], kept: [{ name: "status", reason: "deleted" }] });
+    expect(fs.existsSync(path.join(SKILLS_DIR, "status"))).toBe(false);
+
+    // By name: the other deleted skill stays out.
+    fs.rmSync(path.join(SKILLS_DIR, "sync"), { recursive: true });
+    expect(syncInstanceBundledSkills({ restoreDeleted: ["sync"] }).added).toEqual(["sync"]);
     expect(fs.existsSync(path.join(SKILLS_DIR, "status"))).toBe(false);
 
     const result = syncInstanceBundledSkills({ restoreDeleted: true });

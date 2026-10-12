@@ -13,14 +13,14 @@ import type { BundledSkillSync, KeepReason } from "./types.js";
  * update brings it back. `restoreDeleted` is set by one caller only,
  * `ryoko migrate --restore-deleted-skills`.
  */
-export function syncInstanceBundledSkills(options: { restoreDeleted?: boolean } = {}): BundledSkillSync {
+export function syncInstanceBundledSkills(options: { restoreDeleted?: boolean | readonly string[] } = {}): BundledSkillSync {
   return syncBundledSkills({
     templateDir: TEMPLATE_DIR,
     home: JINN_HOME,
     replacements: buildTemplateReplacements(readPortalName()),
     legacyPortalNames: installerDefaultNames(),
     packageVersion: getPackageVersion(),
-    restoreDeleted: options.restoreDeleted === true,
+    restoreDeleted: options.restoreDeleted ?? false,
   });
 }
 
@@ -55,11 +55,8 @@ export function syncBundledSkillsOnBoot(config: Pick<JinnConfig, "skills">): voi
 
 const listed = (label: string, names: readonly string[]): string[] => (names.length > 0 ? [`${label} ${names.join(", ")}`] : []);
 
-const RESTORE_DELETED_SKILLS = '"ryoko migrate --restore-deleted-skills"';
-
-// A skill the sync placed that goes missing counts as deleted, and neither a restart
-// nor a plain `ryoko migrate` puts it back. Hence the option, not "and restart".
-const TAKE_SHIPPED = `To take the shipped version, move the skill's directory aside and run ${RESTORE_DELETED_SKILLS}; see docs/skills.md.`;
+// By name: without one the option brings back every bundled skill the operator deleted.
+const RESTORE_BY_NAME = '"ryoko migrate --restore-deleted-skills <name>"';
 
 /** A run that changed nothing logs nothing, and a skill left untouched is mentioned
  *  once per package version (the sync keeps that tally), so restarts stay quiet. */
@@ -79,17 +76,23 @@ function report(result: BundledSkillSync): void {
   const edited = announced("modified");
   const unrecorded = announced("unmanaged");
   const removed = announced("deleted");
+  // Each case gets the steps that work for it. A recorded skill that goes missing
+  // counts as deleted, so it needs the option; an unrecorded one is simply installed.
   if (edited.length > 0) {
-    logger.warn(`Bundled skills not updated to the newer shipped version because they were edited locally: ${edited.join(", ")}. ${TAKE_SHIPPED}`);
+    logger.warn(
+      `Bundled skills not updated to the newer shipped version because they were edited locally: ${edited.join(", ")}. `
+      + `To take the shipped version, move the skill's directory aside and run ${RESTORE_BY_NAME}; see docs/skills.md.`,
+    );
   }
   if (unrecorded.length > 0) {
     logger.warn(
-      "Bundled skills left untouched because they differ from the shipped version and nothing records how they were installed, "
-      + `so an older shipped copy cannot be told from your own edits: ${unrecorded.join(", ")}. ${TAKE_SHIPPED}`,
+      "Bundled skills left untouched because they differ from every shipped version and nothing records how they were installed, "
+      + `so an older shipped copy cannot be told from your own edits: ${unrecorded.join(", ")}. `
+      + "To take the shipped version, move the skill's directory aside and restart; see docs/skills.md.",
     );
   }
   if (removed.length > 0) {
-    logger.info(`Bundled skills not reinstalled because they were removed from this home: ${removed.join(", ")}. Run ${RESTORE_DELETED_SKILLS} to put them back.`);
+    logger.info(`Bundled skills not reinstalled because they were removed from this home: ${removed.join(", ")}. Run ${RESTORE_BY_NAME} to put one back.`);
   }
   for (const failure of result.failed) logger.warn(`Bundled skill "${failure.name}" was not synced: ${failure.error}`);
   if (result.skipped === "skills-root-symlink") logger.debug("Bundled skills not synced: skills/ is a symlink the user manages.");

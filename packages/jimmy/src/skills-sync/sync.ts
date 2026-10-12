@@ -26,12 +26,12 @@ export interface SyncBundledSkillsOptions {
   legacyPortalNames?: readonly string[];
   packageVersion: string;
   /**
-   * Put back shipped skills the operator deleted. Off by default: a skill the sync
-   * placed and later finds gone was removed on purpose, and neither starting the
-   * gateway nor updating may undo that. Only `ryoko migrate --restore-deleted-skills`
-   * turns it on.
+   * Put back shipped skills the operator deleted: `true` for all of them, or the
+   * names of the ones wanted. Off by default: a skill the sync placed and later finds
+   * gone was removed on purpose, and neither starting the gateway nor updating may
+   * undo that. Only `ryoko migrate --restore-deleted-skills` turns it on.
    */
-  restoreDeleted?: boolean;
+  restoreDeleted?: boolean | readonly string[];
   now?: Date;
 }
 
@@ -72,7 +72,7 @@ export function syncBundledSkills(options: SyncBundledSkillsOptions): BundledSki
     skillsRoot,
     bundled,
     receipt,
-    restoreDeleted: options.restoreDeleted === true,
+    restoreDeleted: options.restoreDeleted ?? false,
     history: loadShippedHistory(options.templateDir),
     // As configured now, as packaged (never filled in), or under an installer default.
     renderings: [options.replacements, {}, ...(options.legacyPortalNames ?? []).map(buildTemplateReplacements)],

@@ -35,8 +35,9 @@ export interface PlanInput {
   skillsRoot: string;
   bundled: readonly BundledSkill[];
   receipt: Receipt | null;
-  /** Put back shipped skills the operator deleted. Only `ryoko migrate --restore-deleted-skills` asks for this. */
-  restoreDeleted: boolean;
+  /** Put back shipped skills the operator deleted: all of them, or only the ones
+   *  named. Only `ryoko migrate --restore-deleted-skills` asks for this. */
+  restoreDeleted: boolean | readonly string[];
   /** What earlier releases shipped, for homes that predate the receipt. */
   history: ShippedHistory;
   /** Placeholder values the installer could have used when it placed a skill. */
@@ -60,7 +61,7 @@ function planShipped(input: PlanInput, skill: BundledSkill, entry: ReceiptSkill 
   if (home.kind === "missing") {
     // No record of placing it: a skill this home never had (or a first run), so it is
     // installed. A record means the operator removed what we placed, and that stands.
-    return entry && !input.restoreDeleted ? { action: "keep", name, reason: "deleted" } : { action: "install", name, skill };
+    return entry && !isRestoreRequested(input.restoreDeleted, name) ? { action: "keep", name, reason: "deleted" } : { action: "install", name, skill };
   }
   if (home.kind !== "directory") return { action: "keep", name, reason: home.kind };
 
@@ -95,6 +96,11 @@ function planRetired(skillsRoot: string, name: string, entry: ReceiptSkill): Ski
   return home.paths.every((file) => observed[file] === entry.files[file])
     ? { action: "retire", name, observed }
     : { action: "keep", name, reason: "retired-modified" };
+}
+
+/** Names are only ever compared, never joined to a path, so they need no checking. */
+function isRestoreRequested(restoreDeleted: boolean | readonly string[], name: string): boolean {
+  return restoreDeleted === true || (Array.isArray(restoreDeleted) && restoreDeleted.includes(name));
 }
 
 /** A file matches the shipped one as installed, or as packaged (placeholders unfilled). */

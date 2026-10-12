@@ -67,7 +67,7 @@ bundled skill it placed.
 | The skill in `~/.ryoko/skills/` | What the sync does |
 |---|---|
 | Missing, and the sync has no record of placing it | Installs it |
-| Missing, but the sync placed it earlier (you deleted it) | Leaves it out and says so once per release. Only `ryoko migrate --restore-deleted-skills` puts it back |
+| Missing, but the sync placed it earlier (you deleted it) | Leaves it out and says so once per release. Only `ryoko migrate --restore-deleted-skills [name...]` puts it back |
 | Unedited since the sync placed it, and a newer version ships | Replaces it and keeps the previous copy |
 | Edited, or holding files you added | Leaves it alone; tells you once per release when a newer version ships |
 | A symlink, or holding a symlink | Leaves it alone |
@@ -79,11 +79,14 @@ bundled skill it placed.
 
 - **Your changes are never overwritten.** To customize a bundled skill, edit it in place;
   it stops following releases. To return to the shipped version, move the skill's
-  directory aside and run `ryoko migrate --restore-deleted-skills`.
+  directory aside and run `ryoko migrate --restore-deleted-skills <name>`. (A skill the
+  notice describes as having no record of how it was installed is not in the receipt:
+  for that one, moving it aside and restarting is enough.)
 - **A bundled skill you delete stays deleted.** Neither restarting the gateway, nor
   `ryoko migrate`, nor `ryoko update` brings it back; the receipt keeps a
-  `"deleted": true` mark for it. `ryoko migrate --restore-deleted-skills` reinstalls
-  every bundled skill you deleted, so delete again any you still do not want.
+  `"deleted": true` mark for it. `ryoko migrate --restore-deleted-skills <name>...`
+  reinstalls the skills you name and leaves the other deleted ones deleted. Without a
+  name it reinstalls every bundled skill you deleted.
 - **Nothing is deleted.** A replaced or retired skill is moved to
   `~/.ryoko/.migration-backups/<version>-<time>/skills/<name>/`. Remove old backups by
   hand when you no longer need them.

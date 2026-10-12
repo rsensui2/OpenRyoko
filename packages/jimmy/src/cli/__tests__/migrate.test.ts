@@ -238,7 +238,7 @@ describe("migrate: bundled skill sync", () => {
     expect(text).toContain(backupDir);
     expect(text).toMatch(/\[skill kept\].*migrate/);
     // A skill the operator deleted is left out, with the one way to get it back.
-    expect(text).toMatch(/\[skill kept\].* new \(.*ryoko migrate --restore-deleted-skills\)/);
+    expect(text).toMatch(/\[skill kept\].* new \(.*ryoko migrate --restore-deleted-skills new\)/);
     // A symlink or an edit with no shipped update pending needs nothing from the user.
     expect(text).not.toMatch(/status|self-heal/);
     expect(fs.symlinkSync).not.toHaveBeenCalled();
@@ -262,6 +262,19 @@ describe("migrate: bundled skill sync", () => {
     await runMigrate({ ...opts, restoreDeletedSkills: true });
 
     expect(mockSync).toHaveBeenCalledExactlyOnceWith({ restoreDeleted: true });
+  });
+
+  it("passes on the names given to --restore-deleted-skills, so only those come back", async () => {
+    vi.mocked(compareSemver).mockReturnValueOnce(0);
+    mockSync.mockReturnValue(synced({ added: ["status"] }));
+    const { runMigrate } = await import("../migrate.js");
+
+    await runMigrate({ restoreDeletedSkills: ["status", "no-such-skill"] });
+
+    expect(mockSync).toHaveBeenCalledExactlyOnceWith({ restoreDeleted: ["status", "no-such-skill"] });
+    // A name that restored nothing is said out loud rather than silently ignored.
+    expect(output()).toMatch(/no-such-skill.*削除済みの同梱スキルではない/);
+    expect(output()).not.toMatch(/status.*削除済みの同梱スキルではない/);
   });
 
   it("stays read-only under --check even when asked to restore", async () => {

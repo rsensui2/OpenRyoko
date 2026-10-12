@@ -74,8 +74,9 @@ describe("what gateway start logs about the bundled skill sync", () => {
     expect(said("warn")).toHaveLength(1);
     expect(said("warn")[0]).toMatch(/edited locally: onboarding\./);
     // Moving a recorded skill aside only records a deletion, whatever runs next:
-    // a restart and a plain ryoko migrate both leave it out. The option brings it back.
-    expect(said("warn")[0]).toContain("ryoko migrate --restore-deleted-skills");
+    // a restart and a plain ryoko migrate both leave it out. The option brings it
+    // back — by name, so that other skills the operator deleted stay deleted.
+    expect(said("warn")[0]).toContain('"ryoko migrate --restore-deleted-skills <name>"');
     expect(said("warn")[0]).not.toContain("restart");
     expect(said("warn")[0]).toContain("docs/skills.md");
   });
@@ -89,7 +90,9 @@ describe("what gateway start logs about the bundled skill sync", () => {
     expect(said("warn")[0]).toMatch(/: migrate\./);
     expect(said("warn")[0]).toContain("older shipped copy");
     expect(said("warn")[0]).not.toContain("edited locally");
-    expect(said("warn")[0]).toContain("ryoko migrate --restore-deleted-skills");
+    // Nothing recorded means nothing to mistake for a deletion: a restart reinstalls it.
+    expect(said("warn")[0]).toMatch(/move the skill's directory aside and restart/);
+    expect(said("warn")[0]).not.toContain("--restore-deleted-skills");
     expect(said("warn")[0]).toContain("docs/skills.md");
   });
 
@@ -100,7 +103,7 @@ describe("what gateway start logs about the bundled skill sync", () => {
 
     // The operator's own choice: worth a line, not a warning.
     expect(said("info")).toEqual([expect.stringMatching(/removed from this home: status\./)]);
-    expect(said("info")[0]).toContain("ryoko migrate --restore-deleted-skills");
+    expect(said("info")[0]).toContain('"ryoko migrate --restore-deleted-skills <name>"');
     expect(said("warn")).toEqual([]);
   });
 

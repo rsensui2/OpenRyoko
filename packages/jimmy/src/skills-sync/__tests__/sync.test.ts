@@ -444,6 +444,45 @@ describe("bundled skill sync: skills the operator deleted", () => {
     expect(f.sync("2026.10.11")).toMatchObject({ added: [], kept: [], inSync: ["example"] });
   });
 
+  it("puts back only the deleted skills it is asked for by name", () => {
+    const f = fixture();
+    for (const name of ["edited", "unwanted", "also-unwanted"]) f.ship(name, { "SKILL.md": `${name} v1` });
+    f.sync("2026.10.10");
+    // The operator deleted two skills for good, and now moves an edited one aside to get the shipped text back.
+    fs.rmSync(path.join(f.skills, "unwanted"), { recursive: true });
+    fs.rmSync(path.join(f.skills, "also-unwanted"), { recursive: true });
+    f.sync("2026.10.10");
+    fs.writeFileSync(path.join(f.skills, "edited", "SKILL.md"), "edited by the operator");
+    fs.renameSync(path.join(f.skills, "edited"), path.join(f.root, "edited-aside"));
+
+    const result = f.restoreOnly(["edited"]);
+
+    expect(result.added).toEqual(["edited"]);
+    expect(f.read("edited", "SKILL.md")).toBe("edited v1");
+    expect(result.kept).toEqual([{ name: "also-unwanted", reason: "deleted" }, { name: "unwanted", reason: "deleted" }]);
+    expect(fs.existsSync(path.join(f.skills, "unwanted"))).toBe(false);
+    expect(fs.existsSync(path.join(f.skills, "also-unwanted"))).toBe(false);
+    expect(f.receipt().skills.unwanted.deleted).toBe(true);
+    expect(f.receipt().skills.edited).not.toHaveProperty("deleted");
+  });
+
+  it("restores nothing for names that are not deleted bundled skills", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.ship("present", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    fs.rmSync(path.join(f.skills, "example"), { recursive: true });
+    const before = () => snapshot(path.join(f.skills, "present"));
+    const untouched = before();
+
+    for (const names of [[], ["present"], ["no-such-skill"], ["../example"], ["EXAMPLE"]]) {
+      const result = f.restoreOnly(names);
+      expect(result.added, JSON.stringify(names)).toEqual([]);
+      expect(fs.existsSync(path.join(f.skills, "example")), JSON.stringify(names)).toBe(false);
+    }
+    expect(before()).toEqual(untouched);
+  });
+
   it("leaves a deleted skill out unless a caller explicitly asks for it back", () => {
     const f = fixture();
     f.ship("example", { "SKILL.md": "v1" });
