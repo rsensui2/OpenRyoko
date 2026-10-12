@@ -100,7 +100,7 @@ cron:
 # 1日1回、ホームの config.yaml・cron・人格と記憶・org・skills・docs・knowledge を
 # tar.gz にまとめ、セッションDB と workflow DB のコピーと一緒に保存する。
 # 一覧は `ryoko backup list`、復元は `ryoko backup restore <id> [--only config,cron] [--dry-run]`。
-# 失敗は gateway のログと /api/status の backup に出る。
+# 失敗は gateway のログと /api/status の backup に出る。対象・戻し方・DB の復元手順は docs/backup.md。
 # backup:
 #   enabled: true
 #   directory: /path/to/backups   # 省略時は <ホーム>/backups。ホームの外（別ディスクなど）も指定できる
