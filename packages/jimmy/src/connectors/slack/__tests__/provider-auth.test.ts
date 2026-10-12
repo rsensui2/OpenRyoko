@@ -454,6 +454,55 @@ describe("Slack provider login — endings", () => {
     expect(stopped).toBe(true);
   });
 
+  it("never posts the link again when an edit of the prompt fails while the login is ending", async () => {
+    const f = fixture();
+    const pty = await startLogin(f, "codex");
+    let failPromptEdit!: () => void;
+    f.update.mockImplementationOnce(() => new Promise((_resolve, reject) => {
+      failPromptEdit = () => reject(Object.assign(new Error("An API error occurred: ratelimited"), { data: { error: "ratelimited" } }));
+    }));
+    pty.emitData(CODEX_LOGIN_OUTPUT);
+    await settle();
+    const promptTs = f.update.mock.calls[0][0].ts;
+    expect(JSON.stringify(f.update.mock.calls[0][0])).toContain(CODEX_DEVICE_CODE);
+
+    // The login ends while Slack has not yet answered the edit that shows the prompt…
+    pty.emitExit(1);
+    await settle();
+    f.postMessage.mockClear();
+    // …and then that edit fails.
+    failPromptEdit();
+    await settle();
+
+    const postedAfterTheEnd = JSON.stringify(f.postMessage.mock.calls);
+    expect(postedAfterTheEnd).not.toContain(CODEX_DEVICE_CODE);
+    expect(postedAfterTheEnd).not.toContain("https://");
+    expect(f.remove).not.toHaveBeenCalled();
+    const final = f.update.mock.calls.at(-1)![0];
+    expect(final).toMatchObject({ channel: DM, ts: promptTs });
+    expect(final.text).toContain("完了しませんでした");
+    expect(f.buttons(final)).toEqual([]);
+  });
+
+  it("replaces an uneditable message with the outcome only, even when every edit fails", async () => {
+    const f = fixture();
+    const pty = await startLogin(f, "codex");
+    f.update.mockRejectedValue(Object.assign(new Error("An API error occurred: cant_update_message"), { data: { error: "cant_update_message" } }));
+    pty.emitData(CODEX_LOGIN_OUTPUT);
+    await settle();
+    f.postMessage.mockClear();
+
+    pty.emitExit(1);
+    await settle();
+
+    expect(f.remove).toHaveBeenCalledTimes(1);
+    expect(f.postMessage).toHaveBeenCalledTimes(1);
+    const replacement = f.postMessage.mock.calls[0][0];
+    expect(replacement.text).toContain("完了しませんでした");
+    expect(JSON.stringify(replacement)).not.toContain(CODEX_DEVICE_CODE);
+    expect(f.buttons(replacement)).toEqual([]);
+  });
+
   it("removes the message when it cannot be edited, and still reports the outcome", async () => {
     const f = fixture();
     const pty = await startLogin(f, "codex");

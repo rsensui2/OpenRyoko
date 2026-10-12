@@ -300,13 +300,13 @@ export class SlackProviderAuth {
       const drawn = JSON.stringify(message);
       if (drawn === view.lastDrawn) return;
       view.lastDrawn = drawn;
-      await this.show(view, message);
+      await this.show(view, message, final);
     } finally {
       if (final) this.views.delete(view);
     }
   }
 
-  private async show(view: FlowView, message: SlackAuthMessage): Promise<void> {
+  private async show(view: FlowView, message: SlackAuthMessage, final: boolean): Promise<void> {
     if (!view.messageTs) {
       view.messageTs = await this.post(view.destination, message);
       return;
@@ -316,12 +316,17 @@ export class SlackProviderAuth {
       await this.client.chat.update({ ...at, text: message.text, blocks: message.blocks });
     } catch (error) {
       this.log.warn(`${TAG} a login message could not be edited (${slackErrorCode(error)})`);
-      if (view.outcome) await this.replaceUneditable(view, at, message);
+      // Only the draw of the outcome may replace the message. An earlier draw
+      // that fails after the login has ended still holds the prompt — link,
+      // device code, buttons — and posting that would leave it up for good.
+      // The outcome's own draw is queued right behind and does the blanking.
+      if (final) await this.replaceUneditable(view, at, message);
     }
   }
 
-  /** The message holding the link could not be rewritten: remove it, or say plainly that it is still there. */
-  private async replaceUneditable(view: FlowView, at: { channel: string; ts: string }, message: SlackAuthMessage): Promise<void> {
+  /** The message holding the link could not be rewritten: remove it, or say plainly that it is still there.
+   *  `outcome` is always the settled message — nothing with a link or a code is ever posted here. */
+  private async replaceUneditable(view: FlowView, at: { channel: string; ts: string }, outcome: SlackAuthMessage): Promise<void> {
     let removed = true;
     try {
       await this.client.chat.delete(at);
@@ -329,7 +334,7 @@ export class SlackProviderAuth {
       removed = false;
       this.log.error(`${TAG} a login message could be neither edited nor removed (${slackErrorCode(error)})`);
     }
-    await this.post(view.destination, removed ? message : unredactedWarning(message));
+    await this.post(view.destination, removed ? outcome : unredactedWarning(outcome));
   }
 
   private async post(destination: Destination, message: SlackAuthMessage): Promise<string | undefined> {
