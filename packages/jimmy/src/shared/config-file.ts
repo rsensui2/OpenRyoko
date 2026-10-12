@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import yaml from "js-yaml";
+import { editYamlText } from "./config-yaml-edit.js";
 import { logger } from "./logger.js";
 import { CONFIG_PATH } from "./paths.js";
 
@@ -149,20 +150,38 @@ function replaceFile(filePath: string, data: string, mode: number): void {
 }
 
 /**
+ * The text to store for `document`. config.yaml is edited by hand as much as
+ * through the API, so only the lines whose value changed are rewritten: the
+ * comments, the order of keys and the quoting of everything else stay as they
+ * are. Where that cannot be done safely the whole document is dumped, the way
+ * every save used to be.
+ */
+function renderConfig(snapshot: ConfigSnapshot, document: Record<string, unknown>): string {
+  if (snapshot.raw === null) return yaml.dump(document);
+  const edited = editYamlText(snapshot.raw, snapshot.document, document);
+  if (edited !== null) return edited;
+  if (/^\s*#/m.test(snapshot.raw)) {
+    logger.info("config.yaml was rewritten in full: this change could not be applied in place, so its comments were not kept");
+  }
+  return yaml.dump(document);
+}
+
+/**
  * Replace config.yaml with `document`. The new contents are staged in a
  * temporary file next to it and renamed into place, so a crash or a full disk
  * mid-write leaves the previous file whole — neither the gateway's watcher nor
  * the next boot ever reads a half-written config. `snapshot` is the read the
  * document was merged from: it tells whether the file is being created
- * (owner-only, it holds tokens) or replaced (permission bits kept). Returns
- * the revision of what was written.
+ * (owner-only, it holds tokens) or replaced (permission bits kept), and it is
+ * the text the changed lines are written into. Returns the revision of what
+ * was written.
  */
 export function writeConfigDocument(
   snapshot: ConfigSnapshot,
   document: Record<string, unknown>,
   configPath: string = CONFIG_PATH,
 ): string {
-  const data = yaml.dump(document);
+  const data = renderConfig(snapshot, document);
   replaceFile(configPath, data, snapshot.mode ?? 0o600);
   return revisionOf(data);
 }
