@@ -24,6 +24,7 @@
 import type { JinnConfig, JsonObject, Session } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
 import { postSessionNotification } from "./callbacks.js";
+import { hasUndeliveredReply } from "./origin-delivery.js";
 import type { SessionQueue } from "./queue.js";
 import { getMessagePage, getSession, initDb, listSessions, updateSession, type SessionMessage } from "./registry.js";
 
@@ -83,9 +84,10 @@ export interface RestartNudgeSituation {
   /** A user message was recorded after the interruption and never answered:
    *  it was waiting in the queue and never reached the engine. */
   unseenUserMessage?: boolean;
-  /** The turn had finished and recorded its reply, but the process was gone
-   *  before the delivery came back: the reply may not have reached anyone. */
-  replyUndelivered?: boolean;
+  /** The turn had finished and recorded its reply, so there is no work to pick
+   *  back up — but the reply is not known to have arrived: the process was gone
+   *  before the delivery came back, or the delivery failed and was recorded. */
+  reply?: "undelivered";
 }
 
 export interface RestartResumeDeps {
@@ -351,6 +353,20 @@ function underLoopGuard(session: Session, nudgedAt: string[], now: number): bool
   return !hasNewInputSince(session, last);
 }
 
+/**
+ * For a turn that had recorded its reply when the restart cut it off: is that
+ * reply still not known to have arrived?
+ *
+ * The turn's completion writes a final status only after the delivery has
+ * returned, so the interruption's own status still standing means the process
+ * was gone first. And a delivery that did return may have returned a failure —
+ * during a shutdown, typically because the connector had already been stopped —
+ * which the completion catches, records, and settles as an ordinary "idle".
+ */
+function replyDeliveryOpen(session: Session): boolean {
+  return session.status === "interrupted" || hasUndeliveredReply(session);
+}
+
 interface SelectInput {
   now: number;
   maxAgeMs: number;
@@ -371,10 +387,8 @@ function skipReason(session: Session, input: SelectInput): RestartResumeSkip | n
   // A mark can outlive its restart (the nudge could not be posted). Once the user has asked again
   // and been answered, it is history. A later message that was merely recorded proves nothing.
   if (hasUserMessageSince(session.id, interruptedAt, true)) return "moved-on";
-  // The turn had recorded its reply. Its completion writes a final status only after the delivery
-  // has returned, so any status but the interruption's own means the reply was dealt with — and
-  // "interrupted" means the process was gone first. A later message nobody answered still needs a turn.
-  if (state.replyRecorded && session.status !== "interrupted" && !hasUserMessageSince(session.id, interruptedAt, false)) return "answered";
+  // The turn had recorded its reply, and that reply went out. A later message nobody answered still needs a turn.
+  if (state.replyRecorded && !replyDeliveryOpen(session) && !hasUserMessageSince(session.id, interruptedAt, false)) return "answered";
   if (input.now - interruptedAt > input.maxAgeMs) return "too-old";
   if (underLoopGuard(session, state.nudgedAt, input.now)) return "recently-nudged";
   return null;
@@ -437,22 +451,26 @@ export function planRestartResumes(input: { candidates: Session[]; now: number }
  * more. The transcript shows it either way.
  *
  * A turn that had already recorded its reply gets a different message: there
- * is nothing to pick back up, only a reply that may not have been delivered,
- * and the session has to be told to send that same reply again rather than
- * redo the work or carry on as if it had been cut off mid-flight.
+ * is nothing to pick back up, only a reply that may not have arrived, and the
+ * session has to be told to deliver it rather than redo the work or carry on
+ * as if it had been cut off mid-flight. It says what the note of a failed
+ * delivery says (recordFailedOriginDelivery): none of the reply arrived, or
+ * only the beginning — look first, send what is missing, repeat nothing. When
+ * that note is in the transcript, the two must not pull in different directions.
  */
 export function restartResumeMessage(session: Session, interruptedAt: string, situation: RestartNudgeSituation = {}): string {
   const transcript = `GET /api/sessions/${session.id}?last=10`;
   const ownRestart = "If you restarted or updated the gateway yourself (for example `ryoko update --restart`), that restart is this one and it is done. Do NOT trigger it again";
-  if (situation.replyUndelivered) {
+  if (situation.reply === "undelivered") {
     return [
-      `${RESTART_NUDGE_PREFIX} The gateway restarted at ${interruptedAt}, just as your last reply in this conversation was being delivered — not something the user did, and not a mistake in your work. That reply is saved in this session, but it may never have reached the conversation.`,
+      `${RESTART_NUDGE_PREFIX} The gateway restarted at ${interruptedAt}, just as your last reply in this conversation was being delivered — not something the user did, and not a mistake in your work. That reply is saved in this session, but the conversation may have seen none of it, or only the beginning.`,
       "",
-      "Your turn had finished, so there is no work to redo. Only the delivery is in doubt:",
-      "1. If you can read the conversation itself (the thread or channel), check whether that reply arrived.",
-      `2. If it did not arrive, or you cannot tell, send it again: answer this message with the same reply, unchanged. You can read it back with ${transcript}`,
-      "3. If it did arrive, do not post it a second time.",
-      `4. ${ownRestart}.`,
+      "Your turn had finished, so there is no work to redo. Only the delivery is open:",
+      `1. Check the conversation itself (the thread or channel) for how much of that reply arrived. The reply as you wrote it is in this session: ${transcript}`,
+      "2. Send what is missing: your answer to this message is posted to the conversation. Do not repost a part that is already there.",
+      "3. If you cannot read the conversation, send the whole reply again, unchanged.",
+      "4. If all of it is there, do not post it a second time.",
+      `5. ${ownRestart}.`,
     ].join("\n");
   }
   return [
@@ -484,11 +502,12 @@ async function sendRestartNudge(sessionId: string, plannedAt: number, deps: Rest
     logger.info(`[restart-resume] Session ${sessionId} is active again — no nudge needed`);
     return;
   }
+  const replyRecorded = readRestartResumeState(session.transportMeta).replyRecorded === true;
   try {
     await (deps.post ?? postSessionNotification)(deps.port, sessionId, {
       message: restartResumeMessage(session, interruptedAt, {
         unseenUserMessage: hasUserMessageSince(sessionId, Date.parse(interruptedAt), false),
-        replyUndelivered: readRestartResumeState(session.transportMeta).replyRecorded === true && session.status === "interrupted",
+        ...(replyRecorded && replyDeliveryOpen(session) ? { reply: "undelivered" as const } : {}),
       }),
       dedupeKey: `restart-resume:${sessionId}:${interruptedAt}`,
     });

@@ -144,3 +144,15 @@ export function recordFailedOriginDelivery(
     logger.error(`Failed to record origin-delivery failure for session ${session.id}: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
+
+/**
+ * True while a session carries the record recordFailedOriginDelivery() leaves:
+ * its last reply did not reach the conversation, or reached it only in part,
+ * and no turn has settled since (a turn's completion resets lastError).
+ *
+ * This is the one place that knows how that record is written. Ask here rather
+ * than match lastError's wording somewhere else.
+ */
+export function hasUndeliveredReply(session: Pick<Session, "lastError">): boolean {
+  return session.lastError?.startsWith(DELIVERY_FAILED) === true;
+}

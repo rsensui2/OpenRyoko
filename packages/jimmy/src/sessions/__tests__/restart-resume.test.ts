@@ -28,6 +28,7 @@ import {
   withRestartInterruptedMark,
   type RestartResumeDeps,
 } from "../restart-resume.js";
+import { recordFailedOriginDelivery } from "../origin-delivery.js";
 import type { JinnConfig, JsonObject, Session } from "../../shared/types.js";
 
 const NOW = Date.parse("2026-10-12T03:00:00.000Z");
@@ -364,6 +365,21 @@ describe("selectRestartResumeCandidates", () => {
     expect(markOf(delivered.id)).toEqual({ nudgedAt: [] });
   });
 
+  it("picks a turn whose reply was recorded and whose delivery failed", () => {
+    // The delivery came back — with an error, which the runner caught and
+    // recorded before settling the turn as idle. During a shutdown that is
+    // usually the shutdown's own doing (a connector already stopped), and the
+    // reply is still owed.
+    const failed = interrupted(iso(MINUTE), { status: "idle", replyRecorded: true });
+    recordFailedOriginDelivery(failed, undefined, "Discord client is not ready");
+    const delivered = interrupted(iso(MINUTE), { status: "idle", replyRecorded: true });
+
+    const { candidates, skipped } = select();
+
+    expect(candidates.map((s) => s.id)).toEqual([failed.id]);
+    expect(skipped).toEqual([{ sessionId: delivered.id, reason: "answered" }]);
+  });
+
   it("picks a turn whose reply was recorded but whose delivery never came back", () => {
     // Still "interrupted": the process was gone before the turn could write anything else.
     const undelivered = interrupted(iso(MINUTE), { status: "interrupted", replyRecorded: true });
@@ -556,17 +572,20 @@ describe("restartResumeMessage", () => {
     expect(withUnseen).toContain("Do NOT trigger it again");
   });
 
-  it("asks for the reply to be delivered again — not for the work to be redone — when only the delivery is in doubt", () => {
+  it("asks for the missing part of the reply — not for the work to be redone — when only the delivery is open", () => {
     const session = interrupted(iso(MINUTE), { replyRecorded: true });
 
-    const message = restartResumeMessage(session, iso(MINUTE), { replyUndelivered: true });
+    const message = restartResumeMessage(session, iso(MINUTE), { reply: "undelivered" });
 
     expect(message.startsWith(RESTART_NUDGE_PREFIX)).toBe(true);
     expect(message).toContain(iso(MINUTE));
-    expect(message).toContain("may never have reached the conversation");
     expect(message).toContain("there is no work to redo");
-    expect(message).toContain("send it again");
-    expect(message).toContain("do not post it a second time");
+    // The same account of it as the note a failed delivery leaves in the transcript:
+    // nothing arrived, or only the beginning; look first; send only what is missing.
+    expect(message).toContain("none of it, or only the beginning");
+    expect(message).toContain("Check the conversation");
+    expect(message).toContain("Send what is missing");
+    expect(message).toContain("Do not repost a part that is already there.");
     expect(message).toContain(`GET /api/sessions/${session.id}?last=10`);
     expect(message).toContain("Do NOT trigger it again");
     // Not the "you were cut off mid-flight" instructions.
@@ -677,8 +696,22 @@ describe("resumeRestartInterruptedSessions", () => {
     await run.fire();
 
     expect(run.post).toHaveBeenCalledTimes(1);
-    expect(run.post.mock.calls[0][2].message).toBe(restartResumeMessage(session, iso(MINUTE), { replyUndelivered: true }));
+    expect(run.post.mock.calls[0][2].message).toBe(restartResumeMessage(session, iso(MINUTE), { reply: "undelivered" }));
     expect(markOf(session.id)).toEqual({ nudgedAt: [new Date(NOW).toISOString()] });
+  });
+
+  it("sends the delivery nudge to a session whose reply was recorded and whose delivery failed", async () => {
+    const session = interrupted(iso(MINUTE), { status: "idle", replyRecorded: true });
+    message(session.id, "user", 5 * MINUTE, "本番にデプロイして");
+    message(session.id, "assistant", MINUTE + 1_000, "デプロイが完了しました。");
+    recordFailedOriginDelivery(session, undefined, "Discord client is not ready");
+
+    const run = boot();
+    expect(run.summary).toMatchObject({ planned: 1, skipped: 0 });
+    await run.fire();
+
+    expect(run.post).toHaveBeenCalledTimes(1);
+    expect(run.post.mock.calls[0][2].message).toBe(restartResumeMessage(session, iso(MINUTE), { reply: "undelivered" }));
   });
 
   it("tells the session about a message that was recorded after the interruption but never answered", async () => {
