@@ -322,6 +322,22 @@ describe("ProviderAuthService — verification", () => {
     expect(harness.runCommand).not.toHaveBeenCalled();
   });
 
+  it("does not take a CLI killed by a signal for one that finished", async () => {
+    // node-pty reports a signal death as exit code 0 plus the signal number.
+    const harness = makeHarness();
+    const flow = await startFlow(harness, "claude");
+    flow.pty.emitExit(0, 9);
+    await settle();
+
+    expect(flow.outcomes).toEqual([{ status: "failed", reason: "exit" }]);
+    expect(harness.runCommand).not.toHaveBeenCalled();
+
+    const clean = await startFlow(harness, "claude");
+    clean.pty.emitExit(0, 0);
+    await settle();
+    expect(clean.outcomes).toEqual([{ status: "succeeded" }]);
+  });
+
   it.each([
     ["a logged-out answer", { stdout: JSON.stringify({ loggedIn: false }), exitCode: 0 }],
     ["a logged-in answer from a failed probe", { stdout: JSON.stringify({ loggedIn: true }), exitCode: 1 }],

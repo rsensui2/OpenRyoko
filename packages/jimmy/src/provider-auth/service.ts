@@ -210,7 +210,7 @@ export class ProviderAuthService implements ProviderAuthPort {
 
   private attach(flow: Flow): void {
     flow.dataSubscription = flow.pty.onData((chunk) => this.onData(flow, chunk));
-    flow.pty.onExit((event) => { void this.onExit(flow, event.exitCode); });
+    flow.pty.onExit((event) => { void this.onExit(flow, event.exitCode, event.signal); });
     this.arm(flow, "ttl", FLOW_TTL_MS, () => this.expire(flow));
     this.arm(flow, "stall", STALL_NOTICE_MS, () => this.noteStall(flow));
   }
@@ -258,14 +258,19 @@ export class ProviderAuthService implements ProviderAuthPort {
     this.call(() => flow.listener.onStalled?.());
   }
 
-  private async onExit(flow: Flow, exitCode: number): Promise<void> {
+  private async onExit(flow: Flow, exitCode: number, signal?: number): Promise<void> {
     if (flow.exited) return;
     flow.exited = true;
     this.disarm(flow, "kill");
     if (flow.settled) return;
     for (const name of ["ttl", "quiet", "stall", "submit"] as const) this.disarm(flow, name);
-    this.deps.logger.info(`${TAG} ${PROVIDERS[flow.provider].label} login: CLI exited with code ${Number(exitCode)}`);
-    if (exitCode !== 0) {
+    // node-pty reports a process killed by a signal as exit code 0 plus the
+    // signal number. That is not a finished login, whatever the status says.
+    const killedBy = Number(signal) || 0;
+    this.deps.logger.info(
+      `${TAG} ${PROVIDERS[flow.provider].label} login: CLI exited with code ${Number(exitCode)}${killedBy ? ` (signal ${killedBy})` : ""}`,
+    );
+    if (exitCode !== 0 || killedBy) {
       this.settle(flow, { status: "failed", reason: "exit" });
       return;
     }

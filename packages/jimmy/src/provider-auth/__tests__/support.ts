@@ -31,12 +31,12 @@ export interface FakePty extends AuthPty {
   args: readonly string[];
   options: PtySpawnOptions;
   emitData(data: string): void;
-  emitExit(exitCode: number): void;
+  emitExit(exitCode: number, signal?: number): void;
 }
 
 export function makePty(file: string, args: readonly string[], options: PtySpawnOptions): FakePty {
   let onData: ((data: string) => void) | undefined;
-  let onExit: ((event: { exitCode: number }) => void) | undefined;
+  let onExit: ((event: { exitCode: number; signal?: number }) => void) | undefined;
   return {
     file, args, options,
     write: vi.fn<(data: string) => void>(),
@@ -44,7 +44,7 @@ export function makePty(file: string, args: readonly string[], options: PtySpawn
     onData: (handler) => { onData = handler; return { dispose: () => { onData = undefined; } }; },
     onExit: (handler) => { onExit = handler; return { dispose: () => { onExit = undefined; } }; },
     emitData: (data) => onData?.(data),
-    emitExit: (exitCode) => onExit?.({ exitCode }),
+    emitExit: (exitCode, signal) => onExit?.({ exitCode, ...(signal === undefined ? {} : { signal }) }),
   };
 }
 
