@@ -104,89 +104,105 @@ function logReport(report: BackupRunReport): void {
  * is logged and reported through `getBackupStatus()` rather than thrown.
  */
 export function startBackupScheduler(options: BackupSchedulerOptions): BackupScheduler {
-  const home = options.home ?? JINN_HOME;
-  const now = options.now ?? (() => new Date());
-  const run = options.run ?? runBackup;
-  const loadConfig = options.loadConfig ?? loadConfigFromDisk;
-  const checkIntervalMs = options.checkIntervalMs ?? CHECK_INTERVAL_MS;
-  let settings = resolveBackupSettings(options.config.backup, home);
-  let state = readBackupState(settings.directory);
-  let warned = "";
-  let timer: NodeJS.Timeout | undefined;
-  let running = false;
-  let stopped = false;
+  const scheduler = new GatewayBackupScheduler(options);
+  scheduler.start();
+  return { stop: () => scheduler.stop(), check: () => scheduler.check() };
+}
 
-  const warnAboutSettings = (): void => {
-    const text = settings.warnings.join("\n");
-    if (text === warned) return;
-    warned = text;
-    for (const warning of settings.warnings) logger.warn(`Backup settings: ${warning}`);
-  };
+class GatewayBackupScheduler {
+  private readonly home: string;
+  private readonly now: () => Date;
+  private readonly run: (options: BackupRunOptions) => Promise<BackupRunReport>;
+  private readonly loadConfig: () => BackupConfig;
+  private readonly checkIntervalMs: number;
+  private settings: BackupSettings;
+  private state: BackupState;
+  /** The settings warnings last logged, so the same ones are not repeated on every check. */
+  private warned = "";
+  private timer: NodeJS.Timeout | undefined;
+  private running = false;
+  private stopped = false;
 
-  const refreshSettings = (): void => {
-    const previous = settings.directory;
+  constructor(private readonly options: BackupSchedulerOptions) {
+    this.home = options.home ?? JINN_HOME;
+    this.now = options.now ?? (() => new Date());
+    this.run = options.run ?? runBackup;
+    this.loadConfig = options.loadConfig ?? loadConfigFromDisk;
+    this.checkIntervalMs = options.checkIntervalMs ?? CHECK_INTERVAL_MS;
+    this.settings = resolveBackupSettings(options.config.backup, this.home);
+    this.state = readBackupState(this.settings.directory);
+  }
+
+  start(): void {
+    this.warnAboutSettings();
+    published = statusOf(this.settings, this.state);
+    this.schedule(this.options.firstCheckDelayMs ?? FIRST_CHECK_DELAY_MS);
+  }
+
+  stop(): void {
+    this.stopped = true;
+    if (this.timer) clearTimeout(this.timer);
+    published = unknownStatus();
+  }
+
+  async check(): Promise<void> {
+    if (this.running || this.stopped) return;
+    this.running = true;
     try {
-      settings = resolveBackupSettings(loadConfig().backup, home);
+      this.refreshSettings();
+      const due = this.settings.enabled ? dueTargets(this.state, this.now()) : [];
+      if (due.length > 0) await this.backUp(due);
+    } catch (error) {
+      logger.error(`Backup check failed: ${errorMessage(error)}`);
+    } finally {
+      this.running = false;
+      if (!this.stopped) published = statusOf(this.settings, this.state);
+    }
+  }
+
+  /** The next check is only armed once this one has finished, so two never overlap. */
+  private schedule(delayMs: number): void {
+    if (this.stopped) return;
+    this.timer = setTimeout(() => { void this.check().finally(() => this.schedule(this.checkIntervalMs)); }, delayMs);
+    this.timer.unref();
+  }
+
+  private warnAboutSettings(): void {
+    const text = this.settings.warnings.join("\n");
+    if (text === this.warned) return;
+    this.warned = text;
+    for (const warning of this.settings.warnings) logger.warn(`Backup settings: ${warning}`);
+  }
+
+  private refreshSettings(): void {
+    const previous = this.settings.directory;
+    try {
+      this.settings = resolveBackupSettings(this.loadConfig().backup, this.home);
     } catch {
       // config.yaml does not parse right now. The settings that last did still apply.
     }
-    warnAboutSettings();
+    this.warnAboutSettings();
     // A directory the config newly points at starts from its own history, so it
     // gets its first backup now rather than whenever the old one would be due.
-    state = settings.directory === previous
-      ? mergeStates(state, readBackupState(settings.directory))
-      : readBackupState(settings.directory);
-  };
+    const onDisk = readBackupState(this.settings.directory);
+    this.state = this.settings.directory === previous ? mergeStates(this.state, onDisk) : onDisk;
+  }
 
-  const backUp = async (due: readonly BackupTargetName[]): Promise<void> => {
-    const report = await run({
-      home,
-      settings,
-      now: now(),
+  private async backUp(due: readonly BackupTargetName[]): Promise<void> {
+    const report = await this.run({
+      home: this.home,
+      settings: this.settings,
+      now: this.now(),
       targets: due,
-      databases: { sessions: () => ({ database: options.database, release: () => {} }) },
+      databases: { sessions: () => ({ database: this.options.database, release: () => {} }) },
     });
-    state = applyRunReport(state, report);
+    this.state = applyRunReport(this.state, report);
     try {
-      writeBackupState(settings.directory, state);
+      writeBackupState(this.settings.directory, this.state);
     } catch {
       // The run has already said why this directory cannot be written. The
       // state stays in memory, so the retry still waits its hour.
     }
     logReport(report);
-  };
-
-  const check = async (): Promise<void> => {
-    if (running || stopped) return;
-    running = true;
-    try {
-      refreshSettings();
-      const due = settings.enabled ? dueTargets(state, now()) : [];
-      if (due.length > 0) await backUp(due);
-    } catch (error) {
-      logger.error(`Backup check failed: ${errorMessage(error)}`);
-    } finally {
-      running = false;
-      if (!stopped) published = statusOf(settings, state);
-    }
-  };
-
-  const schedule = (delayMs: number): void => {
-    if (stopped) return;
-    timer = setTimeout(() => { void check().finally(() => schedule(checkIntervalMs)); }, delayMs);
-    timer.unref();
-  };
-
-  warnAboutSettings();
-  published = statusOf(settings, state);
-  schedule(options.firstCheckDelayMs ?? FIRST_CHECK_DELAY_MS);
-
-  return {
-    stop: () => {
-      stopped = true;
-      if (timer) clearTimeout(timer);
-      published = unknownStatus();
-    },
-    check,
-  };
+  }
 }

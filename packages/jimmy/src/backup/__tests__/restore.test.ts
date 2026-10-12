@@ -426,6 +426,21 @@ describe("restoreHomeArchive, refusing what it must not trust", () => {
     expect(result.changes.find((change) => change.path === "skills/demo")).toMatchObject({ type: "directory", action: "replace" });
   });
 
+  it("replaces a symlink standing where a file belongs, rather than writing to what it points at", async () => {
+    const target = await scene();
+    const outside = path.join(target.root, "outside");
+    writeTree(outside, { "victim.txt": "not the instance's to overwrite\n" });
+    fs.rmSync(path.join(target.home, "config.yaml"));
+    fs.symlinkSync(path.join(outside, "victim.txt"), path.join(target.home, "config.yaml"));
+
+    const result = await restoreHomeArchive(optionsFor(target, { only: ["config"] }));
+
+    expect(read(outside, "victim.txt")).toBe("not the instance's to overwrite\n");
+    expect(fs.lstatSync(path.join(target.home, "config.yaml")).isFile()).toBe(true);
+    expect(read(target.home, "config.yaml")).toBe(HOME_CONTENT["config.yaml"]);
+    expect(result.changes).toEqual([{ path: "config.yaml", type: "file", kind: "config", action: "replace" }]);
+  });
+
   it("does not recreate a symlink that points outside the home unless told to", async () => {
     const root = tempDir();
     const home = makeHome(root);
