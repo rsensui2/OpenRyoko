@@ -11,6 +11,7 @@ export type {
 } from "./types.js";
 
 let shared: ProviderAuthService | undefined;
+let unsubscribe: (() => void) | undefined;
 
 /**
  * The gateway's one flow engine. A provider's credentials are a property of
@@ -29,7 +30,25 @@ export function getProviderAuthService(): ProviderAuthService {
     clock: SYSTEM_CLOCK,
     logger,
   });
-  onProviderAuthFailure((provider) => service.reportAuthFailure(provider));
+  unsubscribe = onProviderAuthFailure((provider) => service.reportAuthFailure(provider));
   shared = service;
   return service;
+}
+
+/**
+ * The first step of gateway shutdown, ahead of anything that can take time:
+ * every login CLI is killed and every login ended before the first await, and
+ * the wait that follows — for the connectors to blank their messages — is
+ * short and bounded. Does nothing if no connector ever opted in. Never rejects.
+ *
+ * The service is forgotten afterwards, so a gateway started again in the same
+ * process gets a working one.
+ */
+export async function stopProviderAuth(): Promise<void> {
+  const service = shared;
+  if (!service) return;
+  shared = undefined;
+  unsubscribe?.();
+  unsubscribe = undefined;
+  await service.stop();
 }

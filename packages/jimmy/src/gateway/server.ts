@@ -49,6 +49,7 @@ import {
 import { initStt } from "../stt/stt.js";
 import { startWatchers, stopWatchers, syncSkillSymlinks } from "./watcher.js";
 import { SlackConnector } from "../connectors/slack/index.js";
+import { stopProviderAuth } from "../provider-auth/index.js";
 import { DiscordConnector, type DiscordConnectorConfig } from "../connectors/discord/index.js";
 import { RemoteDiscordConnector } from "../connectors/discord/remote.js";
 import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
@@ -1421,6 +1422,9 @@ export async function startGateway(
   // Return cleanup function
   return async () => {
     logger.info("Gateway cleanup starting...");
+    // First, ahead of every step that can take time: end any provider login
+    // in progress (its CLI killed, its chat message blanked). Bounded and brief.
+    await stopProviderAuth();
     clearInterval(modelRefreshTimer);
     modelManagement?.stop();
     stopScheduler();

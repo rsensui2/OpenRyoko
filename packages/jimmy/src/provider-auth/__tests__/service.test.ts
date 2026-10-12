@@ -291,6 +291,56 @@ describe("ProviderAuthService — lifecycle", () => {
     expect(harness.spawnPty).toHaveBeenCalledTimes(2);
   });
 
+  it("waits at shutdown until the outcome has been shown, with the CLI already dead", async () => {
+    const harness = makeHarness();
+    const observed = makeListener();
+    let finishShowing!: () => void;
+    const shown = new Promise<void>((resolve) => { finishShowing = resolve; });
+    await harness.service.start("claude", {
+      ...observed.listener,
+      onSettled: (outcome) => { void observed.listener.onSettled(outcome); return shown; },
+    });
+    const pty = harness.ptys[0];
+
+    let stopped = false;
+    const stopping = harness.service.stop().then(() => { stopped = true; });
+    // Nothing is awaited before the CLI is killed and the flow is over.
+    expect(pty.kill.mock.calls).toEqual([[], ["SIGKILL"]]);
+    expect(observed.outcomes).toEqual([{ status: "failed", reason: "stopped" }]);
+    await settle();
+    expect(stopped).toBe(false);
+
+    finishShowing();
+    await stopping;
+    expect(stopped).toBe(true);
+  });
+
+  it("stops waiting for the outcome to be shown after 1.5 seconds", async () => {
+    const harness = makeHarness();
+    await harness.service.start("codex", { onPrompt: () => {}, onSettled: () => new Promise<void>(() => {}) });
+
+    let stopped = false;
+    const stopping = harness.service.stop().then(() => { stopped = true; });
+    harness.clock.advance(1_499);
+    await settle();
+    expect(stopped).toBe(false);
+
+    harness.clock.advance(1);
+    await stopping;
+    expect(stopped).toBe(true);
+  });
+
+  it("shuts down at once when no login is running, or when showing the outcome fails", async () => {
+    const idle = makeHarness();
+    await idle.service.stop();
+    expect(idle.clock.delays()).toEqual([]);
+
+    const failing = makeHarness();
+    await failing.service.start("codex", { onPrompt: () => {}, onSettled: async () => { throw new Error("slack is down"); } });
+    await failing.service.stop();
+    expect(failing.clock.delays()).toEqual([]);
+  });
+
   it("does not leave a CLI running when shutdown lands while it is being spawned", async () => {
     const harness = makeHarness();
     const starting = harness.service.start("claude", makeListener().listener);

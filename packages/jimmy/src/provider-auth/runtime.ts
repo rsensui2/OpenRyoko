@@ -4,7 +4,7 @@ import { loadConfig } from "../shared/config.js";
 import { JINN_HOME } from "../shared/paths.js";
 import { tryResolveBin } from "../shared/resolveBin.js";
 import type { JinnConfig } from "../shared/types.js";
-import type { AuthClock, AuthProvider, ProviderCommand, RunCommand, SpawnPty } from "./types.js";
+import type { AuthClock, AuthProvider, AuthPty, ProviderCommand, RunCommand, SpawnPty } from "./types.js";
 
 /**
  * How a provider's login CLI is run for real.
@@ -45,9 +45,35 @@ export async function resolveProviderCommand(
   return { file, env: buildClaudePtyEnv(undefined, process.env), cwd: JINN_HOME };
 }
 
+/** Login CLIs that are still running, whichever flow started them. */
+const livePtys = new Set<AuthPty>();
+let exitGuardInstalled = false;
+
+/**
+ * The last resort: no login CLI survives the gateway process. Shutdown stops
+ * them long before this runs; it matters when the process leaves by another
+ * door — a forced exit after a hung cleanup, an uncaught error. Synchronous,
+ * as an exit handler has to be.
+ */
+export function killLiveLoginPtys(): void {
+  for (const pty of livePtys) {
+    try {
+      pty.kill("SIGKILL");
+    } catch { /* already gone */ }
+  }
+  livePtys.clear();
+}
+
 export const spawnLoginPty: SpawnPty = async (file, args, options) => {
-  const pty = await import("node-pty");
-  return pty.spawn(file, [...args], options);
+  const { spawn } = await import("node-pty");
+  const pty = spawn(file, [...args], options);
+  livePtys.add(pty);
+  pty.onExit(() => { livePtys.delete(pty); });
+  if (!exitGuardInstalled) {
+    exitGuardInstalled = true;
+    process.on("exit", killLiveLoginPtys);
+  }
+  return pty;
 };
 
 /**

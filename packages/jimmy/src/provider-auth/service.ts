@@ -19,6 +19,9 @@ const QUIET_FLUSH_MS = 1_500;
 /** No link or code recognized by now means the CLI's output is not being read. */
 const STALL_NOTICE_MS = 30_000;
 const STATUS_TIMEOUT_MS = 15_000;
+/** At shutdown, how long to wait for a flow's outcome to be shown — for a chat
+ *  connector, for the message holding the link and the code to be blanked. */
+const STOP_DRAIN_MS = 1_500;
 /** The pause between typing a code and pressing Enter. A CLI that reads its
  *  prompt in raw mode takes a CR arriving in the same chunk as part of the
  *  paste; the interactive engine found 150 ms to be the beat that is reliable. */
@@ -147,7 +150,7 @@ export class ProviderAuthService implements ProviderAuthPort {
     const flow = this.flows.get(provider);
     if (!flow || (flowId !== undefined && flow.id !== flowId)) return false;
     this.terminate(flow, false);
-    this.settle(flow, { status: "cancelled" });
+    void this.settle(flow, { status: "cancelled" });
     return true;
   }
 
@@ -156,7 +159,7 @@ export class ProviderAuthService implements ProviderAuthPort {
     const flow = this.flows.get(provider);
     if (!flow || flow.id !== flowId) return false;
     this.terminate(flow, true);
-    this.settle(flow, { status: "failed", reason: "stopped" });
+    void this.settle(flow, { status: "failed", reason: "stopped" });
     return true;
   }
 
@@ -179,13 +182,27 @@ export class ProviderAuthService implements ProviderAuthPort {
     this.notices.report(provider);
   }
 
-  /** Gateway shutdown: no CLI outlives it, and nothing starts afterwards. */
-  stop(): void {
+  /**
+   * Gateway shutdown: no CLI outlives it, and nothing starts afterwards.
+   *
+   * Every CLI is killed and every flow ended before this returns. The promise
+   * it returns only waits — briefly — for the listeners to finish showing that
+   * outcome. It never rejects.
+   */
+  stop(): Promise<void> {
     this.stopped = true;
-    for (const flow of [...this.flows.values()]) {
+    const shown = [...this.flows.values()].map((flow) => {
       this.terminate(flow, true);
-      this.settle(flow, { status: "failed", reason: "stopped" });
-    }
+      return this.settle(flow, { status: "failed", reason: "stopped" });
+    });
+    if (shown.length === 0) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const deadline = this.deps.clock.setTimeout(resolve, STOP_DRAIN_MS);
+      void Promise.all(shown).then(() => {
+        this.deps.clock.clearTimeout(deadline);
+        resolve();
+      });
+    });
   }
 
   private async spawn(provider: AuthProvider, listener: FlowListener): Promise<Flow | null> {
@@ -237,7 +254,7 @@ export class ProviderAuthService implements ProviderAuthPort {
     flow.deviceCode = deviceCode;
     this.disarm(flow, "stall");
     this.deps.logger.info(`${TAG} ${spec.label} login: sign-in ${deviceCode ? "link and device code" : "link"} ready`);
-    this.call(() => flow.listener.onPrompt(this.promptOf(flow)));
+    void this.call(() => flow.listener.onPrompt(this.promptOf(flow)));
   }
 
   private promptOf(flow: Flow): FlowPrompt {
@@ -255,7 +272,7 @@ export class ProviderAuthService implements ProviderAuthPort {
     this.deps.logger.warn(
       `${TAG} ${PROVIDERS[flow.provider].label} login: no sign-in link recognized after ${STALL_NOTICE_MS / 1000}s (${flow.bytes} bytes of output)`,
     );
-    this.call(() => flow.listener.onStalled?.());
+    void this.call(() => flow.listener.onStalled?.());
   }
 
   private async onExit(flow: Flow, exitCode: number, signal?: number): Promise<void> {
@@ -271,13 +288,13 @@ export class ProviderAuthService implements ProviderAuthPort {
       `${TAG} ${PROVIDERS[flow.provider].label} login: CLI exited with code ${Number(exitCode)}${killedBy ? ` (signal ${killedBy})` : ""}`,
     );
     if (exitCode !== 0 || killedBy) {
-      this.settle(flow, { status: "failed", reason: "exit" });
+      void this.settle(flow, { status: "failed", reason: "exit" });
       return;
     }
     flow.phase = "verifying";
-    this.call(() => flow.listener.onVerifying?.());
+    void this.call(() => flow.listener.onVerifying?.());
     const verified = await this.verify(flow);
-    this.settle(flow, verified ? { status: "succeeded" } : { status: "failed", reason: "unverified" });
+    void this.settle(flow, verified ? { status: "succeeded" } : { status: "failed", reason: "unverified" });
   }
 
   /** A clean exit is not proof: the CLI's own status command has the last word. */
@@ -296,7 +313,7 @@ export class ProviderAuthService implements ProviderAuthPort {
   private expire(flow: Flow): void {
     if (flow.settled) return;
     this.terminate(flow, false);
-    this.settle(flow, { status: "expired" });
+    void this.settle(flow, { status: "expired" });
   }
 
   private terminate(flow: Flow, force: boolean): void {
@@ -316,15 +333,16 @@ export class ProviderAuthService implements ProviderAuthPort {
     } catch { /* already gone */ }
   }
 
-  private settle(flow: Flow, outcome: FlowOutcome): void {
-    if (flow.settled) return;
+  /** Ends the flow. Resolves once the listener has finished showing the outcome. */
+  private settle(flow: Flow, outcome: FlowOutcome): Promise<void> {
+    if (flow.settled) return Promise.resolve();
     flow.settled = true;
     for (const name of ["ttl", "quiet", "stall", "submit"] as const) this.disarm(flow, name);
     try { flow.dataSubscription?.dispose(); } catch { /* best effort */ }
     flow.tail = "";
     if (this.flows.get(flow.provider) === flow) this.flows.delete(flow.provider);
     this.deps.logger.info(`${TAG} ${PROVIDERS[flow.provider].label} login ${describeOutcome(outcome)}`);
-    this.call(() => flow.listener.onSettled(outcome));
+    return this.call(() => flow.listener.onSettled(outcome));
   }
 
   private arm(flow: Flow, name: TimerName, delayMs: number, handler: () => void): void {
@@ -341,13 +359,15 @@ export class ProviderAuthService implements ProviderAuthPort {
     flow.timers[name] = undefined;
   }
 
-  /** A connector that fails to render must not stall or break the flow. */
-  private call(invoke: () => void | Promise<void>): void {
+  /** A connector that fails to render must not stall or break the flow.
+   *  The returned promise settles when the listener is done, and never rejects. */
+  private call(invoke: () => void | Promise<void>): Promise<void> {
     const failed = () => this.deps.logger.warn(`${TAG} a login update could not be shown`);
     try {
-      void Promise.resolve(invoke()).catch(failed);
+      return Promise.resolve(invoke()).catch(failed);
     } catch {
       failed();
+      return Promise.resolve();
     }
   }
 }

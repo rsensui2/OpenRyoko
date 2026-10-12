@@ -90,7 +90,7 @@ interface FlowView {
 }
 
 const LOGIN_COMMANDS = new Set(["ログイン", "再ログイン", "/login", "login"]);
-const STOP_DRAIN_MS = 3_000;
+const STOP_DRAIN_MS = 1_500;
 const TAG = "[slack] provider-auth:";
 
 /** Slack's own error code (`missing_scope`, …) — safe to log and to show. */
@@ -209,7 +209,8 @@ export class SlackProviderAuth {
       onPrompt: (prompt) => { view.prompt = prompt; this.draw(view); },
       onStalled: () => { view.stalled = true; this.draw(view); },
       onVerifying: () => { view.verifying = true; this.draw(view); },
-      onSettled: (outcome) => { view.outcome = outcome; this.draw(view); },
+      // Returning the draw lets the flow engine wait, at shutdown, for the message to be blanked.
+      onSettled: (outcome) => { view.outcome = outcome; this.draw(view); return view.queue; },
     });
     if (!result.ok) {
       await this.say(destination, startRefusedMessage(provider, result.reason));

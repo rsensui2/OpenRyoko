@@ -2,9 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { runEngineWithResponseTimeout } from "../../sessions/engine-fallback.js";
 import type { Engine, EngineResult, JinnConfig } from "../../shared/types.js";
 import { onProviderAuthFailure } from "../failure-signal.js";
-import { getProviderAuthService } from "../index.js";
+import { getProviderAuthService, stopProviderAuth } from "../index.js";
 import type { AuthFailureNotifier } from "../types.js";
-import { settle } from "./support.js";
+import { makeListener, settle } from "./support.js";
 
 const config = { engines: { default: "claude" }, sessions: {}, connectors: {} } as unknown as JinnConfig;
 const AUTH_FAILED = "Interactive turn failed: authentication_failed";
@@ -66,5 +66,29 @@ describe("engine run path → provider auth failure signal", () => {
     await settle();
 
     expect(notifier).toHaveBeenCalledExactlyOnceWith("claude");
+  });
+});
+
+describe("stopProviderAuth — gateway shutdown", () => {
+  it("stops the shared service, cuts it off from the engines, and lets a later start begin afresh", async () => {
+    const service = getProviderAuthService();
+    const notifier = vi.fn<AuthFailureNotifier>(async () => true);
+    service.addNotifier(notifier);
+
+    await stopProviderAuth();
+
+    expect(await service.start("claude", makeListener().listener)).toEqual({ ok: false, reason: "stopped" });
+    await runEngineWithResponseTimeout(engine("claude", { sessionId: "s", result: "", error: AUTH_FAILED }), { prompt: "task", cwd: "/tmp" }, config);
+    await settle();
+    expect(notifier).not.toHaveBeenCalled();
+
+    const next = getProviderAuthService();
+    expect(next).not.toBe(service);
+    await stopProviderAuth();
+  });
+
+  it("is a no-op when no connector ever opted in", async () => {
+    await expect(stopProviderAuth()).resolves.toBeUndefined();
+    await expect(stopProviderAuth()).resolves.toBeUndefined();
   });
 });

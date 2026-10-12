@@ -10,7 +10,7 @@ import { buildClaudePtyEnv } from "../../engines/claude-interactive.js";
 import { buildChildEnv } from "../../shared/childEnv.js";
 import { JINN_HOME } from "../../shared/paths.js";
 import { _clearResolveBinCache } from "../../shared/resolveBin.js";
-import { resolveProviderCommand, runStatusCommand, spawnLoginPty } from "../runtime.js";
+import { killLiveLoginPtys, resolveProviderCommand, runStatusCommand, spawnLoginPty } from "../runtime.js";
 
 // Stand-ins for the two CLIs, so no test depends on what this machine has installed.
 const BIN_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "provider-auth-bin-"));
@@ -100,10 +100,41 @@ describe("resolveProviderCommand", () => {
 });
 
 describe("spawnLoginPty", () => {
+  beforeEach(() => { spawn.mockClear(); });
+  afterAll(() => { process.removeListener("exit", killLiveLoginPtys); });
+  const options = { name: "xterm-256color", cols: 2000, rows: 50, cwd: "/work", env: { HOME: "/home/ryoko" } };
+  function fakePty() {
+    let exited: (() => void) | undefined;
+    return {
+      write: vi.fn(), kill: vi.fn(), onData: vi.fn(),
+      onExit: vi.fn((handler: () => void) => { exited = handler; }),
+      exit: () => exited?.(),
+    };
+  }
+
+  it("kills, when the process exits, every login CLI that is still running — and only those", async () => {
+    const guardsBefore = process.listenerCount("exit");
+    const [gone, alive, stubborn] = [fakePty(), fakePty(), fakePty()];
+    for (const pty of [gone, alive, stubborn]) {
+      spawn.mockReturnValueOnce(pty);
+      await spawnLoginPty("/opt/bin/codex", ["login", "--device-auth"], options);
+    }
+    // One guard for the process, however many logins were started.
+    expect(process.listenerCount("exit") - guardsBefore).toBe(1);
+    expect(process.listeners("exit")).toContain(killLiveLoginPtys);
+
+    gone.exit();
+    stubborn.kill.mockImplementation(() => { throw new Error("ESRCH"); });
+    expect(() => killLiveLoginPtys()).not.toThrow();
+
+    expect(gone.kill).not.toHaveBeenCalled();
+    expect(alive.kill).toHaveBeenCalledExactlyOnceWith("SIGKILL");
+    expect(stubborn.kill).toHaveBeenCalledExactlyOnceWith("SIGKILL");
+  });
+
   it("starts the CLI in a PTY with exactly the given arguments, directory and environment", async () => {
-    const pty = { write: vi.fn(), kill: vi.fn(), onData: vi.fn(), onExit: vi.fn() };
+    const pty = fakePty();
     spawn.mockReturnValueOnce(pty);
-    const options = { name: "xterm-256color", cols: 2000, rows: 50, cwd: "/work", env: { HOME: "/home/ryoko" } };
 
     expect(await spawnLoginPty("/opt/bin/claude", ["auth", "login", "--claudeai"], options)).toBe(pty);
     expect(spawn).toHaveBeenCalledExactlyOnceWith("/opt/bin/claude", ["auth", "login", "--claudeai"], options);

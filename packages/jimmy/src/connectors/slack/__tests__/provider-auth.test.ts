@@ -417,6 +417,28 @@ describe("Slack provider login — endings", () => {
     expect(f.postMessage.mock.calls[0][0]).toMatchObject({ channel: DM, thread_ts: "40.000" });
   });
 
+  it("at gateway shutdown, the login is stopped and its message blanked before anything else is waited for", async () => {
+    const f = fixture();
+    const pty = await startLogin(f, "codex");
+    pty.emitData(CODEX_LOGIN_OUTPUT);
+    await settle();
+    let finishEdit!: () => void;
+    f.update.mockImplementationOnce(() => new Promise((resolve) => { finishEdit = () => resolve({}); }));
+
+    let stopped = false;
+    const stopping = f.core.service.stop().then(() => { stopped = true; });
+    expect(pty.kill).toHaveBeenCalledWith("SIGKILL");
+    await settle();
+    // The service does not report itself stopped while the blanking edit is still on its way to Slack.
+    expect(stopped).toBe(false);
+    expect(f.update.mock.calls.at(-1)![0].text).toContain("中断");
+    expect(JSON.stringify(f.update.mock.calls.at(-1)![0])).not.toContain(CODEX_DEVICE_CODE);
+
+    finishEdit();
+    await stopping;
+    expect(stopped).toBe(true);
+  });
+
   it("kills the CLI when the connector stops", async () => {
     const f = fixture();
     const pty = await startLogin(f, "claude");
