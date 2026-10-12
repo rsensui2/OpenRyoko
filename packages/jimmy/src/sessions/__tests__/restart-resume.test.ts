@@ -16,6 +16,7 @@ import {
   RESTART_NUDGE_COOLDOWN_MS,
   RESTART_NUDGE_PREFIX,
   RESTART_NUDGE_WINDOW_LIMIT,
+  RESTART_LIMIT_RESET_BUFFER_MS,
   RESTART_RESUME_META_KEY,
   RESTART_RESUME_STAGGER_MS,
   interruptRunningSessionsForShutdown,
@@ -30,6 +31,7 @@ import {
 } from "../restart-resume.js";
 import { recordFailedOriginDelivery } from "../origin-delivery.js";
 import { SUPPRESS_PUBLIC_TRAILER } from "../reply-disposition.js";
+import { MAX_USAGE_LIMIT_WAIT_MS } from "../../shared/rateLimit.js";
 import type { JinnConfig, JsonObject, Session } from "../../shared/types.js";
 
 const NOW = Date.parse("2026-10-12T03:00:00.000Z");
@@ -63,12 +65,20 @@ function slackSession(overrides: { status?: Session["status"]; lastActivity?: st
 }
 
 /** The same session as the gateway's shutdown loop leaves it: status interrupted + the mark. */
-function interrupted(at = iso(MINUTE), overrides: Parameters<typeof slackSession>[0] & { replyRecorded?: boolean } = {}): Session {
+function interrupted(at = iso(MINUTE), overrides: Parameters<typeof slackSession>[0] & { replyRecorded?: boolean; limitWait?: { resetsAt?: string } } = {}): Session {
   const session = slackSession(overrides);
   updateSession(session.id, {
     status: overrides.status ?? "interrupted",
-    transportMeta: withRestartInterruptedMark(session.transportMeta, at, { replyRecorded: overrides.replyRecorded }),
+    transportMeta: withRestartInterruptedMark(session.transportMeta, at, { replyRecorded: overrides.replyRecorded, limitWait: overrides.limitWait }),
   });
+  return getSession(session.id)!;
+}
+
+/** A conversation whose turn met a usage limit and is parked, the way the
+ *  connector runner leaves it: "waiting", the expected reset noted in lastError. */
+function waitingForLimit(resetsAt: string | null, overrides: Parameters<typeof slackSession>[0] = {}): Session {
+  const session = slackSession({ ...overrides, status: "waiting" });
+  updateSession(session.id, { lastError: resetsAt ? `claude usage limit — resumes ${resetsAt}` : "claude usage limit — waiting for reset" });
   return getSession(session.id)!;
 }
 
@@ -145,7 +155,6 @@ describe("restart interruption mark", () => {
   it("is stamped at boot on a session the previous process never got to shut down cleanly", () => {
     const crashed = slackSession({ status: "running", lastActivity: iso(7 * MINUTE) });
     const idle = slackSession({ status: "idle" });
-    const waiting = slackSession({ status: "waiting" });
 
     expect(prepareRestartResume(NOW).marked).toBe(1);
 
@@ -155,7 +164,7 @@ describe("restart interruption mark", () => {
     expect(recoverStaleSessions()).toBe(1);
     expect(getSession(crashed.id)?.status).toBe("interrupted");
     expect(markOf(crashed.id).interruptedAt).toBe(iso(7 * MINUTE));
-    for (const untouched of [idle, waiting]) expect(markOf(untouched.id).interruptedAt).toBeUndefined();
+    expect(markOf(idle.id).interruptedAt).toBeUndefined();
   });
 
   it("records at boot that a crashed session had already recorded its reply", () => {
@@ -213,7 +222,7 @@ describe("interruptRunningSessionsForShutdown — the graceful-shutdown half", (
   });
 
   it("leaves sessions that are not mid-turn exactly as they are", () => {
-    const others = (["idle", "waiting", "error", "interrupted"] as const).map((status) => slackSession({ status }));
+    const others = (["idle", "error", "interrupted"] as const).map((status) => slackSession({ status }));
 
     expect(interruptRunningSessionsForShutdown(NOW)).toBe(0);
 
@@ -278,6 +287,198 @@ describe("interruptRunningSessionsForShutdown — the graceful-shutdown half", (
     // recoverStaleWorkflowAttemptSessions() stamps the gateway-restart receipt; a plain interrupt here would misclassify it.
     expect(getSession(attempt.id)?.status).toBe("running");
     expect(markOf(attempt.id).interruptedAt).toBeUndefined();
+  });
+});
+
+// A turn that meets a usage limit with no engine to switch to is parked: the
+// user is told "I'll continue automatically", the session says "waiting", and
+// the wait itself is a loop inside the process. A restart ended that loop and
+// nothing took its place — the session said "waiting" for good, and the next
+// message was answered "still paused" although nothing was waiting any more.
+describe("a turn that was waiting for a usage limit when the gateway stopped", () => {
+  const RESET_IN = 40 * MINUTE;
+  const reset = new Date(NOW + RESET_IN).toISOString();
+
+  it("is marked at a graceful shutdown, with the reset it was waiting for", () => {
+    const waiting = waitingForLimit(reset);
+
+    expect(interruptRunningSessionsForShutdown(NOW)).toBe(1);
+
+    const after = getSession(waiting.id)!;
+    expect(after.status).toBe("interrupted");
+    expect(markOf(waiting.id)).toEqual({ interruptedAt: iso(0), limitWait: { resetsAt: reset }, nudgedAt: [] });
+    // No longer "resumes at …": nothing in this process will resume it.
+    expect(after.lastError).toMatch(/^Interrupted: .*waiting for a usage limit/);
+    expect(after.transportMeta).toMatchObject({ channelExternal: false });
+  });
+
+  it("is marked as such even when the wait did not know when the limit resets", () => {
+    const waiting = waitingForLimit(null);
+
+    interruptRunningSessionsForShutdown(NOW);
+
+    expect(markOf(waiting.id)).toEqual({ interruptedAt: iso(0), limitWait: {}, nudgedAt: [] });
+  });
+
+  it("is marked at boot when the process died without shutting down, and is no longer shown as waiting", () => {
+    // The wait's heartbeat is its last sign of life.
+    const waiting = waitingForLimit(reset, { lastActivity: iso(30_000) });
+
+    expect(prepareRestartResume(NOW).marked).toBe(1);
+    expect(markOf(waiting.id)).toEqual({ interruptedAt: iso(30_000), limitWait: { resetsAt: reset }, nudgedAt: [] });
+
+    expect(recoverStaleSessions()).toBe(1);
+    const after = getSession(waiting.id)!;
+    expect(after.status).toBe("interrupted");
+    expect(after.lastError).toMatch(/^Interrupted: .*waiting for a usage limit/);
+    expect(markOf(waiting.id).limitWait).toEqual({ resetsAt: reset }); // the sweep leaves the mark alone
+  });
+
+  it("keeps the reset when the dying wait's heartbeat wrote \"waiting\" back over the shutdown's mark", () => {
+    const waiting = waitingForLimit(reset);
+    interruptRunningSessionsForShutdown(NOW - 5_000);
+    updateSession(waiting.id, { status: "waiting", lastActivity: iso(1_000) }); // the heartbeat, a moment before the process went
+
+    prepareRestartResume(NOW);
+
+    expect(markOf(waiting.id).limitWait).toEqual({ resetsAt: reset });
+    expect(markOf(waiting.id).interruptedAt).toBe(iso(1_000));
+  });
+
+  it("is told apart from a turn whose reply was already written when the limit had cleared", () => {
+    // The wait's retry went through and recorded its reply; the delivery was in
+    // flight. That is a reply in doubt, not a wait.
+    const delivering = waitingForLimit(reset);
+    message(delivering.id, "user", 10 * MINUTE);
+    message(delivering.id, "assistant", 5_000);
+
+    interruptRunningSessionsForShutdown(NOW);
+
+    expect(markOf(delivering.id)).toEqual({ interruptedAt: iso(0), replyRecorded: true, nudgedAt: [] });
+  });
+
+  it("stops being shown as waiting at boot even when nothing will resume it — a cron fire", () => {
+    const fire = createSession({ engine: "claude", source: "cron", sourceRef: "cron:daily", connector: "slack", sessionKey: `cron:daily:${++sequence}` });
+    updateSession(fire.id, { status: "waiting", lastError: `claude usage limit — resumes ${reset}` });
+
+    expect(prepareRestartResume(NOW).marked).toBe(0);
+    expect(recoverStaleSessions()).toBe(1);
+
+    expect(getSession(fire.id)?.status).toBe("interrupted");
+    expect(markOf(fire.id).interruptedAt).toBeUndefined();
+  });
+
+  it("is never nudged when it is a cron fire, shut down gracefully or not", () => {
+    // A cron fire has no conversation to continue in, and its job fires again by itself.
+    const fire = createSession({ engine: "claude", source: "cron", sourceRef: "cron:daily", connector: "slack", sessionKey: `cron:daily:${++sequence}` });
+    updateSession(fire.id, { status: "waiting", lastError: `claude usage limit — resumes ${reset}` });
+    interruptRunningSessionsForShutdown(NOW - MINUTE);
+    expect(getSession(fire.id)?.status).toBe("interrupted");
+
+    const run = boot();
+
+    expect(run.summary).toMatchObject({ planned: 0, heldForLimit: 0, skipped: 1 });
+    expect(run.timers).toEqual([]);
+    expect(markOf(fire.id).interruptedAt).toBeUndefined();
+  });
+
+  it("is held until the limit has reset, then nudged", async () => {
+    const waiting = waitingForLimit(reset);
+    interruptRunningSessionsForShutdown(NOW - MINUTE);
+
+    const run = boot();
+
+    expect(run.summary).toMatchObject({ planned: 1, heldForLimit: 1, skipped: 0 });
+    // Not now: the engine would only refuse it again. A moment after the reset.
+    expect(run.timers.map((t) => t.delayMs)).toEqual([RESET_IN + RESTART_LIMIT_RESET_BUFFER_MS]);
+    expect(run.post).not.toHaveBeenCalled();
+    expect(markOf(waiting.id).interruptedAt).toBe(iso(MINUTE)); // kept until the nudge is accepted
+
+    await run.fire();
+
+    expect(run.post).toHaveBeenCalledTimes(1);
+    expect(run.post.mock.calls[0][2].message).toBe(restartResumeMessage(getSession(waiting.id)!, iso(MINUTE), { limitWait: true }));
+    expect(markOf(waiting.id).interruptedAt).toBeUndefined();
+  });
+
+  it.each([
+    ["the limit has already reset", new Date(NOW - 5 * MINUTE).toISOString()],
+    ["the wait did not know when it resets", null],
+  ])("is nudged at once when %s", (_case, resetsAt) => {
+    waitingForLimit(resetsAt);
+    interruptRunningSessionsForShutdown(NOW - MINUTE);
+
+    const run = boot();
+
+    expect(run.summary).toMatchObject({ planned: 1, heldForLimit: 0 });
+    expect(run.timers.map((t) => t.delayMs)).toEqual([0]);
+  });
+
+  it("spaces the sessions held for the same reset apart, like any others", () => {
+    for (let i = 0; i < 3; i++) waitingForLimit(reset, { lastActivity: iso((i + 2) * MINUTE) });
+    interruptRunningSessionsForShutdown(NOW - MINUTE);
+
+    const run = boot();
+
+    const first = RESET_IN + RESTART_LIMIT_RESET_BUFFER_MS;
+    expect(run.timers.map((t) => t.delayMs)).toEqual([first, first + RESTART_RESUME_STAGGER_MS, first + 2 * RESTART_RESUME_STAGGER_MS]);
+  });
+
+  it("is still held after another restart, however long ago the first one was", () => {
+    // Restarted five hours ago, and again now; the limit resets in forty minutes.
+    const held = interrupted(iso(5 * 60 * MINUTE), { limitWait: { resetsAt: reset } });
+
+    const { candidates, skipped } = selectRestartResumeCandidates({ now: NOW, maxAgeMs: MAX_AGE_MS });
+
+    expect(candidates.map((s) => s.id)).toEqual([held.id]);
+    expect(skipped).toEqual([]);
+  });
+
+  it("is left for the operator once the reset is further back than the age limit", () => {
+    const stale = interrupted(iso(5 * 60 * MINUTE), { limitWait: { resetsAt: new Date(NOW - MAX_AGE_MS - MINUTE).toISOString() } });
+
+    const { candidates, skipped } = selectRestartResumeCandidates({ now: NOW, maxAgeMs: MAX_AGE_MS });
+
+    expect(candidates).toEqual([]);
+    expect(skipped).toEqual([{ sessionId: stale.id, reason: "too-old" }]);
+  });
+
+  it("is left for the operator when the reset is further off than a turn is ever kept waiting", () => {
+    // A wait an older version started for a weekly limit: nothing is parked that long any more.
+    const far = interrupted(iso(MINUTE), { limitWait: { resetsAt: new Date(NOW + MAX_USAGE_LIMIT_WAIT_MS + MINUTE).toISOString() } });
+
+    const { candidates, skipped } = selectRestartResumeCandidates({ now: NOW, maxAgeMs: MAX_AGE_MS });
+
+    expect(candidates).toEqual([]);
+    expect(skipped).toEqual([{ sessionId: far.id, reason: "limit-too-far" }]);
+    expect(markOf(far.id).interruptedAt).toBeUndefined();
+  });
+
+  it("is not nudged after all if the conversation carried on before the reset", async () => {
+    const waiting = waitingForLimit(reset);
+    interruptRunningSessionsForShutdown(NOW - MINUTE);
+    const run = boot();
+    // The user did not wait: they wrote again, and that turn has run.
+    updateSession(waiting.id, { status: "idle", lastActivity: new Date(NOW + 10 * MINUTE).toISOString(), lastError: null });
+
+    await run.fire();
+
+    expect(run.post).not.toHaveBeenCalled();
+    expect(markOf(waiting.id).interruptedAt).toBeUndefined();
+  });
+
+  it("tells the session that it was waiting for a usage limit, and that the request is still unanswered", () => {
+    const session = interrupted(iso(MINUTE), { limitWait: { resetsAt: reset } });
+
+    const text = restartResumeMessage(session, iso(MINUTE), { limitWait: true });
+
+    expect(text.startsWith(RESTART_NUDGE_PREFIX)).toBe(true);
+    expect(text).toContain(iso(MINUTE));
+    expect(text).toContain("waiting for a usage limit");
+    expect(text).toContain("still unanswered");
+    expect(text).toContain(`GET /api/sessions/${session.id}?last=10`);
+    expect(text).toContain("Do NOT trigger it again");
+    expect(text).not.toBe(restartResumeMessage(session, iso(MINUTE)));
   });
 });
 

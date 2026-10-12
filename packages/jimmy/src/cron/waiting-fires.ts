@@ -1,4 +1,5 @@
 import { getSessionBySessionKey } from "../sessions/registry.js";
+import { usageLimitWaitResetsAt } from "../sessions/usage-limit-wait.js";
 import { logger } from "../shared/logger.js";
 
 /**
@@ -31,9 +32,6 @@ export interface WaitingFire {
   resetsAt?: string;
 }
 
-/** The session manager notes the reset a wait expects in `lastError`, as an ISO time. */
-const ISO_TIME = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/;
-
 /**
  * The fire of `jobId` that is parked waiting for a usage limit to reset, if one
  * is. `waiting` is the status of exactly that: a turn that met a usage limit
@@ -46,7 +44,7 @@ export function fireWaitingOnUsageLimit(jobId: string): WaitingFire | null {
     try {
       const session = getSessionBySessionKey(sessionKey);
       if (session?.status !== "waiting") continue;
-      const resetsAt = session.lastError?.match(ISO_TIME)?.[0];
+      const resetsAt = usageLimitWaitResetsAt(session);
       return { waitingSessionId: session.id, ...(resetsAt ? { resetsAt } : {}) };
     } catch (error) {
       logger.warn(`Could not read the session of an earlier cron fire (${sessionKey}): ${error instanceof Error ? error.message : String(error)}`);

@@ -23,10 +23,12 @@
  */
 import type { JinnConfig, JsonObject, Session } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
+import { usageLimitOutlastsWait } from "../shared/rateLimit.js";
 import { postSessionNotification } from "./callbacks.js";
 import { hasUndeliveredReply, silentOriginAnswer } from "./origin-delivery.js";
 import type { SessionQueue } from "./queue.js";
 import { getMessagePage, getSession, initDb, listSessions, updateSession, type SessionMessage } from "./registry.js";
+import { usageLimitWaitResetsAt } from "./usage-limit-wait.js";
 
 /** transportMeta key holding a session's {@link RestartResumeState}. */
 export const RESTART_RESUME_META_KEY = "restartResume";
@@ -46,6 +48,9 @@ export const RESTART_NUDGE_COOLDOWN_MS = 30 * 60_000;
 /** …and never more than this many times within the window. */
 export const RESTART_NUDGE_WINDOW_LIMIT = 3;
 export const RESTART_NUDGE_WINDOW_MS = 24 * 60 * 60_000;
+/** A turn that was waiting for a usage limit is nudged this long after the
+ *  reset it expected — the margin the wait itself left before retrying. */
+export const RESTART_LIMIT_RESET_BUFFER_MS = 10_000;
 /** Opening words of every nudge. Also how a nudge is recognised in the queue. */
 export const RESTART_NUDGE_PREFIX = "[Gateway] Restart complete.";
 
@@ -56,11 +61,15 @@ export interface RestartResumeState {
   /** Goes with `interruptedAt`: the turn had already recorded its reply when
    *  it was interrupted. What is in doubt is the delivery, not the work. */
   replyRecorded?: true;
+  /** Goes with `interruptedAt`: the turn was not running but parked, waiting
+   *  for an engine's usage limit to reset — with the reset that wait expected,
+   *  when it knew. The request has simply not been answered yet. */
+  limitWait?: { resetsAt?: string };
   /** When this session was nudged, oldest first — what the loop guard reads. */
   nudgedAt: string[];
 }
 
-export type RestartResumeSkip = "workflow" | "cron" | "active" | "moved-on" | "answered" | "too-old" | "recently-nudged";
+export type RestartResumeSkip = "workflow" | "cron" | "active" | "moved-on" | "answered" | "limit-too-far" | "too-old" | "recently-nudged";
 
 export interface RestartResumeSelection {
   candidates: Session[];
@@ -68,7 +77,8 @@ export interface RestartResumeSelection {
 }
 
 export interface RestartResumePlan {
-  resumes: Array<{ sessionId: string; dueAt: number }>;
+  /** `heldForLimit`: due only after the usage limit the turn was waiting for has reset. */
+  resumes: Array<{ sessionId: string; dueAt: number; heldForLimit?: true }>;
   /** Candidates over the cap, by id. Reported so a busy restart is visible in
    *  the log rather than silently losing the least recent conversations. */
   deferred: string[];
@@ -93,6 +103,9 @@ export interface RestartNudgeSituation {
    *   message that came in afterwards and was never answered.
    */
   reply?: "undelivered" | "delivered";
+  /** The turn was parked, waiting for a usage limit to reset, when the restart
+   *  ended the wait: its request has not been answered. */
+  limitWait?: boolean;
 }
 
 export interface RestartResumeDeps {
@@ -110,6 +123,8 @@ export interface RestartResumeDeps {
 
 export interface RestartResumeSummary {
   planned: number;
+  /** Of `planned`: held until the usage limit they were waiting for has reset. */
+  heldForLimit: number;
   deferred: number;
   skipped: number;
   disabled?: true;
@@ -131,9 +146,11 @@ export function readRestartResumeState(meta: Session["transportMeta"]): RestartR
   const raw = metaObject(meta)[RESTART_RESUME_META_KEY];
   const state = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
   const marked = isInstant(state.interruptedAt);
+  const wait = state.limitWait && typeof state.limitWait === "object" && !Array.isArray(state.limitWait) ? state.limitWait : undefined;
   return {
     ...(marked ? { interruptedAt: state.interruptedAt as string } : {}),
     ...(marked && state.replyRecorded === true ? { replyRecorded: true as const } : {}),
+    ...(marked && wait ? { limitWait: isInstant(wait.resetsAt) ? { resetsAt: wait.resetsAt } : {} } : {}),
     nudgedAt: Array.isArray(state.nudgedAt) ? state.nudgedAt.filter(isInstant) : [],
   };
 }
@@ -143,6 +160,7 @@ function withRestartResumeState(meta: Session["transportMeta"], state: RestartRe
   const stored: JsonObject = {
     ...(state.interruptedAt ? { interruptedAt: state.interruptedAt } : {}),
     ...(state.interruptedAt && state.replyRecorded ? { replyRecorded: true } : {}),
+    ...(state.interruptedAt && state.limitWait ? { limitWait: { ...state.limitWait } } : {}),
     ...(state.nudgedAt.length > 0 ? { nudgedAt: state.nudgedAt } : {}),
   };
   if (Object.keys(stored).length > 0) next[RESTART_RESUME_META_KEY] = stored;
@@ -155,11 +173,12 @@ function withRestartResumeState(meta: Session["transportMeta"], state: RestartRe
 export function withRestartInterruptedMark(
   meta: Session["transportMeta"],
   at: string,
-  mark: { replyRecorded?: boolean } = {},
+  mark: { replyRecorded?: boolean; limitWait?: { resetsAt?: string } } = {},
 ): JsonObject {
   return withRestartResumeState(meta, {
     interruptedAt: at,
     ...(mark.replyRecorded ? { replyRecorded: true as const } : {}),
+    ...(mark.limitWait ? { limitWait: mark.limitWait } : {}),
     nudgedAt: readRestartResumeState(meta).nudgedAt,
   }) ?? {};
 }
@@ -236,10 +255,36 @@ function replyAlreadyRecorded(session: Session, newest = newestMessage(session.i
 }
 
 /**
- * Graceful shutdown, right before the engines are killed: every session that
- * is mid-turn becomes "interrupted" (its engine session id is kept, so it can
- * be resumed) and gets the mark the next boot reads — which also says whether
- * the turn had already recorded its reply. Returns how many were interrupted.
+ * Sessions whose turn lives only in this process: mid-turn ("running"), or
+ * parked on a usage limit ("waiting") — that wait is a loop in the runner, not
+ * something the next process picks up. Left unmarked, a waiting session said
+ * "waiting" for good after a restart, with nothing waiting any more.
+ */
+function sessionsWithALiveTurn(): Session[] {
+  return [...listSessions({ status: "running" }), ...listSessions({ status: "waiting" })];
+}
+
+/**
+ * What the mark records about the turn a restart is ending: that its reply was
+ * already written (see replyAlreadyRecorded), or that it was only waiting for
+ * a usage limit — and until when, read from the wait's own note. A wait that
+ * was marked once already has lost that note to the mark's lastError, so the
+ * reset is carried over from the mark (the dying wait's heartbeat can write
+ * "waiting" back over a shutdown's "interrupted").
+ */
+function markDetails(session: Session, newest = newestMessage(session.id)): { replyRecorded?: boolean; limitWait?: { resetsAt?: string } } {
+  if (replyAlreadyRecorded(session, newest)) return { replyRecorded: true };
+  if (session.status !== "waiting") return {};
+  const resetsAt = usageLimitWaitResetsAt(session) ?? readRestartResumeState(session.transportMeta).limitWait?.resetsAt;
+  return { limitWait: resetsAt ? { resetsAt } : {} };
+}
+
+/**
+ * Graceful shutdown, right before the engines are killed: every session whose
+ * turn lives in this process becomes "interrupted" (its engine session id is
+ * kept, so it can be resumed) and gets the mark the next boot reads — which
+ * also says whether the turn had already recorded its reply, or was only
+ * waiting for a usage limit. Returns how many were interrupted.
  *
  * Workflow attempts are skipped: recoverStaleWorkflowAttemptSessions(), which
  * the caller runs first, stamps their `gateway-restart` receipt — a plain
@@ -249,14 +294,16 @@ export function interruptRunningSessionsForShutdown(now = Date.now()): number {
   shuttingDown = true;
   const interruptedAt = new Date(now).toISOString();
   let interrupted = 0;
-  for (const session of listSessions({ status: "running" })) {
+  for (const session of sessionsWithALiveTurn()) {
     if (session.workflowProvenance?.kind === "phase") continue;
     updateSession(session.id, {
       status: "interrupted",
       lastActivity: interruptedAt,
-      lastError: "Interrupted: gateway shutting down gracefully",
+      lastError: session.status === "waiting"
+        ? "Interrupted: gateway shut down while session was waiting for a usage limit"
+        : "Interrupted: gateway shutting down gracefully",
       // The killed turn's completion overwrites the status; the mark is what the next boot reads.
-      transportMeta: withRestartInterruptedMark(session.transportMeta, interruptedAt, { replyRecorded: replyAlreadyRecorded(session) }),
+      transportMeta: withRestartInterruptedMark(session.transportMeta, interruptedAt, markDetails(session)),
     });
     logger.info(`Marked session ${session.id} as interrupted for resume`);
     interrupted++;
@@ -268,10 +315,10 @@ export function interruptRunningSessionsForShutdown(now = Date.now()): number {
  * Boot step, BEFORE recoverStaleSessions() and recoverStaleQueueItems() — both
  * erase what this reads.
  *
- * - A session still "running" was never shut down cleanly (crash, SIGKILL, a
- *   shutdown that ran out of time). Its last sign of life — the heartbeat or
- *   the newest transcript entry, whichever is later — is the best estimate of
- *   when it was cut off.
+ * - A session still "running" — or still "waiting" for a usage limit — was
+ *   never shut down cleanly (crash, SIGKILL, a shutdown that ran out of time).
+ *   Its last sign of life — the heartbeat or the newest transcript entry,
+ *   whichever is later — is the best estimate of when it was cut off.
  * - A nudge turn that was itself in flight is cancelled instead of going back
  *   to pending: replaying it is how a turn that restarts the gateway would
  *   loop. The session is interrupted again and falls under the cooldown.
@@ -284,15 +331,14 @@ export function prepareRestartResume(now = Date.now()): { marked: number; cancel
       "UPDATE queue_items SET status = 'cancelled' WHERE status = 'running' AND substr(prompt, 1, ?) = ?",
     ).run(RESTART_NUDGE_PREFIX.length, RESTART_NUDGE_PREFIX).changes;
     let marked = 0;
-    for (const session of listSessions({ status: "running" })) {
+    for (const session of sessionsWithALiveTurn()) {
       // Workflow attempts have their own restart recovery; a cron run has no conversation to answer in.
       if (session.workflowProvenance || session.source === "cron") continue;
       const newest = newestMessage(session.id);
       const heartbeat = Date.parse(session.lastActivity);
       const lastAlive = Math.max(Number.isFinite(heartbeat) ? heartbeat : 0, newest?.timestamp ?? 0);
       const at = new Date(lastAlive > 0 ? Math.min(lastAlive, now) : now).toISOString();
-      const replyRecorded = replyAlreadyRecorded(session, newest);
-      updateSession(session.id, { transportMeta: withRestartInterruptedMark(session.transportMeta, at, { replyRecorded }) });
+      updateSession(session.id, { transportMeta: withRestartInterruptedMark(session.transportMeta, at, markDetails(session, newest)) });
       marked++;
     }
     return { marked, cancelledNudges };
@@ -394,7 +440,13 @@ function skipReason(session: Session, input: SelectInput): RestartResumeSkip | n
   if (hasUserMessageSince(session.id, interruptedAt, true)) return "moved-on";
   // The turn had recorded its reply, and that reply went out. A later message nobody answered still needs a turn.
   if (state.replyRecorded && !replyDeliveryOpen(session) && !hasUserMessageSince(session.id, interruptedAt, false)) return "answered";
-  if (input.now - interruptedAt > input.maxAgeMs) return "too-old";
+  // NaN unless the turn was waiting for a usage limit and its wait knew the reset.
+  const limitResetsAt = Date.parse(state.limitWait?.resetsAt ?? "");
+  // No turn is kept waiting for a reset that far off (a wait an older version started): nor is its nudge.
+  if (usageLimitOutlastsWait(limitResetsAt / 1000, input.now)) return "limit-too-far";
+  // A wait counts from the reset it was waiting for: until then nothing could have been done about it.
+  const since = Number.isFinite(limitResetsAt) ? Math.max(interruptedAt, limitResetsAt) : interruptedAt;
+  if (input.now - since > input.maxAgeMs) return "too-old";
   if (underLoopGuard(session, state.nudgedAt, input.now)) return "recently-nudged";
   return null;
 }
@@ -426,6 +478,18 @@ function activityMillis(session: Session): number {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
+/**
+ * The earliest a session's nudge may go out. A turn that was waiting for a
+ * usage limit is not woken while that limit is known to be on: the engine
+ * would only refuse it again, and every restart during the limit would wake it
+ * to fail. It is woken a moment after the reset it was waiting for — which is
+ * when it was going to carry on anyway.
+ */
+function notBefore(session: Session, now: number): number {
+  const resetsAt = Date.parse(readRestartResumeState(session.transportMeta).limitWait?.resetsAt ?? "");
+  return Number.isFinite(resetsAt) ? Math.max(now, resetsAt + RESTART_LIMIT_RESET_BUFFER_MS) : now;
+}
+
 /** Order the interrupted sessions, most recent conversation first, and spread
  *  their wake-ups over the stagger window. */
 export function planRestartResumes(input: { candidates: Session[]; now: number }): RestartResumePlan {
@@ -434,10 +498,14 @@ export function planRestartResumes(input: { candidates: Session[]; now: number }
     return activity !== 0 ? activity : a.id.localeCompare(b.id);
   });
   return {
-    resumes: ordered.slice(0, MAX_RESTART_RESUMES).map((session, index) => ({
-      sessionId: session.id,
-      dueAt: input.now + index * RESTART_RESUME_STAGGER_MS,
-    })),
+    resumes: ordered.slice(0, MAX_RESTART_RESUMES).map((session, index) => {
+      const start = notBefore(session, input.now);
+      return {
+        sessionId: session.id,
+        dueAt: start + index * RESTART_RESUME_STAGGER_MS,
+        ...(start > input.now ? { heldForLimit: true as const } : {}),
+      };
+    }),
     deferred: ordered.slice(MAX_RESTART_RESUMES).map((session) => session.id),
   };
 }
@@ -462,12 +530,18 @@ function withEndingWithoutAPost(step: string, session: Session): string[] {
   ];
 }
 
-/** The turn was cut off mid-flight: its work has to be picked back up. */
-function cutOffMessage(session: Session, interruptedAt: string, unseenUserMessage: boolean): string {
+/**
+ * The turn was cut off mid-flight: its work has to be picked back up. So does
+ * the request of a turn that was parked waiting for a usage limit — the user
+ * was told it would carry on by itself, and the wait went with the process.
+ */
+function cutOffMessage(session: Session, interruptedAt: string, unseenUserMessage: boolean, limitWait: boolean): string {
   const transcript = transcriptOf(session);
   const alreadyDelivered = "5. Only if you find that your answer to that request had already been delivered and nothing is left to do: do not post it a second time.";
   return [
-    `${RESTART_NUDGE_PREFIX} Your previous turn in this conversation was cut off by a gateway restart at ${interruptedAt} — not by the user, and not by a mistake in your work.`,
+    limitWait
+      ? `${RESTART_NUDGE_PREFIX} Your previous turn in this conversation was waiting for a usage limit to reset when the gateway restarted at ${interruptedAt}. The wait did not survive the restart, so the request it was for is still unanswered — not something the user did, and not a mistake in your work.`
+      : `${RESTART_NUDGE_PREFIX} Your previous turn in this conversation was cut off by a gateway restart at ${interruptedAt} — not by the user, and not by a mistake in your work.`,
     "",
     "Pick the request back up and finish it:",
     "1. First re-check anything that was in flight (a command, a tool call, a delegated child, a detached job). Look at its actual state before you assume it finished or run it again.",
@@ -545,7 +619,7 @@ export function restartResumeMessage(session: Session, interruptedAt: string, si
   const unseenUserMessage = situation.unseenUserMessage === true;
   if (situation.reply === "delivered") return newerMessageOnlyMessage(session, interruptedAt);
   if (situation.reply === "undelivered") return openDeliveryMessage(session, interruptedAt, unseenUserMessage);
-  return cutOffMessage(session, interruptedAt, unseenUserMessage);
+  return cutOffMessage(session, interruptedAt, unseenUserMessage, situation.limitWait === true);
 }
 
 function busyProbe(deps: RestartResumeDeps): (session: Session) => boolean {
@@ -554,10 +628,11 @@ function busyProbe(deps: RestartResumeDeps): (session: Session) => boolean {
 }
 
 function nudgeSituation(session: Session, interruptedAt: string): RestartNudgeSituation {
-  const replyRecorded = readRestartResumeState(session.transportMeta).replyRecorded === true;
+  const state = readRestartResumeState(session.transportMeta);
   return {
     unseenUserMessage: hasUserMessageSince(session.id, Date.parse(interruptedAt), false),
-    ...(replyRecorded ? { reply: replyDeliveryOpen(session) ? "undelivered" as const : "delivered" as const } : {}),
+    ...(state.replyRecorded ? { reply: replyDeliveryOpen(session) ? "undelivered" as const : "delivered" as const } : {}),
+    ...(state.limitWait ? { limitWait: true } : {}),
   };
 }
 
@@ -628,7 +703,7 @@ export function resumeRestartInterruptedSessions(deps: RestartResumeDeps): Resta
     if (left.length > 0) {
       logger.info(`Restart resume is off (sessions.resumeInterruptedOnBoot: false) — left ${left.length} interrupted session(s) for the operator`);
     }
-    return { planned: 0, deferred: 0, skipped: left.length, disabled: true, cancel: () => {} };
+    return { planned: 0, heldForLimit: 0, deferred: 0, skipped: left.length, disabled: true, cancel: () => {} };
   }
   const selection = selectRestartResumeCandidates({ now, maxAgeMs: maxAgeMs(deps.config), isBusy: busyProbe(deps) });
   const plan = planRestartResumes({ candidates: selection.candidates, now });
@@ -645,12 +720,14 @@ export function resumeRestartInterruptedSessions(deps: RestartResumeDeps): Resta
     cancelled = true;
     for (const undo of unschedule.splice(0)) undo();
   };
+  const heldForLimit = plan.resumes.filter((resume) => resume.heldForLimit).length;
   if (plan.resumes.length + plan.deferred.length + selection.skipped.length > 0) {
     logger.info(
       `Restart resume: nudging ${plan.resumes.length} interrupted session(s)` +
+      (heldForLimit > 0 ? ` (${heldForLimit} of them once the usage limit they were waiting for has reset)` : "") +
       (plan.deferred.length > 0 ? `, ${plan.deferred.length} over the cap of ${MAX_RESTART_RESUMES} left alone` : "") +
       (selection.skipped.length > 0 ? `, skipped ${describeSkipped(selection.skipped)}` : ""),
     );
   }
-  return { planned: plan.resumes.length, deferred: plan.deferred.length, skipped: selection.skipped.length, cancel };
+  return { planned: plan.resumes.length, heldForLimit, deferred: plan.deferred.length, skipped: selection.skipped.length, cancel };
 }
