@@ -43,6 +43,15 @@ describe("shipped cron documentation", () => {
     expect(text).toMatch(/`kind: "maintenance"`[^.]*`notified`/);
   });
 
+  // A fire that is skipped because an earlier one of the same job is parked on
+  // a usage limit writes a reason and two fields nothing else does.
+  it.each(["docs/cron.md", "skills/cron-manager/SKILL.md"])("says in %s why a prompt run is skipped while an earlier fire waits for a usage limit", (file) => {
+    const text = read(file);
+    expect(text).toContain("previous-run-waiting-for-usage-limit");
+    expect(text).toContain("`waitingSessionId`");
+    expect(text).toContain("`resetsAt`");
+  });
+
   // A job naming an unknown engine is failed before any session is started, so
   // that error line has no `sessionId` to follow.
   it("does not promise a sessionId for a run that failed before a session existed", () => {

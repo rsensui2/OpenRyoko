@@ -92,6 +92,8 @@ For command success, history should show `kind: "command"`, `status: "success"`,
 
 For a prompt job, `status: "error"` covers more than a routing failure. The run is an error, with the reason in `error`, when its session ended in error, when its result was not delivered (the delivery connector was not running, or refused the message), or when the job names an engine the gateway does not have. `sessionId`, when present, names the session to inspect; it is absent when the run failed before a session was reported, which is always so for a job naming an engine the gateway does not have. Use `GET /api/cron/<id>/runs?limit=N` to read only the newest N runs.
 
+`status: "skipped"` with `reason: "previous-run-waiting-for-usage-limit"` means an earlier fire of the same job is waiting for an engine's usage limit to reset, and will run the job once when it does. `waitingSessionId` names that session and `resetsAt`, when present, the reset. Do not run the skipped fires by hand while it waits; they are not made up afterwards either.
+
 Failure alerts for prompt jobs go to `cron.alertConnector` / `cron.alertChannel`. A job that keeps failing for the same reason alerts once per `cron.alertThrottleMinutes` (default 60; `0` alerts every time), so the absence of a new alert is not recovery. Confirm with the run history.
 
 Logs live under `~/.ryoko/cron/commands/<job-hash>/`, with up to 100 logs per job and a 1 MiB limit per file. A durable `running.lock` prevents overlap. After abnormal termination, inspect its recorded PIDs, process state, logs, and completed external effects before removing only that lock or retrying. Do not clear all locks or state files.
