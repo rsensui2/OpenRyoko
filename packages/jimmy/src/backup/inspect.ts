@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { pipeline } from "node:stream/promises";
 import zlib from "node:zlib";
 import { errorMessage, formatBytes } from "./format.js";
-import { ArchiveTooLargeError, manifestByteLimit, pathByteLimit, type ArchiveLimits } from "./limits.js";
+import { ArchiveTooLargeError, manifestByteLimit, pathByteLimit, unpackedByteLimit, type ArchiveLimits } from "./limits.js";
 import { findManifestEntry, parseManifest, serializeManifest, type BackupManifest, type ManifestEntry } from "./manifest.js";
 import { DEFAULT_ARCHIVE_LIMITS } from "./settings.js";
 import { readTar, type TarEntry, type TarEntrySink } from "./tar.js";
@@ -54,11 +54,47 @@ class ManifestProblem extends Error {}
 const isManifestEntry = (entry: TarEntry): boolean => entry.path === MANIFEST_ENTRY_PATH && entry.type === "file";
 
 /**
+ * Passes the decompressed stream on, and stops it once it has delivered more
+ * than `allowed` bytes. The limits on entries and on content are judged from
+ * headers; this is the one that holds whatever the headers say or leave out.
+ */
+function unpackedUpTo(source: AsyncIterable<Buffer>, allowed: number): AsyncIterable<Buffer> {
+  // An iterator by hand, not a generator looping over the stream: leaving such
+  // a loop by throwing closes the stream first, and the pipeline then reports
+  // that it was aborted instead of why.
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<Buffer> {
+      const chunks = source[Symbol.asyncIterator]();
+      let unpacked = 0;
+      return {
+        next: async () => {
+          const step = await chunks.next();
+          if (step.done) return step;
+          unpacked += step.value.length;
+          if (unpacked > allowed) {
+            throw new ArchiveTooLargeError(
+              `the archive unpacks to more than ${formatBytes(allowed)}, past anything its limits account for (backup.maxArchiveMb, backup.maxEntries)`,
+            );
+          }
+          return step;
+        },
+      };
+    },
+  };
+}
+
+/**
  * Decompresses an archive and hands its entries to `onEntry`, in order, giving
  * up the moment it holds more than `limits` allow. The limits are judged from
  * each header as it arrives - before any of the data it announces is read - so
  * an archive that promises a terabyte, or a million empty directories in a
  * megabyte of gzip, costs neither the time nor the memory it was built to take.
+ *
+ * Two things a header does not announce are held as well. The manifest is let
+ * through once and is not an entry; a second one is refused where it starts,
+ * or manifests by the hundred would pass a limit they are not counted against.
+ * And the stream as a whole may not unpack to more than an archive at its
+ * limits could.
  */
 export async function readHomeArchive(
   file: string,
@@ -68,11 +104,14 @@ export async function readHomeArchive(
   const pathLimit = pathByteLimit(limits);
   let entries = 0;
   let declared = 0;
+  let manifests = 0;
   const admit = (entry: TarEntry): void => {
     if (Buffer.byteLength(entry.path) > pathLimit || Buffer.byteLength(entry.linkTarget ?? "") > pathLimit) {
       throw new ArchiveTooLargeError(`the archive holds a path longer than ${pathLimit} bytes`);
     }
     if (isManifestEntry(entry)) {
+      manifests += 1;
+      if (manifests > 1) throw new ManifestProblem("the manifest appears more than once");
       if (entry.size > manifestByteLimit(limits)) throw new ArchiveTooLargeError("the archive's manifest is larger than backup.maxEntries allows");
       return;
     }
@@ -84,7 +123,7 @@ export async function readHomeArchive(
     }
   };
   await pipeline(fs.createReadStream(file), zlib.createGunzip(), async (source: AsyncIterable<Buffer>) => {
-    await readTar(source, (entry) => {
+    await readTar(unpackedUpTo(source, unpackedByteLimit(limits)), (entry) => {
       admit(entry);
       return onEntry(entry);
     });

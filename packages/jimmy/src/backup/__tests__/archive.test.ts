@@ -4,8 +4,8 @@ import path from "node:path";
 import zlib from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { expectPosixMode, POSIX_MODES_SUPPORTED } from "../../shared/test-support/posix-mode.js";
-import { ArchiveTooLargeError, createHomeArchive, inspectHomeArchive } from "../archive.js";
-import { encodeTarEntry, TAR_TRAILER } from "../tar.js";
+import { ArchiveTooLargeError, createHomeArchive, inspectHomeArchive, readHomeArchive } from "../archive.js";
+import { encodeTarEntry, encodeTarHeaderBlock, tarPadding, TAR_TRAILER } from "../tar.js";
 import { MANIFEST_ENTRY_PATH } from "../targets.js";
 import {
   HOME_CONTENT,
@@ -699,5 +699,87 @@ describe("inspectHomeArchive", () => {
       expect(inspection.problems, broken).toHaveLength(1);
       expect(inspection.manifest, broken).toBeUndefined();
     }
+  });
+});
+
+describe("readHomeArchive, and how much of a file it will read", () => {
+  /* The limits count entries and the content they announce. A file can be made
+   * to cost far more than either without touching them: zeroes after the end
+   * marker, manifests by the hundred (which were let through uncounted), and
+   * headers that announce nothing at all. */
+
+  const TIGHT = { maxEntries: 10, maxBytes: 1024 };
+
+  function gzipInto(parts: Buffer[]): string {
+    const file = path.join(tempDir(), "home-20261012T030000Z.tar.gz");
+    fs.writeFileSync(file, zlib.gzipSync(Buffer.concat(parts)));
+    return file;
+  }
+
+  function fileBlocks(entryPath: string, contents: string): Buffer[] {
+    const data = Buffer.from(contents, "utf8");
+    return [encodeTarEntry({ path: entryPath, type: "file", mode: 0o644, size: data.length, mtimeSeconds: 0 }), data, tarPadding(data.length)];
+  }
+
+  const manifestBlocks = (): Buffer[] => fileBlocks(MANIFEST_ENTRY_PATH, "{}");
+
+  it("stops at data that goes on after the end of the archive, even when it is only zeroes", async () => {
+    // Sixty-four megabytes of zeroes in sixty-four kilobytes of gzip.
+    const padded = [...fileBlocks("config.yaml", "port: 1\n"), ...manifestBlocks(), TAR_TRAILER];
+    const endless = gzipInto([...padded, Buffer.alloc(64 * 1024 * 1024)]);
+    expect(fs.statSync(endless).size).toBeLessThan(128 * 1024);
+
+    await expect(readHomeArchive(endless, () => undefined)).rejects.toThrow(/after the end of the archive/);
+    expect((await inspectHomeArchive(endless)).problems).toEqual([expect.stringMatching(/after the end of the archive/)]);
+
+    // The padding a tar writer rounds an archive up with is no reason to refuse one.
+    await expect(readHomeArchive(gzipInto([...padded, Buffer.alloc(10 * 1024)]), () => undefined)).resolves.toBeUndefined();
+  });
+
+  it("lets one manifest through and stops at the second, before reading it", async () => {
+    // A hundred of them went past a limit of ten entries: the manifest was not counted as an entry.
+    const flood = gzipInto([
+      ...fileBlocks("config.yaml", "port: 1\n"), ...Array.from({ length: 100 }, manifestBlocks).flat(), TAR_TRAILER,
+    ]);
+    let manifests = 0;
+
+    await expect(readHomeArchive(flood, (entry) => {
+      if (entry.path === MANIFEST_ENTRY_PATH) manifests += 1;
+      return undefined;
+    }, TIGHT)).rejects.toThrow(/manifest appears more than once/);
+
+    expect(manifests).toBe(1);
+    expect((await inspectHomeArchive(flood, { limits: TIGHT })).problems).toEqual(["the manifest appears more than once"]);
+  });
+
+  it("stops unpacking once the stream is past anything its limits could account for", async () => {
+    // Pax records with no entry behind them: four megabytes that are neither an entry nor content.
+    const record = Buffer.from("13 comment=x\n", "latin1");
+    const announcesNothing = Buffer.concat([
+      encodeTarHeaderBlock({ name: "pax", mode: 0o644, size: record.length, mtimeSeconds: 0, typeflag: "x" }), record, tarPadding(record.length),
+    ]);
+    const bloated = gzipInto([
+      ...Array.from({ length: 4000 }, () => announcesNothing), ...fileBlocks("config.yaml", "port: 1\n"), ...manifestBlocks(), TAR_TRAILER,
+    ]);
+
+    await expect(readHomeArchive(bloated, () => undefined, TIGHT)).rejects.toThrow(/unpacks to more than/);
+    expect((await inspectHomeArchive(bloated, { limits: TIGHT })).problems).toEqual([expect.stringMatching(/could not be read.*unpacks to more than/)]);
+
+    // Under the limits an instance really runs with, the same file is merely odd.
+    await expect(readHomeArchive(bloated, () => undefined)).resolves.toBeUndefined();
+  });
+
+  it("still reads an archive that is as large as its limits allow", async () => {
+    // The cap leaves room for what an archive at its limits really unpacks to: headers and padding, not only content.
+    const root = tempDir();
+    const home = path.join(root, "home");
+    writeTree(home, Object.fromEntries(Array.from({ length: 40 }, (_, index) => [`knowledge/note-${String(index).padStart(2, "0")}.md`, "x".repeat(500)])));
+    const limits = { maxEntries: 41, maxBytes: 40 * 500 };
+
+    const result = await createHomeArchive({
+      home, destination: path.join(root, "backups", "home-20261012T030000Z.tar.gz"), id: "home-20261012T030000Z", createdAt: AT, limits,
+    });
+
+    expect((await inspectHomeArchive(result.file, { limits })).problems).toEqual([]);
   });
 });

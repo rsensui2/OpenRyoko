@@ -202,6 +202,27 @@ describe("tar codec", () => {
     await expect(readAll(archive)).rejects.toThrow(/after the end of the archive/);
   });
 
+  it("stops at zeroes that go on after the end-of-archive marker, instead of reading however many there are", async () => {
+    // A hundred megabytes of zeroes is a hundred kilobytes of gzip. Padding up
+    // to a tar record is expected after the marker; a stream that just keeps
+    // going is not, and reading it to the end was the cost of opening the file.
+    let handed = 0;
+    async function* goesOn(): AsyncGenerator<Buffer> {
+      yield archiveOf([file("config.yaml", "port: 1\n")]);
+      for (; handed < 10_000; handed += 1) yield Buffer.alloc(16 * 1024);
+    }
+
+    await expect(readTar(goesOn(), () => undefined)).rejects.toThrow(/after the end of the archive/);
+
+    expect(handed).toBeLessThan(10);
+  });
+
+  it("accepts the padding a tar writer rounds an archive up with", async () => {
+    const archive = Buffer.concat([archiveOf([file("config.yaml", "port: 1\n")]), Buffer.alloc(10 * 1024)]);
+
+    await expect(readAll(archive)).resolves.toBeDefined();
+  });
+
   it("refuses a directory or symlink that claims to carry data", async () => {
     const archive = Buffer.concat([
       encodeTarHeaderBlock({ name: "skills/", mode: 0o755, size: 4, mtimeSeconds: MTIME, typeflag: "5" }),

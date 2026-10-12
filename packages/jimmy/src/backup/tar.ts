@@ -15,6 +15,12 @@
 export const TAR_BLOCK_BYTES = 512;
 /** Two zero blocks close an archive. */
 export const TAR_TRAILER = Buffer.alloc(TAR_BLOCK_BYTES * 2);
+/**
+ * How much may follow the end-of-archive marker. Tar writers round an archive
+ * up to their record size with zeroes - ten kilobytes by default - and that is
+ * all that belongs there.
+ */
+export const MAX_TRAILING_PADDING_BYTES = 64 * 1024;
 
 /** Largest value an 11-digit octal field holds (8 GiB - 1). Past it the size rides in a pax record. */
 const USTAR_MAX_SIZE = 0o77777777777;
@@ -261,9 +267,11 @@ async function readPaxRecords(reader: ByteReader, block: Buffer): Promise<Record
  * Walks a tar stream entry by entry.
  *
  * `onEntry` decides what happens to each entry's data: return a sink to receive
- * it, or nothing to have it skipped. The stream is always read to its end -
- * the caller's decompressor only verifies its checksum once it is drained, and
- * anything other than padding after the end-of-archive marker is refused.
+ * it, or nothing to have it skipped. A sound archive is read to its end - the
+ * caller's decompressor only verifies its checksum once it is drained - and
+ * anything other than padding after the end-of-archive marker is refused. So
+ * is padding that goes on: zeroes compress to nothing, and a stream of them
+ * after the marker would otherwise be read for as long as it lasted.
  */
 export async function readTar(
   source: AsyncIterable<Uint8Array>,
@@ -288,7 +296,9 @@ export async function readTar(
     await reader.read(tarPadding(entry.size).length);
     await sink?.end();
   }
+  let trailing = 0;
   for await (const chunk of reader.rest()) {
-    if (!isZeroFilled(chunk)) throw new Error("unexpected data after the end of the archive");
+    trailing += chunk.length;
+    if (trailing > MAX_TRAILING_PADDING_BYTES || !isZeroFilled(chunk)) throw new Error("unexpected data after the end of the archive");
   }
 }
