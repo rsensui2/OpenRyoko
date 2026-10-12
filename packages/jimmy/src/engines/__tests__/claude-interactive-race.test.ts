@@ -125,6 +125,22 @@ describe("InteractiveClaudeEngine — kill->respawn race (Item C)", () => {
     expect(r2.error).toBeUndefined();
   });
 
+  // Both ends of a turn read "Interrupted: …". Only the engine knows which it
+  // was: a stop the gateway asked for through kill(), or the process dying.
+  it("marks the run it was asked to stop, and not one whose process died on its own", async () => {
+    const asked = engine.run({ sessionId: "asked", prompt: "a", cwd: "/tmp" } as any);
+    await flush();
+    engine.kill("asked", "Interrupted: new message received");
+    expect(await asked).toMatchObject({ error: "Interrupted: new message received", interruptRequested: true });
+
+    const died = engine.run({ sessionId: "died", prompt: "b", cwd: "/tmp" } as any);
+    await flush();
+    ptys.at(-1)!.fireExit();
+    const result = await died;
+    expect(result.error).toMatch(/^Interrupted: claude /);
+    expect(result.interruptRequested).toBeUndefined();
+  });
+
   it("a genuine crash of the current turn's PTY still interrupts (no hang)", async () => {
     const p = engine.run({ sessionId: "s2", prompt: "c", cwd: "/tmp" } as any);
     await flush();

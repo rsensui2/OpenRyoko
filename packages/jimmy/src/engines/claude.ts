@@ -459,6 +459,7 @@ export class ClaudeEngine implements InterruptibleEngine {
             sessionId: opts.resumeSessionId || "",
             result: "",
             error: terminationReason,
+            interruptRequested: true, // only kill() sets a termination reason
           });
           return;
         }

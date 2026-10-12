@@ -71,6 +71,16 @@ export const SAFE_ACK = "確認しました。追って対応します。";
 // base64url has no ">", so `[^>]*` cannot over-run the closing "-->".
 const SENTINEL_RE = /^<!--RYOKO-DISPOSITION:v1:([^>]*)-->$/;
 
+/**
+ * The trailer that keeps a whole answer out of the conversation: the public
+ * body suppressed, no reaction in its place. An answer that ends with it
+ * resolves to "none" wherever no reply is owed (`addressed` false) and audience
+ * separation is on — not in a DM, which shows a turn's output as it stands.
+ * Ready-made, for callers that have to hand it to a model.
+ */
+export const SUPPRESS_PUBLIC_TRAILER =
+  `<!--RYOKO-DISPOSITION:v1:${Buffer.from(JSON.stringify({ suppressPublic: true }), "utf8").toString("base64url")}-->`;
+
 function normalizeEmoji(name: string): string {
   return name.trim().replace(/^:+|:+$/g, "");
 }

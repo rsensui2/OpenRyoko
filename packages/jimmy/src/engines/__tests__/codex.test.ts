@@ -234,4 +234,19 @@ describe("CodexEngine", () => {
     expect((await promise).error).toContain("code 1");
   });
 
+  it("marks a run that kill() ended as a stop the gateway asked for, and no other", async () => {
+    const proc = createMockProcess();
+    mockSpawn.mockReturnValue(proc);
+    const asked = engine.run({ prompt: "long task", cwd: "/tmp", sessionId: "asked-to-stop" });
+    engine.kill("asked-to-stop", "Interrupted: new message received");
+    proc.emit("close", null);
+    expect(await asked).toMatchObject({ error: "Interrupted: new message received", interruptRequested: true });
+
+    const other = createMockProcess();
+    mockSpawn.mockReturnValue(other);
+    const died = engine.run({ prompt: "run", cwd: "/tmp", sessionId: "died" });
+    other.emit("close", 137);
+    expect((await died).interruptRequested).toBeUndefined();
+  });
+
 });

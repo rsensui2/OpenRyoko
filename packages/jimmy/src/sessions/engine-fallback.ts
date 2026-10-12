@@ -14,6 +14,7 @@ import { readEngineHealth, reprobeAtMs } from "../shared/engine-health.js";
 import { claimUsageLimitAnnouncement, HEALTH_OVERRIDE_SOURCE, healthOverrideReleased, isUsableFallbackTarget, noteEngineTurnOutcome } from "./engine-health-gate.js";
 import { confirmLoginRefusal, isLoginRefusal, LOGIN_REFUSAL_HOLD_MS, loginRefusalConfirmed } from "./engine-login.js";
 import { noteLimitFailure } from "./limit-failure-notice.js";
+import { isGatewayShuttingDown, markTurnCutOffByShutdown } from "./restart-resume.js";
 
 export type EngineFallbackReason = "rate_limit" | "no_response" | "timeout";
 const object = (value: unknown): Record<string, any> => value && typeof value === "object" && !Array.isArray(value) ? { ...value } : {};
@@ -162,6 +163,37 @@ export function failLimitThatOutlastsTheWait(
       "which is too far off to wait for. Please try again after that." }, { engine: engine.name, resetsAt: resetsAt.toISOString() });
 }
 
+/**
+ * An engine reports every run that ends early as "Interrupted: …", and the
+ * runners treat that as a quiet, deliberate end: no reply, no error. That is
+ * right for a stop the gateway asked for — a newer message, /stop, an engine
+ * switch, a shutdown — all of which go through `kill()`, and the engine marks
+ * the result when they do (`interruptRequested`).
+ *
+ * It is wrong for a run that ended that way with nobody having asked: the
+ * engine's process died. That is a failed run, and it is turned into one here,
+ * where every engine run of every path ends, so that it gets an error reply,
+ * an error status and a failed cron run instead of silence.
+ *
+ * It is not offered to the stale-session retry: the dead run may already have
+ * run tools, and that retry starts the prompt over on a fresh engine session.
+ * An engine's own turn deadline stays a timeout another engine may take over.
+ */
+function settleUnrequestedStop(engine: Engine, result: EngineResult, sessionId: string | undefined, shouldStop?: () => boolean): EngineResult {
+  if (!result.error || !/^Interrupted/i.test(result.error) || result.interruptRequested) return result;
+  if (shouldStop?.()) return result; // the turn is being cancelled anyway
+  if (isGatewayShuttingDown()) {
+    // The shutdown stopped it, and nothing else may ever see this session running again.
+    try { if (sessionId) markTurnCutOffByShutdown(sessionId); }
+    catch (error) { logger.warn(`Could not mark session ${sessionId} as cut off by the shutdown: ${error instanceof Error ? error.message : String(error)}`); }
+    return result;
+  }
+  const detail = result.error.replace(/^Interrupted:?\s*/i, "") || "no reason reported";
+  const failure: EngineResult = { ...result, error: `${engine.name} stopped unexpectedly: ${detail}` };
+  logger.warn(`Engine run for session ${sessionId ?? "unknown"} ended without being asked to — ${failure.error}`);
+  return engineFallbackFailure(result) === "timeout" ? failure : { ...failure, retryable: false };
+}
+
 /** Watch actual engine activity, underneath goal supervision. A timed-out process
  * must settle AND stop before another provider can run the same work. */
 export async function runEngineWithResponseTimeout(
@@ -220,7 +252,7 @@ export async function runEngineWithResponseTimeout(
   try {
     const first = await Promise.race([running, timeout]);
     if (typeof first !== "string") {
-      const result = withProgress(first);
+      const result = withProgress(settleUnrequestedStop(engine, first, opts.sessionId, shouldStop));
       // Every attempt on the local account is evidence about its allowance: a
       // stated limit is remembered for the next session, a served turn that
       // started after it forgets it. A run over SSH used the remote machine's

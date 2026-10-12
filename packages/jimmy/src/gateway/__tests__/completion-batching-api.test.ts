@@ -305,7 +305,7 @@ describe("child completion notifications are batched for a busy parent", () => {
     expect(pendingRows(parent)).toHaveLength(1);
 
     // The busy turn ends and the batch turn starts — and is still in the engine when the gateway shuts down.
-    let killEngine!: (result: { sessionId: string; result: string; error: string }) => void;
+    let killEngine!: (result: { sessionId: string; result: string; error: string; interruptRequested: true }) => void;
     engineRun.mockImplementationOnce(() => new Promise((resolve) => { killEngine = resolve; }));
     releaseBusyTurn();
     await vi.waitFor(() => expect(engineRun).toHaveBeenCalledTimes(2), { timeout: 10_000 });
@@ -313,7 +313,7 @@ describe("child completion notifications are batched for a busy parent", () => {
 
     // Graceful shutdown, as startGateway's cleanup does it: mark, then kill.
     expect(restartResume.interruptRunningSessionsForShutdown()).toBe(1);
-    killEngine({ sessionId: "engine-parent", result: "", error: "Interrupted: gateway shutting down" });
+    killEngine({ sessionId: "engine-parent", result: "", error: "Interrupted: gateway shutting down", interruptRequested: true });
     // The dying runner closes the batch row: nothing is left in the queue to replay.
     await vi.waitFor(() => expect(registry.getQueueItems(parent.sessionKey)).toHaveLength(0), { timeout: 10_000 });
     expect(replyMessage).not.toHaveBeenCalled();

@@ -4,6 +4,7 @@ import {
   normalizeDelivery,
   normalizeTurns,
   SAFE_ACK,
+  SUPPRESS_PUBLIC_TRAILER,
   type DeliveryContext,
 } from "../reply-disposition.js";
 
@@ -170,5 +171,25 @@ describe("normalizeTurns — batch", () => {
     const turns = [sentinel({ internal: "メモ", suppressPublic: true })];
     const { actions } = normalizeTurns(turns, UNADDRESSED);
     expect(actions).toEqual([]);
+  });
+});
+
+// A turn nobody addressed (a wake-up) sometimes finds it has nothing to post.
+// Its whole answer goes to the conversation, so it needs an answer that posts
+// nothing — handed to it ready-made, because a model does not base64 reliably.
+describe("SUPPRESS_PUBLIC_TRAILER", () => {
+  it("is the trailer the parser reads as: no public body, no reaction", () => {
+    expect(SUPPRESS_PUBLIC_TRAILER).toBe(sentinel({ suppressPublic: true }));
+    expect(parseDisposition(SUPPRESS_PUBLIC_TRAILER)).toEqual({
+      publicText: "",
+      payload: { internal: undefined, react: undefined, suppressPublic: true },
+      hadSentinel: true,
+      decodeError: false,
+    });
+  });
+
+  it("posts nothing where no reply is owed, alone or under a remark", () => {
+    expect(normalizeDelivery(SUPPRESS_PUBLIC_TRAILER, UNADDRESSED)).toEqual({ publicAction: { kind: "none" } });
+    expect(normalizeDelivery(`返信は届いていました。\n\n${SUPPRESS_PUBLIC_TRAILER}`, UNADDRESSED)).toEqual({ publicAction: { kind: "none" } });
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { recordFailedOriginDelivery } from "../origin-delivery.js";
-import { createSession, getMessages, getSession } from "../registry.js";
+import { hasUndeliveredReply, recordFailedOriginDelivery } from "../origin-delivery.js";
+import { createSession, getMessages, getSession, updateSession } from "../registry.js";
 
 // A cron job whose reply could not be delivered ends with this record, and the
 // cron run log and the operator's alert quote its lastError. With a fixed text
@@ -108,5 +108,36 @@ describe("recordFailedOriginDelivery", () => {
 
     expect(recorded.lastError).not.toContain("xoxb");
     expect(recorded.note).not.toContain("xoxb");
+  });
+});
+
+// The restart nudge has to tell a reply that went out from one whose delivery
+// failed and was recorded here — both leave the session idle. It asks this
+// module, which wrote the record, instead of reading lastError's wording itself.
+describe("hasUndeliveredReply", () => {
+  function session() {
+    const key = `slack:origin-delivery-record-${++nextKey}`;
+    return createSession({ engine: "claude", source: "slack", sourceRef: key, connector: "slack", sessionKey: key, replyContext: { channel: "C1", thread: "1.000" } });
+  }
+
+  it.each([undefined, "An API error occurred: channel_not_found", "Slack replyMessage: only 1 of 4 chunks were delivered (request timed out)"])(
+    "is true for the record recordFailedOriginDelivery leaves (reason: %j)", (reason) => {
+      const created = session();
+      recordFailedOriginDelivery(created, undefined, reason);
+      expect(hasUndeliveredReply(getSession(created.id)!)).toBe(true);
+    });
+
+  it("is false for a session with no such record", () => {
+    const created = session();
+    expect(hasUndeliveredReply(getSession(created.id)!)).toBe(false);
+    updateSession(created.id, { status: "error", lastError: "Not logged in · Please run /login" });
+    expect(hasUndeliveredReply(getSession(created.id)!)).toBe(false);
+  });
+
+  it("is false again once a later turn has settled and reset lastError", () => {
+    const created = session();
+    recordFailedOriginDelivery(created, undefined, "channel_not_found");
+    updateSession(created.id, { status: "idle", lastError: null });
+    expect(hasUndeliveredReply(getSession(created.id)!)).toBe(false);
   });
 });

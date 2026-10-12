@@ -197,13 +197,85 @@ describe("restart resume — a Slack session interrupted mid-turn is nudged and 
     await vi.waitFor(() => expect(replyMessage).toHaveBeenCalledTimes(1), { timeout: 10_000 });
     const prompt = (engineRun.mock.calls[0][0] as { prompt: string }).prompt;
     expect(prompt.startsWith(restartResume.RESTART_NUDGE_PREFIX)).toBe(true);
-    expect(prompt).toContain("may never have reached the conversation");
-    expect(prompt).toContain("send it again");
+    expect(prompt).toContain("none of it, or only the beginning");
+    expect(prompt).toContain("Send what is missing");
     expect(prompt).not.toContain("Pick the request back up");
     const [target, text] = replyMessage.mock.calls[0] as unknown as [Record<string, unknown>, string];
     expect(target).toMatchObject({ channel: "C_DEPLOY", thread: "999.000" });
     expect(text).toBe("デプロイが完了しました。");
     await vi.waitFor(() => expect(registry.getSession(session.id)?.status).toBe("idle"));
+  });
+
+  it("a reply whose delivery failed during the shutdown is asked for too, and its record is cleared once it lands", async () => {
+    engineRun.mockClear();
+    replyMessage.mockClear();
+    requests.length = 0;
+    const { hasUndeliveredReply, recordFailedOriginDelivery } = await import("../../sessions/origin-delivery.js");
+    const session = registry.createSession({
+      engine: "claude", source: "slack", sourceRef: "C_DEPLOY", connector: "slack", sessionKey: "slack:C_DEPLOY:888.000",
+      replyContext: { channel: "C_DEPLOY", thread: "888.000" }, transportMeta: { channelExternal: false }, prompt: "本番にデプロイして",
+    });
+    // The connector turn finished its work and recorded the reply; the post was in flight when the gateway shut down…
+    registry.insertMessage(session.id, "user", "本番にデプロイして");
+    registry.insertMessage(session.id, "assistant", "デプロイが完了しました。手順書も更新済みです。");
+    registry.updateSession(session.id, { status: "running", engineSessionId: "engine-before-restart" });
+    restartResume.interruptRunningSessionsForShutdown();
+    // …and this time the post came back — as a failure, after the first of its two chunks. The turn's
+    // completion settles it as a finished turn and puts the lost reply on record.
+    registry.updateSession(session.id, { status: "idle", lastError: null });
+    recordFailedOriginDelivery(registry.getSession(session.id)!, undefined, "Slack replyMessage: only 1 of 2 chunks were delivered (socket closed)");
+    expect(registry.getSession(session.id)).toMatchObject({ status: "idle" });
+    // The model does what the nudge asks: it sends the part that is missing.
+    engineRun.mockImplementationOnce(async () => ({ result: "手順書も更新済みです。", sessionId: "engine-resumed", numTurns: 1 }));
+
+    expect(restartResume.resumeRestartInterruptedSessions(bootDeps())).toMatchObject({ planned: 1, skipped: 0 });
+
+    await vi.waitFor(() => expect(replyMessage).toHaveBeenCalledTimes(1), { timeout: 10_000 });
+    const prompt = (engineRun.mock.calls[0][0] as { prompt: string }).prompt;
+    expect(prompt.startsWith(restartResume.RESTART_NUDGE_PREFIX)).toBe(true);
+    expect(prompt).toContain("none of it, or only the beginning");
+    expect(prompt).toContain("Do not repost a part that is already there.");
+    expect(prompt).not.toContain("Pick the request back up");
+    const [target, text] = replyMessage.mock.calls[0] as unknown as [Record<string, unknown>, string];
+    expect(target).toMatchObject({ channel: "C_DEPLOY", thread: "888.000" });
+    expect(text).toBe("手順書も更新済みです。");
+    await vi.waitFor(() => expect(registry.getSession(session.id)?.status).toBe("idle"));
+    expect(hasUndeliveredReply(registry.getSession(session.id)!)).toBe(false);
+    // Nothing left for a second boot.
+    await vi.waitFor(() => expect(restartResume.readRestartResumeState(registry.getSession(session.id)!.transportMeta).interruptedAt).toBeUndefined());
+    expect(restartResume.resumeRestartInterruptedSessions(bootDeps())).toMatchObject({ planned: 0 });
+  });
+
+  it("a session that finds its reply had arrived ends the nudge turn without a post", async () => {
+    engineRun.mockClear();
+    replyMessage.mockClear();
+    requests.length = 0;
+    const { hasUndeliveredReply, silentOriginAnswer } = await import("../../sessions/origin-delivery.js");
+    const session = registry.createSession({
+      engine: "claude", source: "slack", sourceRef: "C_DEPLOY", connector: "slack", sessionKey: "slack:C_DEPLOY:777.000",
+      replyContext: { channel: "C_DEPLOY", thread: "777.000" }, transportMeta: { channelExternal: true }, prompt: "本番にデプロイして",
+    });
+    // The reply was recorded and the post in flight when the process went away — and the post had in fact landed.
+    registry.insertMessage(session.id, "user", "本番にデプロイして");
+    registry.insertMessage(session.id, "assistant", "デプロイが完了しました。");
+    registry.updateSession(session.id, { status: "running", engineSessionId: "engine-before-restart" });
+    restartResume.interruptRunningSessionsForShutdown();
+    const silent = silentOriginAnswer(registry.getSession(session.id)!)!;
+    // The model checks the thread, sees its reply there, and ends the way the nudge tells it to.
+    engineRun.mockImplementationOnce(async () => ({ result: `スレッドを確認: 返信は届いていた。\n\n${silent}`, sessionId: "engine-resumed", numTurns: 1 }));
+
+    expect(restartResume.resumeRestartInterruptedSessions(bootDeps())).toMatchObject({ planned: 1, skipped: 0 });
+
+    await vi.waitFor(() => expect(engineRun).toHaveBeenCalledTimes(1), { timeout: 10_000 });
+    // The nudge handed the session that line, on a line of its own.
+    expect((engineRun.mock.calls[0][0] as { prompt: string }).prompt.split("\n")).toContain(silent);
+    await vi.waitFor(() => expect(registry.getSession(session.id)?.status).toBe("idle"), { timeout: 10_000 });
+    await new Promise((r) => setTimeout(r, 300));
+    // Nothing went to the customer's thread — not the remark, not the trailer.
+    expect(replyMessage).not.toHaveBeenCalled();
+    // A post that was deliberately not made is not a failed delivery.
+    expect(hasUndeliveredReply(registry.getSession(session.id)!)).toBe(false);
+    expect(registry.getMessages(session.id).filter((m) => m.role === "notification" && m.content.includes("NOT delivered"))).toEqual([]);
   });
 
   it("a session the queue replay already re-dispatched is not resumed a second time", async () => {

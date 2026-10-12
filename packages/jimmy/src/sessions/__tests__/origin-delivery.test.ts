@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { deliverToOriginConnector } from "../origin-delivery.js";
+import { deliverToOriginConnector, silentOriginAnswer } from "../origin-delivery.js";
 import { PartialDeliveryError } from "../../shared/partial-delivery.js";
 import type { Connector, Session } from "../../shared/types.js";
 
@@ -142,5 +142,41 @@ describe("deliverToOriginConnector", () => {
     // Still a failure for the caller to record: the reply is not all there.
     expect(delivered).toBe("failed");
     expect(replyMessage).toHaveBeenCalledTimes(1);
+  });
+});
+
+// A turn woken by a notification has its whole answer posted to the origin
+// conversation. When it finds there is nothing to post, saying so would be one
+// more post in the customer's thread.
+describe("silentOriginAnswer", () => {
+  it("is an answer the origin delivery posts nothing for", async () => {
+    const { connector, replyMessage, addReaction } = makeConnector();
+    const session = makeSession();
+    const answer = silentOriginAnswer(session);
+
+    expect(answer).toEqual(expect.any(String));
+    expect(await deliverToOriginConnector(session, answer!, new Map([["slack", connector]]))).toBe("suppressed");
+    expect(replyMessage).not.toHaveBeenCalled();
+    expect(addReaction).not.toHaveBeenCalled();
+  });
+
+  it("still posts nothing when the model writes a remark above it", async () => {
+    const { connector, replyMessage, addReaction } = makeConnector();
+    const session = makeSession({ transportMeta: { channelExternal: false } });
+
+    const delivered = await deliverToOriginConnector(session, `返信は届いていました。\n\n${silentOriginAnswer(session)}`, new Map([["slack", connector]]));
+
+    expect(delivered).toBe("suppressed");
+    expect(replyMessage).not.toHaveBeenCalled();
+    expect(addReaction).not.toHaveBeenCalled();
+  });
+
+  it("does not exist for a DM, which shows a turn's output as it stands", () => {
+    expect(silentOriginAnswer(makeSession({ transportMeta: { channelType: "im" } }))).toBeNull();
+  });
+
+  it("does not exist for a session with no conversation to deliver to", () => {
+    expect(silentOriginAnswer(makeSession({ source: "web", connector: "web", replyContext: { source: "web" } }))).toBeNull();
+    expect(silentOriginAnswer(makeSession({ replyContext: null }))).toBeNull();
   });
 });
