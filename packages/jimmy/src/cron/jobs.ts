@@ -69,3 +69,12 @@ export function appendRunLog(jobId: string, entry: object): void {
   const logPath = path.join(CRON_RUNS, `${jobId}.jsonl`);
   fs.appendFileSync(logPath, JSON.stringify(entry) + "\n", "utf-8");
 }
+
+/** A job's runs, oldest first (the log is append-only). A positive `limit`
+ *  keeps the newest N in that same order and parses only those lines. */
+export function readRunLog(jobId: string, limit = 0): unknown[] {
+  const logPath = path.join(CRON_RUNS, `${jobId}.jsonl`);
+  if (!fs.existsSync(logPath)) return [];
+  const lines = fs.readFileSync(logPath, "utf-8").trim().split("\n").filter(Boolean);
+  return (limit > 0 ? lines.slice(-limit) : lines).map((line) => JSON.parse(line));
+}

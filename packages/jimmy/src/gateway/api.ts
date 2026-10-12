@@ -63,7 +63,7 @@ import { explicitThread } from "../shared/threading.js";
 import { effortLevelsForModel, invalidateModelRegistry } from "../shared/models.js";
 import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt, recordClaudeRateLimit } from "../shared/usageAwareness.js";
-import { CronJobsReadError, loadJobs, saveJobs } from "../cron/jobs.js";
+import { CronJobsReadError, loadJobs, readRunLog, saveJobs } from "../cron/jobs.js";
 import { getCronJobScheduleStatus, getSchedulerSnapshot, reloadScheduler } from "../cron/scheduler.js";
 import { runCronJob } from "../cron/runner.js";
 import { checkForUpdates } from "../updates/checker.js";
@@ -1439,18 +1439,11 @@ export async function handleApiRequest(
       return json(res, enriched);
     }
 
-    // GET /api/cron/:id/runs
+    // GET /api/cron/:id/runs — every run, oldest first; ?limit=N keeps the newest N.
     params = matchRoute("/api/cron/:id/runs", pathname);
     if (method === "GET" && params) {
-      const runFile = path.join(CRON_RUNS, `${params.id}.jsonl`);
-      if (!fs.existsSync(runFile)) return json(res, []);
-      const lines = fs
-        .readFileSync(runFile, "utf-8")
-        .trim()
-        .split("\n")
-        .filter(Boolean)
-        .map((l) => JSON.parse(l));
-      return json(res, lines);
+      const limit = Math.max(0, parseInt(url.searchParams.get("limit") || "0", 10) || 0);
+      return json(res, readRunLog(params.id, limit));
     }
 
     // POST /api/cron — create new cron job

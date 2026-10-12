@@ -426,7 +426,9 @@ export const api = {
   getCronStatus: () => get<CronSchedulerStatus>("/api/cron/status"),
   createCronJob: (data: Record<string, unknown>) =>
     post<Record<string, unknown>>("/api/cron", data),
-  getCronRuns: (id: string) => get<Record<string, unknown>[]>(`/api/cron/${id}/runs`),
+  /** Oldest first. `limit` keeps only the newest N, in that same order. */
+  getCronRuns: (id: string, limit?: number) =>
+    get<Record<string, unknown>[]>(`/api/cron/${id}/runs${limit ? `?limit=${limit}` : ""}`),
   updateCronJob: (id: string, data: Record<string, unknown>) =>
     put<Record<string, unknown>>(`/api/cron/${id}`, data),
   triggerCronJob: (id: string) =>

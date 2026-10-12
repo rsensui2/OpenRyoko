@@ -54,3 +54,35 @@ describe("cron job storage", () => {
     expect(fs.readdirSync(path.dirname(filename))).toEqual(["jobs.json"]);
   });
 });
+
+describe("cron run history", () => {
+  const entries = [1, 2, 3, 4, 5, 6, 7].map((n) => ({
+    timestamp: `2026-10-0${n}T07:00:00.000Z`, status: n % 2 ? "success" : "error", durationMs: n * 1000,
+  }));
+  const record = (jobId: string) => { for (const entry of entries) storage.appendRunLog(jobId, entry); };
+
+  it("returns every run oldest first when no limit is given", () => {
+    record("daily");
+    expect(storage.readRunLog("daily")).toEqual(entries);
+    expect(storage.readRunLog("daily", 0)).toEqual(entries);
+  });
+
+  it("keeps only the newest runs when limited, still oldest first", () => {
+    record("daily");
+    expect(storage.readRunLog("daily", 3)).toEqual(entries.slice(-3));
+    expect(storage.readRunLog("daily", 1)).toEqual([entries.at(-1)]);
+    expect(storage.readRunLog("daily", 50)).toEqual(entries);
+  });
+
+  it("is empty for a job that has never run", () => {
+    expect(storage.readRunLog("never-ran")).toEqual([]);
+    expect(storage.readRunLog("never-ran", 5)).toEqual([]);
+  });
+
+  it("parses only the runs it returns, so an old damaged line does not hide recent ones", () => {
+    const runs = path.join(root, "cron", "runs");
+    fs.mkdirSync(runs, { recursive: true });
+    fs.writeFileSync(path.join(runs, "damaged.jsonl"), `{"status":"succ\n${entries.slice(-2).map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+    expect(storage.readRunLog("damaged", 2)).toEqual(entries.slice(-2));
+  });
+});
