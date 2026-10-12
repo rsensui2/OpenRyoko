@@ -141,6 +141,41 @@ describe("Slack connector — providerAuth wiring", () => {
     expect(world.log.join("\n")).not.toContain("Received message event");
   });
 
+  it("routes an ordinary request that merely mentions a callback URL or an anchor", async () => {
+    const { app, routed, receive } = await connect({ providerAuth: { enabled: true } });
+    const requests = [
+      "この <http://localhost:3000/callback?code=abc&amp;state=xyz> が 500 になる。調べて",
+      "docs の installation-and-setup-guide#troubleshooting を直して",
+    ];
+
+    for (const text of requests) await receive(text);
+
+    expect(routed.mock.calls.map(([message]) => message.text)).toEqual(requests);
+    expect(app.client.chat.postMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["with a file attached", { subtype: "file_share", files: [] as unknown[] }, (code: string) => code],
+    ["also sent to the DM from a thread", { subtype: "thread_broadcast" }, (code: string) => code],
+    ["in backticks", {}, (code: string) => `\`${code}\``],
+    ["inside a sentence", {}, (code: string) => `コードは${code}です`],
+  ])("during a login, keeps a code pasted %s out of the message log and the session", async (_name, extra, wrap) => {
+    const { app, routed, receive, click } = await connect({ providerAuth: { enabled: true } });
+    await click("ryoko_auth_start_claude");
+    world.core.ptys[0].emitData(CLAUDE_LOGIN_OUTPUT);
+    await settle();
+    world.log.length = 0;
+    app.client.chat.postMessage.mockClear();
+
+    await receive(wrap(`${OAUTH_CODE}#${OAUTH_STATE}`), extra);
+
+    expect(routed).not.toHaveBeenCalled();
+    expect(world.log.join("\n")).not.toContain(OAUTH_CODE.slice(0, 20));
+    expect(world.log.join("\n")).not.toContain("Received message event");
+    expect(app.client.chat.postMessage).toHaveBeenCalledTimes(1);
+    expect(world.core.ptys[0].write).not.toHaveBeenCalled();
+  });
+
   it("applies allowFrom before the operator's command", async () => {
     const { app, routed, receive } = await connect({ providerAuth: { enabled: true }, allowFrom: ["USOMEONE"] });
 

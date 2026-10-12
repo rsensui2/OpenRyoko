@@ -24,7 +24,6 @@ const OAUTH_CODE = /^[A-Za-z0-9_-]{20,512}$/;
 const OAUTH_STATE = /^[A-Za-z0-9_-]{8,512}$/;
 const CODE_STATE = /^[A-Za-z0-9_-]{20,512}#[A-Za-z0-9_-]{8,512}$/;
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
-const MAX_TOKENS_SCANNED = 50;
 
 function parseUrl(value: string): URL | null {
   try {
@@ -54,17 +53,31 @@ export function parseAuthInput(raw: string): ParsedAuthInput | null {
   return callback ? { kind: "callback-url", value: callback } : null;
 }
 
-function isOAuthArtifact(token: string): boolean {
-  if (CODE_STATE.test(token)) return true;
-  const url = parseUrl(token);
-  return !!url && url.pathname === "/callback" && url.searchParams.has("code");
+/**
+ * Outside a login, a chat message is taken for a pasted code only when the
+ * whole message IS one. A request that merely mentions a callback URL or a
+ * `page#anchor` ("this /callback?code=… returns 500, look into it") is an
+ * ordinary request and must reach the session. A bare short code is not taken
+ * either: with no login running it is an order number, and nobody's secret.
+ */
+export function isOAuthInput(raw: string): boolean {
+  const parsed = parseAuthInput(raw);
+  return parsed !== null && parsed.kind !== "short-code";
 }
 
+/** Slack caps a message at 40 000 characters; nothing longer needs reading. */
+const MAX_SCANNED_LENGTH = 40_000;
+const CODE_STATE_ANYWHERE = /[A-Za-z0-9_-]{20,512}#[A-Za-z0-9_-]{8,512}/;
+const CALLBACK_ANYWHERE = /\/callback\?\S*?\bcode=/i;
+const SHORT_CODE_ANYWHERE = /(?<![A-Za-z0-9-])[A-Z0-9]{4}-[A-Z0-9]{4,5}(?![A-Za-z0-9-])/;
+
 /**
- * Whether a chat message carries an OAuth artifact — valid or not — that must
- * be kept out of logs and session history. A bare short code is not flagged:
- * outside a login it is indistinguishable from an order number.
+ * While a login is running, a code anywhere in a message counts — wrapped in
+ * backticks or asterisks, or in the middle of a sentence. For those few
+ * minutes a false alarm costs the operator a rephrased message; a miss puts a
+ * live code into the log and the session history.
  */
-export function looksLikeAuthSecret(raw: string): boolean {
-  return raw.trim().split(/\s+/).slice(0, MAX_TOKENS_SCANNED).some(isOAuthArtifact);
+export function containsAuthCode(raw: string): boolean {
+  const text = raw.slice(0, MAX_SCANNED_LENGTH);
+  return CODE_STATE_ANYWHERE.test(text) || CALLBACK_ANYWHERE.test(text) || SHORT_CODE_ANYWHERE.test(text);
 }

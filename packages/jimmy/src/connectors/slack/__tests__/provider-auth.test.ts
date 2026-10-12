@@ -292,6 +292,64 @@ describe("Slack provider login — Claude", () => {
     expect(f.shown()).not.toContain(OAUTH_CODE);
   });
 
+  it.each([
+    "この http://localhost:3000/callback?code=abc&state=xyz が 500 になる。調べて",
+    "この <http://localhost:3000/callback?code=abc&amp;state=xyz> が 500 になる。調べて",
+    "docs の installation-and-setup-guide#troubleshooting を直して",
+    `さっきの ${OAUTH_CODE}#${OAUTH_STATE} は何のコード？`,
+    "http://localhost:3000/callback?code=abc&state=xyz",
+  ])("leaves an ordinary request to the session when no login is running: %s", async (text) => {
+    const f = fixture();
+
+    expect(await f.message(text)).toBe(false);
+    expect(f.postMessage).not.toHaveBeenCalled();
+  });
+
+  it("takes a message that is nothing but a callback URL even when no login is running", async () => {
+    const f = fixture();
+
+    expect(await f.message(`<http://localhost:58741/callback?code=${OAUTH_CODE}&amp;state=${OAUTH_STATE}>`)).toBe(true);
+    expect(f.postMessage.mock.calls[0][0].text).toContain("進行中のログインはありません");
+  });
+
+  it.each([
+    ["with a file attached", `${OAUTH_CODE}#${OAUTH_STATE}`, { subtype: "file_share", files: [{ id: "F1" }] }],
+    ["also sent to the DM from a thread", `${OAUTH_CODE}#${OAUTH_STATE}`, { subtype: "thread_broadcast", thread_ts: "40.000" }],
+    ["in backticks", `\`${OAUTH_CODE}#${OAUTH_STATE}\``, {}],
+    ["in bold", `*${OAUTH_CODE}#${OAUTH_STATE}*`, {}],
+    ["inside a sentence", `コードは${OAUTH_CODE}#${OAUTH_STATE}です`, {}],
+    ["as a callback URL inside a sentence", `これです <http://localhost:58741/callback?code=${OAUTH_CODE}&amp;state=${OAUTH_STATE}> お願いします`, {}],
+    ["as a device code inside a sentence", `コードは ${CODEX_DEVICE_CODE} でした`, {}],
+  ] as const)("while a login is running, swallows a code pasted %s", async (_name, text, extra) => {
+    const f = fixture();
+    const pty = await startLogin(f, "claude");
+    pty.emitData(CLAUDE_LOGIN_OUTPUT);
+    await settle();
+    f.postMessage.mockClear();
+
+    expect(await f.message(text, extra)).toBe(true);
+
+    expect(pty.write).not.toHaveBeenCalled();
+    expect(f.postMessage).toHaveBeenCalledTimes(1);
+    expect(f.postMessage.mock.calls[0][0].text).toContain("コードを入力");
+    // The match is deliberately broad for these ten minutes; say how to get an ordinary message through.
+    expect(f.postMessage.mock.calls[0][0].text).toContain("ログインが終わってから");
+    expect(f.shown()).not.toContain(OAUTH_CODE);
+  });
+
+  it("while a login is running, still routes messages that carry no code, and ignores everyone but the operator", async () => {
+    const f = fixture();
+    await startLogin(f, "claude");
+    f.postMessage.mockClear();
+
+    expect(await f.message("今日の予定を教えて")).toBe(false);
+    expect(await f.message("資料です", { subtype: "file_share", files: [{ id: "F1" }] })).toBe(false);
+    expect(await f.message(`${OAUTH_CODE}#${OAUTH_STATE}`, { user: "UOTHER" })).toBe(false);
+    expect(await f.message(`${OAUTH_CODE}#${OAUTH_STATE}`, { bot_id: "B1", subtype: "bot_message" })).toBe(false);
+    expect(await f.message(`${OAUTH_CODE}#${OAUTH_STATE}`, { channel: "C1", channel_type: "channel" })).toBe(false);
+    expect(f.postMessage).not.toHaveBeenCalled();
+  });
+
   it("swallows a pasted code replayed from before boot without answering it", async () => {
     const f = fixture({ stale: true });
     expect(await f.message(`${OAUTH_CODE}#${OAUTH_STATE}`)).toBe(true);

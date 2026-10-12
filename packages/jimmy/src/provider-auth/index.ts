@@ -4,7 +4,7 @@ import { resolveProviderCommand, runStatusCommand, spawnLoginPty, SYSTEM_CLOCK }
 import { ProviderAuthService } from "./service.js";
 
 export { PROVIDERS, AUTH_PROVIDERS, isAuthProvider } from "./providers.js";
-export { looksLikeAuthSecret, parseAuthInput } from "./input.js";
+export { containsAuthCode, isOAuthInput, parseAuthInput } from "./input.js";
 export { ProviderAuthService } from "./service.js";
 export type {
   AuthFailureNotifier, AuthProvider, FlowListener, FlowOutcome, FlowPrompt, InputResult, ProviderAuthPort, StartResult,

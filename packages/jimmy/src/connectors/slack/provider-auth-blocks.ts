@@ -172,7 +172,9 @@ export function modalFailedMessage(slackError: string): SlackAuthMessage {
 
 export function pastedCodeMessage(loginInProgress: boolean): SlackAuthMessage {
   const where = "認証コードはチャットに貼らず、ログインのメッセージにある「コードを入力」ボタンから送ってください。いま貼り付けたメッセージは、ご自身で削除してください。";
-  return say(loginInProgress ? where : `進行中のログインはありません。「ログイン」と送ると始められます。\n${where}`);
+  if (!loginInProgress) return say(`進行中のログインはありません。「ログイン」と送ると始められます。\n${where}`);
+  // During a login anything that looks like a code is held back, so an ordinary message can be caught too.
+  return say(`${where}\nコードではなかった場合は、ログインが終わってから（または「キャンセル」してから）もう一度送ってください。ログイン中は、コードに見える文字列を含むメッセージを受け付けません。`);
 }
 
 export function inputErrorText(reason: Extract<InputResult, { ok: false }>["reason"]): string {

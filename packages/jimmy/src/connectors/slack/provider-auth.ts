@@ -1,4 +1,4 @@
-import { getProviderAuthService, looksLikeAuthSecret, parseAuthInput, PROVIDERS } from "../../provider-auth/index.js";
+import { containsAuthCode, getProviderAuthService, isOAuthInput, PROVIDERS } from "../../provider-auth/index.js";
 import type { AuthProvider, FlowOutcome, FlowPrompt, ProviderAuthPort } from "../../provider-auth/index.js";
 import { logger as sharedLogger } from "../../shared/logger.js";
 import type { SlackConnectorConfig } from "../../shared/types.js";
@@ -143,13 +143,19 @@ export class SlackProviderAuth {
    * Called for every message before the connector logs or routes it. Returns
    * true when the message was a login command or a pasted code and has been
    * dealt with — such a message is never logged, routed, or stored.
+   *
+   * What counts as a pasted code depends on whether a login is running. With
+   * none, only a message that is nothing but an OAuth value: a request that
+   * mentions a callback URL stays an ordinary request. With one — ten minutes
+   * at most — a code anywhere in the text, in any kind of message (a file
+   * upload's caption, a thread reply also sent to the DM).
    */
   async handleMessage(event: SlackAuthMessageEvent): Promise<boolean> {
-    if (this.stopped || event.bot_id || event.subtype || !event.channel || event.channel_type !== "im") return false;
+    if (this.stopped || event.bot_id || !event.channel || event.channel_type !== "im") return false;
     const text = typedText(event.text ?? "");
-    const command = LOGIN_COMMANDS.has(text.toLowerCase());
+    const command = !event.subtype && LOGIN_COMMANDS.has(text.toLowerCase());
     const loginInProgress = this.service.hasActiveFlow();
-    const pastedCode = !command && (looksLikeAuthSecret(text) || (loginInProgress && parseAuthInput(text) !== null));
+    const pastedCode = !command && (loginInProgress ? containsAuthCode(text) : isOAuthInput(text));
     if ((!command && !pastedCode) || !this.isOperator(event.user)) return false;
     // A replayed command takes the connector's normal old-message drop. A
     // replayed code is swallowed here instead, so that drop never logs it.

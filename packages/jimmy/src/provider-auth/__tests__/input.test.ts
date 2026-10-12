@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { looksLikeAuthSecret, parseAuthInput } from "../input.js";
+import { containsAuthCode, isOAuthInput, parseAuthInput } from "../input.js";
 
 const CODE = "Ab".repeat(24);
 const STATE = "state_1234567890123456";
@@ -49,16 +49,57 @@ describe("parseAuthInput", () => {
   });
 });
 
-describe("looksLikeAuthSecret", () => {
-  it("flags OAuth artifacts even when they are malformed", () => {
-    expect(looksLikeAuthSecret(`${CODE}#${STATE}`)).toBe(true);
-    expect(looksLikeAuthSecret(`http://localhost:58741/callback?code=${CODE}&state=${STATE}`)).toBe(true);
-    expect(looksLikeAuthSecret("http://localhost:58741/callback?code=bad&state=short")).toBe(true);
+describe("isOAuthInput — outside a login, only a message that IS the code", () => {
+  it("recognizes a message that is nothing but an OAuth value", () => {
+    expect(isOAuthInput(`${CODE}#${STATE}`)).toBe(true);
+    expect(isOAuthInput(`  ${CODE}#${STATE}\n`)).toBe(true);
+    expect(isOAuthInput(`http://localhost:58741/callback?code=${CODE}&state=${STATE}`)).toBe(true);
   });
 
-  it("leaves ordinary messages alone", () => {
-    for (const value of ["ログイン", "AB12-CD34", "https://example.com/docs", "please check #general", "issue#42"]) {
-      expect(looksLikeAuthSecret(value), value).toBe(false);
+  it("leaves a request that merely mentions a callback URL or an anchor alone", () => {
+    for (const value of [
+      "この http://localhost:3000/callback?code=abc&state=xyz が 500 になる。調べて",
+      "docs の installation-and-setup-guide#troubleshooting を直して",
+      "http://localhost:3000/callback?code=abc&state=xyz",
+      `コードは ${CODE}#${STATE} です`,
+      `\`${CODE}#${STATE}\``,
+      "ログイン", "https://example.com/docs", "please check #general", "issue#42",
+    ]) {
+      expect(isOAuthInput(value), value).toBe(false);
+    }
+  });
+
+  it("does not treat a bare short code as a login artifact: outside a login it is an order number", () => {
+    expect(isOAuthInput("AB12-CD34")).toBe(false);
+  });
+});
+
+describe("containsAuthCode — during a login, a code anywhere in the message", () => {
+  it.each([
+    ["the bare value", `${CODE}#${STATE}`],
+    ["in a sentence", `コードは ${CODE}#${STATE} です`],
+    ["in a sentence without spaces", `コードは${CODE}#${STATE}です`],
+    ["in backticks", `\`${CODE}#${STATE}\``],
+    ["in a code block", `\`\`\`\n${CODE}#${STATE}\n\`\`\``],
+    ["in bold", `*${CODE}#${STATE}*`],
+    ["in italics", `_${CODE}#${STATE}_`],
+    ["quoted", `> ${CODE}#${STATE}`],
+    ["a callback URL in a sentence", `これです http://localhost:58741/callback?code=${CODE}&state=${STATE} お願いします`],
+    ["a callback URL without a scheme", `localhost:58741/callback?state=${STATE}&code=${CODE}`],
+    ["a malformed callback URL", "http://localhost:58741/callback?code=bad&state=short"],
+    ["a device code in a sentence", "コードはFHI3-TCJKFです"],
+    ["a device code in backticks", "`AB12-CD34`"],
+  ])("finds %s", (_name, value) => {
+    expect(containsAuthCode(value)).toBe(true);
+  });
+
+  it("does not see a code in ordinary text", () => {
+    for (const value of [
+      "", "ログイン", "今日の予定を教えて", "https://example.com/docs#install", "please check #general", "issue#42",
+      "2026-10-12 の件", "docs の setup-guide#troubleshooting を直して", "PR-1234 を見て",
+      "XABCD-EFGHIJ", "abcd-efgh",
+    ]) {
+      expect(containsAuthCode(value), value).toBe(false);
     }
   });
 });
