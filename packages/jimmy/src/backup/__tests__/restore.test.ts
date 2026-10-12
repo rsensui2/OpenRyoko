@@ -631,6 +631,22 @@ describe("restoreHomeArchive and the working directory it extracts into", () => 
   /** The second file extracted, by the name the working directory gives it. */
   const waiting = (staging: string): string => path.join(staging, "000001");
 
+  /**
+   * Puts another regular file under `name`: one that is certain not to be the
+   * file it replaces. It is made while that file still exists, so the two
+   * cannot have the same inode number. A file made after the old one was
+   * deleted can be handed the number just freed - ext4 does that - and then
+   * nothing tells the two apart. That is the gap assertStillExtracted
+   * describes, and a test cannot hold it either way.
+   */
+  function putAnotherFileUnder(name: string, content: string, mode = 0o644): void {
+    const made = `${name}.another`;
+    fs.writeFileSync(made, content, { mode });
+    fs.rmSync(name);
+    fs.linkSync(made, name);
+    fs.rmSync(made);
+  }
+
   it("does not put a link in the place of a file it extracted, nor the file's permissions on what the link points at", async () => {
     const { target, script, edited, secret } = await twoToRestore();
 
@@ -656,10 +672,7 @@ describe("restoreHomeArchive and the working directory it extracts into", () => 
     // The same length as the real one, so that only being a different file tells them apart.
     const planted = HOME_CONTENT["skills/demo/run.sh"]!.replace(/./g, "#");
 
-    const { failure } = await restoreInterrupted(target, (staging) => {
-      fs.rmSync(waiting(staging));
-      fs.writeFileSync(waiting(staging), planted, { mode: 0o755 });
-    });
+    const { failure } = await restoreInterrupted(target, (staging) => putAnotherFileUnder(waiting(staging), planted, 0o755));
 
     expect(failure?.message).toMatch(/stopped partway.*is not the file that was extracted/s);
     expect(fs.readFileSync(script, "utf8")).toBe(edited);
@@ -682,8 +695,8 @@ describe("restoreHomeArchive and the working directory it extracts into", () => 
   });
 
   it.each([
-    ["a link to a file outside the home", (waitingFile: string, secret: string) => fs.symlinkSync(secret, waitingFile)],
-    ["another file", (waitingFile: string) => fs.writeFileSync(waitingFile, "planted\n")],
+    ["a link to a file outside the home", (waitingFile: string, secret: string) => { fs.rmSync(waitingFile); fs.symlinkSync(secret, waitingFile); }],
+    ["another file", (waitingFile: string) => putAnotherFileUnder(waitingFile, "planted\n")],
   ])("copies only the file it extracted, even when %s takes its name in the last instant before the copy", async (_what, plant) => {
     // The look at the name comes first and is past by now. When the file has to
     // be copied out, it is read through a descriptor that is itself held to
@@ -692,10 +705,7 @@ describe("restoreHomeArchive and the working directory it extracts into", () => 
     const realRename = fs.renameSync;
     const rename = vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
       if (!stagedFrom(from)) return realRename(from, to);
-      if (path.basename(String(from)) === "000001") {
-        fs.rmSync(String(from));
-        plant(String(from), secret);
-      }
+      if (path.basename(String(from)) === "000001") plant(String(from), secret);
       throw Object.assign(new Error("EXDEV: cross-device link not permitted"), { code: "EXDEV" });
     });
 
