@@ -34,7 +34,7 @@ export const HOME_JUNK: Record<string, string> = {
   "logs/gateway.log": "log line\n",
   "tmp/scratch.txt": "scratch\n",
   "files/abc/upload.bin": "binary\n",
-  "backups/sessions-2026-10-01.db": "an older backup\n",
+  "backups/older-notes.txt": "kept beside the backups\n",
   ".migration-backups/config.yaml.bak": "old\n",
   "node_modules/left-pad/index.js": "module.exports = 1\n",
   "skills/demo/node_modules/dep/index.js": "module.exports = 2\n",

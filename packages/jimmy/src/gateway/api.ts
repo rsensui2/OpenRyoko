@@ -94,6 +94,7 @@ import { handleTypeSafeIntegrationApi } from "./integrations-typesafe-api.js";
 import type { WorkflowService } from "../workflows/service.js";
 import { shouldRequireGatewayAuth as workflowAuthRequired, verifyGatewayAuth as workflowVerifyAuth } from "./auth.js";
 import { getDiskSpaceStatus } from "../shared/storage-health.js";
+import { getBackupStatus } from "../backup/scheduler.js";
 import { ptySnapshotStore } from "../engines/pty-snapshot.js";
 import { collectClaudeUsage } from "../shared/claude-usage.js";
 import { PairingAttemptLimiter, pairingAttemptKey } from "./pairing-rate-limit.js";
@@ -725,6 +726,7 @@ export async function handleApiRequest(
         sessions: { total: sessions.length, running, active: running },
         connectors,
         storage: getDiskSpaceStatus(),
+        backup: getBackupStatus(),
       });
     }
 
@@ -1962,6 +1964,7 @@ Handle this as a priority request from a colleague.`;
         "mcp",
         "sessions",
         "cron",
+        "backup",
         "workflows",
         "notifications",
         "portal",

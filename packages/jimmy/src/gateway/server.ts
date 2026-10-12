@@ -58,7 +58,7 @@ import { startScheduler, stopScheduler } from "../cron/scheduler.js";
 import { createCronReconciler } from "../cron/reconcile.js";
 import { stopCommandJobs } from "../cron/command.js";
 import { scanOrg } from "./org.js";
-import { createDailyDatabaseBackup } from "../sessions/backup.js";
+import { startBackupScheduler } from "../backup/scheduler.js";
 import { getDiskSpaceStatus } from "../shared/storage-health.js";
 import { requestOriginAllowed } from "./request-origin.js";
 import { hostHeaderAllowed, localInterfaceHosts } from "./host-guard.js";
@@ -195,12 +195,9 @@ export async function startGateway(
     const freeMiB = disk.freeBytes === null ? "unknown" : Math.floor(disk.freeBytes / 1024 ** 2);
     logger.warn(`Low disk space: ${freeMiB} MiB free (${disk.freePercent?.toFixed(1) ?? "unknown"}%)`);
   }
-  try {
-    const backup = await createDailyDatabaseBackup(database);
-    if (backup.created) logger.info(`Created daily database backup: ${backup.file}`);
-  } catch (error) {
-    logger.warn(`Database backup failed: ${error instanceof Error ? error.message : String(error)}`);
-  }
+  // Daily home archive + database copies. Checks once boot has settled, then
+  // for as long as the gateway runs; never awaited here.
+  const backupScheduler = startBackupScheduler({ database, config });
   ensureFilesDir();
   const recovered = recoverStaleSessions();
   if (recovered > 0) {
@@ -1421,6 +1418,7 @@ export async function startGateway(
   return async () => {
     logger.info("Gateway cleanup starting...");
     clearInterval(modelRefreshTimer);
+    backupScheduler.stop();
     modelManagement?.stop();
     stopScheduler();
     await stopCommandJobs();
