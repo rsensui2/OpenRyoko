@@ -45,7 +45,11 @@ export interface RestoreOptions {
   inspect?: (file: string, context: InspectOptions) => Promise<ArchiveInspection>;
 }
 
-export type RestoreAction = "create" | "replace" | "unchanged";
+/** "mode": the bytes already match and only the permissions are put back. */
+export type RestoreAction = "create" | "replace" | "mode" | "unchanged";
+
+/** True for the actions that extract a file from the archive. */
+const writesContent = (action: RestoreAction): boolean => action === "create" || action === "replace";
 
 export interface RestoreChange {
   path: string;
@@ -191,7 +195,19 @@ function compareWithHome(home: string, entry: ManifestEntry, conflicts: string[]
     return "replace";
   }
   if (entry.type === "symlink") return stat.isSymbolicLink() && fs.readlinkSync(absolute) === entry.target ? "unchanged" : "replace";
-  return stat.isFile() && stat.size === entry.size && sha256OfFile(absolute) === entry.sha256 ? "unchanged" : "replace";
+  if (!stat.isFile() || stat.size !== entry.size || !sameContent(absolute, entry)) return "replace";
+  // Same bytes is not the same file: a script that has lost its execute bit is still broken.
+  const sameMode = process.platform === "win32" || (stat.mode & 0o777) === (entry.mode & 0o777);
+  return sameMode ? "unchanged" : "mode";
+}
+
+/** Whether a file in the home has the content the archive recorded. One that cannot be read counts as different. */
+function sameContent(file: string, entry: ManifestEntry): boolean {
+  try {
+    return sha256OfFile(file) === entry.sha256;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -260,7 +276,7 @@ async function untouchedInHome(
 
 /** The bytes the plan will extract into the staging directory, and so into the home. */
 function bytesToStage(plan: PlanItem[]): number {
-  return plan.reduce((total, { entry, action }) => (action !== "unchanged" && entry.type === "file" ? total + (entry.size ?? 0) : total), 0);
+  return plan.reduce((total, { entry, action }) => (writesContent(action) && entry.type === "file" ? total + (entry.size ?? 0) : total), 0);
 }
 
 /** Refuses a restore whose files would not leave the home's disk room for the gateway to keep writing. */
@@ -367,6 +383,16 @@ function placeFile(staged: string, destination: string, mode: number): void {
   }
 }
 
+/**
+ * Puts back the permissions of a file whose content already matches. Checked
+ * again that it is still a plain file: chmod follows a symlink, and the plan
+ * was made a moment ago.
+ */
+function restoreMode(destination: string, mode: number): void {
+  if (!lstatOrNull(destination)?.isFile()) throw new Error(`${destination} is no longer a regular file`);
+  fs.chmodSync(destination, mode & 0o777);
+}
+
 function placeSymlink(destination: string, target: string): void {
   const temporary = `${destination}.restore-${crypto.randomBytes(4).toString("hex")}`;
   fs.symlinkSync(target, temporary);
@@ -378,7 +404,8 @@ function applyPlan(home: string, plan: PlanItem[], staged: Map<string, string>):
     if (action === "unchanged") continue;
     assertParentIsDirectory(home, entry.path);
     const destination = absolutePathOf(home, entry.path);
-    if (entry.type === "directory") makeDirectory(destination, entry.mode);
+    if (action === "mode") restoreMode(destination, entry.mode);
+    else if (entry.type === "directory") makeDirectory(destination, entry.mode);
     else if (entry.type === "symlink") placeSymlink(destination, entry.target ?? "");
     else placeFile(staged.get(entry.path)!, destination, entry.mode);
   }
@@ -391,7 +418,7 @@ async function writeIntoHome(options: RestoreOptions, home: string, plan: PlanIt
   const staging = fs.mkdtempSync(path.join(scratch, "restore-"));
   try {
     const needed = new Map(plan
-      .filter((item) => item.action !== "unchanged" && item.entry.type === "file")
+      .filter((item) => writesContent(item.action) && item.entry.type === "file")
       .map((item) => [item.entry.path, item.entry]));
     const staged = await stageFiles(options.archive, staging, needed, options.limits ?? DEFAULT_ARCHIVE_LIMITS);
     try {
@@ -431,7 +458,7 @@ export async function restoreHomeArchive(options: RestoreOptions): Promise<Resto
   if (!options.allowExternalSymlinks) refuseExternalSymlinks([home, path.resolve(options.home)], plan);
   const kinds = BACKUP_KINDS.filter((kind) => selected.some((entry) => kindOf(entry) === kind));
   const changes = plan
-    .filter((item): item is PlanItem & { action: "create" | "replace" } => item.action !== "unchanged")
+    .filter((item): item is PlanItem & { action: Exclude<RestoreAction, "unchanged"> } => item.action !== "unchanged")
     .map((item) => ({ path: item.entry.path, type: item.entry.type, kind: kindOf(item.entry), action: item.action }));
   const result: RestoreResult = {
     id: manifest.id,

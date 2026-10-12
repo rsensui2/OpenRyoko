@@ -228,6 +228,28 @@ describe("restoreHomeArchive", () => {
     expect(fs.readdirSync(path.join(target.home, "tmp")).filter((name) => name.startsWith("restore-"))).toEqual([]);
   });
 
+  it.skipIf(!POSIX_MODES_SUPPORTED)("puts a file's permissions back when they are all that changed", async () => {
+    // Same bytes, so it used to count as unchanged - and a script that had
+    // lost its execute bit stayed broken after a restore that reported success.
+    const target = await scene();
+    const script = path.join(target.home, "skills", "demo", "run.sh");
+    fs.chmodSync(script, 0o644);
+
+    const preview = await restoreHomeArchive(optionsFor(target, { dryRun: true }));
+
+    expect(preview.changes).toEqual([{ path: "skills/demo/run.sh", type: "file", kind: "skills", action: "mode" }]);
+    expectPosixMode(script, 0o644);
+
+    const result = await restoreHomeArchive(optionsFor(target));
+
+    expectPosixMode(script, 0o755);
+    expect(read(target.home, "skills/demo/run.sh")).toBe(HOME_CONTENT["skills/demo/run.sh"]);
+    expect(result.changes).toEqual(preview.changes);
+    // It is a change to the home like any other, so the state before it is saved.
+    expect(result.preRestore).not.toBeNull();
+    expect(fs.readdirSync(path.join(target.home, "tmp")).filter((name) => name.startsWith("restore-"))).toEqual([]);
+  });
+
   it("restores a file with the mode it was archived with", async () => {
     const target = await scene();
     fs.rmSync(path.join(target.home, "config.yaml"));

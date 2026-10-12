@@ -199,6 +199,9 @@ function parseKinds(only: string | undefined): BackupKind[] | undefined {
   return names as BackupKind[];
 }
 
+/** 権限: the content already matches and only the permissions are put back. */
+const ACTION_LABELS: Record<RestoreResult["changes"][number]["action"], string> = { create: "作成", replace: "置換", mode: "権限" };
+
 function printPaths(io: BackupCliIo, label: string, paths: string[]): void {
   if (paths.length === 0) return;
   const shown = paths.slice(0, MAX_LISTED_PATHS).join(", ");
@@ -208,7 +211,7 @@ function printPaths(io: BackupCliIo, label: string, paths: string[]): void {
 function printFileRestore(io: BackupCliIo, result: RestoreResult): void {
   io.out(`${result.dryRun ? "[dry-run] " : ""}${result.id} から復元${result.dryRun ? "する場合" : "しました"}（種類: ${result.kinds.join(", ")}）`);
   for (const change of result.changes.slice(0, MAX_LISTED_CHANGES)) {
-    io.out(`${change.action === "create" ? "作成" : "置換"}    ${change.path}${change.type === "file" ? "" : `（${change.type}）`}`);
+    io.out(`${ACTION_LABELS[change.action]}    ${change.path}${change.type === "file" ? "" : `（${change.type}）`}`);
   }
   if (result.changes.length > MAX_LISTED_CHANGES) io.out(`...ほか ${result.changes.length - MAX_LISTED_CHANGES} 件`);
   if (result.changes.length === 0) io.out("ホームはすでにこのバックアップと一致しています。何も書き込みません。");
