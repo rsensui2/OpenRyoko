@@ -127,13 +127,12 @@ function conversation(sender: Sender) {
     const written = ptys.at(-1)?.writes.length ?? 0;
     const msg: IncomingMessage = { ...SENDERS[sender], sessionKey, channel: "D-chat", user: "someone", userId: "someone",
       text, attachments: [], replyContext: { channel: "D-chat" }, raw: {} };
+    const pasted = () => ptys.at(-1)?.writes.slice(written).map((write) => PASTE.exec(write)?.[1]).find((paste) => paste !== undefined);
     const routed = manager.route(msg, connector);
-    await until(() => ptys.length > spawned || (ptys.at(-1)?.writes.length ?? 0) > written, "the prompt to reach the CLI");
+    await until(() => ptys.length > spawned || pasted() !== undefined, "the prompt to reach the CLI");
     const cold = ptys.length > spawned;
     const pty = ptys.at(-1)!;
-    const handed = cold
-      ? pty.args[pty.args[0] === "--resume" ? 2 : 0]
-      : pty.writes.slice(written).map((write) => PASTE.exec(write)?.[1]).find((paste) => paste !== undefined);
+    const handed = cold ? pty.args[pty.args[0] === "--resume" ? 2 : 0] : pasted();
     const session = getSessionBySessionKey(sessionKey)!;
     registry.deliver(session.id, { hook_event_name: "SessionStart", session_id: `claude-${sessionKey}` });
     registry.deliver(session.id, { hook_event_name: "Stop", last_assistant_message: "ok" });
