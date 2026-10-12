@@ -71,7 +71,9 @@ export function buildSpeakerPrefix(
     speakerDiscordId: str(meta.speakerDiscordId),
     ...context,
   });
-  const safeName = name.replace(/[\[\]\r\n]/g, "").slice(0, 60);
+  // Brackets would close the line early; control characters (line breaks
+  // included) act on the terminal the line is pasted into.
+  const safeName = name.replace(/[\[\]\u0000-\u001F\u007F-\u009F]/g, "").slice(0, 60);
   const operator = context.operatorName?.trim();
   const tag = operator
     ? isOp

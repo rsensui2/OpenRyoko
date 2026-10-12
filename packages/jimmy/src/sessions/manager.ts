@@ -53,6 +53,7 @@ import { effortLevelsForModel } from "../shared/models.js";
 import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit, isDeadSessionError, isPoisonedTranscriptError, isTransientServerError, MAX_USAGE_LIMIT_WAIT_MS, withEarlierProgress } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt, isLikelyNearClaudeUsageLimit, recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { buildSpeakerPrefix, type SpeakerPrefixMeta } from "./speaker-prefix.js";
+import { guardConnectorMessage, senderMayManageSession } from "./connector-command-guard.js";
 import { loadJobs } from "../cron/jobs.js";
 import { setCronJobEnabled, triggerCronJob } from "../cron/scheduler.js";
 import { checkBudget } from "../gateway/budgets.js";
@@ -436,7 +437,7 @@ export class SessionManager {
     try {
       await this.queue.enqueue(msg.sessionKey, () => {
         executionStarted = true;
-        return this.runSession(session!, msg, attachmentPaths, connector, target, opts.employee);
+        return this.runSession(session!, guardConnectorMessage(msg, this.config), attachmentPaths, connector, target, opts.employee);
       });
     } finally {
       // The turn is over, however it ended: it ran to its end, it was
@@ -1314,6 +1315,11 @@ export class SessionManager {
     }
 
     if (text.startsWith("/model")) {
+      // Switching the model is a change to the session. On an instance with an
+      // operator ID set, only the operator makes it; anyone else's "/model …"
+      // is left to fall through and reach the assistant as an ordinary message
+      // (no "not allowed" reply — the feature is simply not advertised).
+      if (!senderMayManageSession(msg, this.config)) return false;
       const nextModel = text.slice("/model".length).trim();
       if (!nextModel) {
         await connector.replyMessage(target, "Usage: /model <model-name>");
@@ -1355,7 +1361,7 @@ export class SessionManager {
     }
 
     if (text.startsWith("/cron")) {
-      return this.handleCronCommand(text, connector, target);
+      return this.handleCronCommand(text, connector, target, senderMayManageSession(msg, this.config));
     }
 
     return false;
@@ -1372,7 +1378,7 @@ export class SessionManager {
     }
   }
 
-  private async handleCronCommand(text: string, connector: Connector, target: Target): Promise<boolean> {
+  private async handleCronCommand(text: string, connector: Connector, target: Target, mayManage: boolean): Promise<boolean> {
     const [_, subcommand = "", ...rest] = text.split(/\s+/);
     const arg = rest.join(" ").trim();
 
@@ -1389,6 +1395,12 @@ export class SessionManager {
       await connector.replyMessage(target, ["Cron jobs:", ...lines].join("\n"));
       return true;
     }
+
+    // run / enable / disable change the schedule. On an instance with an
+    // operator ID set, only the operator runs them; anyone else's command is
+    // left to fall through to the assistant as an ordinary message. Listing
+    // (handled above) stays open to everyone.
+    if (!mayManage) return false;
 
     if (subcommand === "run") {
       if (!arg) {

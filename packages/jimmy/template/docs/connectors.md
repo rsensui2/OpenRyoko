@@ -292,6 +292,52 @@ connectors:
 - With `channelRouting`, the *primary* instance's `replyStyle` applies —
   it renders every proxied send.
 
+## Commands in Chat
+
+A message that starts with `/` is one of three things. This applies to every
+connector (Slack, Discord, Telegram, WhatsApp).
+
+- **A gateway command** — answered by the gateway, never sent to the CLI.
+  `/new`, `/status`, `/doctor`, `/cron list` and `/goal …` work for anyone
+  the connector lets in (they read, or touch only the one conversation). The
+  state-changing ones — `/model <name>`, and `/cron run|enable|disable` —
+  work only for the operator **when an operator ID is set**
+  (`portal.operatorSlackId` / `portal.operatorDiscordId`); from anyone else
+  they reach the assistant as an ordinary message instead. With no operator
+  ID configured, and on Telegram and WhatsApp (which have none), they stay
+  open to everyone, as before. (On Slack the model-settings panel has always
+  been operator-only; the text command now matches it.)
+- **A Claude Code command the operator may run from chat** —
+  `/compact [instructions]`, `/clear`. Passed to the CLI only when the
+  sender's platform ID equals `portal.operatorSlackId` (Slack) or
+  `portal.operatorDiscordId` (Discord). A display name never counts. If
+  neither ID is configured nobody is the operator, and Telegram and WhatsApp
+  have no operator at all — so set the ID if you want these from chat.
+- **Anything else** — delivered to the assistant as an ordinary message, with
+  a one-line note that it was not run. That includes `/usage` and `/cost`
+  (they open a panel that nothing in chat can see), `/logout`, `/login`,
+  `/permissions`, `/resume`, `/config`, `/mcp`, `/hooks`, `/agents`,
+  `/add-dir`, `/exit` and every other CLI command, from the operator too, and
+  any command a later CLI version adds: only the two above are let through.
+  Run the others in a terminal on the machine.
+
+`/<skill-name>` still works: the assistant reads it and uses the skill.
+
+The same holds for a message that starts with `-` or `!`, or that is only
+`exit` or `quit`: it reaches the assistant as text, never the CLI as an
+option, a shell command or a quit. Control characters are removed from chat
+messages.
+
+`/logout` is turned off in the Claude CLI the gateway runs: it signs the
+shared account out from under every session, so it is disabled at the source
+rather than left to chance. To log out, use a terminal on the machine. (The
+sign-in command is left on, so the operator can recover from the web live
+terminal.)
+
+The gateway does not answer "that command is not allowed" — the sender gets
+the assistant's reply to the message. Prompts from the web UI, the API and
+cron jobs are yours and are not affected.
+
 ## Future Connectors
 
 The connector interface is designed for additional platforms:

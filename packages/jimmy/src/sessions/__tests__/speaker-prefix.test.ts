@@ -140,4 +140,16 @@ describe("buildSpeakerPrefix", () => {
     const prefix2 = buildSpeakerPrefix({ speakerName: long, channelType: "channel" }, { source: "slack" });
     expect(prefix2).toBe(`[Speaker: ${"あ".repeat(60)}]`);
   });
+
+  // The line is pasted into the CLI's terminal ahead of the message, and a
+  // display name is its owner's to choose: ESC [ 201 ~ in one would end the
+  // paste, and what followed would be typed instead.
+  it("keeps terminal control characters out of the line", () => {
+    const prefix = buildSpeakerPrefix(
+      { speakerName: "Ha\u001b[201~na\u0000ko\u009b\u007f\t", channelType: "channel" },
+      { source: "slack" },
+    );
+
+    expect(prefix).toBe("[Speaker: Ha201~nako]");
+  });
 });

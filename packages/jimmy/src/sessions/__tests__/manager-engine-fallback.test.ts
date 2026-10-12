@@ -4,16 +4,20 @@ import { createSession, getMessages, getSessionBySessionKey, updateSession } fro
 import { invalidateModelRegistry } from "../../shared/models.js";
 import type { Connector, Engine, EngineResult, IncomingMessage, JinnConfig } from "../../shared/types.js";
 
-vi.mock("../context.js", () => ({ buildContext: (options: { processLifetime: string }) => `context: ${options.processLifetime}` }));
+// The system prompt is stubbed; who the operator is, is decided by the real code.
+vi.mock("../context.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../context.js")>()),
+  buildContext: (options: { processLifetime: string }) => `context: ${options.processLifetime}`,
+}));
 vi.mock("../callbacks.js", () => ({ notifyParentSession: vi.fn(), notifyRateLimited: vi.fn(), notifyRateLimitResumed: vi.fn(), notifyDiscordChannel: vi.fn() }));
 vi.mock("../goal-review.js", () => ({ reviewGoal: vi.fn(async () => ({ status: "complete", reason: "verified" })) }));
 
 let sequence = 0;
-function setup(from: "claude" | "codex" = "codex") {
+function setup(from: "claude" | "codex" = "codex", portal?: JinnConfig["portal"]) {
   const to = from === "claude" ? "codex" : "claude";
   const config = { engines: { default: from, claude: { bin: "claude-bin", model: "claude-model", interactive: true },
     codex: { bin: "codex-bin", model: "codex-model" } }, sessions: {}, connectors: { slack: { goalExtraction: { enabled: false } } },
-    logging: { level: "error", stdout: false } } as unknown as JinnConfig;
+    portal, logging: { level: "error", stdout: false } } as unknown as JinnConfig;
   const sourceRun = vi.fn<Engine["run"]>().mockResolvedValue({ sessionId: `${from}-source`, result: "", error: "Usage limit reached" });
   const targetRun = vi.fn<Engine["run"]>().mockResolvedValue({ sessionId: `${to}-target`, result: "代替エンジンで完了しました。", cost: 0.2 });
   const manager = new SessionManager(config, new Map([[from, { name: from, run: sourceRun }], [to, { name: to, run: targetRun }]]));
@@ -86,10 +90,13 @@ describe("SessionManager actual fallback routing", () => {
   });
 
   it("does not interpret a successful native command's deliberate empty output as a failure", async () => {
-    const f = setup("claude");
+    // A native command reaches the CLI from chat only when the operator sends it.
+    const f = setup("claude", { operatorSlackId: "U-operator" });
     f.msg.text = "/compact";
+    f.msg.transportMeta = { channelExternal: false, speakerSlackId: "U-operator" };
     f.sourceRun.mockResolvedValue({ sessionId: "native", result: "", responseExpected: false });
     await f.manager.route(f.msg, f.connector);
+    expect(f.sourceRun.mock.calls[0][0].prompt).toBe("/compact");
     expect(f.targetRun).not.toHaveBeenCalled();
     expect(f.replyMessage).not.toHaveBeenCalled();
     expect(getSessionBySessionKey(f.msg.sessionKey)?.status).toBe("idle");

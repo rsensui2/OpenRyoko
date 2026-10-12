@@ -297,7 +297,12 @@ export class ClaudeEngine implements InterruptibleEngine {
       spawnBin = resolveBin(requestedBin);
       spawnArgs = args;
       spawnCwd = opts.cwd;
-      spawnEnv = { ...buildChildEnv(), ...claudeAutoMemoryEnvFor(opts.cwd || process.cwd()) };
+      // Match the interactive engine: the gateway's own Claude never runs
+      // /logout (it signs the shared account out). Local only — a value set
+      // here is not forwarded to the remote process over the SSH branch above,
+      // and a /logout there would affect only that host's own CLI, which is not
+      // ours to manage. /login is deliberately left enabled.
+      spawnEnv = { ...buildChildEnv(), ...claudeAutoMemoryEnvFor(opts.cwd || process.cwd()), DISABLE_LOGOUT_COMMAND: "1" };
       logger.info(
         `Claude engine (one-shot) starting: ${spawnBin} -p --output-format ${streaming ? "stream-json" : "json"} --model ${opts.model || "default"} (resume: ${opts.resumeSessionId || "none"})`,
       );

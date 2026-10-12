@@ -72,6 +72,18 @@ describe("resolveProviderCommand", () => {
     expect(command.env).not.toHaveProperty("CLAUDE_CODE_ENTRYPOINT");
   });
 
+  it("logs in with the `auth login` subcommand, which the inherited DISABLE_LOGOUT_COMMAND does not touch", async () => {
+    const { PROVIDERS } = await import("../providers.js");
+    const command = await resolveProviderCommand("claude", { engines: ENGINES });
+
+    // The login runs a CLI subcommand, not the interactive TUI, so the switch
+    // that turns off the TUI's /logout (carried in the interactive env it
+    // inherits) has no bearing on it — the login still works.
+    expect(PROVIDERS.claude.loginArgs.slice(0, 2)).toEqual(["auth", "login"]);
+    expect(command.env.DISABLE_LOGOUT_COMMAND).toBe("1");
+    expect(command.env).not.toHaveProperty("DISABLE_LOGIN_COMMAND");
+  });
+
   it("gives the Codex login the Codex engine's environment — no CODEX_HOME override", async () => {
     const command = await resolveProviderCommand("codex", { engines: ENGINES });
 
