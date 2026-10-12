@@ -15,6 +15,7 @@ import { claimUsageLimitAnnouncement, HEALTH_OVERRIDE_SOURCE, healthOverrideRele
 import { confirmLoginRefusal, isLoginRefusal, LOGIN_REFUSAL_HOLD_MS, loginRefusalConfirmed } from "./engine-login.js";
 import { noteLimitFailure } from "./limit-failure-notice.js";
 import { isGatewayShuttingDown, markTurnCutOffByShutdown } from "./restart-resume.js";
+import { unrequestedStopError } from "./unrequested-stop.js";
 
 export type EngineFallbackReason = "rate_limit" | "no_response" | "timeout";
 const object = (value: unknown): Record<string, any> => value && typeof value === "object" && !Array.isArray(value) ? { ...value } : {};
@@ -178,6 +179,10 @@ export function failLimitThatOutlastsTheWait(
  * It is not offered to the stale-session retry: the dead run may already have
  * run tools, and that retry starts the prompt over on a fresh engine session.
  * An engine's own turn deadline stays a timeout another engine may take over.
+ *
+ * The session it leaves in "error" can run again at once, unlike one stopped by
+ * a usage limit or a lost login — see failedByUnrequestedStop, which is how
+ * that is told apart later.
  */
 function settleUnrequestedStop(engine: Engine, result: EngineResult, sessionId: string | undefined, shouldStop?: () => boolean): EngineResult {
   if (!result.error || !/^Interrupted/i.test(result.error) || result.interruptRequested) return result;
@@ -189,7 +194,7 @@ function settleUnrequestedStop(engine: Engine, result: EngineResult, sessionId: 
     return result;
   }
   const detail = result.error.replace(/^Interrupted:?\s*/i, "") || "no reason reported";
-  const failure: EngineResult = { ...result, error: `${engine.name} stopped unexpectedly: ${detail}` };
+  const failure: EngineResult = { ...result, error: unrequestedStopError(engine.name, detail) };
   logger.warn(`Engine run for session ${sessionId ?? "unknown"} ended without being asked to — ${failure.error}`);
   return engineFallbackFailure(result) === "timeout" ? failure : { ...failure, retryable: false };
 }

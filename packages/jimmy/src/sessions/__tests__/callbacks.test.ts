@@ -32,6 +32,7 @@ import { notifyParentSession, notifyDiscordChannel, notifyRateLimited } from "..
 import { logger } from "../../shared/logger.js";
 import { readGatewayAuthToken } from "../../gateway/auth.js";
 import { getSession } from "../registry.js";
+import { unrequestedStopError } from "../unrequested-stop.js";
 import type { Session } from "../../shared/types.js";
 
 function makeSession(overrides: Partial<Session> = {}): Session {
@@ -423,5 +424,66 @@ describe("notifyParentSession — completion batching flag", () => {
 
     expect(fetchSpy).toHaveBeenCalledOnce();
     expect(sentBody()).not.toHaveProperty("completionOf");
+  });
+});
+
+// A parent in error is not sent its children's completions: one stopped by a
+// usage limit or a lost login would run a failing turn for each. A parent whose
+// engine process died is in error as well, and is not like them.
+describe("notifyParentSession — a parent in error", () => {
+  let fetchSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(readGatewayAuthToken).mockReturnValue("test-token");
+    vi.mocked(loadConfig).mockReturnValue({ gateway: { port: 7777 } } as never);
+    fetchSpy = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch as typeof fetch;
+  });
+
+  const parentInError = (lastError: string | null) =>
+    vi.mocked(getSession).mockReturnValue(makeSession({ id: "parent-001", parentSessionId: null, status: "error", lastError }));
+
+  describe("because its engine stopped without being asked to", () => {
+    // Its process died. The engine session and the transcript are intact, and
+    // the next turn starts a new process — nothing about it would fail again.
+    beforeEach(() => { parentInError(unrequestedStopError("claude", "claude process exited")); });
+
+    it("is woken for a child's completion like any other parent", async () => {
+      notifyParentSession(makeSession({ id: "child-042" }), { result: "調査が終わりました" });
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(fetchSpy).toHaveBeenCalledOnce();
+      const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe("http://127.0.0.1:7777/api/sessions/parent-001/message");
+      expect(JSON.parse(String(init.body))).toMatchObject({ role: "notification", completionOf: "child-042" });
+      expect((init.headers as Record<string, string>).Authorization).toBe("Bearer test-token");
+    });
+
+    it("is woken for a child's failure too", async () => {
+      notifyParentSession(makeSession({ id: "child-042" }), { error: "Something broke" });
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(fetchSpy).toHaveBeenCalledOnce();
+      expect(JSON.parse(String((fetchSpy.mock.calls[0][1] as RequestInit).body)).message).toContain("Something broke");
+    });
+  });
+
+  it.each([
+    "claude usage limit reached. It resets Mon, 19 Oct, 03:00 (2026-10-19T03:00:00.000Z), which is too far off to wait for. Please try again after that.",
+    "Not logged in · Please run /login",
+    "Engine response timeout",
+    null,
+  ])("is still not woken when its next turn would meet the same failure: %s", async (lastError) => {
+    parentInError(lastError);
+
+    notifyParentSession(makeSession({ id: "child-042" }), { result: "調査が終わりました" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

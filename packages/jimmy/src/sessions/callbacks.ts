@@ -1,4 +1,5 @@
 import { getSession } from "./registry.js";
+import { failedByUnrequestedStop } from "./unrequested-stop.js";
 import { loadConfig } from "../shared/config.js";
 import { logger } from "../shared/logger.js";
 import { readGatewayAuthToken } from "../gateway/auth.js";
@@ -62,6 +63,19 @@ export function notifyRateLimitResumed(
   });
 }
 
+/**
+ * Whether a notification should start a turn in this parent.
+ *
+ * A parent in error is not woken: one stopped by a usage limit or a lost login
+ * would fail again, once for every child that finishes. The exception is a
+ * parent whose engine stopped without being asked to — its process died. It
+ * can run again at once, and it is usually waiting on exactly these
+ * notifications: left out, the conversation it answers in just stops.
+ */
+function wakesForNotifications(parent: Session): boolean {
+  return parent.status !== "error" || failedByUnrequestedStop(parent);
+}
+
 async function _sendNotification(
   childSession: Session,
   result: { result?: string | null; error?: string | null; cost?: number; durationMs?: number },
@@ -73,7 +87,7 @@ async function _sendNotification(
     logger.info(`[callbacks] Parent ${childSession.parentSessionId} not found for child ${childSession.id} — no notification sent.`);
     return; // Parent gone or expired
   }
-  if (parent.status === "error") {
+  if (!wakesForNotifications(parent)) {
     logger.info(`[callbacks] Parent ${parent.id} is in error — skipping notification for child ${childSession.id}. The child's result will not reach it.`);
     return; // Parent already in error — skip
   }
