@@ -294,20 +294,21 @@ export class ProviderAuthService implements ProviderAuthPort {
     }
     flow.phase = "verifying";
     void this.call(() => flow.listener.onVerifying?.());
-    const verified = await this.verify(flow);
-    void this.settle(flow, verified ? { status: "succeeded" } : { status: "failed", reason: "unverified" });
+    void this.settle(flow, await this.verify(flow));
   }
 
   /** A clean exit is not proof: the CLI's own status command has the last word. */
-  private async verify(flow: Flow): Promise<boolean> {
+  private async verify(flow: Flow): Promise<FlowOutcome> {
     const spec = PROVIDERS[flow.provider];
     try {
       const result = await this.deps.runCommand(flow.command.file, spec.statusArgs, {
         env: flow.command.env, cwd: flow.command.cwd, timeoutMs: STATUS_TIMEOUT_MS,
       });
-      return spec.isAuthenticated(result);
+      if (!spec.isAuthenticated(result)) return { status: "failed", reason: "unverified" };
+      const cliStatus = spec.describeLogin?.(result);
+      return { status: "succeeded", ...(cliStatus ? { cliStatus } : {}) };
     } catch {
-      return false;
+      return { status: "failed", reason: "unverified" };
     }
   }
 

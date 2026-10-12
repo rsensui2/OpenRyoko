@@ -126,7 +126,9 @@ then shows `[slack] provider-auth: enabled`. If it shows a warning about
 3. **Codex**: open the login page from the button and type in the device code
    the bot shows. Nothing is sent back; the bot notices when you are done.
 4. The bot confirms the result with the CLI's own status command and rewrites
-   its message — the link and the code are gone from the DM either way.
+   its message — the link and the code are gone from the DM either way. After
+   a Codex login it also shows what the CLI reports about the login and asks
+   you to confirm the approval was yours (see the note on device codes below).
 
 A login that is not finished within 10 minutes is stopped; press *キャンセル*
 to stop it sooner. Only one login per provider runs at a time. Saving the
@@ -163,6 +165,17 @@ pressed means exactly that.
 - The link and the device code stay in the DM until the login ends, and are
   never written to the gateway log or the session database. Slack itself may
   retain edited messages under your workspace's retention and export settings.
+- **A Codex device code works for whoever sees it.** That is how a device
+  login is built: the code is typed into a browser, and the CLI is signed in
+  to whichever account that browser is using. Someone who can read the
+  operator's DM while a Codex login is open — a shared screen, a workspace
+  admin, a second device — can enter the code with *their own* ChatGPT
+  account. The instance then runs as that account, and the bot reports a
+  perfectly successful login. So: treat the code like a password for those
+  minutes, and when the bot reports success, make sure you had finished the
+  browser step yourself. If a Codex login completes and you had not, log in
+  again at once. Claude is not exposed to this — its code only ever travels
+  from you to the CLI, through the dialog.
 - The CLI runs with the same binary (`engines.<name>.bin`) and environment as
   the engine, so the credentials land where the engine reads them
   (`~/.claude` or `CLAUDE_CONFIG_DIR`; `~/.codex`). In a container that

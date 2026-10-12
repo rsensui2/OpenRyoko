@@ -146,9 +146,26 @@ function outcomeText(provider: AuthProvider, outcome: FlowOutcome, ttlMinutes: n
   return `${name} のログインは完了しませんでした（CLI がエラーで終了しました）。もう一度お試しください。`;
 }
 
-/** The final state of a login message: the outcome, and nothing to act on. */
+/**
+ * The final state of a login message: the outcome, and nothing to act on.
+ *
+ * A device code can be approved by anyone who sees it, with their own account
+ * — the CLI then runs as them, and reports a perfectly good login. So after a
+ * device-code login the operator is shown what the CLI says it holds and asked
+ * to confirm the approval was theirs. That line may name an account: it goes
+ * in a block, never in the top-level text.
+ */
 export function settledMessage(provider: AuthProvider, outcome: FlowOutcome, ttlMinutes: number): SlackAuthMessage {
-  return say(outcomeText(provider, outcome, ttlMinutes));
+  const text = outcomeText(provider, outcome, ttlMinutes);
+  if (outcome.status !== "succeeded" || !PROVIDERS[provider].showsDeviceCode) return say(text);
+  return {
+    text: `${text}\nご自身で承認したログインかどうかを確認してください。`,
+    blocks: [
+      section(text),
+      ...(outcome.cliStatus ? [section(`CLI の表示: ${outcome.cliStatus}`)] : []),
+      note(`デバイスコードは、それを見た人が自分のアカウントで承認できます。ブラウザでの承認をご自身で済ませていないのに完了した場合は、別のアカウントでログインされています。そのときは、すぐに「${label(provider)} にログイン」からやり直してください。`),
+    ],
+  };
 }
 
 export function unredactedWarning(message: SlackAuthMessage): SlackAuthMessage {

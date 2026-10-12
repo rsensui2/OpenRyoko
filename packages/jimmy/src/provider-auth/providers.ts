@@ -1,4 +1,6 @@
+import { redactText } from "../shared/redact.js";
 import type { AuthInputKind } from "./input.js";
+import { terminalText } from "./terminal.js";
 import type { AuthProvider, CommandResult } from "./types.js";
 
 export interface ProviderSpec {
@@ -10,9 +12,28 @@ export interface ProviderSpec {
   showsDeviceCode: boolean;
   /** Hosts the sign-in page lives on (a subdomain counts). */
   signInHosts: readonly string[];
-  /** Reads the status command's answer. Its output is never logged or shown:
-   *  it names the account. */
+  /** Reads the status command's answer. Its output is never logged. */
   isAuthenticated(result: CommandResult): boolean;
+  /**
+   * One line of what the CLI says about the login it now holds, for the
+   * operator to check. Set where a login can be completed by someone other
+   * than the operator: a device code works for whoever sees it, and signs the
+   * CLI in to *their* account. Absent where the code only ever travels from the
+   * operator to the CLI.
+   */
+  describeLogin?(result: CommandResult): string | undefined;
+}
+
+const MAX_STATUS_LINE = 120;
+
+/** The first line a status command printed — on either stream — made safe to
+ *  show: no terminal control, nothing that looks like a key, bounded length. */
+function statusLine(result: CommandResult): string | undefined {
+  const line = terminalText(`${result.stdout}\n${result.stderr ?? ""}`)
+    .split("\n")
+    .map((text) => text.replace(/\s+/g, " ").trim())
+    .find(Boolean);
+  return line ? redactText(line).slice(0, MAX_STATUS_LINE) : undefined;
 }
 
 /** What the status JSON says, when it can be read at all. */
@@ -57,6 +78,7 @@ export const PROVIDERS: Record<AuthProvider, ProviderSpec> = {
     showsDeviceCode: true,
     signInHosts: ["openai.com", "chatgpt.com"],
     isAuthenticated: (result) => result.exitCode === 0,
+    describeLogin: statusLine,
   },
 };
 

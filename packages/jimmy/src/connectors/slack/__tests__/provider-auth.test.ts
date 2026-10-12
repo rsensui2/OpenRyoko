@@ -378,6 +378,54 @@ describe("Slack provider login — Codex", () => {
     expect(JSON.stringify(done)).not.toContain(CODEX_DEVICE_CODE);
     expect(JSON.stringify(done)).not.toContain("openai.com");
   });
+
+  it("on success, shows what the CLI says it is logged in as and asks the operator to confirm it was them", async () => {
+    const f = fixture();
+    const pty = await startLogin(f, "codex");
+    pty.emitData(CODEX_LOGIN_OUTPUT);
+    await settle();
+
+    pty.emitExit(0);
+    await settle();
+
+    const done = f.lastRendered();
+    const shown = JSON.stringify(done.blocks);
+    // A device code can be approved by anyone who sees it — with their own account.
+    expect(shown).toContain("Logged in using ChatGPT");
+    expect(shown).toContain("ご自身で");
+    expect(shown).toContain("やり直してください");
+    expect(done.text).toContain("確認してください");
+    // The status line may name an account: it stays out of the notification text and the message log.
+    expect(done.text).not.toContain("Logged in using ChatGPT");
+    expect([...f.logged, ...f.core.logged].join("\n")).not.toContain("Logged in using ChatGPT");
+  });
+
+  it("asks for the same confirmation when the CLI says nothing about the login", async () => {
+    const f = fixture();
+    f.core.status.codex = { stdout: "", exitCode: 0 };
+    const pty = await startLogin(f, "codex");
+
+    pty.emitExit(0);
+    await settle();
+
+    const done = f.lastRendered();
+    expect(done.text).toContain("Codex にログインしました");
+    expect(JSON.stringify(done.blocks)).toContain("ご自身で");
+    expect(JSON.stringify(done.blocks)).not.toContain("CLI の表示");
+  });
+
+  it("does not ask for it after a Claude login, whose code only ever goes in through the dialog", async () => {
+    const f = fixture();
+    const pty = await startLogin(f, "claude");
+
+    pty.emitExit(0);
+    await settle();
+
+    const done = f.lastRendered();
+    expect(done.text).toContain("Claude にログインしました");
+    expect(JSON.stringify(done)).not.toContain("ご自身で");
+    expect(JSON.stringify(done)).not.toContain("operator@example.com");
+  });
 });
 
 describe("Slack provider login — endings", () => {

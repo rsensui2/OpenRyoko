@@ -46,6 +46,7 @@ describe("ProviderAuthService — Claude", () => {
       ["auth", "status", "--json"],
       expect.objectContaining({ env: COMMANDS.claude.env, cwd: COMMANDS.claude.cwd }),
     );
+    // Claude's status output names the account; none of it leaves the flow engine.
     expect(flow.outcomes).toEqual([{ status: "succeeded" }]);
     expect(flow.events).toEqual(["prompt", "verifying", "settled:succeeded"]);
     expect(harness.service.activeFlow("claude")).toBeUndefined();
@@ -163,6 +164,30 @@ describe("ProviderAuthService — Codex", () => {
     expect(harness.runCommand).toHaveBeenCalledExactlyOnceWith(
       COMMANDS.codex.file, ["login", "status"], expect.objectContaining({ env: COMMANDS.codex.env }),
     );
+    // The outcome carries what the CLI itself says about the login it now holds.
+    expect(flow.outcomes).toEqual([{ status: "succeeded", cliStatus: "Logged in using ChatGPT" }]);
+  });
+
+  it.each([
+    ["written to stderr", { stdout: "", stderr: "Logged in using ChatGPT\n", exitCode: 0 }, "Logged in using ChatGPT"],
+    ["colored and padded", { stdout: "\r\n  \u001b[32mLogged in using ChatGPT\u001b[0m  \r\nsecond line\r\n", exitCode: 0 }, "Logged in using ChatGPT"],
+    ["carrying a full key", { stdout: "Logged in using an API key - sk-proj-abcdefghijklmnopqrstuvwxyz0123456789\n", exitCode: 0 }, "Logged in using an API key - [REDACTED]"],
+    ["longer than a line should be", { stdout: `Logged in as ${"x".repeat(500)}\n`, exitCode: 0 }, `Logged in as ${"x".repeat(107)}`],
+  ])("passes on the status line %s in a form that is safe to show", async (_name, answer, expected) => {
+    const harness = makeHarness({ status: { codex: answer } });
+    const flow = await startFlow(harness, "codex");
+    flow.pty.emitExit(0);
+    await settle();
+
+    expect(flow.outcomes).toEqual([{ status: "succeeded", cliStatus: expected }]);
+  });
+
+  it("reports success without a status line when the CLI prints nothing", async () => {
+    const harness = makeHarness({ status: { codex: { stdout: "", exitCode: 0 } } });
+    const flow = await startFlow(harness, "codex");
+    flow.pty.emitExit(0);
+    await settle();
+
     expect(flow.outcomes).toEqual([{ status: "succeeded" }]);
   });
 

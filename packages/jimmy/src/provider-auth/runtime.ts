@@ -77,8 +77,8 @@ export const spawnLoginPty: SpawnPty = async (file, args, options) => {
 };
 
 /**
- * Runs a provider's status command and reports only its exit status and
- * stdout. It always resolves: a command that cannot start, fails, or hangs
+ * Runs a provider's status command and reports its exit status and what it
+ * printed. It always resolves: a command that cannot start, fails, or hangs
  * past the timeout answers non-zero. The timeout kills outright, because a
  * status probe that ignores SIGTERM would otherwise hold its login flow open.
  */
@@ -96,9 +96,13 @@ export const runStatusCommand: RunCommand = (file, args, options) =>
         killSignal: "SIGKILL",
         windowsHide: true,
       },
-      (error, stdout) => {
+      (error, stdout, stderr) => {
         const code = (error as { code?: unknown } | null)?.code;
-        resolve({ stdout: String(stdout ?? ""), exitCode: !error ? 0 : typeof code === "number" ? code : 1 });
+        resolve({
+          stdout: String(stdout ?? ""),
+          stderr: String(stderr ?? ""),
+          exitCode: !error ? 0 : typeof code === "number" ? code : 1,
+        });
       },
     );
   });

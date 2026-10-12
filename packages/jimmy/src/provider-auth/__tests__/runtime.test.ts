@@ -149,12 +149,17 @@ describe("runStatusCommand", () => {
     const script = "process.stdout.write(process.env.MARK + '|' + process.cwd() + '|' + String(process.env.HOME)); process.exit(7)";
     const result = await runStatusCommand(process.execPath, ["-e", script], { env, cwd, timeoutMs: 10_000 });
 
-    expect(result).toEqual({ stdout: `from-env|${cwd}|undefined`, exitCode: 7 });
+    expect(result).toEqual({ stdout: `from-env|${cwd}|undefined`, stderr: "", exitCode: 7 });
+  });
+
+  it("returns what the command wrote to stderr as well", async () => {
+    const result = await runStatusCommand(process.execPath, ["-e", "console.error('Logged in using ChatGPT')"], { env, cwd, timeoutMs: 10_000 });
+    expect(result).toEqual({ stdout: "", stderr: "Logged in using ChatGPT\n", exitCode: 0 });
   });
 
   it("reports success as exit status 0", async () => {
     const result = await runStatusCommand(process.execPath, ["-e", "console.log('{\"loggedIn\":true}')"], { env, cwd, timeoutMs: 10_000 });
-    expect(result).toEqual({ stdout: '{"loggedIn":true}\n', exitCode: 0 });
+    expect(result).toEqual({ stdout: '{"loggedIn":true}\n', stderr: "", exitCode: 0 });
   });
 
   it("answers non-zero when the command cannot be started", async () => {

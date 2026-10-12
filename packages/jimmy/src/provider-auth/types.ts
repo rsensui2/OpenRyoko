@@ -33,6 +33,7 @@ export type SpawnPty = (
 
 export interface CommandResult {
   stdout: string;
+  stderr?: string;
   exitCode: number;
 }
 
@@ -74,7 +75,9 @@ export interface FlowPrompt {
 }
 
 export type FlowOutcome =
-  | { status: "succeeded" }
+  /** `cliStatus`: the CLI's own one-line account of the login it now holds,
+   *  for providers where the operator should check it. Safe to show them. */
+  | { status: "succeeded"; cliStatus?: string }
   /** `exit`: the CLI gave up. `unverified`: it exited cleanly but the status
    *  command does not report a login. `stopped`: the gateway is shutting down. */
   | { status: "failed"; reason: "exit" | "unverified" | "stopped" }
