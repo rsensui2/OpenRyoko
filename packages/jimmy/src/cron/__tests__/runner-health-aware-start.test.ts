@@ -85,7 +85,12 @@ function setup(options: Options = {}) {
   ]));
   // Results and notices are delivered through "slack"; failure alerts go out through "ops".
   const posted: string[] = [];
-  const post = async (_target: unknown, text: string) => { posted.push(text); return "ts"; };
+  const postedTo: Array<{ channel: string; text: string }> = [];
+  const post = vi.fn(async (target: { channel: string }, text: string) => {
+    posted.push(text);
+    postedTo.push({ channel: target.channel, text });
+    return "ts";
+  });
   const alert = vi.fn<Connector["sendMessage"]>(async () => "alert-ts");
   const getCapabilities = () => ({ threading: true, messageEdits: false, reactions: true, attachments: false });
   const connectors = new Map<string, Connector>([
@@ -94,7 +99,9 @@ function setup(options: Options = {}) {
   ]);
   const fire = () => runCronJob(job, manager, config, connectors);
   return {
-    job, claudeRun, codexRun, alert, posted, fire,
+    job, claudeRun, codexRun, alert, posted, post, connectors, fire,
+    /** What one delivery channel received. */
+    postedIn: (channel: string) => postedTo.filter((message) => message.channel === channel).map((message) => message.text),
     /** Fire another job on the same gateway. */
     fireJob: (other: CronJob) => runCronJob(other, manager, config, connectors),
     /** Fire the job this many minutes after START. */
@@ -364,11 +371,83 @@ describe("cron fires while the only usable engine is out of allowance", () => {
     }
     // The same job failing for the same reason alerts once an hour …
     expect(f.alert).toHaveBeenCalledExactlyOnceWith({ channel: "C-alerts" }, expect.stringContaining(iso(reset)));
-    // … but its delivery channel is told on every fire.
-    expect(f.posted).toEqual(entries.map((entry) => entry.error));
+    // … and its delivery channel is told once for the whole limit period.
+    expect(f.posted).toEqual([entries[0]!.error]);
 
     await f.fireAt(75);
     expect(f.alert).toHaveBeenCalledTimes(2);
+    expect(f.posted).toHaveLength(1);
+    // A fire that posted nothing is still an error for the limit, not for a delivery that failed.
+    const last = runs(f.job.id).at(-1)!;
+    expect(last).toMatchObject({ status: "error", error: entries[0]!.error });
+    expect(getSession(last.sessionId)).toMatchObject({ status: "error", lastError: entries[0]!.error });
+  });
+
+  it("tell the delivery channel again when a new limit period begins", async () => {
+    const f = setup({ claudeFallback: [] });
+    const firstReset = START + 5 * 24 * HOUR;
+    const secondReset = firstReset + 7 * 24 * HOUR;
+    f.claudeRun.mockImplementation(async () => spentUntil(Date.now() < firstReset ? firstReset : secondReset, "7d"));
+
+    await f.fireAt(0);
+    await f.fireAt(15);
+    await f.fireAt(5 * 24 * 60 + 1); // the window reopened and was spent again
+    await f.fireAt(5 * 24 * 60 + 16);
+
+    expect(f.posted).toEqual([expect.stringContaining(iso(firstReset)), expect.stringContaining(iso(secondReset))]);
+    expect(outcomes(f.job.id)).toEqual(["error", "error", "error", "error"]);
+  });
+
+  // Once per limit period is counted per delivery channel: every channel that
+  // is waiting for a job's output learns why none is coming, and learns it once.
+  it("tell each delivery channel once, however many jobs deliver to it", async () => {
+    const f = setup({ claudeFallback: [] });
+    f.claudeSpentUntil(START + 5 * 24 * HOUR, "7d");
+    const sameChannel: CronJob = { ...f.job, id: `${f.job.id}-same-channel`, name: "Evening digest" };
+    const otherChannel: CronJob = { ...f.job, id: `${f.job.id}-other-channel`, name: "Sales report", delivery: { connector: "slack", channel: "C-sales" } };
+
+    for (const minutes of [0, 15]) {
+      vi.setSystemTime(START + minutes * MINUTE);
+      await f.fire();
+      await f.fireJob(sameChannel);
+      await f.fireJob(otherChannel);
+    }
+
+    expect(f.postedIn("C-briefing")).toHaveLength(1);
+    expect(f.postedIn("C-sales")).toHaveLength(1);
+    for (const job of [f.job, sameChannel, otherChannel]) expect(outcomes(job.id)).toEqual(["error", "error"]);
+  });
+
+  // A fire whose post was held back sent nothing, so nothing of it can have
+  // failed to arrive: it is not turned into a delivery failure by the checks
+  // that look for output that reached nobody.
+  it("stay errors for the limit, not for a delivery, when the channel's connector is gone while a repeat is held back", async () => {
+    const f = setup({ claudeFallback: [] });
+    f.claudeSpentUntil(START + 5 * 24 * HOUR, "7d");
+
+    await f.fireAt(0);
+    f.connectors.delete("slack");
+    await f.fireAt(15);
+
+    const [first, second] = runs(f.job.id);
+    expect(second).toMatchObject({ status: "error", error: first!.error });
+    expect(second!.error).not.toMatch(/deliver/i);
+    expect(getSession(second!.sessionId)).toMatchObject({ status: "error", lastError: first!.error });
+    expect(f.posted).toHaveLength(1);
+  });
+
+  // "Told" means the post went out. One the channel refused is tried again by the next fire.
+  it("try again with the next fire when the channel refused the message", async () => {
+    const f = setup({ claudeFallback: [] });
+    f.claudeSpentUntil(START + 5 * 24 * HOUR, "7d");
+    f.post.mockRejectedValueOnce(new Error("channel_not_found"));
+
+    await f.fireAt(0);
+    await f.fireAt(15);
+    await f.fireAt(30);
+
+    expect(f.posted).toEqual([expect.stringContaining("claude usage limit reached")]);
+    expect(outcomes(f.job.id)).toEqual(["error", "error", "error"]);
   });
 });
 
@@ -465,6 +544,8 @@ describe("cron fires while an earlier fire of the same job waits for a usage lim
     const entries = runs(f.job.id);
     expect(entries.map((entry) => entry.status)).toEqual(["error", "error"]);
     for (const entry of entries) expect(entry.error).toContain(iso(weekly));
+    // The channel heard that the job was waiting, then why it stopped — and not a second time from the fire after it.
+    expect(f.posted).toEqual([expect.stringMatching(WAITING_NOTICE), entries[0]!.error]);
   });
 
   // A session that was waiting when the gateway went down is still marked so,

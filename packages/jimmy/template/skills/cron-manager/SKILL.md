@@ -96,6 +96,8 @@ For a prompt job, `status: "error"` covers more than a routing failure. The run 
 
 Failure alerts for prompt jobs go to `cron.alertConnector` / `cron.alertChannel`. A job that keeps failing for the same reason alerts once per `cron.alertThrottleMinutes` (default 60; `0` alerts every time), so the absence of a new alert is not recovery. Confirm with the run history.
 
+When an engine's usage limit will not reset within six hours and no fallback engine can take the job, every fire fails at once and is logged as an `error` that names the reset. The job's delivery channel is told once per limit period, not on every fire, so silence there is not recovery either.
+
 Logs live under `~/.ryoko/cron/commands/<job-hash>/`, with up to 100 logs per job and a 1 MiB limit per file. A durable `running.lock` prevents overlap. After abnormal termination, inspect its recorded PIDs, process state, logs, and completed external effects before removing only that lock or retrying. Do not clear all locks or state files.
 
 Malformed `jobs.json` must be backed up and repaired in a separate candidate. Never replace an unreadable existing store with `[]`. Compare all IDs before any recovery and retain execution history. API failure should not cause a silent fallback to writing the live file.

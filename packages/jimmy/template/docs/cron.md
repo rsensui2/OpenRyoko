@@ -94,6 +94,8 @@ A prompt run is `skipped`, with `reason: "previous-run-waiting-for-usage-limit"`
 
 A failed prompt run is always written to the run log, and alerts `cron.alertConnector` / `cron.alertChannel` in `config.yaml` when both are set. While the same failure of a job repeats, the alert is sent once and then held back for `cron.alertThrottleMinutes` (default 60; `0` alerts on every failure). A new reason, or a success in between, alerts again at once. No new alert therefore does not mean the job recovered: check its run log. Command jobs alert as described in [Direct command jobs](cron-commands.md).
 
+When an engine's usage limit will not reset within six hours and no fallback engine can take the job, each fire fails at once instead of waiting, and is logged as an `error` that names the reset. The job's delivery channel is told once per limit period (an engine and the reset it stated), not on every fire. Silence in that channel does not mean the job recovered either: check its run log.
+
 ## Delegation Pattern
 
 When a cron job produces analytical, reporting, or decision-informing output, it should **always target {{portalSlug}}** (the COO), not the employee directly. {{portalName}} then delegates to the employee via a child session, reviews the output, filters noise, and delivers the final result.

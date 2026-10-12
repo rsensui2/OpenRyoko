@@ -13,6 +13,7 @@ import { recordTurnAccounting, unrecordTurnAccounting } from "./accounting.js";
 import { readEngineHealth, reprobeAtMs } from "../shared/engine-health.js";
 import { claimUsageLimitAnnouncement, HEALTH_OVERRIDE_SOURCE, healthOverrideReleased, isUsableFallbackTarget, noteEngineTurnOutcome } from "./engine-health-gate.js";
 import { confirmLoginRefusal, isLoginRefusal, LOGIN_REFUSAL_HOLD_MS, loginRefusalConfirmed } from "./engine-login.js";
+import { noteLimitFailure } from "./limit-failure-notice.js";
 
 export type EngineFallbackReason = "rate_limit" | "no_response" | "timeout";
 const object = (value: unknown): Record<string, any> => value && typeof value === "object" && !Array.isArray(value) ? { ...value } : {};
@@ -154,9 +155,11 @@ export function failLimitThatOutlastsTheWait(
   if (engine.name === "claude") recordClaudeRateLimit(limit.resetsAt); // what entering the wait would have noted
   logger.info(`Session ${outcome.session?.id ?? "(unknown)"} hit ${engine.name} usage limit that resets at ${resetsAt.toISOString()} — ` +
     `further off than the ${Math.round(MAX_USAGE_LIMIT_WAIT_MS / 3_600_000)}h a turn waits, so it fails now instead of waiting`);
-  return { ...result, result: "", retryable: false,
+  // Marked as what it is, so that a cron job's channel is not told of the
+  // same limit period on every fire (see limit-failure-notice.ts).
+  return noteLimitFailure({ ...result, result: "", retryable: false,
     error: `${engine.name} usage limit reached. It resets ${resetsAt.toLocaleString("en-GB", RESET_DAY_AND_TIME)} (${resetsAt.toISOString()}), ` +
-      "which is too far off to wait for. Please try again after that." };
+      "which is too far off to wait for. Please try again after that." }, { engine: engine.name, resetsAt: resetsAt.toISOString() });
 }
 
 /** Watch actual engine activity, underneath goal supervision. A timed-out process

@@ -52,6 +52,14 @@ describe("shipped cron documentation", () => {
     expect(text).toContain("`resetsAt`");
   });
 
+  // While a usage limit is not waited for, every fire fails and is logged, but
+  // the delivery channel hears of it once: silence there is not recovery.
+  it.each(["docs/cron.md", "skills/cron-manager/SKILL.md"])("says in %s that the delivery channel is told of a usage limit once per limit period", (file) => {
+    const text = read(file);
+    expect(text).toMatch(/usage limit[^.]*\./);
+    expect(text).toMatch(/delivery channel[^.]*once per limit period/);
+  });
+
   // A job naming an unknown engine is failed before any session is started, so
   // that error line has no `sessionId` to follow.
   it("does not promise a sessionId for a run that failed before a session existed", () => {
