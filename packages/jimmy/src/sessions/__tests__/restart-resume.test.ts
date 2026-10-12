@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createSession,
   enqueueQueueItem,
@@ -527,6 +527,72 @@ describe("resumeRestartInterruptedSessions", () => {
 
     expect(post).toHaveBeenCalledTimes(1);
     expect(markOf(session.id)).toEqual({ interruptedAt: iso(MINUTE), nudgedAt: [] });
+  });
+});
+
+describe("resumeRestartInterruptedSessions — cancel", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("stops the nudges that have not gone out yet, and leaves their marks for the next boot", async () => {
+    // Three sessions, fifteen seconds apart: the gateway shuts down again after the first.
+    const sessions = [1, 2, 3].map((minutesAgo) => interrupted(iso(MINUTE), { status: "idle", lastActivity: iso(minutesAgo * MINUTE) }));
+    const run = boot();
+    await run.timers[0].run();
+    expect(run.post).toHaveBeenCalledTimes(1);
+
+    run.summary.cancel();
+    for (const timer of run.timers.slice(1)) await timer.run(); // a timer that still fires does nothing
+
+    expect(run.post).toHaveBeenCalledTimes(1);
+    expect(markOf(sessions[0].id).interruptedAt).toBeUndefined();
+    expect(markOf(sessions[1].id).interruptedAt).toBe(iso(MINUTE));
+    expect(markOf(sessions[2].id).interruptedAt).toBe(iso(MINUTE));
+    expect(markOf(sessions[1].id).nudgedAt).toEqual([]); // not on record as nudged: nothing was sent
+
+    // The next boot picks the two up.
+    const next = boot({ now: () => NOW + 5 * MINUTE });
+    expect(next.summary).toMatchObject({ planned: 2 });
+    await next.fire();
+    expect(next.post.mock.calls.map((call) => call[1]).sort()).toEqual([sessions[1].id, sessions[2].id].sort());
+  });
+
+  it("clears the real timers, so nothing fires into a gateway that is shutting down", async () => {
+    vi.useFakeTimers();
+    [1, 2, 3].forEach((minutesAgo) => interrupted(iso(MINUTE), { status: "idle", lastActivity: iso(minutesAgo * MINUTE) }));
+    const post = vi.fn<NonNullable<RestartResumeDeps["post"]>>(async () => {});
+
+    const handle = resumeRestartInterruptedSessions({ config: config(), port: 0, now: () => NOW, post });
+    expect(vi.getTimerCount()).toBe(3);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(post).toHaveBeenCalledTimes(1); // the first nudge is immediate
+
+    handle.cancel();
+
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(10 * MINUTE);
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not put a nudge on record when the shutdown began while it was being posted", async () => {
+    // The turn that nudge starts is killed with everything else. On record as
+    // sent, it would keep the session under the loop guard at the next boot.
+    const session = interrupted(iso(MINUTE), { status: "idle" });
+    let accept!: () => void;
+    const post = vi.fn<NonNullable<RestartResumeDeps["post"]>>(() => new Promise<void>((resolve) => { accept = resolve; }));
+    const run = boot({ post });
+    const sending = run.timers[0].run();
+    await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(1));
+
+    run.summary.cancel();
+    accept();
+    await sending;
+
+    expect(markOf(session.id)).toEqual({ interruptedAt: iso(MINUTE), nudgedAt: [] });
+  });
+
+  it("is a no-op when there was nothing to nudge or the feature is off", () => {
+    expect(() => boot().summary.cancel()).not.toThrow();
+    expect(() => boot({ config: config({ resumeInterruptedOnBoot: false }) }).summary.cancel()).not.toThrow();
   });
 });
 

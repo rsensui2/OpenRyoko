@@ -83,7 +83,8 @@ export interface RestartResumeDeps {
   /** Test overrides. */
   now?: () => number;
   post?: (port: number, sessionId: string, body: RestartNudgeBody) => Promise<void>;
-  schedule?: (run: () => Promise<void>, delayMs: number) => void;
+  /** May return a function that un-schedules the run. */
+  schedule?: (run: () => Promise<void>, delayMs: number) => (() => void) | void;
 }
 
 export interface RestartResumeSummary {
@@ -91,6 +92,12 @@ export interface RestartResumeSummary {
   deferred: number;
   skipped: number;
   disabled?: true;
+}
+
+export interface RestartResumeHandle extends RestartResumeSummary {
+  /** Stop the nudges that have not been sent yet — call it first thing at
+   *  shutdown. Their sessions keep the mark, so the next boot picks them up. */
+  cancel: () => void;
 }
 
 function metaObject(meta: Session["transportMeta"]): JsonObject {
@@ -332,8 +339,9 @@ function busyProbe(deps: RestartResumeDeps): (session: Session) => boolean {
   return (session) => !!queue && (queue.isRunning(session.sessionKey) || queue.getPendingCount(session.sessionKey) > 0);
 }
 
-/** Wake one session, unless something else got to it first. */
-async function sendRestartNudge(sessionId: string, plannedAt: number, deps: RestartResumeDeps): Promise<void> {
+/** Wake one session, unless something else got to it first. `shuttingDown`
+ *  turns true once the boot step's nudges have been cancelled. */
+async function sendRestartNudge(sessionId: string, plannedAt: number, deps: RestartResumeDeps, shuttingDown: () => boolean): Promise<void> {
   const session = getSession(sessionId);
   const interruptedAt = session ? readRestartResumeState(session.transportMeta).interruptedAt : undefined;
   if (!session || !interruptedAt) return; // deleted, or already handled
@@ -352,17 +360,21 @@ async function sendRestartNudge(sessionId: string, plannedAt: number, deps: Rest
     logger.warn(`[restart-resume] Failed to nudge session ${sessionId}: ${err instanceof Error ? err.message : String(err)}`);
     return;
   }
+  // Posted into a gateway that has since begun shutting down: the turn it
+  // started dies with the rest. Not on record, so the next boot may try again.
+  if (shuttingDown()) return;
   clearRestartInterruptedMark(sessionId, new Date(deps.now?.() ?? Date.now()).toISOString());
   logger.info(
     `Nudged interrupted session ${sessionId} (${session.connector ?? session.source}${session.employee ? `, ${session.employee}` : ""}) to continue after the restart`,
   );
 }
 
-function scheduleTimer(run: () => Promise<void>, delayMs: number): void {
+function scheduleTimer(run: () => Promise<void>, delayMs: number): () => void {
   const timer = setTimeout(() => {
     run().catch((err) => logger.warn(`[restart-resume] nudge failed: ${err instanceof Error ? err.message : String(err)}`));
   }, delayMs);
   timer.unref?.();
+  return () => clearTimeout(timer);
 }
 
 function maxAgeMs(config: JinnConfig): number {
@@ -380,8 +392,13 @@ function describeSkipped(skipped: RestartResumeSelection["skipped"]): string {
  * Boot step: tell every session this restart interrupted to carry on. Runs
  * after the pending queue replay, so a session already back on the engine
  * through its own queue row is skipped rather than resumed twice.
+ *
+ * The nudges go out over the stagger window, so the gateway can be shutting
+ * down again before the last one is due. A nudge accepted then starts a turn
+ * that is killed at once, yet stays on record as sent — the returned `cancel`
+ * stops the ones still waiting.
  */
-export function resumeRestartInterruptedSessions(deps: RestartResumeDeps): RestartResumeSummary {
+export function resumeRestartInterruptedSessions(deps: RestartResumeDeps): RestartResumeHandle {
   const now = deps.now?.() ?? Date.now();
   if (deps.config.sessions?.resumeInterruptedOnBoot === false) {
     const left = listMarkedSessions();
@@ -389,15 +406,23 @@ export function resumeRestartInterruptedSessions(deps: RestartResumeDeps): Resta
     if (left.length > 0) {
       logger.info(`Restart resume is off (sessions.resumeInterruptedOnBoot: false) — left ${left.length} interrupted session(s) for the operator`);
     }
-    return { planned: 0, deferred: 0, skipped: left.length, disabled: true };
+    return { planned: 0, deferred: 0, skipped: left.length, disabled: true, cancel: () => {} };
   }
   const selection = selectRestartResumeCandidates({ now, maxAgeMs: maxAgeMs(deps.config), isBusy: busyProbe(deps) });
   const plan = planRestartResumes({ candidates: selection.candidates, now });
   for (const sessionId of plan.deferred) clearRestartInterruptedMark(sessionId);
   const schedule = deps.schedule ?? scheduleTimer;
+  let cancelled = false;
+  const unschedule: Array<() => void> = [];
   for (const resume of plan.resumes) {
-    schedule(() => sendRestartNudge(resume.sessionId, now, deps), Math.max(0, resume.dueAt - now));
+    const nudge = () => (cancelled ? Promise.resolve() : sendRestartNudge(resume.sessionId, now, deps, () => cancelled));
+    const undo = schedule(nudge, Math.max(0, resume.dueAt - now));
+    if (undo) unschedule.push(undo);
   }
+  const cancel = () => {
+    cancelled = true;
+    for (const undo of unschedule.splice(0)) undo();
+  };
   if (plan.resumes.length + plan.deferred.length + selection.skipped.length > 0) {
     logger.info(
       `Restart resume: nudging ${plan.resumes.length} interrupted session(s)` +
@@ -405,5 +430,5 @@ export function resumeRestartInterruptedSessions(deps: RestartResumeDeps): Resta
       (selection.skipped.length > 0 ? `, skipped ${describeSkipped(selection.skipped)}` : ""),
     );
   }
-  return { planned: plan.resumes.length, deferred: plan.deferred.length, skipped: selection.skipped.length };
+  return { planned: plan.resumes.length, deferred: plan.deferred.length, skipped: selection.skipped.length, cancel };
 }

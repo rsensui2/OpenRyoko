@@ -1363,8 +1363,9 @@ export async function startGateway(
 
   // Nudge the sessions the restart cut off mid-turn to carry on. After the
   // replay above, so a session it already re-dispatched is not resumed twice.
+  let cancelRestartNudges: () => void = () => {};
   try {
-    resumeRestartInterruptedSessions({ config: currentConfig, port, queue: sessionManager.getQueue() });
+    cancelRestartNudges = resumeRestartInterruptedSessions({ config: currentConfig, port, queue: sessionManager.getQueue() }).cancel;
   } catch (err) {
     logger.warn(`Restart resume failed: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -1443,6 +1444,7 @@ export async function startGateway(
   // Return cleanup function
   return async () => {
     logger.info("Gateway cleanup starting...");
+    cancelRestartNudges(); // before anything is awaited: a nudge accepted now starts a turn only to have it killed
     clearInterval(modelRefreshTimer);
     modelManagement?.stop();
     stopScheduler();

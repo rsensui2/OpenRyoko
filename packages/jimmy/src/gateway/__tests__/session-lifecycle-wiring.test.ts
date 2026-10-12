@@ -37,6 +37,14 @@ describe("gateway/server.ts — session lifecycle wiring", () => {
     expect(server.lastIndexOf("recoverStaleWorkflowAttemptSessions()")).toBeLessThan(mark);
   });
 
+  it("cancels the pending restart nudges first thing at shutdown", () => {
+    // A nudge accepted while the gateway is going down starts a turn that is killed at once.
+    const cancel = callSite("cancelRestartNudges();");
+    expect(callSite("Gateway cleanup starting")).toBeLessThan(cancel);
+    expect(cancel).toBeLessThan(callSite("await stopCommandJobs()"));
+    expect(server).toMatch(/cancelRestartNudges = resumeRestartInterruptedSessions\(\{[^}]*\}\)\.cancel;/);
+  });
+
   it("gives the status reconciler the queue-ownership probe", () => {
     const start = callSite("startStatusReconciler({");
     const wiring = server.slice(start, server.indexOf("});", start));
