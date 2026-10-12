@@ -13,7 +13,7 @@ interface CronJob {
   kind?: "prompt" | "update-notification" | "command"; // Default: prompt
   maintenance?: { mode: "off" | "review" | "apply" }; // Update notifications; default review
   timezone?: string;     // IANA timezone (default: system timezone)
-  engine: string;        // "claude" or "codex"
+  engine?: string;       // "claude", "codex" or "gemini". Omitted: the employee's engine, else engines.default
   effortLevel?: string; // Per-job reasoning effort for prompt jobs
   command?: { executable: string; args?: string[]; cwd?: string; timeoutSeconds?: number };
   failureDelivery?: { connector: string; channel: string } | null;
@@ -61,12 +61,20 @@ Examples:
 
 ## Hot Reload
 
-The gateway watches `cron/jobs.json` with chokidar. When the file changes:
-1. All existing scheduled jobs are cancelled
-2. The new file is parsed and validated
-3. Enabled jobs are rescheduled with the updated definitions
+The gateway watches the directory that holds `cron/jobs.json`, and every 30 seconds compares the file with what is scheduled, in case a change was missed. When the file changes:
+1. The new file is parsed and validated
+2. Jobs that are new or changed are rescheduled, and jobs that were removed or disabled are unscheduled. A job that did not change keeps its registration
+3. If the file cannot be read — invalid JSON, a duplicate id, a file caught half-written, a file that is missing — nothing changes. The jobs registered before stay scheduled, and the gateway logs `Cron reload skipped; keeping previous registrations`
+
+A valid empty list `[]` is a change like any other: it unschedules every job. Deleting the file does not.
 
 No restart is required. Create and update through the authenticated `/api/cron` API so the running scheduler is reloaded immediately. Direct file edits are for offline recovery, with a backup.
+
+The `cron` section of `config.yaml` (`alertConnector`, `alertChannel`, `alertThrottleMinutes`, `defaultDelivery`) and the engine defaults are read each time a job fires. A change to them applies from the next fire, without a restart.
+
+## Which Engine a Job Runs On
+
+A job that names neither `engine` nor `model` runs on its employee's engine, or on `engines.default`. While that engine's usage limit is on record and a fallback engine can take the job, it starts there straight away, and goes back after the reset. A job that names its `engine` or `model` is taken at its word and is not moved: during the same limit every fire first fails a turn on the named engine, and is switched only then. Name them where the job needs that engine or model, and leave them out otherwise.
 
 For `kind: "command"`, the gateway executes `command` without creating an AI session. Legacy prompt/model fields are ignored by this kind. See [Direct command jobs](cron-commands.md) for timeout, output, failure delivery, and lock recovery.
 
@@ -92,7 +100,7 @@ A prompt run is `skipped`, with `reason: "previous-run-waiting-for-usage-limit"`
 
 ## Failure Alerts
 
-A failed prompt run is always written to the run log, and alerts `cron.alertConnector` / `cron.alertChannel` in `config.yaml` when both are set. While the same failure of a job repeats, the alert is sent once and then held back for `cron.alertThrottleMinutes` (default 60; `0` alerts on every failure). A new reason, or a success in between, alerts again at once. No new alert therefore does not mean the job recovered: check its run log. Command jobs alert as described in [Direct command jobs](cron-commands.md).
+A failed prompt run is always written to the run log, and alerts `cron.alertConnector` / `cron.alertChannel` in `config.yaml` when both are set. While the same failure of a job repeats, the alert is sent once and then held back for `cron.alertThrottleMinutes` (default 60; `0` alerts on every failure). A new reason, or a success in between, alerts again at once. No new alert therefore does not mean the job recovered: check its run log. What was already alerted is kept in memory only, so the first failure after a gateway restart alerts again. Command jobs alert as described in [Direct command jobs](cron-commands.md).
 
 When an engine's usage limit will not reset within six hours and no fallback engine can take the job, each fire fails at once instead of waiting, and is logged as an `error` that names the reset. That failure is alerted once per limit period (an engine and the reset it stated) rather than once per `cron.alertThrottleMinutes`; `0` still alerts on every failure. The job's delivery channel is told once per limit period as well, not on every fire. Silence in either place does not mean the job recovered: check its run log.
 
@@ -136,7 +144,7 @@ When a cron job produces analytical, reporting, or decision-informing output, it
 }
 ```
 
-Direct employee-to-user delivery is only acceptable for simple, no-review-needed tasks (e.g. a health check ping). The gateway will log a warning if it detects a non-{{portalSlug}} employee with delivery configured.
+Direct employee-to-user delivery is only acceptable for simple, no-review-needed tasks (e.g. a health check ping). Nothing stops such a job: the gateway only notes in its debug log that the job delivers for an employee other than {{portalSlug}}.
 
 ## Example Configuration
 
