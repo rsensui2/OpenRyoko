@@ -169,6 +169,20 @@ describe("bundled skill sync: what is not mistaken for an untouched earlier copy
     expect(f.read("example", "notes.md")).toBe("mine");
   });
 
+  it("a copy with one of the earlier version's files removed", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1", "references/a.md": "a1", "references/b.md": "b1" });
+    f.release("v2026.7.1");
+    f.ship("example", { "SKILL.md": "v2", "references/a.md": "a2", "references/b.md": "b2" });
+    // Every file still there is that release's, byte for byte. The one taken out was the operator's doing.
+    f.place("example", { "SKILL.md": "v1", "references/b.md": "b1" });
+    const before = snapshot(path.join(f.skills, "example"));
+
+    expect(f.sync("2026.10.10")).toMatchObject({ updated: [], adopted: [], kept: [{ name: "example", reason: "unmanaged" }], backupDir: null });
+    expect(snapshot(path.join(f.skills, "example"))).toEqual(before);
+    expect(fs.existsSync(f.backups)).toBe(false);
+  });
+
   it("a symlink that resolves to an untouched earlier copy", () => {
     const f = upgraded(rendered(OLD["SKILL.md"], "Momo"));
     const elsewhere = path.join(f.root, "elsewhere");
