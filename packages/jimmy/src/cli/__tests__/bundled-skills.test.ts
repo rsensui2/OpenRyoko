@@ -75,4 +75,59 @@ describe("bundled skills on upgrade", () => {
     expect(fs.existsSync(path.join(home, "skills", "example"))).toBe(false);
     expect(fs.readdirSync(home)).toEqual([]);
   });
+
+  it("leaves no staging directory behind when a skill cannot be moved into place, and deletes no tree to do it", () => {
+    const { home, template, write } = fixture();
+    write("demo/SKILL.md", "---\nname: demo\n---\nHello {{portalName}}\n");
+    write("demo/references/a.md", "a\n");
+    write("demo/assets/.gitkeep", "");
+    const rename = fs.renameSync;
+    // The user's skills directory is on another volume: the move cannot be a rename.
+    vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (String(to) === path.join(home, "skills", "demo")) throw Object.assign(new Error("EXDEV: cross-device link not permitted"), { code: "EXDEV" });
+      return rename(from, to);
+    });
+    const rm = vi.spyOn(fs, "rmSync");
+
+    expect(() => stageMissingBundledSkills(template, home, { "{{portalName}}": "Momo" })).toThrow(/EXDEV/);
+
+    expect(fs.readdirSync(home).filter((name) => name.startsWith(".bundled-skill-"))).toEqual([]);
+    expect(fs.existsSync(path.join(home, "skills", "demo"))).toBe(false);
+    expect(rm.mock.calls.filter(([, options]) => options?.recursive)).toEqual([]);
+  });
+
+  it("removes its staging directory once the skill is in place, without deleting a tree", () => {
+    const { home, template, write } = fixture();
+    write("demo/SKILL.md", "---\nname: demo\n---\n");
+    const rm = vi.spyOn(fs, "rmSync");
+
+    expect(stageMissingBundledSkills(template, home, {})).toEqual(["demo"]);
+
+    expect(fs.readdirSync(home)).toEqual(["skills"]);
+    expect(rm.mock.calls.filter(([, options]) => options?.recursive)).toEqual([]);
+  });
+
+  it("does not empty a directory linked in where its staged copy was", () => {
+    const { root, home, template, write } = fixture();
+    write("demo/SKILL.md", "---\nname: demo\n---\n");
+    write("demo/references/a.md", "a\n");
+    const outside = path.join(root, "outside");
+    fs.mkdirSync(path.join(outside, "references"), { recursive: true });
+    fs.writeFileSync(path.join(outside, "SKILL.md"), "the user's own skill\n");
+    fs.writeFileSync(path.join(outside, "references", "a.md"), "the user's own reference\n");
+    const rename = fs.renameSync;
+    // The move fails, and before the clean-up the staged copy is swapped for a link.
+    vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (String(to) !== path.join(home, "skills", "demo")) return rename(from, to);
+      rename(from, path.join(root, "real-staged"));
+      fs.symlinkSync(outside, String(from));
+      throw Object.assign(new Error("EXDEV: cross-device link not permitted"), { code: "EXDEV" });
+    });
+
+    expect(() => stageMissingBundledSkills(template, home, {})).toThrow(/EXDEV/);
+
+    expect(fs.readFileSync(path.join(outside, "SKILL.md"), "utf8")).toBe("the user's own skill\n");
+    expect(fs.readFileSync(path.join(outside, "references", "a.md"), "utf8")).toBe("the user's own reference\n");
+  });
 });
+

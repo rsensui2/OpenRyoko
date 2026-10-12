@@ -234,7 +234,8 @@ describe("restoreHomeArchive", () => {
     const limits = { maxEntries: 60, maxBytes: 200_000 };
     writeTree(target.home, {
       "knowledge/grown.bin": "x".repeat(600_000),
-      ...Object.fromEntries(Array.from({ length: 300 }, (_, index) => [`knowledge/flood/empty-${index}`, ""])),
+      // Forty more files is past a limit of sixty; it does not take hundreds to be over it.
+      ...Object.fromEntries(Array.from({ length: 40 }, (_, index) => [`knowledge/flood/empty-${index}`, ""])),
     });
     fs.writeFileSync(path.join(target.home, "config.yaml"), "broken\n");
 
@@ -367,6 +368,8 @@ describe("restoreHomeArchive", () => {
     expect(read(target.home, "skills/demo/run.sh")).toBe(HOME_CONTENT["skills/demo/run.sh"]);
     if (POSIX_MODES_SUPPORTED) expect(fs.statSync(path.join(target.home, "skills", "demo", "run.sh")).mode & 0o111).not.toBe(0);
     expect(fs.readdirSync(path.join(target.home, "skills", "demo")).filter((name) => name.includes(".restore-"))).toEqual([]);
+    // Copied rather than moved, the extracted files were still in the working directory: cleared away all the same.
+    expect(fs.readdirSync(path.join(target.home, "tmp")).filter((name) => name.startsWith("restore-"))).toEqual([]);
   });
 
   it.skipIf(!POSIX_MODES_SUPPORTED || IS_ROOT)("says where the previous state is when it has to stop partway", async () => {
@@ -486,6 +489,274 @@ describe("restoreHomeArchive", () => {
       archive, home, backupDirectory: path.join(home, "backups"), now: NOW, only: ["org"], diskSpace: () => ROOMY,
     })).rejects.toThrow(/holds nothing.*org/s);
     expect(fs.existsSync(home)).toBe(false);
+  });
+});
+
+describe("restoreHomeArchive and the working directory it extracts into", () => {
+  /* <home>/tmp/restore-XXXXXX is made by the restore and cleared away by it.
+   * It used to be cleared with a recursive delete. A recursive delete walks
+   * paths, and a directory swapped for a symlink while it walks is followed:
+   * what is deleted is then wherever the link leads, outside the home. So the
+   * restore removes the files it put there, one by one and by name, and the
+   * directory only once it is empty - and anything else it finds, it leaves. */
+
+  const stagedFrom = (from: unknown): boolean => String(from).includes(`${path.sep}tmp${path.sep}restore-`);
+
+  /**
+   * Runs a restore and steps in once, around the moment the first extracted
+   * file is moved into place: the working directory is made, its files are in
+   * it, and the clearing away is still to come. `meddle` is handed that directory.
+   */
+  async function restoreInterrupted(
+    target: Scene,
+    meddle: (staging: string) => void,
+    when: "before the move" | "after the move" = "before the move",
+    /** As when tmp/ is a mount of its own: a file cannot be moved out of the working directory, only copied. */
+    crossDevice = false,
+  ): Promise<{ result?: Awaited<ReturnType<typeof restoreHomeArchive>>; failure?: Error }> {
+    const realRename = fs.renameSync;
+    let stepped = false;
+    const step = (from: unknown): void => {
+      stepped = true;
+      meddle(path.dirname(String(from)));
+    };
+    const rename = vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      const first = stagedFrom(from) && !stepped;
+      if (first && when === "before the move") step(from);
+      if (stagedFrom(from) && crossDevice) throw Object.assign(new Error("EXDEV: cross-device link not permitted"), { code: "EXDEV" });
+      realRename(from, to);
+      if (first && when === "after the move") step(from);
+    });
+    try {
+      return { result: await restoreHomeArchive(optionsFor(target)) };
+    } catch (error) {
+      return { failure: error as Error };
+    } finally {
+      rename.mockRestore();
+    }
+  }
+
+  const workingDirectories = (target: Scene): string[] =>
+    fs.readdirSync(path.join(target.home, "tmp")).filter((name) => name.startsWith("restore-"));
+
+  it("leaves none behind after an ordinary restore, and has nothing to warn about", async () => {
+    const target = await scene();
+    fs.writeFileSync(path.join(target.home, "config.yaml"), "broken\n");
+    fs.rmSync(path.join(target.home, "skills", "demo", "run.sh"));
+
+    const result = await restoreHomeArchive(optionsFor(target));
+
+    expect(workingDirectories(target)).toEqual([]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("removes only what it put there: what somebody else left in it stays, and is said", async () => {
+    const target = await scene();
+    fs.writeFileSync(path.join(target.home, "config.yaml"), "broken\n");
+    fs.rmSync(path.join(target.home, "skills", "demo", "run.sh"));
+    let staging = "";
+
+    const { result } = await restoreInterrupted(target, (directory) => {
+      staging = directory;
+      writeTree(directory, { "left-here/keep.txt": "not the restore's to remove\n" });
+    });
+
+    expect(read(target.home, "config.yaml")).toBe(HOME_CONTENT["config.yaml"]);
+    expect(read(target.home, "skills/demo/run.sh")).toBe(HOME_CONTENT["skills/demo/run.sh"]);
+    // Its own two files are gone. The directory is still there because it is not empty, and what is in it was not touched.
+    expect(fs.readdirSync(staging)).toEqual(["left-here"]);
+    expect(read(staging, "left-here/keep.txt")).toBe("not the restore's to remove\n");
+    expect(result!.warnings).toEqual([expect.stringMatching(/restore-\w+ .*was left as it is/s)]);
+  });
+
+  it("does not go through a link planted in it to what the link points at", async () => {
+    const target = await scene();
+    const outside = path.join(target.root, "outside");
+    writeTree(outside, { "precious.txt": "outside the home\n", "deeper/also.txt": "and this\n" });
+    fs.writeFileSync(path.join(target.home, "config.yaml"), "broken\n");
+    let staging = "";
+
+    const { result } = await restoreInterrupted(target, (directory) => {
+      staging = directory;
+      fs.symlinkSync(outside, path.join(directory, "linked"));
+    });
+
+    expect(snapshotTree(outside)).toEqual({ "precious.txt": "outside the home\n", "deeper/also.txt": "and this\n" });
+    // The link is not the restore's either: it is left where it was found.
+    expect(fs.readdirSync(staging)).toEqual(["linked"]);
+    expect(result!.warnings).toHaveLength(1);
+    expect(read(target.home, "config.yaml")).toBe(HOME_CONTENT["config.yaml"]);
+  });
+
+  it("touches nothing when the directory itself has been swapped for a link to somewhere else", async () => {
+    // The files it would remove are known by name. Removed by name through a
+    // directory that has become a link, they would be somebody else's files.
+    const target = await scene();
+    const elsewhere = path.join(target.root, "elsewhere");
+    writeTree(elsewhere, { "000000": "not the restore's\n", "000001": "nor this\n", "other.txt": "nor this\n" });
+    fs.writeFileSync(path.join(target.home, "config.yaml"), "broken\n");
+    let staging = "";
+
+    const { result } = await restoreInterrupted(target, (directory) => {
+      staging = directory;
+      fs.renameSync(directory, `${directory}.moved-aside`);
+      fs.symlinkSync(elsewhere, directory);
+    }, "after the move");
+
+    expect(snapshotTree(elsewhere)).toEqual({ "000000": "not the restore's\n", "000001": "nor this\n", "other.txt": "nor this\n" });
+    expect(fs.lstatSync(staging).isSymbolicLink()).toBe(true);
+    expect(result!.warnings).toEqual([expect.stringMatching(/no longer the directory this restore made/)]);
+    expect(read(target.home, "config.yaml")).toBe(HOME_CONTENT["config.yaml"]);
+  });
+
+  /* Between a file being extracted there and its being moved into place, the
+   * working directory is somebody else's to reach. What is extracted is held
+   * to the manifest's hash as it lands; what is moved into place afterwards
+   * was whatever sat under that name. A link put there got the file's
+   * permissions through it, and was then itself moved into the home. */
+
+  /** A home with two files to restore: config.yaml, extracted first, and run.sh, extracted second and still waiting when the first is placed. */
+  async function twoToRestore(): Promise<{ target: Scene; script: string; edited: string; secret: string }> {
+    const target = await scene();
+    const script = path.join(target.home, "skills", "demo", "run.sh");
+    const edited = "#!/bin/sh\necho edited since the backup\n";
+    fs.writeFileSync(path.join(target.home, "config.yaml"), "broken\n");
+    fs.writeFileSync(script, edited);
+    const secret = path.join(target.root, "outside", "secret.txt");
+    writeTree(path.dirname(secret), { "secret.txt": "outside the home\n" });
+    fs.chmodSync(secret, 0o600);
+    return { target, script, edited, secret };
+  }
+
+  /** The second file extracted, by the name the working directory gives it. */
+  const waiting = (staging: string): string => path.join(staging, "000001");
+
+  it("does not put a link in the place of a file it extracted, nor the file's permissions on what the link points at", async () => {
+    const { target, script, edited, secret } = await twoToRestore();
+
+    const { failure } = await restoreInterrupted(target, (staging) => {
+      fs.rmSync(waiting(staging));
+      fs.symlinkSync(secret, waiting(staging));
+    });
+
+    expect(failure?.message).toMatch(/stopped partway.*is not the file that was extracted/s);
+    // run.sh is 0755 in the archive. That did not land on the file the link leads to.
+    if (POSIX_MODES_SUPPORTED) expect(fs.statSync(secret).mode & 0o777).toBe(0o600);
+    expect(fs.readFileSync(secret, "utf8")).toBe("outside the home\n");
+    // And no link arrived in the home where the script belongs: what was there still is.
+    expect(fs.lstatSync(script).isFile()).toBe(true);
+    expect(fs.readFileSync(script, "utf8")).toBe(edited);
+    // config.yaml, placed before the swap, is the one that was extracted.
+    expect(read(target.home, "config.yaml")).toBe(HOME_CONTENT["config.yaml"]);
+    expect(workingDirectories(target)).toEqual([]);
+  });
+
+  it("does not put another file in the place of the one it extracted and checked", async () => {
+    const { target, script, edited } = await twoToRestore();
+    // The same length as the real one, so that only being a different file tells them apart.
+    const planted = HOME_CONTENT["skills/demo/run.sh"]!.replace(/./g, "#");
+
+    const { failure } = await restoreInterrupted(target, (staging) => {
+      fs.rmSync(waiting(staging));
+      fs.writeFileSync(waiting(staging), planted, { mode: 0o755 });
+    });
+
+    expect(failure?.message).toMatch(/stopped partway.*is not the file that was extracted/s);
+    expect(fs.readFileSync(script, "utf8")).toBe(edited);
+  });
+
+  it("does not copy what a link points at into the home when files have to be copied out of the working directory", async () => {
+    const { target, script, edited, secret } = await twoToRestore();
+
+    const { failure } = await restoreInterrupted(target, (staging) => {
+      fs.rmSync(waiting(staging));
+      fs.symlinkSync(secret, waiting(staging));
+    }, "before the move", true);
+
+    expect(failure?.message).toMatch(/stopped partway.*is not the file that was extracted/s);
+    // Copying follows a link: the secret's contents would have been written into the home as run.sh.
+    expect(fs.readFileSync(script, "utf8")).toBe(edited);
+    if (POSIX_MODES_SUPPORTED) expect(fs.statSync(secret).mode & 0o777).toBe(0o600);
+    expect(read(target.home, "config.yaml")).toBe(HOME_CONTENT["config.yaml"]);
+    expect(fs.readdirSync(path.dirname(script)).filter((name) => name.includes(".restore-"))).toEqual([]);
+  });
+
+  it.each([
+    ["a link to a file outside the home", (waitingFile: string, secret: string) => fs.symlinkSync(secret, waitingFile)],
+    ["another file", (waitingFile: string) => fs.writeFileSync(waitingFile, "planted\n")],
+  ])("copies only the file it extracted, even when %s takes its name in the last instant before the copy", async (_what, plant) => {
+    // The look at the name comes first and is past by now. When the file has to
+    // be copied out, it is read through a descriptor that is itself held to
+    // being the extracted file - so here, unlike a move, the last instant is closed too.
+    const { target, script, edited, secret } = await twoToRestore();
+    const realRename = fs.renameSync;
+    const rename = vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (!stagedFrom(from)) return realRename(from, to);
+      if (path.basename(String(from)) === "000001") {
+        fs.rmSync(String(from));
+        plant(String(from), secret);
+      }
+      throw Object.assign(new Error("EXDEV: cross-device link not permitted"), { code: "EXDEV" });
+    });
+
+    const failure = await restoreHomeArchive(optionsFor(target)).then(() => undefined, (error: Error) => error).finally(() => rename.mockRestore());
+
+    expect(failure?.message).toMatch(/stopped partway.*is not the file that was extracted/s);
+    expect(fs.readFileSync(script, "utf8")).toBe(edited);
+    expect(fs.readFileSync(secret, "utf8")).toBe("outside the home\n");
+    expect(fs.readdirSync(path.dirname(script)).filter((name) => name.includes(".restore-"))).toEqual([]);
+  });
+
+  it.skipIf(process.platform === "win32")("opens what it copies in a way that neither follows a link nor waits on a pipe", async () => {
+    // A plain open waits for ever on a named pipe put under the name. That is
+    // not tried with a real pipe here: a test that hangs when the code is wrong
+    // holds up every suite running beside it. What is asked of the open is checked instead.
+    const { target } = await twoToRestore();
+    const open = vi.spyOn(fs, "openSync");
+
+    const { result } = await restoreInterrupted(target, () => {}, "before the move", true);
+    const flags = open.mock.calls
+      .filter(([file, flag]) => stagedFrom(file) && typeof flag === "number")
+      .map(([, flag]) => flag as number);
+    open.mockRestore();
+
+    // Both files were copied out, each read through an open of its own.
+    expect(result!.changes).toHaveLength(2);
+    expect(flags).toHaveLength(2);
+    for (const flag of flags) {
+      expect(flag & fs.constants.O_NOFOLLOW).toBe(fs.constants.O_NOFOLLOW);
+      expect(flag & fs.constants.O_NONBLOCK).toBe(fs.constants.O_NONBLOCK);
+    }
+  });
+
+  it.skipIf(!POSIX_MODES_SUPPORTED)("has a file's permissions on it from the moment it is extracted, not put on by name afterwards", async () => {
+    const { target } = await twoToRestore();
+    let mode = 0;
+
+    const { result } = await restoreInterrupted(target, (staging) => {
+      mode = fs.statSync(waiting(staging)).mode & 0o777;
+    });
+
+    // run.sh is 0755 in the archive, and already was while it waited in the working directory.
+    expect(mode).toBe(0o755);
+    expect(result!.warnings).toEqual([]);
+    expect(fs.statSync(path.join(target.home, "skills", "demo", "run.sh")).mode & 0o777).toBe(0o755);
+  });
+
+  it("says what it could not clear away when the restore itself stops partway", async () => {
+    const target = await scene();
+    fs.writeFileSync(path.join(target.home, "config.yaml"), "broken\n");
+    let staging = "";
+
+    const { failure } = await restoreInterrupted(target, (directory) => {
+      staging = directory;
+      writeTree(directory, { "left-here.txt": "not the restore's to remove\n" });
+      throw new Error("the disk went away");
+    });
+
+    expect(failure!.message).toMatch(/stopped partway: the disk went away.*restore-\w+ .*was left as it is/s);
+    expect(fs.readdirSync(staging)).toEqual(["left-here.txt"]);
+    expect(read(target.home, "config.yaml")).toBe("broken\n");
   });
 });
 

@@ -11,6 +11,7 @@ import type { MaintenanceMode } from "../updates/maintenance-audit.js";
 import { runCommand } from "./command.js";
 import { settledRunFailure } from "./run-outcome.js";
 import { clearAlertThrottle, isAlertThrottled, recordAlertSent } from "./alert-throttle.js";
+import { fireWaitingOnUsageLimit, trackFire } from "./waiting-fires.js";
 
 const updateNotificationRuns = new Set<string>();
 
@@ -146,6 +147,22 @@ export async function runCronJob(
       );
     }
 
+    // An earlier fire of this job that is parked on a usage limit runs when the
+    // limit resets. One started beside it would spend a turn finding the same
+    // limit, wait as well, and run the job a second time at that moment.
+    const waiting = fireWaitingOnUsageLimit(job.id);
+    if (waiting) {
+      appendRunLog(job.id, {
+        timestamp: startedAt,
+        status: "skipped",
+        durationMs: Date.now() - startTime,
+        reason: "previous-run-waiting-for-usage-limit",
+        ...waiting,
+      });
+      logger.info(`Cron job "${job.name}" skipped: an earlier fire is waiting for a usage limit to reset${waiting.resetsAt ? ` at ${waiting.resetsAt}` : ""}`);
+      return;
+    }
+
     let employee;
     if (job.employee) {
       const orgRegistry = scanOrg();
@@ -155,6 +172,7 @@ export async function runCronJob(
     const connector = new CronConnector(connectors, delivery);
     const sessionKey = `cron:${job.id}:${Date.now()}`;
     let sessionId: string | null = null;
+    const fireSettled = trackFire(job.id, sessionKey);
 
     try {
       // route() would start a session, post "engine not available" into the
@@ -274,6 +292,8 @@ export async function runCronJob(
           });
         }
       }
+    } finally {
+      fireSettled();
     }
   } finally {
     if (job.kind === "update-notification") updateNotificationRuns.delete(job.id);

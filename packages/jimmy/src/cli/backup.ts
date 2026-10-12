@@ -315,6 +315,7 @@ function printFileRestore(io: BackupCliIo, result: RestoreResult): void {
   printPaths(io, "バックアップに無いので手を付けないファイル", result.untouched);
   printPaths(io, "アーカイブ対象外のため無視したエントリ", result.ignored);
   printWayBack(io, result);
+  for (const warning of result.warnings) io.out(`警告: ${warning}`);
 }
 
 function printDatabaseRestore(io: BackupCliIo, result: DatabaseRestoreResult): void {
