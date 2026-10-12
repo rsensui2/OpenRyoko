@@ -48,7 +48,7 @@ import { JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 import { resolveEffort } from "../shared/effort.js";
 import { effortLevelsForModel } from "../shared/models.js";
-import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit, isDeadSessionError, isPoisonedTranscriptError, isTransientServerError, MAX_USAGE_LIMIT_WAIT_MS, usageLimitOutlastsWait } from "../shared/rateLimit.js";
+import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit, isDeadSessionError, isPoisonedTranscriptError, isTransientServerError, MAX_USAGE_LIMIT_WAIT_MS, usageLimitOutlastsWait, withEarlierProgress } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt, isLikelyNearClaudeUsageLimit, recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { buildSpeakerPrefix, type SpeakerPrefixMeta } from "./speaker-prefix.js";
 import { loadJobs } from "../cron/jobs.js";
@@ -896,7 +896,9 @@ export class SessionManager {
             await new Promise((r) => setTimeout(r, Math.min(20_000, delayMs - waited)));
           }
           const resumeId = result.sessionId?.trim() || session.engineSessionId || undefined;
-          result = await runEngine(engine, {
+          // Still the same turn: the continuation's result carries what the
+          // run it continues was seen doing, for whoever judges or takes over.
+          result = withEarlierProgress(result, await runEngine(engine, {
             prompt:
               "The previous response was interrupted by a temporary Anthropic API server error. " +
               "The conversation history up to that point is intact. Continue and complete the original request now. " +
@@ -912,7 +914,7 @@ export class SessionManager {
             remoteCwd: employee?.remoteCwd,
             mcpConfigPath,
             sessionId: session.id,
-          });
+          }));
           wasInterrupted = result.error?.startsWith("Interrupted");
           if (wasInterrupted || !isTransientServerError(result)) break;
         }

@@ -4,7 +4,7 @@ import { isInterruptibleEngine } from "../shared/types.js";
 import { resolveFallbackEngine, resolveSubstituteModel } from "../shared/engine-fallback.js";
 import { effortLevelsForModel, getModelRegistry } from "../shared/models.js";
 import { logger } from "../shared/logger.js";
-import { detectRateLimit, MAX_USAGE_LIMIT_WAIT_MS, usageLimitOutlastsWait } from "../shared/rateLimit.js";
+import { detectRateLimit, MAX_OBSERVED_PROGRESS_CHARS, MAX_USAGE_LIMIT_WAIT_MS, usageLimitOutlastsWait, withEarlierProgress } from "../shared/rateLimit.js";
 import { recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { redactText } from "../shared/redact.js";
 import { getMessages, getSession, updateSession, type UpdateSessionFields } from "./registry.js";
@@ -204,7 +204,7 @@ export async function runEngineWithResponseTimeout(
   } })).catch((error): EngineResult => ({ sessionId: opts.resumeSessionId ?? "", result: "", error: error instanceof Error ? error.message : String(error) }));
   const withProgress = (result: EngineResult): EngineResult => {
     const progress = [streamedText, toolProgress.length ? `Observed tool events (verify their effects before continuing):\n${toolProgress.join("\n")}` : ""].filter(Boolean).join("\n\n");
-    const annotated = progress ? { ...result, handoffContext: redactText(progress).slice(-8000) } : result;
+    const annotated = progress ? { ...result, handoffContext: redactText(progress).slice(-MAX_OBSERVED_PROGRESS_CHARS) } : result;
     // Goal supervision must see a failed attempt, rather than reviewing an
     // empty answer and converting it into a terminal Goal incomplete result.
     return engineFallbackFailure(annotated) === "no_response" && !annotated.error
@@ -429,6 +429,10 @@ export async function runFallbackAttempts(options: EngineFallbackOptions): Promi
       ({ engine, result, attempted } = left);
       continue;
     }
+    // Whether the target could sign in was about what it did itself. From here
+    // on its result stands for the turn, so it also carries what the engine it
+    // took over from was seen doing: the next engine in the chain is told too.
+    result = withEarlierProgress(left.result, result);
     const nextMeta = object(latest.transportMeta);
     const nextSessions = object(nextMeta.engineSessions);
     if (result.sessionId) nextSessions[targetName] = result.sessionId;

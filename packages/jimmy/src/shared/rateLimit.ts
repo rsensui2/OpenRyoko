@@ -77,6 +77,28 @@ export function attemptMadeProgress(result: EngineResult): boolean {
   return !(result.error && redactText(result.error).includes(observed));
 }
 
+/** How much of what an attempt was seen doing is kept on its result. */
+export const MAX_OBSERVED_PROGRESS_CHARS = 8000;
+
+/**
+ * `later`, still carrying what `earlier` was seen doing.
+ *
+ * One turn can take several engine runs — a tracked task and its continuations,
+ * a continuation after a server error, the next engine of a fallback chain —
+ * and is then judged as a single result. If only the last run's observed
+ * progress survived, a run that failed before doing anything would make a turn
+ * that had already run commands look like one that never started.
+ *
+ * Only real progress is carried: text that is nothing but the earlier run's own
+ * error (see attemptMadeProgress) is not work, on that run or on a later one.
+ */
+export function withEarlierProgress(earlier: EngineResult | undefined, later: EngineResult): EngineResult {
+  const before = earlier && attemptMadeProgress(earlier) ? earlier.handoffContext?.trim() : undefined;
+  if (!before) return later;
+  const after = later.handoffContext?.trim();
+  return { ...later, handoffContext: (after ? `${before}\n\n${after}` : before).slice(-MAX_OBSERVED_PROGRESS_CHARS) };
+}
+
 /**
  * Detect whether an engine result indicates a dead/expired session rather than
  * a transient or rate-limit error. A dead session is one where the engine exited
