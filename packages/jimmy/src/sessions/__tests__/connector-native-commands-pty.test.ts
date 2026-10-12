@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
@@ -59,6 +61,7 @@ import { HookRegistry } from "../../gateway/hook-registry.js";
 import { OPERATOR_NATIVE_COMMANDS } from "../connector-command-guard.js";
 import { SessionManager } from "../manager.js";
 import { getSessionBySessionKey } from "../registry.js";
+import { SKILLS_DIR } from "../../shared/paths.js";
 import type { Connector, Engine, IncomingMessage, JinnConfig } from "../../shared/types.js";
 import { claudeReads, strictestClaudeReads } from "./claude-cli-reading.js";
 
@@ -254,6 +257,35 @@ describe("a chat message from the operator", () => {
   it("cannot hand the CLI an option or reach bash mode from chat", async () => {
     expect(claudeReads(await conversation("slack-operator").say("--resume"))).toBe("text");
     expect(claudeReads(await (await warm("slack-operator")).say("!ls"))).toBe("text");
+  });
+});
+
+describe("a skill named like a CLI command", () => {
+  // A leading "/" that named an installed skill used to be let through to the
+  // CLI with a space in front, for the model to read. The CLI trims that space
+  // off, so a skill directory called `logout` made /logout run. Skill names no
+  // longer decide anything.
+  const collisions = ["logout", "permissions", "compact"].map((name) => path.join(SKILLS_DIR, name));
+
+  beforeEach(() => { for (const directory of collisions) fs.mkdirSync(directory, { recursive: true }); });
+  afterEach(() => { for (const directory of collisions) fs.rmSync(directory, { recursive: true, force: true }); });
+
+  it.each<Sender>(["slack-stranger", "slack-operator"])("lets nothing through that was not already allowed (%s)", async (sender) => {
+    for (const command of ["/logout", "/permissions"]) {
+      expect(claudeReads(await conversation(sender).say(command))).toBe("text");
+      expect(claudeReads(await (await warm(sender)).say(command))).toBe("text");
+    }
+  });
+
+  it("does not make an allowed command the stranger's, or take it from the operator", async () => {
+    expect(claudeReads(await (await warm("slack-stranger")).say("/compact"))).toBe("text");
+    expect(claudeReads(await (await warm("slack-operator")).say("/compact"))).toBe("/compact");
+  });
+
+  it("is still asked for by name: the words reach the model, which uses the skill", async () => {
+    const handed = await (await warm("slack-stranger")).say("/logout を使って");
+
+    expect(handed).toMatch(/if it names an installed skill, it is a request to use that skill\.\]\n\/logout を使って$/);
   });
 });
 
