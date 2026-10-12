@@ -16,7 +16,9 @@ export type KeepReason =
    *  out across restarts and updates; `ryoko migrate --restore-deleted-skills` puts it back. */
   | "deleted"
   /** It could not be inspected (permissions, I/O). */
-  | "unreadable";
+  | "unreadable"
+  /** It holds a file, or a number of files, beyond anything a bundled skill has. */
+  | "too-large";
 
 export interface KeptSkill {
   name: string;

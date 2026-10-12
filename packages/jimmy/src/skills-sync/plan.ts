@@ -1,5 +1,6 @@
 import path from "node:path";
 import type { BundledFile, BundledSkill } from "./bundled.js";
+import { TooLargeError } from "./bounded-read.js";
 import { matchShippedVersion, type ShippedHistory } from "./history.js";
 import { hashFiles, inspectHomeSkill } from "./home-skill.js";
 import { assertSkillName, own, sameList } from "./names.js";
@@ -71,7 +72,7 @@ function planShipped(input: PlanInput, skill: BundledSkill, entry: ReceiptSkill 
   const likeRecorded = recordedPaths !== null && sameList(home.paths, recordedPaths);
   // A different set of files is already an answer; hash only when content decides.
   const observed = likeShipped || likeRecorded ? readHashes(directory, home.paths) : null;
-  if (observed === "unreadable") return { action: "keep", name, reason: "unreadable" };
+  if (typeof observed === "string") return { action: "keep", name, reason: observed };
 
   const current = observed !== null && likeShipped && home.paths.every((file) => isShipped(skill.files[file], observed[file]));
   const pristine = observed !== null && entry !== undefined && likeRecorded && home.paths.every((file) => observed[file] === entry.files[file]);
@@ -81,7 +82,7 @@ function planShipped(input: PlanInput, skill: BundledSkill, entry: ReceiptSkill 
   // No receipt entry. The one thing that still proves the copy untouched is that it
   // is, file for file, a version an earlier release installed.
   const earlier = matchEarlierRelease(directory, home.paths, own(input.history.versions, name) ?? [], input.renderings);
-  if (earlier === "unreadable") return { action: "keep", name, reason: "unreadable" };
+  if (typeof earlier === "string") return { action: "keep", name, reason: earlier };
   return earlier ? { action: "update", name, skill, observed: earlier } : { action: "keep", name, reason: "unmanaged" };
 }
 
@@ -92,7 +93,7 @@ function planRetired(skillsRoot: string, name: string, entry: ReceiptSkill): Ski
   if (home.kind !== "directory") return { action: "keep", name, reason: home.kind };
   if (!sameList(home.paths, Object.keys(entry.files).sort())) return { action: "keep", name, reason: "retired-modified" };
   const observed = readHashes(directory, home.paths);
-  if (observed === "unreadable") return { action: "keep", name, reason: "unreadable" };
+  if (typeof observed === "string") return { action: "keep", name, reason: observed };
   return home.paths.every((file) => observed[file] === entry.files[file])
     ? { action: "retire", name, observed }
     : { action: "keep", name, reason: "retired-modified" };
@@ -115,12 +116,16 @@ function hasShippedChanged(skill: BundledSkill, entry: ReceiptSkill): boolean {
     || !shippedPaths.every((file) => isShipped(skill.files[file], entry.files[file]));
 }
 
-function readHashes(directory: string, paths: readonly string[]): Hashes | "unreadable" {
+/** Why a skill's files could not be read: either way, the skill is left alone. */
+type Unread = "unreadable" | "too-large";
+const unread = (error: unknown): Unread => (error instanceof TooLargeError ? "too-large" : "unreadable");
+
+function readHashes(directory: string, paths: readonly string[]): Hashes | Unread {
   try { return hashFiles(directory, paths); }
-  catch { return "unreadable"; }
+  catch (error) { return unread(error); }
 }
 
-function matchEarlierRelease(...args: Parameters<typeof matchShippedVersion>): Hashes | null | "unreadable" {
+function matchEarlierRelease(...args: Parameters<typeof matchShippedVersion>): Hashes | null | Unread {
   try { return matchShippedVersion(...args); }
-  catch { return "unreadable"; }
+  catch (error) { return unread(error); }
 }

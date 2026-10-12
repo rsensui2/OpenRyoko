@@ -111,6 +111,7 @@ const KEPT_SKILL_GUIDANCE: Record<Exclude<KeepReason, "deleted">, string> = {
   symlink: "a symlink, or holds one: the user manages it elsewhere. Do not touch it.",
   "not-directory": "something that is not a directory occupies its name. Leave it.",
   unreadable: "could not be read. Leave it.",
+  "too-large": "holds a file, or more files, than any bundled skill does. Leave it.",
   "retired-modified": "no longer shipped, but edited by the user. Leave it.",
 };
 

@@ -372,11 +372,11 @@ describe("bundled skill sync: failures and odd states", () => {
     f.sync("2026.10.10");
     f.ship("locked", { "SKILL.md": "v2" });
     f.unship("locked-retired");
-    const read = fs.readFileSync;
-    vi.spyOn(fs, "readFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+    const open = fs.openSync;
+    vi.spyOn(fs, "openSync").mockImplementation(((file: fs.PathLike, ...rest: unknown[]) => {
       if (String(file).startsWith(path.join(f.skills, "locked"))) throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
-      return (read as (...args: unknown[]) => unknown)(file, ...rest);
-    }) as typeof fs.readFileSync);
+      return (open as (...args: unknown[]) => number)(file, ...rest);
+    }) as typeof fs.openSync);
 
     const result = f.sync("2026.10.11");
 

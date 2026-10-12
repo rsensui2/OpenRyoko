@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { applyTemplateReplacements } from "../shared/templateReplacements.js";
+import { MAX_SKILL_FILE_BYTES, readBounded } from "./bounded-read.js";
 import { sha256 } from "./bundled.js";
 import { hasPlaceholder, matchesFingerprint, type FileFingerprint } from "./fingerprint.js";
 import { assertSkillFilePath, assertSkillName, sameList } from "./names.js";
@@ -103,6 +104,8 @@ function parseFingerprint(label: string, fingerprint: unknown): FileFingerprint 
  * `renderings` are the placeholder values the installer could have used. Every file
  * must match the same version under the same rendering: a mix of two releases, or of
  * two names, is not something any release installed.
+ *
+ * Throws TooLargeError when a file is bigger than a skill file can be.
  */
 export function matchShippedVersion(
   directory: string,
@@ -112,7 +115,7 @@ export function matchShippedVersion(
 ): Record<string, string> | null {
   const sameFiles = versions.filter((version) => sameList(paths, Object.keys(version.files).sort()));
   if (sameFiles.length === 0) return null;
-  const contents = paths.map((relative) => fs.readFileSync(path.join(directory, ...relative.split("/"))));
+  const contents = paths.map((relative) => readBounded(path.join(directory, ...relative.split("/")), MAX_SKILL_FILE_BYTES));
   const matched = sameFiles.some((version) => renderings.some((replacements) =>
     paths.every((relative, index) => matchesFingerprint(
       version.files[relative],

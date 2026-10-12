@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { MAX_RECEIPT_BYTES, readBounded } from "./bounded-read.js";
 import { sha256 } from "./bundled.js";
 import { assertSkillFilePath, assertSkillName } from "./names.js";
 
@@ -57,7 +58,9 @@ export function readReceipt(file: string): Receipt | null {
   let text: string;
   try {
     if (!fs.lstatSync(file).isFile()) throw new Error("it is not a regular file");
-    text = fs.readFileSync(file, "utf8");
+    // Bounded before it is parsed: a receipt bloated to exhaust the heap would abort
+    // the process at start-up, and nothing can catch that.
+    text = readBounded(file, MAX_RECEIPT_BYTES).toString("utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw unusable(file, error);
