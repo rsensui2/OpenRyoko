@@ -170,18 +170,27 @@ export function healthOverrideReleased(override: Record<string, unknown>, now: D
 }
 
 /** The limit period — an engine and the reset it stated — that has already been
- *  announced in a conversation. One entry per engine: a new period replaces the
- *  last. In memory only, so a restart inside a period may announce it once more. */
+ *  announced: in a conversation, to everyone, or to one audience that is told on
+ *  its own account (see limit-failure-notice.ts). One entry per engine and
+ *  audience: a new period replaces the last. In memory only, so a restart inside
+ *  a period may announce it once more. */
 const announcedLimits = new Map<string, string>();
+const announcementKey = (engine: string, audience: string): string => `${audience}\n${engine}`;
+
+/** Whether `audience` — everyone, when none is named — has already been told
+ *  that `engine` is out until `until`. */
+export function usageLimitAnnounced(engine: string, until: string, audience = ""): boolean {
+  return announcedLimits.get(announcementKey(engine, audience)) === until;
+}
 
 /**
  * Whether this caller is the one to announce that `engine` is out until
- * `until`. True at most once per limit period; the caller that gets `true`
- * owns the announcement.
+ * `until`. True at most once per limit period and audience; the caller that
+ * gets `true` owns the announcement.
  */
-export function claimUsageLimitAnnouncement(engine: string, until: string): boolean {
-  if (announcedLimits.get(engine) === until) return false;
-  announcedLimits.set(engine, until);
+export function claimUsageLimitAnnouncement(engine: string, until: string, audience = ""): boolean {
+  if (usageLimitAnnounced(engine, until, audience)) return false;
+  announcedLimits.set(announcementKey(engine, audience), until);
   return true;
 }
 

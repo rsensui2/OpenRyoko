@@ -37,6 +37,14 @@ describe("gateway/server.ts — session lifecycle wiring", () => {
     expect(server.lastIndexOf("recoverStaleWorkflowAttemptSessions()")).toBeLessThan(mark);
   });
 
+  it("declares the shutdown before anything is awaited", () => {
+    // Until this is called, an engine process the shutdown's own SIGTERM reached
+    // first reads as one that died for no reason — an error reply into the thread.
+    const begin = callSite("beginGatewayShutdown();");
+    expect(callSite("Gateway cleanup starting")).toBeLessThan(begin);
+    expect(begin).toBeLessThan(callSite("await stopCommandJobs()"));
+  });
+
   it("cancels the pending restart nudges first thing at shutdown", () => {
     // A nudge accepted while the gateway is going down starts a turn that is killed at once.
     const cancel = callSite("cancelRestartNudges();");

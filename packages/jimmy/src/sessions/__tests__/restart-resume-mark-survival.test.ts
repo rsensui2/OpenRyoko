@@ -41,7 +41,7 @@ describe("restart interruption mark — survives the killed turn's completion", 
       // server.ts cleanup: mark every running session, then kill the engines.
       interruptRunningSessionsForShutdown(shutdownAt);
       statusAtShutdown = getSession(opts.sessionId!)?.status;
-      return { sessionId: "native-1", result: "", error: "Interrupted: gateway shutting down" };
+      return { sessionId: "native-1", result: "", error: "Interrupted: gateway shutting down", interruptRequested: true };
     });
     const manager = new SessionManager(config, new Map<string, Engine>([["codex", { name: "codex", run } as Engine]]));
     const replyMessage = vi.fn(async () => undefined);
@@ -185,7 +185,7 @@ describe("restart interruption mark — survives the killed turn's completion", 
       connectors: { slack: {} }, sessions: {}, logging: { level: "error", stdout: false },
     } as unknown as JinnConfig;
     const sessionKey = "slack:restart-mark-queued-behind";
-    let killEngine!: (result: { sessionId: string; result: string; error: string }) => void;
+    let killEngine!: (result: { sessionId: string; result: string; error: string; interruptRequested: true }) => void;
     const run = vi.fn<Engine["run"]>(() => new Promise((resolve) => { killEngine = resolve; }));
     const manager = new SessionManager(config, new Map<string, Engine>([["codex", { name: "codex", run } as Engine]]));
     let exiting = false;
@@ -213,7 +213,7 @@ describe("restart interruption mark — survives the killed turn's completion", 
     // Graceful shutdown: mark, kill the engine, and the process is gone moments later.
     interruptRunningSessionsForShutdown();
     exiting = true;
-    killEngine({ sessionId: "native-3", result: "", error: "Interrupted: gateway shutting down" });
+    killEngine({ sessionId: "native-3", result: "", error: "Interrupted: gateway shutting down", interruptRequested: true });
     await first;
     const sessionId = getSessionBySessionKey(sessionKey)!.id;
     await vi.waitFor(() => expect(getMessages(sessionId).filter((m) => m.role === "user")).toHaveLength(2));
@@ -245,7 +245,7 @@ describe("restart interruption mark — survives the killed turn's completion", 
       connectors: { slack: {} }, sessions: {}, logging: { level: "error", stdout: false },
     } as unknown as JinnConfig;
     const sessionKey = "slack:restart-mark-queued-running";
-    let killEngine!: (result: { sessionId: string; result: string; error: string }) => void;
+    let killEngine!: (result: { sessionId: string; result: string; error: string; interruptRequested: true }) => void;
     const run = vi.fn<Engine["run"]>()
       .mockImplementationOnce(() => new Promise((resolve) => { killEngine = resolve; }))
       .mockImplementationOnce(() => new Promise(() => {})); // the second turn's engine: the process is gone before it answers
@@ -270,7 +270,7 @@ describe("restart interruption mark — survives the killed turn's completion", 
     await vi.waitFor(() => expect(manager.getQueue().getPendingCount(sessionKey)).toBe(1));
 
     interruptRunningSessionsForShutdown();
-    killEngine({ sessionId: "native-5", result: "", error: "Interrupted: gateway shutting down" });
+    killEngine({ sessionId: "native-5", result: "", error: "Interrupted: gateway shutting down", interruptRequested: true });
     await first;
     await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(2)); // the queued turn reached its engine; then: exit
     const sessionId = getSessionBySessionKey(sessionKey)!.id;

@@ -28,7 +28,7 @@ import type { PtyViewEngine } from "../engines/pty-view-engine.js";
 import { attachPtyWebSocket } from "./pty-ws.js";
 import { HookRegistry } from "./hook-registry.js";
 import { startStatusReconciler } from "./status-reconciler.js";
-import { interruptRunningSessionsForShutdown, prepareRestartResume, resumeRestartInterruptedSessions } from "../sessions/restart-resume.js";
+import { beginGatewayShutdown, interruptRunningSessionsForShutdown, prepareRestartResume, resumeRestartInterruptedSessions } from "../sessions/restart-resume.js";
 import { startEngineHealth } from "./engine-health-monitor.js";
 import { writeGatewayInfo } from "./gateway-info.js";
 import { cleanupSessionSettings, seedTrust } from "../shared/claude-settings.js";
@@ -1460,7 +1460,8 @@ export async function startGateway(
   // Return cleanup function
   return async () => {
     logger.info("Gateway cleanup starting...");
-    cancelRestartNudges(); // before anything is awaited: a nudge accepted now starts a turn only to have it killed
+    beginGatewayShutdown(); // before anything is awaited: an engine that stops from here on was stopped by this
+    cancelRestartNudges(); // likewise: a nudge accepted now starts a turn only to have it killed
     // Then, ahead of every step that can take time: end any provider login
     // in progress (its CLI killed, its chat message blanked). Bounded and brief.
     await stopProviderAuth();

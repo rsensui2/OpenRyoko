@@ -75,6 +75,40 @@ describe("shipped instruction templates", () => {
     expect(read("migrations/2026.10.9/files/skills/migrate/SKILL.md")).toBe(read("skills/migrate/SKILL.md"));
   });
 
+  it("tells whoever writes a migration how to keep --auto from recording it as done", () => {
+    const migrate = read("skills/migrate/SKILL.md");
+    expect(migrate).toMatch(/^auto: false$/m);
+    expect(migrate).toMatch(/migration を書くとき/);
+    // The migration that showed why: its owner-facing section must not ride on a file conflict.
+    expect(read("migrations/2026.10.9/MIGRATION.md")).toMatch(/^---\n[\s\S]*?^auto: false$[\s\S]*?^---$/m);
+  });
+
+  it("has the migrate skill rely on the list in its prompt, not on command output it never sees", () => {
+    const migrate = read("skills/migrate/SKILL.md");
+    // `ryoko migrate` prints "[skill kept]" lines to the terminal; the AI it then starts does not get them.
+    expect(migrate).not.toContain("[skill kept]");
+    expect(migrate).toMatch(/プロンプト.*挙が/);
+    // No receipt yet: an old copy is not automatically the user's customization.
+    expect(migrate).toMatch(/追記が無ければ.*そのまま/);
+  });
+
+  it("tells the migrate skill what to do when its prompt says nothing about the sync", () => {
+    const migrate = read("skills/migrate/SKILL.md");
+    // Started from chat with /migrate there is no list. Guessing a skill's state could
+    // bring back one the operator deleted, or mark an untouched one as edited.
+    const rule = migrate.split("\n").find((line) => /プロンプトに.*記載が無い/.test(line)) ?? "";
+    expect(rule).toMatch(/\/migrate/);
+    expect(rule).toMatch(/推測しません/);
+    expect(rule).toMatch(/何も適用せず.*ターミナルで `ryoko migrate`/);
+  });
+
+  it("tells the migrate skill how to treat skills in a home the sync does not run in", () => {
+    const migrate = read("skills/migrate/SKILL.md");
+    // `ryoko migrate` says so in the prompt and points here for the rules.
+    expect(migrate).toMatch(/同期が動かないホーム.*symlink/);
+    expect(migrate).toMatch(/無いスキルディレクトリ.*丸ごとコピー/);
+  });
+
   it("tells the migrate skill not to append sections to an entry-point CLAUDE.md", () => {
     const migrate = read("skills/migrate/SKILL.md");
     expect(migrate).toContain("@AGENTS.md");

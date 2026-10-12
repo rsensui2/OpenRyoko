@@ -38,6 +38,25 @@ describe("deriveSessionKey", () => {
       deriveSessionKey({ channel: "C1", user: "U1", ts: "200.0", thread_ts: "100.0", channel_type: "channel" }),
     ).toBe("slack:C1:100.0");
   });
+
+  // Not every event carries channel_type; one without it is a channel message.
+  it("keys a root message that has no channel_type by its own ts", () => {
+    expect(
+      deriveSessionKey({ channel: "C123", user: "U123", ts: "1700000000.000100" }),
+    ).toBe("slack:C123:1700000000.000100");
+  });
+
+  it("keys a thread reply that has no channel_type by thread_ts", () => {
+    expect(
+      deriveSessionKey({ channel: "C123", user: "U123", ts: "1700000100.000200", thread_ts: "1700000000.000100" }),
+    ).toBe("slack:C123:1700000000.000100");
+  });
+
+  it("treats a thread_ts equal to the message's own ts as a root message", () => {
+    expect(
+      deriveSessionKey({ channel: "C123", user: "U123", ts: "1700000000.000100", thread_ts: "1700000000.000100" }),
+    ).toBe("slack:C123:1700000000.000100");
+  });
 });
 
 describe("buildReplyContext", () => {
@@ -62,6 +81,25 @@ describe("buildReplyContext", () => {
     expect(root).toMatchObject({ thread: "100.0" });
     const reply = buildReplyContext({ channel: "C1", user: "U1", ts: "200.0", thread_ts: "100.0", channel_type: "channel" });
     expect(reply).toMatchObject({ thread: "100.0" });
+  });
+
+  // The whole context, not just the thread: it is stored as-is on the session.
+  it("is exactly channel, thread and messageTs for a channel root message", () => {
+    expect(
+      buildReplyContext({ channel: "C123", ts: "1700000000.000100", channel_type: "channel" }),
+    ).toStrictEqual({ channel: "C123", thread: "1700000000.000100", messageTs: "1700000000.000100" });
+  });
+
+  it("is the thread's root plus the reply's own ts for a thread reply", () => {
+    expect(
+      buildReplyContext({ channel: "C123", ts: "1700000100.000200", thread_ts: "1700000000.000100" }),
+    ).toStrictEqual({ channel: "C123", thread: "1700000000.000100", messageTs: "1700000100.000200" });
+  });
+
+  it("is a null thread and nothing more for a non-threaded DM", () => {
+    expect(
+      buildReplyContext({ channel: "D123", ts: "1700000000.000100", channel_type: "im" }),
+    ).toStrictEqual({ channel: "D123", thread: null, messageTs: "1700000000.000100" });
   });
 });
 

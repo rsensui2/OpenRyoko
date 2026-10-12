@@ -53,10 +53,83 @@ When the user says "deploy" or asks about deployment status.
 - **migrate**: Apply pending version migrations
 - **sync** / **new** / **status**: Slash-command playbooks (`/sync`, `/new`, `/status`)
 
-`ryoko setup` copies bundled skills on a new installation. `ryoko migrate` (including
-`--auto`, as used by `ryoko update`) also adds missing bundled skill directories and
-their Claude/Codex discovery links, even without pending version migrations. Existing
-skill directories and symlinks are preserved as a whole. `--check` does not install skills.
+### Keeping bundled skills up to date
+
+`ryoko setup` copies bundled skills on a new installation. After that they are synced
+each time the gateway starts and each time `ryoko migrate` runs (including `--auto`, as
+used by `ryoko update`), with or without pending version migrations. `--check` changes
+nothing.
+
+The sync replaces a skill only when it can prove the copy is unmodified. It keeps a
+receipt, `~/.ryoko/skills/.shipped-skills.json`, with a sha256 for every file of every
+bundled skill it placed.
+
+| The skill in `~/.ryoko/skills/` | What the sync does |
+|---|---|
+| Missing, and the sync has no record of placing it | Installs it |
+| Missing, but the sync placed it earlier (you deleted it) | Leaves it out and says so once per release. Only `ryoko migrate --restore-deleted-skills [name...]` puts it back |
+| Unedited since the sync placed it, and a newer version ships | Replaces it and keeps the previous copy |
+| Unedited, beside files that are exactly the shipped version's (what restoring `skills` from an older backup leaves when the shipped version has gained files) | Replaces it and keeps the previous copy |
+| Edited, or holding files you added | Leaves it alone; tells you once per release when a newer version ships |
+| A symlink, or holding a symlink | Leaves it alone |
+| Unreadable, or larger than any bundled skill is (a file over 1 MiB, over 2 MiB in all, or over 500 files and directories) | Leaves it alone, unread, and tells you once per release |
+| Identical to the shipped version, not yet in the receipt | Leaves it alone and starts tracking it |
+| An untouched copy of a version an earlier release shipped, not in the receipt | Replaces it and keeps the previous copy |
+| Different from every version ever shipped, not in the receipt | Leaves it alone and tells you once per release |
+| No longer shipped, unedited | Moves it to the backup directory |
+| No longer shipped, edited | Leaves it alone |
+
+- **Your changes are never overwritten.** To customize a bundled skill, edit it in place;
+  it stops following releases. To return to the shipped version, move the skill's
+  directory aside and run `ryoko migrate --restore-deleted-skills <name>`. (A skill the
+  notice describes as having no record of how it was installed is not in the receipt:
+  for that one, moving it aside and restarting is enough.)
+- **A bundled skill you delete stays deleted.** Neither restarting the gateway, nor
+  `ryoko migrate`, nor `ryoko update` brings it back; the receipt keeps a
+  `"deleted": true` mark for it. `ryoko migrate --restore-deleted-skills <name>...`
+  reinstalls the skills you name and leaves the other deleted ones deleted. Without a
+  name it reinstalls every bundled skill you deleted.
+- **Restoring `skills` from a backup does not turn a bundled skill into an edited one.**
+  `ryoko backup restore` writes back the files its archive holds and removes none, so a
+  skill that was replaced since the backup can come out as its old files plus the newer
+  version's extra ones. As long as every one of those extra files is exactly the file
+  the package ships, the skill still counts as unedited and is brought up to date at
+  the next start. A file of your own among them makes it an edited skill, as always.
+- **Nothing is deleted.** A replaced or retired skill is moved to
+  `~/.ryoko/.migration-backups/<version>-<time>/skills/<name>/`. Remove old backups by
+  hand when you no longer need them.
+- A sync that is cut short (the machine goes down, the process is killed) can leave a
+  `.bundled-skill-XXXXXX` directory in `~/.ryoko`. A later sync moves it to
+  `~/.ryoko/.migration-backups/<version>-<time>/staging/` once it is an hour old,
+  provided it holds nothing but bundled skills, and says that it did. The copy of a
+  skill that could not be installed goes to the same place. The sync deletes neither.
+- On the first start after upgrading to a release with this sync there is no receipt
+  yet. Missing skills are added (including any you had deleted before, once). For the
+  rest, the package carries fingerprints of every version of every bundled skill that
+  earlier releases shipped: a skill that is exactly one of those, file for file, is
+  untouched and is brought up to date. Anything else is left alone — a skill you
+  edited, or one installed under an assistant name other than the current one or the
+  installer's default.
+- If `~/.ryoko/skills` is itself a symlink, it is your own skill store and nothing is
+  synced into it: no receipt, no updates, no retirements. The gateway says so in its
+  log at every start. `ryoko migrate` says so too, and
+  handles skills there as it did before the sync existed: it adds bundled skills that
+  are missing, copies a migration's new skill files, and leaves the ones that exist to
+  the AI merge.
+- Do not edit `.shipped-skills.json`. Deleting it is safe, though it also forgets which
+  skills you deleted: missing bundled skills are installed again, skills identical to the
+  shipped version are tracked again, and everything else is left alone.
+- When the receipt was written by a newer OpenRyoko than the one running (an older CLI
+  pointed at the same home, say), the older one changes no skill and says so at every
+  start. If no newer version uses the home, the receipt is wrong and can be fixed or
+  deleted.
+- When the sync cannot run at all — the receipt is unreadable, say, or was written by a
+  newer OpenRyoko — `ryoko migrate` does not start a migration: it would end up recorded
+  as applied with its skill changes left out. It names the cause; fix that and run it
+  again. `ryoko migrate --auto` still applies what has nothing to do with skills, and
+  records the version only when that was everything.
+- `skills.autoSync: false` in `config.yaml` stops the sync at gateway start.
+  `ryoko migrate` syncs either way.
 
 ## Key Points
 

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { applyTemplateReplacements, isTemplateFile } from "../shared/templateReplacements.js";
+import { removePlacedTree } from "./home-copy.js";
 
 function entryExists(file: string): boolean {
   try { fs.lstatSync(file); return true; }
@@ -11,7 +12,13 @@ function entryExists(file: string): boolean {
 }
 
 /** Add newly bundled skills on upgrade, including when no version migration is
- * pending. Existing skills (including user-managed symlinks) belong to the user. */
+ * pending. Existing skills (including user-managed symlinks) belong to the user.
+ *
+ * `ryoko migrate` goes through skills-sync instead, which also updates and retires
+ * skills it can prove are unmodified. It still calls this in one kind of home: one
+ * whose skills/ is the user's own symlink, where the sync does not run and skills
+ * are handled as before it existed. The sync's tests also use it to stand in for a
+ * home earlier releases left behind. */
 export function stageMissingBundledSkills(
   templateDir: string,
   home: string,
@@ -47,7 +54,10 @@ export function stageMissingBundledSkills(
       fs.renameSync(staged, destination);
       added.push(entry.name);
     } finally {
-      fs.rmSync(staging, { recursive: true, force: true });
+      // Empty by now if the skill went in. Otherwise what is in it is this call's own
+      // copy of the package's skill, and is taken away as that: one file at a time by
+      // name, and then the directories. No tree in the home is deleted by walking it.
+      removePlacedTree(skillSource, home, path.basename(staging), entry.name);
     }
   }
   return added;

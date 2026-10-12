@@ -196,6 +196,7 @@ export class CodexEngine implements InterruptibleEngine {
             sessionId: threadId || opts.resumeSessionId || "",
             result: resultText,
             error: terminationReason,
+            interruptRequested: true, // only kill() sets a termination reason
             numTurns: numTurns || undefined,
             ...(typeof lastContextTokens === "number" ? { contextTokens: lastContextTokens } : {}),
           });

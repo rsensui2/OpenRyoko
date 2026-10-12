@@ -13,7 +13,7 @@ import type { DatabaseHandle, DatabaseSource } from "../database-source.js";
 import { runBackup, type BackupRunOptions, type BackupRunReport, type BackupTargetName } from "../run.js";
 import { getBackupStatus, startBackupScheduler, type BackupScheduler } from "../scheduler.js";
 import { applyRunReport, BACKUP_STATE_FILE, readBackupState, writeBackupState } from "../state.js";
-import { makeHome, removeTempDirs, rowCount, tempDir } from "./fixture.js";
+import { makeHome, openForWriting, removeTempDirs, rowCount, tempDir } from "./fixture.js";
 
 const START = new Date("2026-10-12T03:00:00.000Z");
 const MINUTE_MS = 60_000;
@@ -339,7 +339,7 @@ describe("startBackupScheduler", () => {
     expect(workflows()).toBeNull();
     expect(fs.existsSync(store)).toBe(false);
 
-    const seeded = new Database(store);
+    const seeded = openForWriting(store);
     seeded.exec("CREATE TABLE workflows (id INTEGER PRIMARY KEY, label TEXT)");
     seeded.close();
     const handle = connectionFrom(workflows);

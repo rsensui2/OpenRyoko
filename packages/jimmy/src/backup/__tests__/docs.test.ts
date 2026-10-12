@@ -87,6 +87,13 @@ describe("docs/backup.md", () => {
     expect(doc()).not.toMatch(/で元に戻せます/);
   });
 
+  it("says what the warning about a working directory left behind means", () => {
+    // The restore deletes only what it put there itself. What that leaves, and the line it prints, need a place to be looked up.
+    expect(doc()).toMatch(/`tmp\/restore-…`[^。]*作業ディレクトリ/);
+    expect(doc()).toMatch(/自分が置いたファイルだけを消し/);
+    expect(doc()).toContain("was left as it is");
+  });
+
   it("says the snapshot a restore takes first holds what it overwrites, not the whole home", () => {
     expect(doc()).toMatch(/退避するのはそのファイルだけ/);
     expect(doc()).toMatch(/作成だけ[^。]*退避は作られません/);

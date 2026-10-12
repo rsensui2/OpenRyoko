@@ -44,6 +44,7 @@ import { buildContext } from "./context.js";
 import { normalizeDelivery, normalizeTurns, type DeliveryContext } from "./reply-disposition.js";
 import { deliverToOriginConnector, isUndeliveredToOrigin, recordFailedOriginDelivery } from "./origin-delivery.js";
 import { deliverTurn, recordUndeliveredTurn } from "./turn-delivery.js";
+import { deliverUnlessAlreadyTold } from "./limit-failure-notice.js";
 import { SessionQueue } from "./queue.js";
 import { JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
@@ -1128,7 +1129,7 @@ export class SessionManager {
             // Same rule as the ordinary path below: a reply the connector refuses
             // is recorded as undelivered once the turn's state is written.
             const { publicAction } = normalizeDelivery(retryText, this.buildDeliveryContext(session, msg, capabilities));
-            const retryDelivery = await deliverTurn(connector, target, [publicAction]);
+            const retryDelivery = await deliverUnlessAlreadyTold(session, retryResult, () => deliverTurn(connector, target, [publicAction]));
             recordDeliveredOutcome(retryResult, retryDelivery.deliveredReply);
             const retryUpdated = updateSession(session.id, {
               ...(retryResult.sessionId?.trim() ? { engineSessionId: retryResult.sessionId } : {}),
@@ -1218,7 +1219,7 @@ export class SessionManager {
         const actions = turns.length > 1
           ? normalizeTurns(turns, deliveryCtx).actions
           : [normalizeDelivery(responseText, deliveryCtx).publicAction];
-        const delivery = await deliverTurn(connector, target, actions);
+        const delivery = await deliverUnlessAlreadyTold(session, result, () => deliverTurn(connector, target, actions));
         recordDeliveredOutcome(result, delivery.deliveredReply);
         undelivered = delivery.failure;
       }

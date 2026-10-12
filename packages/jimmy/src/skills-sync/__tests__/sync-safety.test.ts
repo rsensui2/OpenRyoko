@@ -1,0 +1,790 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { POSIX_MODES_SUPPORTED } from "../../shared/test-support/posix-mode.js";
+import { RECEIPT_FILE } from "../receipt.js";
+import { syncBundledSkills } from "../sync.js";
+import { fixture, NOW, removeFixtures, sha, snapshot, STAMP, writeTree } from "./fixture.js";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  removeFixtures();
+});
+
+describe("bundled skill sync: staying inside skills/", () => {
+  it.each([
+    ["a parent directory", "../knowledge"],
+    ["a nested path", "mine/inner"],
+    ["a hidden directory", ".disabled"],
+    ["the skills directory itself", "."],
+    ["a Windows-style parent", "..\\knowledge"],
+    ["an empty name", ""],
+  ])("refuses a receipt that names %s, before writing anything", (_label, name) => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    // Directories the user owns, each holding a file the forged entry describes exactly:
+    // a sync that trusted the name would take them for unmodified retired skills and
+    // move them away. The name is the only thing wrong with the entry.
+    const owned = { "SKILL.md": "the user's own" };
+    writeTree(path.join(f.home, "knowledge"), owned);
+    writeTree(path.join(f.skills, "mine", "inner"), owned);
+    writeTree(path.join(f.skills, ".disabled"), owned);
+    const receipt = f.receipt();
+    receipt.skills[name] = { version: "2026.10.10", sha256: sha(""), files: { "SKILL.md": sha(owned["SKILL.md"]) } };
+    fs.writeFileSync(path.join(f.skills, RECEIPT_FILE), JSON.stringify(receipt));
+    // Work a sync would otherwise do, so "nothing changed" is not vacuous.
+    f.ship("example", { "SKILL.md": "v2" });
+    f.ship("brand-new", { "SKILL.md": "new" });
+    const before = snapshot(f.root);
+
+    expect(() => f.sync("2026.10.11")).toThrow(RECEIPT_FILE);
+    expect(snapshot(f.root)).toEqual(before);
+  });
+
+  it("refuses a receipt that names an absolute path", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    const outside = path.join(f.root, "outside");
+    writeTree(outside, { "SKILL.md": "the user's own" });
+    const receipt = f.receipt();
+    receipt.skills[outside] = { version: "2026.10.10", sha256: sha(""), files: { "SKILL.md": sha("the user's own") } };
+    fs.writeFileSync(path.join(f.skills, RECEIPT_FILE), JSON.stringify(receipt));
+    f.ship("example", { "SKILL.md": "v2" });
+    const before = snapshot(f.root);
+
+    expect(() => f.sync("2026.10.11")).toThrow(RECEIPT_FILE);
+    expect(snapshot(f.root)).toEqual(before);
+  });
+
+  it.each(["../../config.yaml", "/etc/hosts", "references/../../x.md", "references\\x.md", ""])(
+    "refuses a receipt whose file list holds %j",
+    (relative) => {
+      const f = fixture();
+      f.ship("example", { "SKILL.md": "v1" });
+      f.sync("2026.10.10");
+      const receipt = f.receipt();
+      receipt.skills.example.files[relative] = sha("x");
+      fs.writeFileSync(path.join(f.skills, RECEIPT_FILE), JSON.stringify(receipt));
+      f.ship("example", { "SKILL.md": "v2" });
+      const before = snapshot(f.root);
+
+      expect(() => f.sync("2026.10.11")).toThrow(RECEIPT_FILE);
+      expect(snapshot(f.root)).toEqual(before);
+    },
+  );
+
+  it("refuses a receipt entry that does not describe a skill", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    // An empty directory matches an entry with no files; without this check it would be "retired".
+    fs.mkdirSync(path.join(f.skills, "scratch"));
+    const receipt = f.receipt();
+    receipt.skills.scratch = { version: "2026.10.10", sha256: sha(""), files: {} };
+    fs.writeFileSync(path.join(f.skills, RECEIPT_FILE), JSON.stringify(receipt));
+    const before = snapshot(f.root);
+
+    expect(() => f.sync("2026.10.11")).toThrow(RECEIPT_FILE);
+    expect(snapshot(f.root)).toEqual(before);
+  });
+
+  it("does not retire a skill just because the receipt lists it: the package must know it once shipped it", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    // The user's own skill. Whoever can write the receipt adds an entry that describes
+    // it exactly — which, for a name the package had shipped, would get it moved away.
+    f.place("mine", { "SKILL.md": "written by the user", "notes.md": "theirs too" });
+    const receipt = f.receipt();
+    receipt.skills.mine = { version: "2026.10.10", sha256: sha(""), files: { "SKILL.md": sha("written by the user"), "notes.md": sha("theirs too") } };
+    fs.writeFileSync(path.join(f.skills, RECEIPT_FILE), JSON.stringify(receipt));
+    const before = snapshot(path.join(f.skills, "mine"));
+
+    const result = f.sync("2026.10.11");
+
+    expect(result).toMatchObject({ retired: [], kept: [], failed: [], backupDir: null });
+    expect(snapshot(path.join(f.skills, "mine"))).toEqual(before);
+    expect(fs.existsSync(f.backups)).toBe(false);
+  });
+
+  it.each(["yes", false, 1, null])("refuses a receipt whose deleted mark is %j rather than true", (mark) => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    const receipt = f.receipt();
+    receipt.skills.example.deleted = mark;
+    fs.writeFileSync(path.join(f.skills, RECEIPT_FILE), JSON.stringify(receipt));
+    fs.rmSync(path.join(f.skills, "example"), { recursive: true });
+    const before = snapshot(f.root);
+
+    expect(() => f.restore("2026.10.10")).toThrow(RECEIPT_FILE);
+    expect(snapshot(f.root)).toEqual(before);
+  });
+
+  it("refuses a receipt it cannot read instead of starting over", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    fs.mkdirSync(f.skills);
+    fs.writeFileSync(path.join(f.skills, RECEIPT_FILE), "{ not json");
+    const before = snapshot(f.root);
+
+    expect(() => f.sync()).toThrow(RECEIPT_FILE);
+    expect(snapshot(f.root)).toEqual(before);
+  });
+
+  it.each([0, -1, 1.5, "1", "2", null, true])("refuses a receipt whose format is %j, which no release ever wrote", (schemaVersion) => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    fs.mkdirSync(f.skills);
+    fs.writeFileSync(path.join(f.skills, RECEIPT_FILE), JSON.stringify({ schemaVersion, packageVersion: "2026.10.10", skills: {}, notices: {} }));
+    const before = snapshot(f.root);
+
+    expect(() => f.sync()).toThrow(RECEIPT_FILE);
+    expect(snapshot(f.root)).toEqual(before);
+  });
+
+  it("tells the truth about what deleting an unusable receipt does", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    fs.mkdirSync(f.skills);
+    fs.writeFileSync(path.join(f.skills, RECEIPT_FILE), "{ not json");
+
+    let message = "";
+    try { f.sync(); } catch (error) { message = (error as Error).message; }
+
+    // Deleting it is not free: the record of which skills the operator deleted goes with it.
+    expect(message).toMatch(/delet/i);
+    expect(message).toMatch(/skills you deleted.*(come back|reinstall)/i);
+    expect(message).not.toMatch(/only resets/);
+  });
+
+  it("does not write through a symlinked skills directory", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    const shared = path.join(f.root, "shared-skills");
+    writeTree(path.join(shared, "mine"), { "SKILL.md": "the user's skill store" });
+    fs.symlinkSync(shared, f.skills);
+    const before = snapshot(f.root);
+
+    const result = f.sync();
+
+    expect(result).toMatchObject({ skipped: "skills-root-symlink", added: [], adopted: [], kept: [], notices: [] });
+    expect(snapshot(f.root)).toEqual(before);
+  });
+
+  it("saves the receipt whatever has been left at the path its temporary file used to take", () => {
+    // The temporary file was once named after the PID, which is the same on every
+    // container start. A link planted there was written through; a directory there
+    // made the save fail after the skills had already been replaced.
+    for (const plant of ["link", "directory"] as const) {
+      const f = fixture();
+      f.ship("example", { "SKILL.md": "v1" });
+      f.sync("2026.10.10");
+      const outside = path.join(f.root, "outside.json");
+      fs.writeFileSync(outside, "the user's file");
+      const guessed = path.join(f.skills, `${RECEIPT_FILE}.tmp-${process.pid}`);
+      if (plant === "link") fs.symlinkSync(outside, guessed);
+      else fs.mkdirSync(guessed);
+      f.ship("example", { "SKILL.md": "v2" });
+
+      const result = f.sync("2026.10.11");
+
+      expect(result, plant).toMatchObject({ updated: ["example"], failed: [] });
+      expect(result.receiptError, plant).toBeUndefined();
+      expect(f.receipt().skills.example.version, plant).toBe("2026.10.11");
+      expect(fs.readFileSync(outside, "utf8"), plant).toBe("the user's file");
+      // What was planted is not the sync's: it is neither used nor removed.
+      expect(fs.readdirSync(f.skills).sort(), plant).toEqual([RECEIPT_FILE, path.basename(guessed), "example"].sort());
+    }
+  });
+
+  it("names its temporary file unpredictably and leaves none behind", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    const rename = vi.spyOn(fs, "renameSync");
+
+    f.sync("2026.10.10");
+    f.ship("example", { "SKILL.md": "v2" });
+    f.sync("2026.10.11");
+
+    const temporaries = rename.mock.calls.filter(([, to]) => String(to) === path.join(f.skills, RECEIPT_FILE)).map(([from]) => path.basename(String(from)));
+    // One write for the install; two for the replacement, which is announced and then closed.
+    expect(temporaries).toHaveLength(3);
+    expect(new Set(temporaries).size).toBe(3);
+    for (const name of temporaries) expect(name).not.toContain(String(process.pid));
+    expect(fs.readdirSync(f.skills).sort()).toEqual([RECEIPT_FILE, "example"]);
+  });
+
+  it("does not write through a link even at the very name its temporary file is about to take", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    f.ship("example", { "SKILL.md": "v2" });
+    const outside = path.join(f.root, "outside.json");
+    fs.writeFileSync(outside, "the user's file");
+    // Not something anyone can arrange — the name is random — but if the path is
+    // taken, the file must be refused rather than followed.
+    vi.spyOn(crypto, "randomBytes").mockImplementation((() => Buffer.alloc(8, 0xab)) as unknown as typeof crypto.randomBytes);
+    fs.symlinkSync(outside, path.join(f.skills, `${RECEIPT_FILE}.${"ab".repeat(8)}.tmp`));
+
+    const result = f.sync("2026.10.11");
+
+    expect(fs.readFileSync(outside, "utf8")).toBe("the user's file");
+    // The receipt could not be written, so the replacement was never announced, so it was not started.
+    expect(result.updated).toEqual([]);
+    expect(result.failed).toEqual([{ name: "example", error: expect.stringContaining("EEXIST") }]);
+    expect(f.read("example", "SKILL.md")).toBe("v1");
+    expect(result.receiptError).toMatch(/EEXIST/);
+    expect(fs.readlinkSync(path.join(f.skills, `${RECEIPT_FILE}.${"ab".repeat(8)}.tmp`))).toBe(outside);
+  });
+
+  it("reports what it did even when the receipt cannot be saved, and records it on the next run", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.ship("gone", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    fs.rmSync(path.join(f.skills, "gone"), { recursive: true });
+    f.ship("example", { "SKILL.md": "v2" });
+    const rename = fs.renameSync;
+    let receiptWrites = 0;
+    // The replacement is announced in the receipt, carried out, and then the receipt
+    // cannot be written a second time.
+    vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (String(to) === path.join(f.skills, RECEIPT_FILE) && ++receiptWrites > 1) throw new Error("read-only file system");
+      return rename(from, to);
+    });
+
+    const result = f.sync("2026.10.11");
+
+    // The skill is in place and the caller is told so — and told which skills were
+    // deleted, which a caller that only saw an exception would have had to guess.
+    expect(result.updated).toEqual(["example"]);
+    expect(result.kept).toEqual([{ name: "gone", reason: "deleted" }]);
+    expect(result.receiptError).toContain("read-only file system");
+    expect(f.read("example", "SKILL.md")).toBe("v2");
+    expect(f.receipt().skills.example.version).toBe("2026.10.10");
+    expect(fs.readdirSync(f.skills).sort()).toEqual([RECEIPT_FILE, "example"]);
+
+    vi.restoreAllMocks();
+    const next = f.sync("2026.10.11");
+    expect(next).toMatchObject({ adopted: ["example"], updated: [], kept: [{ name: "gone", reason: "deleted" }] });
+    expect(next.receiptError).toBeUndefined();
+    expect(f.receipt().skills.example.version).toBe("2026.10.11");
+    expect(f.receipt().skills.gone.deleted).toBe(true);
+  });
+
+  it("refuses a receipt that is itself a link", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    const elsewhere = path.join(f.root, "receipt-elsewhere.json");
+    fs.renameSync(path.join(f.skills, RECEIPT_FILE), elsewhere);
+    fs.symlinkSync(elsewhere, path.join(f.skills, RECEIPT_FILE));
+    f.ship("example", { "SKILL.md": "v2" });
+    const before = snapshot(f.root);
+
+    expect(() => f.sync("2026.10.11")).toThrow(RECEIPT_FILE);
+    expect(snapshot(f.root)).toEqual(before);
+  });
+
+  it("refuses to treat something that is not a directory as the skills directory", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    fs.writeFileSync(f.skills, "not a directory");
+    const before = snapshot(f.root);
+
+    // Named for what it is, not reported as a problem with a receipt that cannot exist.
+    expect(() => f.sync()).toThrow(`${f.skills} is not a directory, so shipped skills cannot be synced into it`);
+    expect(snapshot(f.root)).toEqual(before);
+  });
+
+  it("works when the home itself is reached through a symlink", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    const alias = path.join(f.root, "home-alias");
+    fs.symlinkSync(f.home, alias);
+
+    const result = syncBundledSkills({ templateDir: f.template, home: alias, packageVersion: "2026.10.10", now: NOW, replacements: {} });
+
+    expect(result.added).toEqual(["example"]);
+    expect(f.read("example", "SKILL.md")).toBe("v1");
+  });
+
+  it("refuses a package whose skill carries a symlink, before writing anything", () => {
+    const f = fixture();
+    // "alpha" sorts first: a sync that wrote as it went would have installed it already.
+    f.ship("alpha", { "SKILL.md": "v1" });
+    f.ship("broken", { "SKILL.md": "v1" });
+    // The link resolves, so a sync that read through it would install a file from outside the package.
+    fs.writeFileSync(path.join(f.root, "not-in-the-package.md"), "from outside the package");
+    fs.symlinkSync(path.join(f.root, "not-in-the-package.md"), path.join(f.template, "skills", "broken", "extra.md"));
+    const before = snapshot(f.root);
+
+    expect(() => f.sync()).toThrow(/"broken" carries extra\.md/);
+    expect(snapshot(f.root)).toEqual(before);
+  });
+
+  it("refuses to back up into a backup directory that is a symlink", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    const elsewhere = path.join(f.root, "elsewhere");
+    fs.mkdirSync(elsewhere);
+    fs.symlinkSync(elsewhere, f.backups);
+    f.ship("example", { "SKILL.md": "v2" });
+    const before = snapshot(f.root);
+
+    expect(() => f.sync("2026.10.11")).toThrow(/\.migration-backups/);
+    expect(snapshot(f.root)).toEqual(before);
+  });
+});
+
+describe("bundled skill sync: failures and odd states", () => {
+  it("leaves no partial skill in skills/ and no staging directory in the home when a skill cannot be staged", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1", "references/a.md": "a1" });
+    const write = fs.writeFileSync;
+    vi.spyOn(fs, "writeFileSync").mockImplementation((file, ...rest) => {
+      if (String(file).endsWith(path.join("references", "a.md"))) throw new Error("disk full");
+      return (write as (...args: unknown[]) => void)(file, ...rest);
+    });
+
+    const result = f.sync();
+
+    expect(result.added).toEqual([]);
+    expect(result.failed).toEqual([{ name: "example", error: expect.stringContaining("disk full") }]);
+    // What was written of it is not deleted either: it is out of the way, in the backup directory.
+    expect(fs.readdirSync(f.home)).toEqual([".migration-backups"]);
+    expect(result.stagingSetAside).toHaveLength(1);
+    const partial = path.join(result.backupDir!, "staging", result.stagingSetAside![0], "example");
+    expect(fs.readFileSync(path.join(partial, "SKILL.md"), "utf8")).toBe("v1");
+    expect(fs.existsSync(path.join(partial, "references", "a.md"))).toBe(false);
+  });
+
+  it("still syncs the other skills when one of them fails", () => {
+    const f = fixture();
+    f.ship("broken", { "SKILL.md": "v1", "references/a.md": "a1" });
+    f.ship("fine", { "SKILL.md": "v1" });
+    const write = fs.writeFileSync;
+    vi.spyOn(fs, "writeFileSync").mockImplementation((file, ...rest) => {
+      if (String(file).endsWith(path.join("broken", "references", "a.md"))) throw new Error("disk full");
+      return (write as (...args: unknown[]) => void)(file, ...rest);
+    });
+
+    const result = f.sync();
+
+    expect(result.added).toEqual(["fine"]);
+    expect(result.failed.map((failure) => failure.name)).toEqual(["broken"]);
+    expect(fs.existsSync(path.join(f.skills, "broken"))).toBe(false);
+    expect(Object.keys(f.receipt().skills)).toEqual(["fine"]);
+    // The half-written copy of the one that failed is kept under the backup directory.
+    expect(fs.readdirSync(f.home).sort()).toEqual([".migration-backups", "skills"]);
+    expect(fs.readdirSync(path.join(result.backupDir!, "staging", result.stagingSetAside![0]))).toEqual(["broken"]);
+  });
+
+  it("puts the previous copy back when the replacement cannot be moved into place", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    const recorded = f.receipt().skills.example;
+    f.ship("example", { "SKILL.md": "v2" });
+    const rename = fs.renameSync;
+    let refused = 0;
+    // The new copy cannot go in; the previous one, on its way back, can.
+    vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (String(from).includes(".bundled-skill-") && String(to) === path.join(f.skills, "example")) {
+        refused += 1;
+        throw new Error("rename refused");
+      }
+      return rename(from, to);
+    });
+
+    const result = f.sync("2026.10.11");
+
+    expect(refused).toBe(1);
+    expect(result.updated).toEqual([]);
+    expect(result.failed).toEqual([{ name: "example", error: expect.stringContaining("rename refused") }]);
+    expect(f.read("example", "SKILL.md")).toBe("v1");
+    expect(f.receipt().skills.example).toEqual(recorded);
+    expect(fs.readdirSync(f.home).filter((name) => name.startsWith(".bundled-skill-"))).toEqual([]);
+    // The copy that could not go in is kept; the previous one is back in skills/, not in the backup.
+    const run = path.join(f.backups, `2026.10.11-${STAMP}`);
+    expect(fs.readdirSync(run)).toEqual(["staging"]);
+    expect(fs.readFileSync(path.join(run, "staging", result.stagingSetAside![0], "example", "SKILL.md"), "utf8")).toBe("v2");
+  });
+
+  it("does not mistake a skill it lost in a failed update for one the operator deleted", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    f.ship("example", { "SKILL.md": "v2" });
+    const rename = fs.renameSync;
+    // The previous copy moves to the backup, then neither the new copy nor the rollback can land.
+    vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (String(to) === path.join(f.skills, "example")) throw new Error("rename refused");
+      return rename(from, to);
+    });
+
+    const failed = f.sync("2026.10.11");
+
+    expect(failed.updated).toEqual([]);
+    expect(failed.failed).toEqual([{ name: "example", error: expect.stringContaining(path.join(f.backups, `2026.10.11-${STAMP}`, "skills", "example")) }]);
+    expect(fs.existsSync(path.join(f.skills, "example"))).toBe(false);
+    expect(fs.readFileSync(path.join(f.backups, `2026.10.11-${STAMP}`, "skills", "example", "SKILL.md"), "utf8")).toBe("v1");
+    expect(f.receipt().skills).not.toHaveProperty("example");
+    vi.restoreAllMocks();
+
+    // The next start repairs it instead of recording a deletion nobody made.
+    const repaired = f.sync("2026.10.11");
+    expect(repaired).toMatchObject({ added: ["example"], kept: [] });
+    expect(f.read("example", "SKILL.md")).toBe("v2");
+  });
+
+  it("does not replace a skill that is edited while the sync is running", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    f.ship("example", { "SKILL.md": "v2" });
+    const mkdtemp = fs.mkdtempSync;
+    // The staging directory is created after planning and before the swap.
+    vi.spyOn(fs, "mkdtempSync").mockImplementation(((prefix: string) => {
+      fs.writeFileSync(path.join(f.skills, "example", "SKILL.md"), "edited mid-sync");
+      return mkdtemp(prefix);
+    }) as typeof fs.mkdtempSync);
+
+    const result = f.sync("2026.10.11");
+
+    expect(result.updated).toEqual([]);
+    expect(result.failed).toEqual([{ name: "example", error: expect.stringMatching(/changed/) }]);
+    expect(f.read("example", "SKILL.md")).toBe("edited mid-sync");
+    // The skill never went to the backup directory. Only the copy staged for it did.
+    expect(fs.readdirSync(path.join(f.backups, `2026.10.11-${STAMP}`))).toEqual(["staging"]);
+  });
+
+  it("does not follow skills/ if it is swapped for a symlink while the sync is running", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    fs.mkdirSync(f.skills);
+    const elsewhere = path.join(f.root, "elsewhere");
+    fs.mkdirSync(elsewhere);
+    const mkdtemp = fs.mkdtempSync;
+    vi.spyOn(fs, "mkdtempSync").mockImplementation(((prefix: string) => {
+      fs.rmdirSync(f.skills);
+      fs.symlinkSync(elsewhere, f.skills);
+      return mkdtemp(prefix);
+    }) as typeof fs.mkdtempSync);
+
+    const result = f.sync();
+
+    expect(result.added).toEqual([]);
+    expect(result.failed).toEqual([{ name: "example", error: expect.stringContaining("is not a plain directory") }]);
+    expect(fs.readdirSync(elsewhere)).toEqual([]);
+  });
+
+  it("does not move a skill out of the home if the backup directory becomes a symlink while it works", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    f.ship("example", { "SKILL.md": "v2" });
+    const outside = path.join(f.root, "outside");
+    fs.mkdirSync(outside);
+    const write = fs.writeFileSync;
+    // The new copy is being written to staging: plenty of time to plant a link where the
+    // backup directory will be. Checked only at the start, that link would be followed.
+    vi.spyOn(fs, "writeFileSync").mockImplementation((file, ...rest) => {
+      if (String(file).includes(".bundled-skill-") && !fs.existsSync(f.backups)) fs.symlinkSync(outside, f.backups);
+      return (write as (...args: unknown[]) => void)(file, ...rest);
+    });
+
+    const mkdir = vi.spyOn(fs, "mkdirSync");
+
+    const result = f.sync("2026.10.11");
+
+    expect(fs.readdirSync(outside)).toEqual([]);
+    // Not even a directory was created through the link, let alone a skill moved.
+    expect(mkdir.mock.calls.map((call) => String(call[0])).filter((dir) => dir.startsWith(f.backups + path.sep))).toEqual([]);
+    expect(result.updated).toEqual([]);
+    expect(result.failed).toEqual([{ name: "example", error: expect.stringContaining(".migration-backups") }]);
+    expect(f.read("example", "SKILL.md")).toBe("v1");
+    expect(result.backupDir).toBeNull();
+  });
+
+  it("does not move a skill out of the home if the backup directory is swapped after this run's directory exists", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    f.ship("example", { "SKILL.md": "v2" });
+    const outside = path.join(f.root, "outside");
+    const mkdir = fs.mkdirSync;
+    let swapped = false;
+    // The run's directory is in place and real; then the whole backup directory is moved
+    // out of the home and a link left where it was. Every path still resolves.
+    vi.spyOn(fs, "mkdirSync").mockImplementation(((dir: fs.PathLike, ...rest: unknown[]) => {
+      const made = (mkdir as (...args: unknown[]) => string | undefined)(dir, ...rest);
+      if (!swapped && String(dir).startsWith(f.backups + path.sep) && path.basename(String(dir)) === "skills") {
+        swapped = true;
+        fs.renameSync(f.backups, outside);
+        fs.symlinkSync(outside, f.backups);
+      }
+      return made;
+    }) as typeof fs.mkdirSync);
+
+    const result = f.sync("2026.10.11");
+
+    expect(swapped).toBe(true);
+    const movedOut = fs.readdirSync(outside).flatMap((run) => fs.readdirSync(path.join(outside, run, "skills")));
+    expect(movedOut).toEqual([]);
+    expect(result.updated).toEqual([]);
+    expect(result.failed).toEqual([{ name: "example", error: expect.stringContaining("is not a plain directory") }]);
+    expect(f.read("example", "SKILL.md")).toBe("v1");
+  });
+
+  it("does not put the new copy through skills/ if it is swapped between the two moves", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    f.ship("example", { "SKILL.md": "v2" });
+    const elsewhere = path.join(f.root, "elsewhere");
+    fs.mkdirSync(elsewhere);
+    const rename = fs.renameSync;
+    let swapped = false;
+    // The previous copy has just gone to the backup; skills/ is replaced before the new one lands.
+    vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      rename(from, to);
+      if (!swapped && String(to).startsWith(f.backups)) {
+        swapped = true;
+        rename(f.skills, path.join(f.root, "real-skills"));
+        fs.symlinkSync(elsewhere, f.skills);
+      }
+    });
+
+    const result = f.sync("2026.10.11");
+
+    expect(swapped).toBe(true);
+    expect(fs.readdirSync(elsewhere)).toEqual([]);
+    expect(result.updated).toEqual([]);
+    // Neither the new copy nor the old one could be placed safely; the old one is kept, and said where.
+    const kept = path.join(f.backups, `2026.10.11-${STAMP}`, "skills", "example");
+    expect(result.failed).toEqual([{ name: "example", error: expect.stringContaining(kept) }]);
+    expect(fs.readFileSync(path.join(kept, "SKILL.md"), "utf8")).toBe("v1");
+    expect(result.backupDir).toBe(path.join(f.backups, `2026.10.11-${STAMP}`));
+  });
+
+  it("does not move anything through skills/ if it becomes a symlink just before a skill is moved", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    f.ship("example", { "SKILL.md": "v2" });
+    // Another skill store of the user's, with a skill of the same name.
+    const elsewhere = path.join(f.root, "elsewhere");
+    writeTree(path.join(elsewhere, "example"), { "SKILL.md": "v1" });
+    const mkdir = fs.mkdirSync;
+    let swapped = false;
+    // The last thing created before a move is this run's backup directory. If skills/
+    // was checked before that, swapping it now sends the move through the link.
+    vi.spyOn(fs, "mkdirSync").mockImplementation(((dir: fs.PathLike, ...rest: unknown[]) => {
+      const made = (mkdir as (...args: unknown[]) => string | undefined)(dir, ...rest);
+      if (!swapped && String(dir).startsWith(f.backups + path.sep)) {
+        swapped = true;
+        fs.renameSync(f.skills, path.join(f.root, "real-skills"));
+        fs.symlinkSync(elsewhere, f.skills);
+      }
+      return made;
+    }) as typeof fs.mkdirSync);
+
+    const result = f.sync("2026.10.11");
+
+    expect(swapped).toBe(true);
+    expect(fs.readFileSync(path.join(elsewhere, "example", "SKILL.md"), "utf8")).toBe("v1");
+    expect(fs.readdirSync(elsewhere)).toEqual(["example"]);
+    expect(result.updated).toEqual([]);
+    expect(result.failed).toEqual([{ name: "example", error: expect.stringContaining("is not a plain directory") }]);
+    expect(fs.readFileSync(path.join(f.root, "real-skills", "example", "SKILL.md"), "utf8")).toBe("v1");
+  });
+
+  it("leaves no empty backup directory behind when nothing ends up moved", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    f.ship("example", { "SKILL.md": "v2" });
+    const rename = fs.renameSync;
+    vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (String(to).startsWith(f.backups)) throw new Error("rename refused");
+      return rename(from, to);
+    });
+
+    const result = f.sync("2026.10.11");
+
+    expect(result.failed.map((failure) => failure.name)).toEqual(["example"]);
+    expect(result.backupDir).toBeNull();
+    expect(fs.existsSync(f.backups)).toBe(false);
+    expect(f.read("example", "SKILL.md")).toBe("v1");
+  });
+
+  it("does not install over something that appears while the sync is running", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    const mkdtemp = fs.mkdtempSync;
+    vi.spyOn(fs, "mkdtempSync").mockImplementation(((prefix: string) => {
+      writeTree(path.join(f.skills, "example"), { "SKILL.md": "created by the user just now" });
+      return mkdtemp(prefix);
+    }) as typeof fs.mkdtempSync);
+
+    const result = f.sync();
+
+    expect(result.added).toEqual([]);
+    expect(result.failed).toEqual([{ name: "example", error: expect.stringContaining("appeared at its path") }]);
+    expect(f.read("example", "SKILL.md")).toBe("created by the user just now");
+    expect(f.receipt().skills).toEqual({});
+  });
+
+  it("leaves a skill it cannot read alone, whether it still ships or was retired", () => {
+    const f = fixture();
+    f.ship("locked", { "SKILL.md": "v1" });
+    f.ship("locked-retired", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    f.ship("locked", { "SKILL.md": "v2" });
+    f.unship("locked-retired");
+    const open = fs.openSync;
+    vi.spyOn(fs, "openSync").mockImplementation(((file: fs.PathLike, ...rest: unknown[]) => {
+      if (String(file).startsWith(path.join(f.skills, "locked"))) throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+      return (open as (...args: unknown[]) => number)(file, ...rest);
+    }) as typeof fs.openSync);
+
+    const result = f.sync("2026.10.11");
+
+    expect(result).toMatchObject({ updated: [], retired: [], failed: [], backupDir: null });
+    expect(result.kept).toEqual([{ name: "locked", reason: "unreadable" }, { name: "locked-retired", reason: "unreadable" }]);
+    // Passed over, but not in silence: the operator is the only one who can fix that.
+    expect(result.notices).toEqual(result.kept);
+    vi.restoreAllMocks();
+    expect(f.read("locked", "SKILL.md")).toBe("v1");
+    expect(f.read("locked-retired", "SKILL.md")).toBe("v1");
+    expect(Object.keys(f.receipt().skills)).toEqual(["locked", "locked-retired"]);
+  });
+
+  it("retires nothing when the package ships no skills at all", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    fs.rmSync(path.join(f.template, "skills"), { recursive: true });
+    const before = snapshot(f.home);
+
+    const result = f.sync("2026.10.11");
+
+    expect(result).toMatchObject({ added: [], retired: [], kept: [] });
+    expect(snapshot(f.home)).toEqual(before);
+  });
+
+  it("leaves a home last synced by a newer OpenRyoko exactly as it is", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v2" });
+    f.ship("newer-only", { "SKILL.md": "added in the newer release" });
+    f.sync("2026.10.11");
+    // An older CLI pointed at the same home: it ships the old text and lacks the new skill.
+    f.ship("example", { "SKILL.md": "v1" });
+    f.unship("newer-only");
+    f.ship("older-only", { "SKILL.md": "retired by the newer release" });
+    const before = snapshot(f.home);
+
+    const first = f.sync("2026.10.10");
+    const second = f.sync("2026.10.10");
+
+    for (const result of [first, second]) expect(result).toMatchObject({ skipped: "newer-receipt", added: [], updated: [], retired: [] });
+    // Not a skill, not the receipt (it is the newer release's), and no note of its own:
+    // whether this was said before is not something to keep where anyone can write it.
+    expect(snapshot(f.home)).toEqual(before);
+  });
+
+  it("stands back from a receipt in a newer format instead of failing on every start", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    const receipt = f.receipt();
+    fs.writeFileSync(path.join(f.skills, RECEIPT_FILE), JSON.stringify({ ...receipt, schemaVersion: 2, somethingNew: true }));
+    const written = fs.readFileSync(path.join(f.skills, RECEIPT_FILE));
+    f.ship("example", { "SKILL.md": "v2" });
+    f.ship("brand-new", { "SKILL.md": "new" });
+
+    const before = snapshot(f.home);
+
+    const first = f.sync("2026.10.11");
+    const second = f.sync("2026.10.11");
+
+    for (const result of [first, second]) expect(result).toMatchObject({ skipped: "newer-format", added: [], updated: [], kept: [] });
+    expect(snapshot(f.home)).toEqual(before);
+    expect(fs.readFileSync(path.join(f.skills, RECEIPT_FILE))).toEqual(written);
+  });
+
+  it("forgets a retired skill the user already removed", () => {
+    const f = fixture();
+    f.ship("staying", { "SKILL.md": "stays" });
+    f.ship("old", { "SKILL.md": "retired soon" });
+    f.sync("2026.10.10");
+    fs.rmSync(path.join(f.skills, "old"), { recursive: true });
+    f.unship("old");
+
+    const result = f.sync("2026.10.11");
+
+    expect(result).toMatchObject({ retired: [], kept: [], backupDir: null });
+    expect(Object.keys(f.receipt().skills)).toEqual(["staying"]);
+  });
+
+  it("ignores Finder and git housekeeping files when deciding whether a skill was edited", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    fs.writeFileSync(path.join(f.skills, "example", ".DS_Store"), "finder");
+    f.ship("example", { "SKILL.md": "v2", ".gitkeep": "" });
+
+    const result = f.sync("2026.10.11");
+
+    expect(result.updated).toEqual(["example"]);
+    expect(f.read("example", "SKILL.md")).toBe("v2");
+    expect(fs.readdirSync(path.join(f.skills, "example"))).toEqual(["SKILL.md"]);
+    expect(fs.readFileSync(path.join(result.backupDir!, "skills", "example", ".DS_Store"), "utf8")).toBe("finder");
+  });
+
+  it("keeps a shipped script executable", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1", "scripts/run.sh": "#!/bin/sh\n" });
+    fs.chmodSync(path.join(f.template, "skills", "example", "scripts", "run.sh"), 0o755);
+    fs.chmodSync(path.join(f.template, "skills", "example", "SKILL.md"), 0o644);
+    const chmod = vi.spyOn(fs, "chmodSync");
+
+    f.sync();
+
+    // Owner bits only: the rest is the process umask's to decide, as for any new file.
+    if (POSIX_MODES_SUPPORTED) {
+      expect(fs.statSync(path.join(f.skills, "example", "scripts", "run.sh")).mode & 0o700).toBe(0o700);
+      expect(fs.statSync(path.join(f.skills, "example", "SKILL.md")).mode & 0o700).toBe(0o600);
+    }
+    // The mode is set as the file is created. A separate chmod fails with EPERM on
+    // mounts without POSIX permissions (CIFS), and would fail the whole install there.
+    expect(chmod).not.toHaveBeenCalled();
+  });
+
+  it("neither reads nor writes skills.json, which records what the user installed", () => {
+    const f = fixture();
+    const manifest = `${JSON.stringify({ installed: { example: { source: "own/rep@example", installedAt: "t" } } }, null, 2)}\n`;
+    fs.writeFileSync(path.join(f.home, "skills.json"), manifest);
+    fs.writeFileSync(path.join(f.template, "skills.json"), '{\n  "installed": {}\n}\n');
+    f.ship("example", { "SKILL.md": "v1" });
+    f.ship("old", { "SKILL.md": "retired soon" });
+    f.sync("2026.10.10");
+    f.ship("example", { "SKILL.md": "v2" });
+    f.unship("old");
+    expect(f.sync("2026.10.11")).toMatchObject({ updated: ["example"], retired: ["old"] });
+
+    expect(fs.readFileSync(path.join(f.home, "skills.json"), "utf8")).toBe(manifest);
+
+    const fresh = fixture();
+    fs.writeFileSync(path.join(fresh.template, "skills.json"), '{\n  "installed": {}\n}\n');
+    fresh.ship("example", { "SKILL.md": "v1" });
+    fresh.sync();
+    expect(fs.existsSync(path.join(fresh.home, "skills.json"))).toBe(false);
+  });
+});

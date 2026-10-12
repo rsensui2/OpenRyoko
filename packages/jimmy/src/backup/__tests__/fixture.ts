@@ -81,14 +81,34 @@ export function writeTree(root: string, entries: Record<string, string>): void {
   }
 }
 
+/**
+ * Opens a database for a test to write to, with durability switched off.
+ *
+ * SQLite otherwise syncs to disk on every commit that goes through a rollback
+ * journal and on every checkpoint - about seven times for one small database
+ * made and closed twice. Alone that costs nothing. With several test suites
+ * writing to the same disk at once, each of those waits its turn, and a test
+ * that did no more than arrange three such databases has been seen to take
+ * over eight seconds. These files live for one test; nothing depends on their
+ * surviving a power cut, and what is written into them is the same either way.
+ */
+export function openForWriting(file: string): Database.Database {
+  const database = new Database(file);
+  database.pragma("synchronous = OFF");
+  return database;
+}
+
 function seedDatabase(file: string, table: string, rows: number): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const db = new Database(file);
+  const db = openForWriting(file);
   try {
     db.pragma("journal_mode = WAL");
     db.exec(`CREATE TABLE ${table} (id INTEGER PRIMARY KEY, label TEXT NOT NULL)`);
     const insert = db.prepare(`INSERT INTO ${table} (label) VALUES (?)`);
-    for (let index = 0; index < rows; index += 1) insert.run(`${table}-${index}`);
+    // One commit for all of them: a test that wants a registry of six thousand rows does not want six thousand writes to get it.
+    db.transaction(() => {
+      for (let index = 0; index < rows; index += 1) insert.run(`${table}-${index}`);
+    })();
   } finally {
     db.close();
   }
@@ -125,7 +145,7 @@ const DATABASE_FILE_SUFFIXES = ["", "-wal", "-shm"] as const;
 export function leaveMidFlight(file: string, table: string, rows: number): void {
   const source = `${file}.source`;
   seedDatabase(source, table, 1);
-  const writer = new Database(source);
+  const writer = openForWriting(source);
   try {
     writer.pragma("wal_autocheckpoint = 0");
     const insert = writer.prepare(`INSERT INTO ${table} (label) VALUES (?)`);
@@ -176,6 +196,43 @@ export function damageDatabase(file: string): void {
   } finally {
     fs.closeSync(descriptor);
   }
+}
+
+/**
+ * A stand-in for the SQLite driver whose integrity check never comes back,
+ * for a check that has to be timed out. It leaves the sidecars a real driver
+ * would, says when the worker has got as far as the check (`reached` appears),
+ * and keeps stamping `beat` for as long as it runs.
+ */
+export function hungDriver(directory: string): { driver: string; reached: string; beat: string } {
+  const driver = path.join(directory, "hung-driver.cjs");
+  const reached = path.join(directory, "reached-the-check");
+  const beat = path.join(directory, "still-running");
+  fs.writeFileSync(driver, `
+    const fs = require("node:fs");
+    module.exports = class Hung {
+      constructor(file) { for (const suffix of ["-wal", "-shm"]) if (!fs.existsSync(file + suffix)) fs.writeFileSync(file + suffix, ""); }
+      pragma() {
+        fs.writeFileSync(${JSON.stringify(beat)}, "0");
+        fs.writeFileSync(${JSON.stringify(reached)}, "");
+        for (let turn = 1; ; turn += 1) fs.writeFileSync(${JSON.stringify(beat)}, String(turn));
+      }
+      close() {}
+    };
+  `);
+  return { driver, reached, beat };
+}
+
+/** The real timer, kept from before any test replaces the clock: for waiting on another thread, which no fake clock moves. */
+const realSetTimeout = setTimeout;
+
+/**
+ * Waits until `condition` holds, however long the machine takes to get there.
+ * No deadline of its own: a wait measured in wall-clock time is what makes a
+ * test fail on a busy machine and pass on an idle one.
+ */
+export async function until(condition: () => boolean): Promise<void> {
+  while (!condition()) await new Promise<void>((resolve) => { realSetTimeout(resolve, 5); });
 }
 
 export function rowCount(file: string, table: string): number {

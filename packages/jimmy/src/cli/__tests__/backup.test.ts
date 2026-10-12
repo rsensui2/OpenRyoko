@@ -1,12 +1,12 @@
-import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   databaseFingerprint,
   HOME_CONTENT,
   leaveMidFlight,
   makeHome,
+  openForWriting,
   rawDirectory,
   removeTempDirs,
   rowCount,
@@ -362,13 +362,14 @@ describe("ryoko backup run", () => {
     await runBackupRun({ json: true }, state.deps);
     later(state, 24 * 60);
 
-    for (let round = 0; round < 8; round += 1) {
+    // Five in one day, where three of a day are kept: enough to show the day is capped and yesterday is not what pays for it.
+    for (let round = 0; round < 5; round += 1) {
       await runBackupRun({ json: true }, state.deps);
       later(state, 5);
     }
 
     expect(listBackups(path.join(home, "backups")).map((item) => item.id)).toEqual([
-      "home-20261013T033500Z", "home-20261013T033000Z", "home-20261013T032500Z", "home-20261012T030000Z",
+      "home-20261013T032000Z", "home-20261013T031500Z", "home-20261013T031000Z", "home-20261012T030000Z",
     ]);
   });
 
@@ -656,6 +657,33 @@ describe("ryoko backup restore", () => {
     expect(process.exitCode).toBe(1);
   });
 
+  it("passes on what the restore could not clear away, and leaves it where it is", async () => {
+    // Something that is not the restore's turns up in its working directory:
+    // it is not deleted along with the rest, and the operator is told where it is.
+    const state = await backedUp();
+    fs.writeFileSync(path.join(state.home, "config.yaml"), "broken\n");
+    const realRename = fs.renameSync;
+    let staging = "";
+    const rename = vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (!staging && String(from).includes(`${path.sep}tmp${path.sep}restore-`)) {
+        staging = path.dirname(String(from));
+        writeTree(staging, { "left-here/keep.txt": "not the restore's to remove\n" });
+      }
+      realRename(from, to);
+    });
+    try {
+      await runBackupRestore("home-20261012T030000Z", {}, state.deps);
+    } finally {
+      rename.mockRestore();
+    }
+
+    const printed = take(state.out);
+    expect(printed).toMatch(/置換\s+config\.yaml/);
+    expect(printed).toMatch(new RegExp(`警告: ${staging.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} .*was left as it is`));
+    expect(read(staging, "left-here/keep.txt")).toBe("not the restore's to remove\n");
+    expect(process.exitCode).toBeUndefined();
+  });
+
   it("refuses a damaged archive and leaves the home as it was", async () => {
     const state = await backedUp();
     fs.writeFileSync(path.join(state.home, "config.yaml"), "broken\n");
@@ -678,7 +706,7 @@ describe("ryoko backup restore", () => {
   async function grownRegistry(): Promise<{ state: Cli; live: string }> {
     const state = await backedUp({ sessionRows: 4 });
     const live = path.join(state.home, "sessions", "registry.db");
-    const grow = new Database(live);
+    const grow = openForWriting(live);
     grow.prepare("INSERT INTO sessions (label) VALUES (?)").run("after the backup");
     grow.close();
     idle(state, live);
