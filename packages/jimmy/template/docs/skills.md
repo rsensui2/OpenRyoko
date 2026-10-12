@@ -111,8 +111,8 @@ bundled skill it placed.
   shipped version are tracked again, and everything else is left alone.
 - When the receipt was written by a newer OpenRyoko than the one running (an older CLI
   pointed at the same home, say), the older one changes no skill and says so at every
-  start.
-  If no newer version uses the home, the receipt is wrong and can be fixed or deleted.
+  start. If no newer version uses the home, the receipt is wrong and can be fixed or
+  deleted.
 - When the sync cannot run at all — the receipt is unreadable, say, or was written by a
   newer OpenRyoko — `ryoko migrate` does not start a migration: it would end up recorded
   as applied with its skill changes left out. It names the cause; fix that and run it
