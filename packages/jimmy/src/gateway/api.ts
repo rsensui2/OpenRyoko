@@ -1,5 +1,6 @@
 import type { ModelManagement } from "../models/service.js";
 import { withConfigLock } from "../shared/config-lock.js";
+import { readConfigSnapshot, writeConfigDocument } from "../shared/config-file.js";
 import { validateCommandJob } from "../cron/command.js";
 import { validateCronSchedule } from "../cron/validation.js";
 import type { IncomingMessage as HttpRequest, ServerResponse } from "node:http";
@@ -1989,15 +1990,16 @@ Handle this as a priority request from a colleague.`;
       // Every read→merge→write→reload of config.yaml runs under one lock, so a
       // concurrent writer (another PUT, the onboarding Slack connect and its
       // rollback) can never interleave with — or be overwritten by — this one.
-      return withConfigLock(async () => {
+      // Awaited, so a refused or failed write reaches this handler's catch
+      // instead of escaping as an unhandled rejection.
+      return await withConfigLock(async () => {
       // Deep-merge incoming config with existing config to preserve
-      // fields not included in the update (e.g. connector tokens).
-      let existing: Record<string, unknown> = {};
-      try {
-        existing = yaml.load(fs.readFileSync(CONFIG_PATH, "utf-8")) as Record<string, unknown> || {};
-      } catch { /* start fresh if unreadable */ }
+      // fields not included in the update (e.g. connector tokens). A file
+      // that exists but cannot be read throws here: merging into an empty
+      // object would replace the whole config with this request body.
+      const snapshot = readConfigSnapshot();
+      const existing = snapshot.document;
       const merged = deepMerge(existing, body);
-      const yamlStr = yaml.dump(merged);
 
       // Compare AGAINST THE MERGED config, not the request body — partial
       // updates (e.g. saving only "portal.portalName") leave body.connectors
@@ -2027,7 +2029,7 @@ Handle this as a priority request from a colleague.`;
         context.suppressNextConnectorReload?.();
       }
 
-      fs.writeFileSync(CONFIG_PATH, yamlStr);
+      writeConfigDocument(snapshot, merged);
       invalidateModelRegistry(); // models/engines may have changed — rebuild on next read
       _resetEngineProbeCache(); // engine bins may have changed — the onboarding probe must re-run
       logger.info("Config updated via API");
@@ -2583,12 +2585,9 @@ Handle this as a priority request from a colleague.`;
       const _parsed = await readJsonBody(req, res);
       if (!_parsed.ok) return;
       const body = _parsed.body as Record<string, unknown>;
-      let existing: Record<string, unknown> = {};
-      try {
-        existing = yaml.load(fs.readFileSync(CONFIG_PATH, "utf-8")) as Record<string, unknown> || {};
-      } catch { /* start fresh if unreadable */ }
-      const merged = deepMerge(existing, { budgets: { employees: body } });
-      fs.writeFileSync(CONFIG_PATH, yaml.dump(merged));
+      const snapshot = readConfigSnapshot();
+      const merged = deepMerge(snapshot.document, { budgets: { employees: body } });
+      writeConfigDocument(snapshot, merged);
       logger.info("Budget limits updated via API");
       return json(res, { status: "ok" });
     }
@@ -3399,13 +3398,10 @@ interface ConfigPatchOutcome {
  *  PUT /api/config performs, callable from a server-side flow that has to
  *  read the outcome and possibly undo the write. */
 async function writeConfigPatchAndReload(context: ApiContext, patch: Record<string, unknown>): Promise<ConfigPatchOutcome> {
-  let existing: Record<string, unknown> = {};
-  try {
-    existing = (yaml.load(fs.readFileSync(CONFIG_PATH, "utf-8")) as Record<string, unknown>) || {};
-  } catch { /* first write */ }
-  const merged = deepMerge(existing, patch);
+  const snapshot = readConfigSnapshot();
+  const merged = deepMerge(snapshot.document, patch);
   context.suppressNextConnectorReload?.();
-  fs.writeFileSync(CONFIG_PATH, yaml.dump(merged));
+  writeConfigDocument(snapshot, merged);
   invalidateModelRegistry();
   _resetEngineProbeCache();
   if (!context.reloadAllConnectors) return { status: "ok" };

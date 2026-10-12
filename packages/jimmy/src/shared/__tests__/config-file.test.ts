@@ -1,0 +1,145 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import yaml from "js-yaml";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { expectPosixMode, POSIX_MODES_SUPPORTED } from "../test-support/posix-mode.js";
+import { ConfigFileUnreadableError, readConfigSnapshot, writeConfigDocument } from "../config-file.js";
+
+/* config.yaml is the one file every job and connection is defined in. The
+ * property under test: a writer that cannot read it never replaces it, and a
+ * write either lands whole or leaves the previous file exactly as it was. */
+
+let dir: string;
+let configPath: string;
+
+beforeEach(() => {
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), "ryoko-config-file-"));
+  configPath = path.join(dir, "config.yaml");
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+describe("readConfigSnapshot", () => {
+  it("treats a missing file as an empty document a first write may create", () => {
+    const snapshot = readConfigSnapshot(configPath);
+    expect(snapshot.raw).toBeNull();
+    expect(snapshot.document).toEqual({});
+  });
+
+  it("returns the parsed mapping together with the exact text it came from", () => {
+    const raw = "# keep me\nengines:\n  default: claude\n";
+    fs.writeFileSync(configPath, raw);
+    const snapshot = readConfigSnapshot(configPath);
+    expect(snapshot.raw).toBe(raw);
+    expect(snapshot.document).toEqual({ engines: { default: "claude" } });
+  });
+
+  it("reads an empty or comment-only file as an empty document", () => {
+    fs.writeFileSync(configPath, "# nothing configured yet\n");
+    expect(readConfigSnapshot(configPath).document).toEqual({});
+    fs.writeFileSync(configPath, "");
+    expect(readConfigSnapshot(configPath).document).toEqual({});
+  });
+
+  it("refuses a file that exists but is not valid YAML", () => {
+    fs.writeFileSync(configPath, "gateway: {\nengines: [oops\n");
+    expect(() => readConfigSnapshot(configPath)).toThrow(ConfigFileUnreadableError);
+  });
+
+  it("refuses a file whose top level is not a mapping", () => {
+    fs.writeFileSync(configPath, "- just\n- a list\n");
+    expect(() => readConfigSnapshot(configPath)).toThrow(ConfigFileUnreadableError);
+    fs.writeFileSync(configPath, "just a string\n");
+    expect(() => readConfigSnapshot(configPath)).toThrow(ConfigFileUnreadableError);
+  });
+
+  it("refuses a path that exists but cannot be read as a file", () => {
+    fs.mkdirSync(configPath); // EISDIR — anything but ENOENT is not "start fresh"
+    expect(() => readConfigSnapshot(configPath)).toThrow(ConfigFileUnreadableError);
+  });
+
+  it.skipIf(!POSIX_MODES_SUPPORTED || process.getuid?.() === 0)(
+    "refuses a file the process is not allowed to read",
+    () => {
+      fs.writeFileSync(configPath, "engines:\n  default: claude\n");
+      fs.chmodSync(configPath, 0o000);
+      try {
+        expect(() => readConfigSnapshot(configPath)).toThrow(ConfigFileUnreadableError);
+      } finally {
+        fs.chmodSync(configPath, 0o600);
+      }
+    },
+  );
+
+  it("never quotes the file's contents in the error (a token may sit on the broken line)", () => {
+    fs.writeFileSync(configPath, "connectors:\n  slack:\n    botToken: xoxb-SECRET-VALUE\n   appToken: *xapp-SECRET-ALIAS\n");
+    let message = "";
+    try { readConfigSnapshot(configPath); } catch (err) { message = (err as Error).message; }
+    expect(message).not.toBe("");
+    expect(message).not.toContain("SECRET");
+    expect(message).toMatch(/line \d+/);
+  });
+});
+
+describe("writeConfigDocument", () => {
+  it("creates a missing config.yaml readable by the owner only", () => {
+    const snapshot = readConfigSnapshot(configPath);
+    writeConfigDocument(snapshot, { engines: { default: "codex" } }, configPath);
+    expect(yaml.load(fs.readFileSync(configPath, "utf-8"))).toEqual({ engines: { default: "codex" } });
+    expectPosixMode(configPath, 0o600);
+  });
+
+  it("keeps the permission bits the existing file already had", () => {
+    fs.writeFileSync(configPath, "engines:\n  default: claude\n");
+    fs.chmodSync(configPath, 0o640);
+    writeConfigDocument(readConfigSnapshot(configPath), { engines: { default: "codex" } }, configPath);
+    expectPosixMode(configPath, 0o640);
+    expect(yaml.load(fs.readFileSync(configPath, "utf-8"))).toEqual({ engines: { default: "codex" } });
+  });
+
+  it("leaves no temporary file behind", () => {
+    fs.writeFileSync(configPath, "engines:\n  default: claude\n");
+    writeConfigDocument(readConfigSnapshot(configPath), { engines: { default: "codex" } }, configPath);
+    expect(fs.readdirSync(dir)).toEqual(["config.yaml"]);
+  });
+
+  it("replaces the file in one step: a failed write leaves the previous contents untouched", () => {
+    const before = "# comment\nengines:\n  default: claude\n";
+    fs.writeFileSync(configPath, before);
+    const snapshot = readConfigSnapshot(configPath);
+    // The disk fills up after the new contents were staged but before they
+    // could replace config.yaml. An in-place write would have truncated it.
+    vi.spyOn(fs, "renameSync").mockImplementation(() => {
+      throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+    });
+    expect(() => writeConfigDocument(snapshot, { engines: { default: "codex" } }, configPath)).toThrow(/ENOSPC/);
+    expect(fs.readFileSync(configPath, "utf-8")).toBe(before);
+    expect(fs.readdirSync(dir)).toEqual(["config.yaml"]);
+  });
+
+  it("writes through a symlinked config.yaml instead of replacing the link", () => {
+    const real = path.join(dir, "dotfiles-config.yaml");
+    fs.writeFileSync(real, "engines:\n  default: claude\n");
+    fs.symlinkSync(real, configPath);
+    writeConfigDocument(readConfigSnapshot(configPath), { engines: { default: "codex" } }, configPath);
+    expect(fs.lstatSync(configPath).isSymbolicLink()).toBe(true);
+    expect(yaml.load(fs.readFileSync(real, "utf-8"))).toEqual({ engines: { default: "codex" } });
+  });
+
+  it("still saves where the file cannot be swapped (a single bind-mounted config.yaml)", () => {
+    fs.writeFileSync(configPath, "engines:\n  default: claude\n");
+    const snapshot = readConfigSnapshot(configPath);
+    // rename(2) onto a bind-mounted file answers EBUSY. Saving used to work
+    // there, so it falls back to writing the file in place.
+    vi.spyOn(fs, "renameSync").mockImplementation(() => {
+      throw Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" });
+    });
+    writeConfigDocument(snapshot, { engines: { default: "codex" } }, configPath);
+    expect(yaml.load(fs.readFileSync(configPath, "utf-8"))).toEqual({ engines: { default: "codex" } });
+    expect(fs.readdirSync(dir)).toEqual(["config.yaml"]);
+  });
+});
