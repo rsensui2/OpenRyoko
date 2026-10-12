@@ -3,7 +3,8 @@
  * has stopped being true does not keep steering sessions away.
  *
  * Nothing here polls. A timer exists only while the store holds a limit an
- * engine itself declared, and it asks the provider — never spends a turn:
+ * engine itself declared — and, for a stated outage, one that names the window
+ * it is held on — and it asks the provider, never spends a turn:
  *
  *  - on a doubling backoff from the moment the limit was seen (one minute,
  *    doubling to a half-hour cap, twelve times), and
@@ -58,9 +59,13 @@ interface Watch { key: string; attempts: number; dueAt: number }
 const time = (iso: string | undefined): number => (iso === undefined ? NaN : Date.parse(iso));
 
 /** A limit the engine declared: a stated outage, or a declared limit still
- *  waiting for its reset to be learned. Nothing else is the timer's business. */
+ *  waiting for its reset to be learned. Nothing else is the timer's business.
+ *
+ *  A reading ends an outage only by showing the window it is held on open
+ *  again. An outage that names no window leaves it nothing to look at, so it
+ *  is not asked about: a served turn, or its stated reset, is what ends it. */
 function watchKey(engine: string, record: EngineHealth | undefined): string | undefined {
-  if (record?.state === "exhausted") return `exhausted|${record.until ?? ""}`;
+  if (record?.state === "exhausted") return record.window === undefined ? undefined : `exhausted|${record.until ?? ""}`;
   return record?.state === "degraded" && record.reason === usageLimitReason(engine) ? "degraded" : undefined;
 }
 
@@ -190,6 +195,11 @@ export function startEngineHealthMonitor(options: { probes: Readonly<Record<stri
  * reads. "Available" is claimed only when no window that could be holding the
  * record is spent; a spent window that names no reset still ahead, like a
  * source that did not answer, is "cannot tell".
+ *
+ * So is a stated outage that names no window — `claude -p` reports a rejection
+ * with its reset and nothing else. It may be held by a window scoped to one
+ * model, which is not among those looked at for a record that names none, and
+ * the shared windows being open says nothing about that one.
  */
 export function claudeUsageProbe(
   collect: (options: { timeoutMs?: number }) => Promise<ClaudeUsageResponse> = collectClaudeUsage,
@@ -199,6 +209,7 @@ export function claudeUsageProbe(
     if (!usage.available) return { kind: "unknown" };
     const spent = spentClaudeWindowFor(usage.windows, record.window, now.getTime());
     if (spent?.resetsAt !== undefined) return { kind: "exhausted", resetsAt: spent.resetsAt, window: spent.name };
+    if (record.state === "exhausted" && record.window === undefined) return { kind: "unknown" };
     const unclear = usage.windows.some((window) => window.usedPercent >= 100 && windowCanHoldRecord(window.name, record.window));
     return unclear ? { kind: "unknown" } : { kind: "available" };
   };

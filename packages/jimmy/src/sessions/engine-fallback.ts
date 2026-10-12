@@ -241,15 +241,19 @@ export async function runEngineWithResponseTimeout(
 
 /**
  * Whether the limit a switch is being made for is the one on `engine`'s health
- * record — a limit the engine declared, with the same stated reset. Only then
- * does the record speak for the switch, so that forgetting the record (the
- * engine served a turn; a re-check found the allowance open) can end the hold.
- * A limit with no such record — unstated, undeclared, or met on a remote
- * machine's account — keeps its hold until it expires.
+ * record — a limit the engine declared, with the same stated reset, on a window
+ * it named. Only then does the record speak for the switch, so that forgetting
+ * the record (the engine served a turn; a re-check found the allowance open)
+ * can end the hold. A limit with no such record — unstated, undeclared, or met
+ * on a remote machine's account — keeps its hold until it expires.
+ *
+ * So does one whose window was not named, as `claude -p` reports them. Nothing
+ * then says which model the record is about: it is forgotten when any model is
+ * served, and a conversation tied to it would go back to fail on every message.
  */
 function restsOnHealthRecord(engine: string, statedMs: number): boolean {
   const record = readEngineHealth()[engine];
-  return record?.state === "exhausted" && record.until === new Date(statedMs).toISOString();
+  return record?.state === "exhausted" && record.window !== undefined && record.until === new Date(statedMs).toISOString();
 }
 
 const ENGINE_SWITCHED = "Interrupted: engine switched";

@@ -142,6 +142,31 @@ describe("the engine health re-check timer", () => {
     expect(readEngineHealth().claude).toBeUndefined();
   });
 
+  // A reading can only end an outage by showing the window it is held on open
+  // again. An outage that names no window gives it nothing to look at.
+  it("asks nothing about a stated outage that names no window", async () => {
+    recordEngineUnavailable("claude", "claude usage limit", secondsFromStart(3 * 24 * HOUR));
+    verdicts.push({ kind: "available" });
+    start();
+    expect(vi.getTimerCount()).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(13 * HOUR);
+
+    expect(probe).not.toHaveBeenCalled();
+    expect(readEngineHealth().claude).toMatchObject({ state: "exhausted", until: isoFromStart(3 * 24 * HOUR) });
+  });
+
+  it("starts asking once that outage is recorded again with its window", async () => {
+    recordEngineUnavailable("claude", "claude usage limit", secondsFromStart(3 * 24 * HOUR));
+    start();
+
+    recordEngineUnavailable("claude", "claude usage limit", secondsFromStart(3 * 24 * HOUR), new Date(), "7d");
+
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(MINUTE);
+    expect(probe).toHaveBeenCalledTimes(1);
+  });
+
   it("ignores an engine it has no way to ask", async () => {
     recordEngineUnavailable("codex", "codex usage limit", secondsFromStart(3 * 24 * HOUR));
     start();
@@ -328,6 +353,26 @@ describe("claudeUsageProbe", () => {
     const windows = [window("7d", 40, reset), window("7d Fable", 100, reset), window("7d Opus", 100, reset)];
     await expect(ask(windows, "7d Fable")).resolves.toEqual({ kind: "exhausted", resetsAt: reset, window: "7d Fable" });
     await expect(ask([window("7d", 40, reset), window("7d Opus", 100, reset)], "7d Fable")).resolves.toEqual({ kind: "available" });
-    await expect(ask(windows)).resolves.toEqual({ kind: "available" });
+  });
+
+  // `claude -p` reports a rejection with its reset and no window. Such an
+  // outage could be held by any window — a model's own weekly allowance
+  // included — so open shared windows are no evidence that it is over. (This
+  // used to read "available", and the record was cleared within minutes.)
+  it("cannot tell for a stated outage that names no window, whatever the shared windows show", async () => {
+    const reset = secondsFromStart(48 * HOUR);
+    await expect(ask([window("5h", 20, secondsFromStart(HOUR)), window("7d", 40, reset), window("7d Opus", 100, reset)])).resolves.toEqual({ kind: "unknown" });
+    await expect(ask([window("5h", 20, secondsFromStart(HOUR)), window("7d", 40, reset)])).resolves.toEqual({ kind: "unknown" });
+  });
+
+  it("still states the reset of a shared window that is spent, for an outage that names no window", async () => {
+    const reset = secondsFromStart(48 * HOUR);
+    await expect(ask([window("5h", 12, secondsFromStart(HOUR)), window("7d", 100, reset)])).resolves.toEqual({ kind: "exhausted", resetsAt: reset, window: "7d" });
+  });
+
+  it("still finds nothing to learn for a declared limit without a reset when no shared window is spent", async () => {
+    const declared: EngineHealth = { state: "degraded", until: isoFromStart(15 * MINUTE), reason: "claude usage limit" };
+    const verdict = await claudeUsageProbe(async () => usage([window("5h", 20, secondsFromStart(HOUR)), window("7d", 40, secondsFromStart(48 * HOUR))]))(declared, START);
+    expect(verdict).toEqual({ kind: "available" });
   });
 });
