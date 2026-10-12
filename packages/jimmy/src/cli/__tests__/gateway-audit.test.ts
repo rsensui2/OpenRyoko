@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import crypto from "node:crypto";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { auditGatewayReferences } from "../gateway-audit.js";
 
 const homes: string[] = [];
@@ -13,6 +14,7 @@ function makeHome(): string {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const home of homes.splice(0)) fs.rmSync(home, { recursive: true, force: true });
 });
 
@@ -70,6 +72,103 @@ describe("auditGatewayReferences", () => {
     expect(report.unauthenticatedCurlCandidates).toEqual([]);
     expect(report.backupDir).toBeUndefined();
     expect(fs.readFileSync(path.join(backup, "SKILL.md"), "utf8")).toBe(original);
+  });
+
+  it("does not overwrite a file outside the home through a link left where its temporary file used to go", () => {
+    const home = makeHome();
+    const script = path.join(home, "skills", "x", "a.sh");
+    fs.mkdirSync(path.dirname(script), { recursive: true });
+    fs.writeFileSync(script, "curl http://0.0.0.0:7777/api/status # attacker-chosen text\n", { mode: 0o644 });
+    const outside = makeHome();
+    const secret = path.join(outside, "id_ed25519");
+    fs.writeFileSync(secret, "the user's key\n", { mode: 0o600 });
+    // The temporary file was named after the PID, which can simply be guessed at.
+    fs.symlinkSync(secret, `${script}.tmp-gateway-url-${process.pid}`);
+
+    const report = auditGatewayReferences(home, { fix: true });
+
+    expect(fs.readFileSync(secret, "utf8")).toBe("the user's key\n");
+    expect(fs.statSync(secret).mode & 0o777).toBe(0o600);
+    // The fix itself still happens, on the file it was meant for.
+    expect(report.fixedFiles).toEqual(["skills/x/a.sh"]);
+    expect(fs.lstatSync(script).isFile()).toBe(true);
+    expect(fs.readFileSync(script, "utf8")).toContain("http://127.0.0.1:7777");
+    expect(fs.statSync(script).mode & 0o777).toBe(0o644);
+  });
+
+  it("writes through a temporary file nobody can name in advance, and leaves none behind", () => {
+    const home = makeHome();
+    fs.mkdirSync(path.join(home, "cron"), { recursive: true });
+    for (const name of ["a.json", "b.json"]) fs.writeFileSync(path.join(home, "cron", name), '{"u":"http://0.0.0.0:7777/api/status"}');
+    const rename = vi.spyOn(fs, "renameSync");
+
+    auditGatewayReferences(home, { fix: true });
+
+    const temporaries = rename.mock.calls.map(([from]) => path.basename(String(from)));
+    expect(temporaries).toHaveLength(2);
+    expect(new Set(temporaries).size).toBe(2);
+    for (const name of temporaries) expect(name).not.toContain(String(process.pid));
+    expect(fs.readdirSync(path.join(home, "cron")).sort()).toEqual(["a.json", "b.json"]);
+  });
+
+  it("refuses a file already sitting at the very name its temporary file is about to take", () => {
+    const home = makeHome();
+    const script = path.join(home, "skills", "x", "a.sh");
+    fs.mkdirSync(path.dirname(script), { recursive: true });
+    fs.writeFileSync(script, "curl http://0.0.0.0:7777/api/status\n");
+    const outside = makeHome();
+    const secret = path.join(outside, "id_ed25519");
+    fs.writeFileSync(secret, "the user's key\n");
+    // Not something anyone can arrange once the name is random; if the path is taken
+    // anyway, it must be refused rather than followed.
+    vi.spyOn(crypto, "randomBytes").mockImplementation((() => Buffer.alloc(8, 0xcd)) as unknown as typeof crypto.randomBytes);
+    fs.symlinkSync(secret, `${script}.${"cd".repeat(8)}.tmp`);
+
+    expect(() => auditGatewayReferences(home, { fix: true })).toThrow(/EEXIST/);
+
+    expect(fs.readFileSync(secret, "utf8")).toBe("the user's key\n");
+    expect(fs.readFileSync(script, "utf8")).toContain("0.0.0.0");
+  });
+
+  it("removes its temporary file when the fixed copy cannot be moved into place", () => {
+    const home = makeHome();
+    fs.mkdirSync(path.join(home, "cron"), { recursive: true });
+    const file = path.join(home, "cron", "jobs.json");
+    fs.writeFileSync(file, '{"u":"http://0.0.0.0:7777/api/status"}');
+    vi.spyOn(fs, "renameSync").mockImplementation(() => { throw new Error("rename refused"); });
+
+    expect(() => auditGatewayReferences(home, { fix: true })).toThrow("rename refused");
+
+    expect(fs.readdirSync(path.join(home, "cron"))).toEqual(["jobs.json"]);
+    expect(fs.readFileSync(file, "utf8")).toContain("0.0.0.0");
+  });
+
+  it("does not follow a file that turned into a link after it was listed", () => {
+    const home = makeHome();
+    const script = path.join(home, "skills", "x", "a.sh");
+    fs.mkdirSync(path.dirname(script), { recursive: true });
+    fs.writeFileSync(script, "curl http://0.0.0.0:7777/api/status\n");
+    const outside = makeHome();
+    const elsewhere = path.join(outside, "notes.md");
+    fs.writeFileSync(elsewhere, "see http://0.0.0.0:7777/api/status\n", { mode: 0o600 });
+    const read = fs.readFileSync;
+    // Listed as a regular file; swapped for a link before the fix reaches it.
+    vi.spyOn(fs, "readFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+      const content = (read as (...args: unknown[]) => unknown)(file, ...rest);
+      if (file === script && fs.lstatSync(script).isFile()) {
+        fs.rmSync(script);
+        fs.symlinkSync(elsewhere, script);
+      }
+      return content;
+    }) as typeof fs.readFileSync);
+
+    const report = auditGatewayReferences(home, { fix: true });
+
+    expect(report.fixedFiles).toEqual([]);
+    expect(report.backupDir).toBeUndefined();
+    expect(fs.readFileSync(elsewhere, "utf8")).toBe("see http://0.0.0.0:7777/api/status\n");
+    expect(fs.statSync(elsewhere).mode & 0o777).toBe(0o600);
+    expect(fs.readlinkSync(script)).toBe(elsewhere);
   });
 
   it("flags direct API curl candidates without auth but ignores health and ryoko api", () => {

@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -79,11 +80,33 @@ function timestampForPath(date: Date): string {
   return date.toISOString().replace(/[:.]/g, "-");
 }
 
+/**
+ * Replace `file` in one step, keeping its mode. The temporary file has a random name
+ * and is created exclusively: a name built from the PID could be guessed, and a link
+ * planted there was written through — overwriting whatever it pointed at, anywhere,
+ * with text taken from a file in the home. The mode is set on the temporary file,
+ * which only this call can name, never on a path after the rename.
+ */
 function atomicWritePreservingMode(file: string, content: string, mode: number): void {
-  const temporary = `${file}.tmp-gateway-url-${process.pid}`;
-  fs.writeFileSync(temporary, content, { encoding: "utf8", mode });
-  fs.renameSync(temporary, file);
-  fs.chmodSync(file, mode);
+  const temporary = `${file}.${crypto.randomBytes(8).toString("hex")}.tmp`;
+  fs.writeFileSync(temporary, content, { encoding: "utf8", mode, flag: "wx" });
+  try {
+    fs.chmodSync(temporary, mode);
+    fs.renameSync(temporary, file);
+  } catch (error) {
+    fs.rmSync(temporary, { force: true });
+    throw error;
+  }
+}
+
+/** The file's mode if it is, right now, a regular file — not a link put there since it was listed. */
+function regularFileMode(file: string): number | null {
+  try {
+    const stat = fs.lstatSync(file);
+    return stat.isFile() ? stat.mode & 0o777 : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Audit and optionally repair unsafe bind-address URLs under one instance home. */
@@ -110,11 +133,13 @@ export function auditGatewayReferences(home: string, options: GatewayAuditOption
     if (occurrences > 0) {
       report.legacyFiles.push(relative);
       report.legacyOccurrences += occurrences;
-      if (options.fix) {
+      // Checked again here, without following: backing up and rewriting a link would
+      // copy and chmod whatever it points at.
+      const mode = options.fix ? regularFileMode(file) : null;
+      if (mode !== null) {
         backupDir ??= path.join(home, "backups", `gateway-url-${timestampForPath(options.now ?? new Date())}`);
         const backupFile = path.join(backupDir, relative);
         fs.mkdirSync(path.dirname(backupFile), { recursive: true, mode: 0o700 });
-        const mode = fs.statSync(file).mode & 0o777;
         fs.copyFileSync(file, backupFile);
         fs.chmodSync(backupFile, mode);
         content = replaceLegacyGatewayUrls(content);
