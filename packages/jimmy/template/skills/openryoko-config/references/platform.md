@@ -35,6 +35,7 @@ ryoko -i <name> api GET /api/connectors
 | 停滞時に別AIへ引き継ぐ | `engines.<engine>.fallback/fallbackModelMap`、`sessions.*` | [実行エンジン](engine-fallback.md)の版判定が先 |
 | 新着メッセージで割込む | `sessions.interruptOnNewMessage` | `true`でも実行エンジンのinterrupt対応に依存。待機キューとstopの経路も確認 |
 | 一時障害の再試行・遅れて届く出力 | `sessions.transientRetryDelaysMs/backgroundDelivery` | 同じエンジンでの再試行と別エンジンへの移行は別機構 |
+| 再起動で打ち切られたターンを続きから再開 | `sessions.resumeInterruptedOnBoot/resumeInterruptedMaxAgeMinutes` | 既定で有効・120分より古い打ち切りは対象外。起動時に読む。cron・workflow・キューから再実行されるターンは対象外で、起こす件数と頻度に上限がある。エンジンの異常終了・子の完了通知の扱いとあわせて `docs/architecture.md` の「Session Lifecycle」 |
 | Slack／Discord等を接続 | `connectors.slack/discord/telegram/whatsapp`、`connectors.instances[]` | トップレベルと名前付き接続を取り違えない。インスタンス要素は `id/type/employee/config` |
 | どの会話に応答するか | `connectors.slack.respondTo`、`allowFrom`、`triage` | Slackは `im/mpim/channel: always/mention/never`、`engagedThreads`。Jevより前の入口で除外された会話をJevで救済できない |
 | Claude／Codexのログイン切れをSlackから復旧 | Slackの `providerAuth.enabled`、`portal.operatorSlackId` | 既定は無効。オペレータ本人の1:1のDMだけで動き、他の相手・場所には反応しない。SlackアプリのInteractivityが必要。手順・注意点は `docs/connectors.md` の「Provider Re-login」。`sshHost` の社員のログインは対象外 |
