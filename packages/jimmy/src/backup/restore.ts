@@ -22,6 +22,7 @@ import { BACKUP_KINDS, HOME_ARCHIVE_TARGETS, kindOfPath, unsafePathReason, type 
 import { absolutePathOf, collectHomeEntries } from "./walk.js";
 
 const HASH_CHUNK_BYTES = 64 * 1024;
+const COPY_CHUNK_BYTES = 64 * 1024;
 const MAX_LISTED = 5;
 
 export interface RestoreOptions {
@@ -367,6 +368,21 @@ function refuseToReplaceUnsaved(plan: PlanItem[], snapshot: Snapshot | null): vo
   );
 }
 
+/** A file by where it is stored rather than by what it is called: the device it is on, and its number there. */
+interface FileIdentity {
+  device: bigint;
+  inode: bigint;
+}
+
+const identityOf = (stat: fs.BigIntStats): FileIdentity => ({ device: stat.dev, inode: stat.ino });
+const sameFile = (a: FileIdentity, b: FileIdentity): boolean => a.device === b.device && a.inode === b.inode;
+
+/** A file extracted into the working directory: the name it has there, and which file that was when it was written. */
+interface StagedFile {
+  file: string;
+  identity: FileIdentity;
+}
+
 /**
  * The directory a restore extracts into before anything is moved into place,
  * and a record of every file it puts there.
@@ -383,13 +399,12 @@ class StagingDirectory {
   /** The files created here, in the order they were made. */
   private readonly made: string[] = [];
 
-  private constructor(readonly directory: string, private readonly device: number, private readonly inode: number) {}
+  private constructor(readonly directory: string, private readonly identity: FileIdentity) {}
 
   /** A new, empty, owner-only directory under `scratch`, with a name nobody could have guessed. */
   static createIn(scratch: string): StagingDirectory {
     const directory = fs.mkdtempSync(path.join(scratch, "restore-"));
-    const made = fs.lstatSync(directory);
-    return new StagingDirectory(directory, made.dev, made.ino);
+    return new StagingDirectory(directory, identityOf(fs.lstatSync(directory, { bigint: true })));
   }
 
   /** The next file to extract into. Created exclusively, so that nothing already under its name is written through. */
@@ -406,9 +421,9 @@ class StagingDirectory {
    * one - not another that has been put under its name.
    */
   private displaced(): string | null {
-    const here = lstatOrNull(this.directory);
+    const here = fs.lstatSync(this.directory, { bigint: true, throwIfNoEntry: false });
     const above = lstatOrNull(path.dirname(this.directory));
-    if (above?.isDirectory() && here?.isDirectory() && here.dev === this.device && here.ino === this.inode) return null;
+    if (above?.isDirectory() && here?.isDirectory() && sameFile(identityOf(here), this.identity)) return null;
     return `${this.directory} is no longer the directory this restore made, so nothing was removed from it and it was left as it is`;
   }
 
@@ -448,14 +463,20 @@ class StagingDirectory {
  * each as it lands. Staging holds flat numbered files and nothing else - no
  * directories, no links - so no entry name from the archive is ever used as a
  * path here, and the archive is held to the manifest that was just verified.
+ *
+ * Each file is finished through the descriptor it was written through: its
+ * permissions are put on that way, and which file it is - the device and
+ * inode behind the descriptor - is noted that way. A descriptor cannot be
+ * made to mean another file. A name can, and the name is all that is left of
+ * the file between now and the moment it is moved into place.
  */
 async function stageFiles(
   archive: string,
   staging: StagingDirectory,
   needed: Map<string, ManifestEntry>,
   limits: ArchiveLimits,
-): Promise<Map<string, string>> {
-  const staged = new Map<string, string>();
+): Promise<Map<string, StagedFile>> {
+  const staged = new Map<string, StagedFile>();
   // The one descriptor that may still be open if the archive fails mid-entry.
   const open: { descriptor?: number } = {};
   try {
@@ -471,12 +492,14 @@ async function stageFiles(
           fs.writeSync(descriptor, chunk);
         },
         end: () => {
+          try { fs.fchmodSync(descriptor, expected.mode & 0o777); } catch { /* Windows has no POSIX modes */ }
+          const identity = identityOf(fs.fstatSync(descriptor, { bigint: true }));
           fs.closeSync(descriptor);
           open.descriptor = undefined;
           if (entry.size !== expected.size || hash.digest("hex") !== expected.sha256) {
             throw new Error(`${entry.path} no longer matches the manifest that was verified; the archive changed underneath the restore`);
           }
-          staged.set(entry.path, file);
+          staged.set(entry.path, { file, identity });
         },
       };
     }, limits);
@@ -515,17 +538,88 @@ function makeDirectory(destination: string, mode: number): void {
   fs.mkdirSync(destination, { mode: (mode & 0o777) | 0o700 });
 }
 
-function placeFile(staged: string, destination: string, mode: number): void {
-  try { fs.chmodSync(staged, mode & 0o777); } catch { /* Windows has no POSIX modes */ }
+const replacedMeanwhile = (staged: StagedFile): Error => new Error(
+  `${staged.file} is not the file that was extracted there: it was replaced while the restore was running, so nothing was put in its place`,
+);
+
+/**
+ * Holds what sits under an extracted file's name to still being that file: a
+ * regular file, and the one that was written - not a link put there since,
+ * and not another file.
+ *
+ * What was extracted was checked against the manifest as it landed. What gets
+ * moved into place is whatever is under the name by then, and the working
+ * directory is in the home, where others can reach it. A link there used to be
+ * given the file's permissions - which went to whatever it pointed at - and
+ * was then itself moved into the home.
+ *
+ * Two things this does not close. The instant between this look and the move,
+ * which takes moving by descriptor (renameat on an open directory) and Node
+ * does not offer it. And, for telling one regular file from another, a file
+ * system that hands a freed inode number straight to the next file made:
+ * there, a different file under the name could pass for the one extracted. A
+ * link never does.
+ */
+function assertStillExtracted(staged: StagedFile): void {
+  const found = fs.lstatSync(staged.file, { bigint: true, throwIfNoEntry: false });
+  if (!found?.isFile() || !sameFile(identityOf(found), staged.identity)) throw replacedMeanwhile(staged);
+}
+
+/**
+ * Opens the extracted file for reading - refusing a link under its name, and
+ * not waiting on a pipe put there, which a plain open would do for ever - and
+ * makes sure of it through the descriptor. From here on what is read is that
+ * file, whatever happens to the name.
+ */
+function openExtracted(staged: StagedFile): number {
+  let descriptor: number;
+  try {
+    descriptor = fs.openSync(staged.file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
+  } catch {
+    throw replacedMeanwhile(staged);
+  }
+  if (sameFile(identityOf(fs.fstatSync(descriptor, { bigint: true })), staged.identity)) return descriptor;
+  fs.closeSync(descriptor);
+  throw replacedMeanwhile(staged);
+}
+
+/**
+ * Copies an extracted file to `temporary`, for when it cannot be moved. Read
+ * from a descriptor that is known to be the file, written to a file created
+ * exclusively, and given its permissions through that file's own descriptor:
+ * copying by name would follow a link and bring what it points at into the home.
+ */
+function copyExtracted(staged: StagedFile, temporary: string, mode: number): void {
+  const source = openExtracted(staged);
+  try {
+    const target = fs.openSync(temporary, "wx", 0o600);
+    try {
+      const buffer = Buffer.allocUnsafe(COPY_CHUNK_BYTES);
+      for (let read = fs.readSync(source, buffer); read > 0; read = fs.readSync(source, buffer)) fs.writeSync(target, buffer, 0, read);
+      try { fs.fchmodSync(target, mode & 0o777); } catch { /* Windows has no POSIX modes */ }
+    } finally {
+      fs.closeSync(target);
+    }
+  } finally {
+    fs.closeSync(source);
+  }
+}
+
+function placeFile(staged: StagedFile, destination: string, mode: number): void {
+  assertStillExtracted(staged);
   try {
     // Replaces a file or a symlink at the destination in one step; a link is replaced, not followed.
-    fs.renameSync(staged, destination);
+    fs.renameSync(staged.file, destination);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
     const temporary = `${destination}.restore-${crypto.randomBytes(4).toString("hex")}`;
-    fs.copyFileSync(staged, temporary, fs.constants.COPYFILE_EXCL);
-    try { fs.chmodSync(temporary, mode & 0o777); } catch { /* Windows has no POSIX modes */ }
-    fs.renameSync(temporary, destination);
+    try {
+      copyExtracted(staged, temporary, mode);
+      fs.renameSync(temporary, destination);
+    } catch (failure) {
+      fs.rmSync(temporary, { force: true });
+      throw failure;
+    }
   }
 }
 
@@ -545,7 +639,7 @@ function placeSymlink(destination: string, target: string): void {
   fs.renameSync(temporary, destination);
 }
 
-function applyPlan(home: string, plan: PlanItem[], staged: Map<string, string>): void {
+function applyPlan(home: string, plan: PlanItem[], staged: Map<string, StagedFile>): void {
   for (const { entry, action } of plan) {
     if (action === "unchanged") continue;
     assertParentsAreDirectories(home, entry.path);
