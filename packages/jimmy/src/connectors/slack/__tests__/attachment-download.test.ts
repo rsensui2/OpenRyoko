@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { fetchSlackFiles } from "../attachments.js";
 import { downloadAttachment } from "../format.js";
 
 /* The Slack connector fetches the files people post where the bot reads. How
@@ -43,10 +44,10 @@ describe("Slack downloadAttachment", () => {
     expect(everythingUnder(root)).toEqual([]);
   });
 
-  it("refuses a file announced as larger than 50 MB without reading it", async () => {
+  it("refuses a file announced as larger than 200 MB, the limit when none is given, without reading it", async () => {
     const body = { cancel: vi.fn(async () => {}) };
     outbound.mockResolvedValue({
-      ok: true, status: 200, statusText: "OK", headers: new Headers({ "content-length": String(50 * 1024 * 1024 + 1) }), body,
+      ok: true, status: 200, statusText: "OK", headers: new Headers({ "content-length": String(200 * 1024 * 1024 + 1) }), body,
     } as unknown as Response);
 
     await expect(downloadAttachment(FILE_URL, TOKEN, dest)).rejects.toThrow(/too large/i);
@@ -65,6 +66,48 @@ describe("Slack downloadAttachment", () => {
     outbound.mockResolvedValue(new Response("x".repeat(1024)));
     const saved = await downloadAttachment(FILE_URL, TOKEN, dest, 1024);
     expect(fs.statSync(saved).size).toBe(1024);
+  });
+});
+
+describe("fetchSlackFiles", () => {
+  /* What the connector calls for a message's files. A file that is not
+   * fetched is reported, by Slack's ID for it — and with the reason, when the
+   * reason is its size — so the session can tell the person who sent it. */
+  const file = (id: string) => ({ id, name: `${id}.bin`, mimetype: "application/octet-stream", url_private_download: `https://files.slack.com/files-pri/T0001-${id}/download/${id}.bin` });
+  const announcing = (bytes: number) => ({
+    ok: true, status: 200, statusText: "OK", headers: new Headers({ "content-length": String(bytes) }), body: { cancel: vi.fn(async () => {}) },
+  }) as unknown as Response;
+  const client = (maxBytes?: number) => ({ token: TOKEN, filesInfo: vi.fn(), ...(maxBytes === undefined ? {} : { maxBytes }) });
+  const MB = 1024 * 1024;
+
+  it("fetches each file into the message's directory", async () => {
+    const fetched = await fetchSlackFiles([file("F1"), file("F2")], client(), dest);
+    expect(fetched.failed).toEqual([]);
+    expect(fetched.attachments.map((attachment) => attachment.name)).toEqual(["F1.bin", "F2.bin"]);
+    expect(fetched.attachments.every((attachment) => path.dirname(attachment.localPath!) === dest)).toBe(true);
+  });
+
+  it("reports a file over the connector's limit with that limit, and still fetches the others", async () => {
+    outbound.mockResolvedValueOnce(announcing(6 * MB));
+
+    const fetched = await fetchSlackFiles([file("F1"), file("F2")], client(5 * MB), dest);
+
+    expect(fetched.failed).toEqual(["Slack file F1 (larger than the 5 MB attachment limit)"]);
+    expect(fetched.attachments.map((attachment) => attachment.name)).toEqual(["F2.bin"]);
+  });
+
+  it("keeps a 120 MB recording when no limit is configured: the default is 200 MB", async () => {
+    outbound.mockResolvedValueOnce(announcing(201 * MB)).mockResolvedValueOnce(new Response("a-recording", { headers: { "content-length": String(120 * MB) } }));
+    // (The second answer only announces 120 MB; what it sends is short, and that is what counts.)
+    const fetched = await fetchSlackFiles([file("F1"), file("F2")], client(), dest);
+    expect(fetched.failed).toEqual(["Slack file F1 (larger than the 200 MB attachment limit)"]);
+    expect(fetched.attachments.map((attachment) => attachment.name)).toEqual(["F2.bin"]);
+  });
+
+  it("reports any other failure by the file's ID alone", async () => {
+    outbound.mockResolvedValueOnce(new Response("nope", { status: 403, statusText: "Forbidden" }));
+    const fetched = await fetchSlackFiles([file("F1")], client(), dest);
+    expect(fetched.failed).toEqual(["Slack file F1"]);
   });
 });
 

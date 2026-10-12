@@ -1,17 +1,40 @@
 import fs from "node:fs";
 import path from "node:path";
 
+const BYTES_PER_MB = 1024 * 1024;
+
 /**
- * The largest attachment a connector keeps — the same 50 MB the gateway's own
- * upload route allows. How large a file is, is up to whoever sent it.
+ * The largest attachment a connector downloads when its config does not say:
+ * `connectors.<name>.maxAttachmentMb`. How large a file is, is up to whoever
+ * sent it, so there has to be a limit; it is generous because people do send
+ * recordings and videos, and a file over it is not delivered to the session.
  */
-export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+export const DEFAULT_MAX_ATTACHMENT_MB = 200;
+
+/**
+ * A connector's attachment limit in bytes, from its `maxAttachmentMb`. The
+ * config is hand-edited YAML: anything that is not a positive number means
+ * the default, not "no limit" and not "nothing at all".
+ */
+export function attachmentLimitBytes(maxAttachmentMb: unknown): number {
+  const megabytes =
+    typeof maxAttachmentMb === "number" && Number.isFinite(maxAttachmentMb) && maxAttachmentMb > 0 ? maxAttachmentMb : DEFAULT_MAX_ATTACHMENT_MB;
+  return Math.floor(megabytes * BYTES_PER_MB);
+}
+
+/** `bytes` in megabytes, the way the setting is written: "200", "1.5", "0.5". */
+export function megabytes(bytes: number): string {
+  return String(Number((bytes / BYTES_PER_MB).toFixed(2)));
+}
 
 /** The message says how large is too large, and nothing about the file. */
 export class AttachmentTooLargeError extends Error {
+  /** The limit that was passed. */
+  readonly maxBytes: number;
   constructor(maxBytes: number) {
     super(`Attachment is too large (limit ${maxBytes} bytes)`);
     this.name = "AttachmentTooLargeError";
+    this.maxBytes = maxBytes;
   }
 }
 

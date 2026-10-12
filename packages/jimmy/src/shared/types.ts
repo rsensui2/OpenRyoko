@@ -533,6 +533,9 @@ export interface SlackConnectorConfig {
   botToken: string;
   allowFrom?: string | string[];
   ignoreOldMessagesOnBoot?: boolean;
+  /** Largest attachment downloaded, in MB (default 200). A larger one is not
+   *  fetched; the session is told so. */
+  maxAttachmentMb?: number;
   /** Deterministic per-scope response gate (DM / group DM / channel). */
   respondTo?: SlackRespondToConfig;
   /** Air-reading triage: decide per-message whether to reply/react/stay silent */
@@ -598,6 +601,9 @@ export interface DiscordConnectorConfig {
   botToken?: string;       // Make optional — not needed in proxy mode
   allowFrom?: string | string[];
   ignoreOldMessagesOnBoot?: boolean;
+  /** Largest attachment downloaded, in MB (default 200). A larger one is not
+   *  fetched; the session is told so. */
+  maxAttachmentMb?: number;
   guildId?: string;
   /** Only respond to messages in this channel */
   channelId?: string;
@@ -635,6 +641,9 @@ export interface WhatsAppConnectorConfig {
   /** Allowed phone numbers in JID format (e.g. "447700900000@s.whatsapp.net") — empty = allow all */
   allowFrom?: string[];
   ignoreOldMessagesOnBoot?: boolean;
+  /** Largest attachment downloaded, in MB (default 200). A larger one is not
+   *  fetched; the session is told so. */
+  maxAttachmentMb?: number;
 }
 
 export interface ConnectorInstance {

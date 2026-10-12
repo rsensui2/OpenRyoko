@@ -45,6 +45,7 @@ import { startsWithSlashCommand } from "../../sessions/manager.js";
 import type { SlackTriageConfig } from "../../shared/types.js";
 import { JINN_HOME } from "../../shared/paths.js";
 import { newAttachmentDir } from "../../shared/attachments.js";
+import { attachmentLimitBytes } from "../../shared/attachment-download.js";
 import { logger } from "../../shared/logger.js";
 
 export interface SlackConnectorContext {
@@ -69,6 +70,8 @@ export class SlackConnector implements Connector {
   private handler: ((msg: IncomingMessage) => void) | null = null;
   private readonly allowedUsers: Set<string> | null;
   private readonly ignoreOldMessagesOnBoot: boolean;
+  /** connectors.slack.maxAttachmentMb, as written in the config (see shared/attachment-download.ts). */
+  private readonly maxAttachmentMb: number | undefined;
   private readonly bootTimeMs = Date.now();
   private started = false;
   private lastError: string | null = null;
@@ -155,6 +158,7 @@ export class SlackConnector implements Connector {
     });
     if (context.getModelManagement && context.getOperatorSlackId) this.modelControls = new SlackModelControls(context.getModelManagement, context.getOperatorSlackId, (config as { id?: string }).id || "slack");
     this.ignoreOldMessagesOnBoot = config.ignoreOldMessagesOnBoot !== false;
+    this.maxAttachmentMb = config.maxAttachmentMb;
     const allowFrom = Array.isArray(config.allowFrom)
       ? config.allowFrom
       : typeof config.allowFrom === "string"
@@ -661,7 +665,7 @@ export class SlackConnector implements Connector {
       if (eventFiles.length > 0) {
         const fetched = await fetchSlackFiles(
           eventFiles,
-          { token: this.app.client.token!, filesInfo: (args) => this.app.client.files.info(args) },
+          { token: this.app.client.token!, filesInfo: (args) => this.app.client.files.info(args), maxBytes: attachmentLimitBytes(this.maxAttachmentMb) },
           newAttachmentDir(), // this message's own (see shared/attachments.ts)
         );
         msg.attachments = fetched.attachments;

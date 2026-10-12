@@ -2149,12 +2149,12 @@ Handle this as a priority request from a colleague.`;
 
       // Download attachments from Discord CDN URLs to local temp. The names
       // and URLs are the caller's: only https Discord CDN URLs are fetched.
-      const { downloadIncomingAttachments, sanitizeIncomingDiscordMeta } = await import("../connectors/discord/remote.js");
+      const { downloadIncomingAttachments, routedMessageText, sanitizeIncomingDiscordMeta } = await import("../connectors/discord/remote.js");
       // Only for a message the connector is going to hand on: one it stays
       // silent on (respondTo, addressed to somebody else) is not fetched first.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const wanted: boolean = (connector as any).willDeliver?.(sanitizeIncomingDiscordMeta(body.transportMeta)) ?? true;
-      const attachments = wanted ? await downloadIncomingAttachments(body.attachments, newAttachmentDir()) : [];
+      const fetched = wanted ? await downloadIncomingAttachments(body.attachments, newAttachmentDir()) : { attachments: [], failed: [] };
 
       const incomingMsg: IncomingMessage = {
         connector: params.id,
@@ -2164,9 +2164,9 @@ Handle this as a priority request from a colleague.`;
         thread: body.thread,
         user: body.user,
         userId: body.userId,
-        text: body.text,
+        text: routedMessageText(body.text, fetched.failed), // says which attachments were not fetched
         messageId: body.messageId,
-        attachments,
+        attachments: fetched.attachments,
         replyContext: body.replyContext || {},
         // Boundary scrub: this endpoint carries Discord traffic — drop
         // cross-platform identity fields a forged payload might smuggle in.

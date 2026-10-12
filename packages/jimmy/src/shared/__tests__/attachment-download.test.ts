@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AttachmentTooLargeError, MAX_ATTACHMENT_BYTES, saveResponseWithin, saveWithin } from "../attachment-download.js";
+import { AttachmentTooLargeError, attachmentLimitBytes, DEFAULT_MAX_ATTACHMENT_MB, saveResponseWithin, saveWithin } from "../attachment-download.js";
 
 /* Every connector saves the files people send it. The size of such a file is
  * the sender's choice, so a save must stop at a limit — while reading, not
@@ -154,8 +154,35 @@ describe("saveResponseWithin", () => {
   });
 });
 
-describe("MAX_ATTACHMENT_BYTES", () => {
-  it("is 50 MB, the gateway's own upload limit", () => {
-    expect(MAX_ATTACHMENT_BYTES).toBe(50 * 1024 * 1024);
+describe("attachmentLimitBytes", () => {
+  /* A limit of 50 MB — the first one — turned away the videos and recordings
+   * people had been sending all along. The limit is each connector's own
+   * setting now (`maxAttachmentMb`), and generous unless it is set. */
+  const MB = 1024 * 1024;
+
+  it("is 200 MB unless the connector says otherwise", () => {
+    expect(DEFAULT_MAX_ATTACHMENT_MB).toBe(200);
+    expect(attachmentLimitBytes(undefined)).toBe(200 * MB);
+  });
+
+  it("takes the connector's maxAttachmentMb, whole or fractional", () => {
+    expect(attachmentLimitBytes(50)).toBe(50 * MB);
+    expect(attachmentLimitBytes(1024)).toBe(1024 * MB);
+    expect(attachmentLimitBytes(0.5)).toBe(MB / 2);
+  });
+
+  it.each([[0], [-5], [Number.NaN], [Number.POSITIVE_INFINITY], ["100"], [null], [{}], [true]])(
+    "falls back to the default for %j, which is not a size",
+    (value) => {
+      expect(attachmentLimitBytes(value)).toBe(200 * MB);
+    },
+  );
+});
+
+describe("AttachmentTooLargeError", () => {
+  it("remembers the limit that was passed, for whoever has to explain it", () => {
+    const failure = new AttachmentTooLargeError(200 * 1024 * 1024);
+    expect(failure.maxBytes).toBe(200 * 1024 * 1024);
+    expect(failure.message).toBe("Attachment is too large (limit 209715200 bytes)");
   });
 });

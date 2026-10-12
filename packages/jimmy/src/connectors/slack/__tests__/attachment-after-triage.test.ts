@@ -4,6 +4,7 @@ import { SlackConnector } from "../index.js";
 import { ConversationTracker } from "../conversation-tracker.js";
 import { runTriage } from "../triage.js";
 import { downloadAttachment } from "../format.js";
+import { AttachmentTooLargeError } from "../../../shared/attachment-download.js";
 
 vi.mock("../triage.js", () => ({ runTriage: vi.fn() }));
 vi.mock("../format.js", async (importOriginal) => ({
@@ -18,7 +19,7 @@ afterEach(() => { vi.clearAllMocks(); });
  * leave the files where they were, since only a turn cleans up after itself.
  * Files are now fetched once the message is going to be answered. */
 
-async function fixture() {
+async function fixture(settings: Record<string, unknown> = {}) {
   let receive: (args: { event: Record<string, unknown> }) => Promise<void>;
   const handler = vi.fn();
   const reactions = vi.fn().mockResolvedValue({ ok: true });
@@ -39,6 +40,7 @@ async function fixture() {
     conversations: new ConversationTracker({ now: () => 0, idleTimeoutMs: 1000 }), triageConfig: { enabled: true, backend: "jev" },
     respondTo: undefined, handler, allowedUsers: null, ignoreOldMessagesOnBoot: false,
     userInfoCache: new Map(), channelNameCache: new Map(), agentsCanvas: null,
+    ...settings,
   });
   await connector.start();
   /** A message in a public channel, not addressed to the bot, with files attached. */
@@ -122,5 +124,36 @@ describe("Slack attachments and the triage", () => {
 
     expect(runTriage).not.toHaveBeenCalled(); // a DM with a file is answered, not sent to the react-only triage
     expect(f.handler).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Slack attachments and the connector's size limit", () => {
+  const MB = 1024 * 1024;
+  const limitUsed = () => downloads.mock.calls.map((call) => call[3]);
+
+  it("downloads up to 200 MB when the connector sets no limit", async () => {
+    vi.mocked(runTriage).mockResolvedValue({ action: "reply" });
+    const f = await fixture();
+    await f.post("この録画を見て", ["recording.mp4"]);
+    expect(limitUsed()).toEqual([200 * MB]);
+  });
+
+  it("downloads up to the connector's maxAttachmentMb", async () => {
+    vi.mocked(runTriage).mockResolvedValue({ action: "reply" });
+    const f = await fixture({ maxAttachmentMb: 500 });
+    await f.post("この録画を見て", ["recording.mp4"]);
+    expect(limitUsed()).toEqual([500 * MB]);
+  });
+
+  it("tells the session a file was too large, and what the limit is", async () => {
+    vi.mocked(runTriage).mockResolvedValue({ action: "reply" });
+    downloads.mockImplementationOnce(async () => { throw new AttachmentTooLargeError(200 * MB); });
+    const f = await fixture();
+
+    await f.post("この録画を見て", ["recording.mp4"]);
+
+    const [msg] = f.handler.mock.calls[0];
+    expect(msg.attachments).toEqual([]);
+    expect(msg.text).toContain("Slack file F0 (larger than the 200 MB attachment limit)");
   });
 });

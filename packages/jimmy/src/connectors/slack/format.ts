@@ -1,6 +1,7 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { MAX_ATTACHMENT_BYTES, saveResponseWithin } from "../../shared/attachment-download.js";
+import { attachmentLimitBytes, saveResponseWithin } from "../../shared/attachment-download.js";
+import { attachmentFailureNotice } from "../../shared/attachment-notice.js";
 
 const SLACK_MAX_LENGTH = 3000;
 
@@ -69,13 +70,7 @@ export async function resolveSlackFileAttachment(
  * make a content-dependent task continue with invented or unrelated input.
  */
 export function formatAttachmentFailureNotice(failedAttachments: string[]): string {
-  if (failedAttachments.length === 0) return "";
-
-  return (
-    "\n\n[System attachment notice: The following Slack attachment(s) could not be retrieved: " +
-    `${failedAttachments.join(", ")}. Do not infer or substitute their contents. ` +
-    "Explain that the attachment could not be read before doing any content-dependent work.]"
-  );
+  return attachmentFailureNotice("Slack", failedAttachments);
 }
 
 /**
@@ -205,8 +200,8 @@ async function fetchSlackFile(url: string, token: string): Promise<Response> {
  * Download a Slack file attachment to a local directory.
  * Returns the local file path.
  *
- * The file is written as it arrives and refused past `maxBytes` (50 MB unless
- * said otherwise); `destDir` is created once there is something to save, and
+ * The file is written as it arrives and refused past `maxBytes` (the default
+ * attachment limit unless said otherwise); `destDir` is created once there is something to save, and
  * a download that fails leaves nothing behind. Only a file on Slack's own
  * file host is downloaded (see {@link fetchSlackFile}).
  */
@@ -214,7 +209,7 @@ export async function downloadAttachment(
   url: string,
   token: string,
   destDir: string,
-  maxBytes: number = MAX_ATTACHMENT_BYTES,
+  maxBytes: number = attachmentLimitBytes(undefined),
 ): Promise<string> {
   const response = await fetchSlackFile(url, token);
 

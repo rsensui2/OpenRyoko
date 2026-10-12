@@ -27,7 +27,8 @@ export interface DownloadAttachmentOptions {
   /** When set, only an https URL on exactly one of these hosts is fetched, and
    *  a redirect is an error (it could lead anywhere). */
   allowedHosts?: readonly string[];
-  /** A larger file is refused and nothing is left on disk. Default: 50 MB. */
+  /** A larger file is refused and nothing is left on disk. Default: the
+   *  default attachment limit (see shared/attachment-download.ts). */
   maxBytes?: number;
 }
 
@@ -59,7 +60,7 @@ export async function downloadAttachment(
   options: DownloadAttachmentOptions = {},
 ): Promise<string> {
   const { default: path } = await import("node:path");
-  const { MAX_ATTACHMENT_BYTES, saveResponseWithin } = await import("../../shared/attachment-download.js");
+  const { attachmentLimitBytes, saveResponseWithin } = await import("../../shared/attachment-download.js");
   const name = safeAttachmentName(filename);
   const directory = path.resolve(destDir);
   const destPath = name === null ? null : path.join(directory, name);
@@ -69,6 +70,6 @@ export async function downloadAttachment(
   if (options.allowedHosts) assertAllowedUrl(url, options.allowedHosts);
   const res = options.allowedHosts ? await fetch(url, { redirect: "error" }) : await fetch(url);
   if (!res.ok) throw new Error(`Failed to download attachment: ${res.status}`);
-  await saveResponseWithin(res, destPath, options.maxBytes ?? MAX_ATTACHMENT_BYTES);
+  await saveResponseWithin(res, destPath, options.maxBytes ?? attachmentLimitBytes(undefined));
   return destPath;
 }

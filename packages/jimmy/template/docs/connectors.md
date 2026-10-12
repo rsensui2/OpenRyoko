@@ -36,7 +36,10 @@ connectors:
   slack:
     appToken: xapp-...    # Socket Mode app token
     botToken: xoxb-...    # Bot user OAuth token
+    maxAttachmentMb: 200  # optional: largest attachment downloaded, in MB (default 200)
 ```
+
+An attachment over `maxAttachmentMb` is not downloaded; the session is told which one and why, so it can say so in its reply. The same key works under `discord` and `whatsapp`.
 
 ### Response Gating (`respondTo`)
 
@@ -105,6 +108,7 @@ connectors:
     botToken: ...         # Discord bot token
     guildId: ...          # optional: only handle messages from this guild
     channelId: ...        # optional: only handle messages from this channel
+    maxAttachmentMb: 200  # optional: largest attachment downloaded, in MB (default 200)
 ```
 
 ### Response Gating (`respondTo`)

@@ -7,6 +7,7 @@ import type {
   IncomingMessage,
   Target,
 } from "../../shared/types.js";
+import { failedAttachment, withAttachmentNotice } from "../../shared/attachment-notice.js";
 import { attachmentSlot } from "../../shared/attachments.js";
 import { logger } from "../../shared/logger.js";
 import { mapLimited } from "../../shared/map-limited.js";
@@ -96,25 +97,48 @@ function incomingAttachmentMeta(att: Record<string, unknown>): Attachment {
  *
  * The list is the request's too: only its first ten entries are looked at
  * (Discord's own limit per message), and they are fetched a few at a time.
+ *
+ * `failed` names each attachment that has a URL and was not fetched, by its
+ * position, with the reason when the reason is its size: see
+ * {@link routedMessageText}.
  */
-export async function downloadIncomingAttachments(attachments: unknown, destDir: string): Promise<Attachment[]> {
-  if (!Array.isArray(attachments)) return [];
+export async function downloadIncomingAttachments(attachments: unknown, destDir: string): Promise<IncomingAttachments> {
+  if (!Array.isArray(attachments)) return { attachments: [], failed: [] };
   const listed = attachments
     .filter((att): att is Record<string, unknown> => Boolean(att) && typeof att === "object")
     .slice(0, MAX_INCOMING_ATTACHMENTS);
-  return mapLimited(listed, INCOMING_DOWNLOADS_AT_ONCE, async (att, slot) => {
+  const results = await mapLimited(listed, INCOMING_DOWNLOADS_AT_ONCE, async (att, slot) => {
     const meta = incomingAttachmentMeta(att);
-    if (!meta.url) return meta;
+    if (!meta.url) return { meta, failed: null };
     try {
       const localPath = await downloadAttachment(meta.url, attachmentSlot(destDir, slot), meta.name, {
         allowedHosts: DISCORD_CDN_HOSTS,
         maxBytes: MAX_INCOMING_ATTACHMENT_BYTES,
       });
-      return { ...meta, localPath };
-    } catch {
-      return meta;
+      return { meta: { ...meta, localPath }, failed: null };
+    } catch (err) {
+      return { meta, failed: failedAttachment(`attachment ${slot + 1} of ${listed.length}`, err) };
     }
   });
+  return {
+    attachments: results.map((result) => result.meta),
+    failed: results.flatMap((result) => (result.failed === null ? [] : [result.failed])),
+  };
+}
+
+export interface IncomingAttachments {
+  attachments: Attachment[];
+  failed: string[];
+}
+
+/**
+ * The text of a routed message as the session gets it: what the primary sent,
+ * plus a notice for the attachments this instance did not fetch. Without it a
+ * file over the limit simply went missing, and the session answered as if
+ * nothing had been attached.
+ */
+export function routedMessageText<T>(text: T, failed: readonly string[]): T | string {
+  return withAttachmentNotice(text, "Discord", failed);
 }
 
 /**

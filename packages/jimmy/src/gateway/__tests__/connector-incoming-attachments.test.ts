@@ -329,3 +329,51 @@ describe("POST /api/connectors/:id/incoming limits", () => {
     expect(delivered[0].attachments).toHaveLength(10);
   });
 });
+
+describe("POST /api/connectors/:id/incoming: an attachment that is not fetched is reported", () => {
+  /* A forwarded message keeps the 50 MB limit of this route. What changed is
+   * that a file over it — or one that could not be fetched at all — no longer
+   * just goes missing: the session is told which attachment it does not have,
+   * and why when the reason is its size. */
+  const MB = 1024 * 1024;
+  const announcing = (bytes: number) => ({
+    ok: true, status: 200, headers: new Headers({ "content-length": String(bytes) }), body: { cancel: vi.fn(async () => {}) },
+  }) as unknown as Response;
+  const forwarded = (count: number) =>
+    Array.from({ length: count }, (_, n) => ({ name: `clip-${n}.mp4`, url: `https://cdn.discordapp.com/attachments/1/${n}/clip.mp4`, mimeType: "video/mp4" }));
+
+  it("keeps its 50 MB limit and says which attachment was over it", async () => {
+    outbound.mockImplementation(async (url) => (String(url).includes("/1/1/") ? announcing(60 * MB) : new Response("bytes")));
+
+    await postIncoming(message(forwarded(3)));
+
+    const [msg] = delivered;
+    expect(msg.attachments.filter((attachment) => attachment.localPath).map((attachment) => attachment.name)).toEqual(["clip-0.mp4", "clip-2.mp4"]);
+    expect(msg.text.startsWith("see attached\n\n[System attachment notice: ")).toBe(true);
+    expect(msg.text).toContain("Discord attachment(s) could not be retrieved: attachment 2 of 3 (larger than the 50 MB attachment limit).");
+  });
+
+  it("says so for an attachment it refused to fetch or failed to fetch", async () => {
+    outbound.mockImplementation(async () => new Response("gone", { status: 404 }));
+
+    await postIncoming(message([forwarded(1)[0], { name: "elsewhere.png", url: "https://attacker.example/x.png", mimeType: "image/png" }]));
+
+    expect(delivered[0].text).toContain("could not be retrieved: attachment 1 of 2, attachment 2 of 2.");
+    expect(delivered[0].text).not.toContain("attacker.example");
+  });
+
+  it("adds nothing when every attachment arrived, when there are none, or to a slash command", async () => {
+    await postIncoming(message(forwarded(2)));
+    await postIncoming(message([]));
+    outbound.mockImplementation(async () => announcing(60 * MB));
+    await postIncoming({ ...message(forwarded(1)), text: "/status" });
+
+    expect(delivered.map((msg) => msg.text)).toEqual(["see attached", "see attached", "/status"]);
+  });
+
+  it("leaves a body without text as it is", async () => {
+    outbound.mockImplementation(async () => announcing(60 * MB));
+    await postIncoming({ ...message(forwarded(1)), text: undefined });
+    expect(delivered[0].text).toBeUndefined();
+  });
+});

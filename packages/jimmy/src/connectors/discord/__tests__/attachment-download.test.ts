@@ -139,10 +139,10 @@ describe("downloadAttachment size limit", () => {
   /* The connector's own messages come from Discord, whose files can be far
    * larger than anything a turn can use. A caller that names no limit gets
    * the gateway's. */
-  it("applies the 50 MB limit when the caller names none", async () => {
+  it("applies the 200 MB limit when the caller names none", async () => {
     const body = { cancel: vi.fn(async () => {}) };
     outbound.mockResolvedValue({
-      ok: true, status: 200, headers: new Headers({ "content-length": String(50 * 1024 * 1024 + 1) }), body,
+      ok: true, status: 200, headers: new Headers({ "content-length": String(200 * 1024 * 1024 + 1) }), body,
     } as unknown as Response);
 
     await expect(downloadAttachment(CDN, dest, "photo.png")).rejects.toThrow(/too large/i);
