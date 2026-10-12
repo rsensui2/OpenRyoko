@@ -8,8 +8,9 @@ import { detectRateLimit } from "../shared/rateLimit.js";
 import { recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { redactText } from "../shared/redact.js";
 import { getMessages, getSession, updateSession, type UpdateSessionFields } from "./registry.js";
-import { recordTurnAccounting } from "./accounting.js";
+import { recordTurnAccounting, unrecordTurnAccounting } from "./accounting.js";
 import { claimUsageLimitAnnouncement, healthOverrideReleased, isUsableFallbackTarget, noteEngineTurnOutcome } from "./engine-health-gate.js";
+import { confirmLoginRefusal, isLoginRefusal, LOGIN_REFUSAL_HOLD_MS, loginRefusalConfirmed } from "./engine-login.js";
 
 export type EngineFallbackReason = "rate_limit" | "no_response" | "timeout";
 const object = (value: unknown): Record<string, any> => value && typeof value === "object" && !Array.isArray(value) ? { ...value } : {};
@@ -184,15 +185,49 @@ export async function runEngineWithResponseTimeout(
   }
 }
 
-/** Stop what `engine` still runs for one session that has just been moved off
- *  it. Failing to stop it is logged and never undoes the move. */
-function stopLeftEngine(engine: Engine, sessionId: string): void {
+const ENGINE_SWITCHED = "Interrupted: engine switched";
+
+/** Stop what `engine` still runs for one session — this session's process and
+ *  no other. Failing to stop it is logged and never undoes what the caller did. */
+function stopEngineFor(engine: Engine, sessionId: string, reason: string): void {
   if (!isInterruptibleEngine(engine)) return;
   try {
-    engine.kill(sessionId, "Interrupted: engine switched");
+    engine.kill(sessionId, reason);
   } catch (error) {
-    logger.warn(`Could not stop ${engine.name} for session ${sessionId} after an engine switch: ${error instanceof Error ? error.message : String(error)}`);
+    logger.warn(`Could not stop ${engine.name} for session ${sessionId} (${reason}): ${error instanceof Error ? error.message : String(error)}`);
   }
+}
+
+/** What one switch replaces, kept so that the switch can be taken back. */
+interface BeforeSwitch {
+  engine: Engine;
+  result: EngineResult;
+  attempted: boolean;
+  /** The session's override before the switch, or undefined if it had none. */
+  override: unknown;
+  row: Pick<Session, "engine" | "engineSessionId" | "model" | "effortLevel">;
+}
+
+/** The first line of an engine error, safe and short enough for a log line. */
+const errorSummary = (result: EngineResult): string => redactText(result.error ?? "").split("\n")[0].slice(0, 200);
+
+/**
+ * A session held on a fallback engine, whose turn there was just refused by an
+ * engine now confirmed unable to sign in: send it back to its own engine, model
+ * and effort instead of leaving it pinned until the hold runs out. The refusal
+ * stays this turn's answer — the turn was built for the fallback engine and
+ * cannot be re-run on another here — but the next message is not refused too.
+ */
+function leaveFallbackThatCannotSignIn(session: Session, engine: Engine, result: EngineResult): { session: Session; result: EngineResult } | null {
+  const override = object(object(session.transportMeta).engineOverride);
+  if (typeof override.originalEngine !== "string" || override.originalEngine === session.engine || engine.name !== session.engine) return null;
+  if (!isLoginRefusal(result) || !loginRefusalConfirmed(engine.name)) return null;
+  const back = computeEngineOverrideRevert(session, Date.now(), true);
+  if (!back) return null;
+  logger.warn(`Session ${session.id} returns to ${override.originalEngine}: ${engine.name} cannot sign in (${errorSummary(result)})`);
+  stopEngineFor(engine, session.id, ENGINE_SWITCHED);
+  // The fallback engine's session id means nothing to the engine it goes back to.
+  return { session: updateSession(session.id, back) ?? session, result: { ...result, sessionId: "" } };
 }
 
 export interface EngineFallbackOptions {
@@ -215,6 +250,8 @@ export async function runFallbackAttempts(options: EngineFallbackOptions): Promi
   let engine = options.initialEngine;
   let result = options.initialResult;
   let attempted = false;
+  const returned = leaveFallbackThatCannotSignIn(session, engine, result);
+  if (returned) return { ...returned, engine, attempted };
   const visited = new Set([engine.name]);
   const plan = fallbackConfig(config);
   while (config.sessions?.rateLimitStrategy !== "wait" && !session.workflowProvenance) {
@@ -249,17 +286,21 @@ export async function runFallbackAttempts(options: EngineFallbackOptions): Promi
     if (!override.originalEngine) Object.assign(override, { originalEngine: engine.name, originalEngineSessionId: engineSessions[engine.name] ?? null,
       originalModel: session.model, originalEffortLevel: session.effortLevel, until, syncSince: now });
     const resume = typeof engineSessions[targetName] === "string" ? engineSessions[targetName] : undefined;
+    // What this switch replaces, in case it has to be taken back (see below).
+    const left: BeforeSwitch = { engine, result, attempted, override: meta.engineOverride,
+      row: { engine: session.engine, engineSessionId: session.engineSessionId, model: session.model, effortLevel: session.effortLevel } };
     recordTurnAccounting(session.id, result);
     session = updateSession(session.id, { engine: targetName, engineSessionId: resume ?? null, model: model ?? null, effortLevel: effort ?? null,
       transportMeta: { ...meta, engineSessions, engineOverride: override }, status: "running", lastActivity: now }) ?? session;
     // Claude's native goal handoff clears the gateway goal. If that attempt
     // failed, a Codex substitute still needs the original tracked condition.
-    if (targetName === "codex" && options.session.goal && !getSession(session.id)?.goal) updateSession(session.id, { goal: options.session.goal });
+    const goalRestored = targetName === "codex" && !!options.session.goal && !getSession(session.id)?.goal;
+    if (goalRestored) updateSession(session.id, { goal: options.session.goal });
     // The session belongs to `target` from here on. Whatever the engine it
     // leaves still holds for it — a warm PTY, in Claude's case — could answer
     // later, as a second reply after the substitute's. Stop it: this session's
     // only. A timed-out engine was already stopped, and waited for, above.
-    if (reason !== "timeout") stopLeftEngine(engine, session.id);
+    if (reason !== "timeout") stopEngineFor(engine, session.id, ENGINE_SWITCHED);
     // A limit period — the engine and the reset it stated — is announced once.
     // A conversation whose own turn just failed is still told every time; a
     // cron firing has nobody waiting on it, so it only ever carries the first
@@ -281,12 +322,39 @@ export async function runFallbackAttempts(options: EngineFallbackOptions): Promi
     attempted = true;
     engine = target;
     result = await options.run(target, opts);
+    // Signing in can fail once for a reason that passes — another process won
+    // the race to refresh a shared token. A refused attempt did no work, so
+    // asking once more costs nothing and is what tells that apart from an
+    // engine that is simply not signed in on this machine. The second try gets
+    // a fresh process: a warm one would keep the login it has just failed with.
+    if (isLoginRefusal(result) && !options.shouldStop?.() && getSession(session.id)) {
+      stopEngineFor(target, session.id, "Interrupted: retrying after a login refusal");
+      result = await options.run(target, opts);
+    }
     const latest = getSession(session.id);
     if (!latest) break;
     if (options.shouldStop?.()) {
       result = { ...result, result: "", error: "Interrupted: fallback stopped", retryable: false };
       session = latest;
       break;
+    }
+    if (isLoginRefusal(result)) {
+      // Not signed in: the switch gave the session nothing but a login prompt
+      // for an answer, and would hold it there until the override ran out.
+      // Take it back — engine, model, effort, and the override this switch
+      // made — leave the engine out of fallback for a while, and carry on from
+      // the failure the session had before, as if it had never been a candidate.
+      confirmLoginRefusal(targetName);
+      logger.warn(`Fallback to ${targetName} taken back for session ${session.id}: it cannot sign in (${errorSummary(result)}). ` +
+        `Not offering it sessions for ${Math.round(LOGIN_REFUSAL_HOLD_MS / 60_000)} minutes — sign it in on this machine to use it as a fallback.`);
+      stopEngineFor(target, session.id, ENGINE_SWITCHED); // the session leaves it again
+      const restored = object(latest.transportMeta);
+      if (left.override === undefined) delete restored.engineOverride;
+      else restored.engineOverride = left.override;
+      unrecordTurnAccounting(session.id, left.result); // the caller accounts that turn, as it does when nothing was tried
+      session = updateSession(session.id, { ...left.row, transportMeta: restored, ...(goalRestored ? { goal: null } : {}) }) ?? latest;
+      ({ engine, result, attempted } = left);
+      continue;
     }
     const nextMeta = object(latest.transportMeta);
     const nextSessions = object(nextMeta.engineSessions);

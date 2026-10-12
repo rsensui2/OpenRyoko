@@ -7,6 +7,11 @@
  * notice, then the real work on the fallback engine. Here the session is moved
  * before its first turn instead, with the same temporary override a mid-turn
  * switch records, so `maybeRevertEngineOverride` takes it back unchanged.
+ *
+ * It is only ever moved to an engine that has answered a turn in this process.
+ * A switch after a failed turn can be taken back within that turn if the
+ * fallback engine turns out not to be signed in; a session started there has
+ * no earlier failure to fall back on, so it does not go first.
  */
 
 import { compatibleEffort } from "../models/families.js";
@@ -16,6 +21,7 @@ import { logger } from "../shared/logger.js";
 import type { Employee, Engine, JinnConfig, Session } from "../shared/types.js";
 import { fallbackConfig } from "./engine-fallback.js";
 import { claimUsageLimitAnnouncement, exhaustedRecordFor, HEALTH_OVERRIDE_SOURCE, isUsableFallbackTarget } from "./engine-health-gate.js";
+import { hasServedATurn } from "./engine-login.js";
 import { updateSession } from "./registry.js";
 
 /** What a routed turn brought with it about where the session should run. */
@@ -84,7 +90,11 @@ function rerouted(
 
   let model: string | undefined;
   const to = resolveFallbackEngine(fallbackConfig(config), from, (name) => {
-    if (!getEngine(name) || !config.engines[name]) return false;
+    // Starting a session somewhere cannot be taken back within the turn the
+    // way a switch after a failed turn can, so it only goes to an engine that
+    // has answered a turn in this process — never to one that is merely
+    // installed, and may turn out not to be signed in.
+    if (!getEngine(name) || !config.engines[name] || !hasServedATurn(name)) return false;
     const candidateModel = resolveSubstituteModel(config, getModelRegistry(config), { from, to: name, model: session.model }) ?? config.engines[name]!.model;
     if (!isUsableFallbackTarget(config, name, candidateModel, now)) return false;
     model = candidateModel;

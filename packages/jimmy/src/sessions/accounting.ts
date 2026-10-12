@@ -6,3 +6,9 @@ import { accumulateSessionCost } from "./registry.js";
 export function recordTurnAccounting(sessionId: string, result: Pick<EngineResult, "cost" | "numTurns">): void {
   accumulateSessionCost(sessionId, result.cost ?? 0, result.numTurns ?? 1);
 }
+
+/** Take back one `recordTurnAccounting` for a run that is being handed to
+ * another caller to account, so it is still counted exactly once. */
+export function unrecordTurnAccounting(sessionId: string, result: Pick<EngineResult, "cost" | "numTurns">): void {
+  accumulateSessionCost(sessionId, -(result.cost ?? 0), -(result.numTurns ?? 1));
+}

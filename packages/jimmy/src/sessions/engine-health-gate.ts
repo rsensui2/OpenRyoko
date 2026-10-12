@@ -27,6 +27,7 @@ import {
 } from "../shared/engine-health.js";
 import { detectRateLimit } from "../shared/rateLimit.js";
 import type { EngineResult, JinnConfig } from "../shared/types.js";
+import { isLoginRefusal, loginRefusalConfirmed, noteLoginRefusal, noteLoginWorked } from "./engine-login.js";
 
 /** The reason recorded when the engine itself declared its allowance spent.
  *  The re-check timer recognises what it may ask the provider about by it. */
@@ -48,9 +49,10 @@ function servedATurn(result: EngineResult): boolean {
 
 /**
  * Write down what one engine attempt showed: a usage limit, with the reset it
- * stated if that is still ahead; or a served turn, which forgets a record that
- * was held against the model that just answered. Anything else is not evidence
- * either way. Never throws — health is advisory.
+ * stated if that is still ahead; a refusal to sign in; or a served turn, which
+ * proves the engine can sign in and forgets a record that was held against the
+ * model that just answered. Anything else is not evidence either way. Never
+ * throws — health is advisory.
  */
 export function noteEngineTurnOutcome(
   engine: string,
@@ -71,7 +73,12 @@ export function noteEngineTurnOutcome(
         stated === undefined ? undefined : result.rateLimit?.window);
       return;
     }
+    if (isLoginRefusal(result)) {
+      noteLoginRefusal(engine, now);
+      return;
+    }
     if (!servedATurn(result)) return;
+    noteLoginWorked(engine);
     const record = readEngineHealth(now)[engine];
     if (record && record.state !== "ok" && limitWindowBindsModel(record.window, model)) clearEngineHealth(engine);
   } catch {
@@ -118,8 +125,9 @@ function knownNotInstalled(config: JinnConfig, engine: string): boolean {
 
 /**
  * Whether a session may be handed to `engine`: not known to be out of
- * allowance for `model`, and not known to be missing from this machine. What
- * is merely unknown is usable — both checks rule out on knowledge only.
+ * allowance for `model`, not known to be missing from this machine, and not
+ * known to be unable to sign in. What is merely unknown is usable — every
+ * check rules out on knowledge only.
  */
 export function isUsableFallbackTarget(
   config: JinnConfig,
@@ -127,7 +135,7 @@ export function isUsableFallbackTarget(
   model?: string | null,
   now: Date = new Date(),
 ): boolean {
-  return !exhaustedRecordFor(engine, model, now) && !knownNotInstalled(config, engine);
+  return !exhaustedRecordFor(engine, model, now) && !knownNotInstalled(config, engine) && !loginRefusalConfirmed(engine, now);
 }
 
 /** How an override that exists only because of a health record is marked. */

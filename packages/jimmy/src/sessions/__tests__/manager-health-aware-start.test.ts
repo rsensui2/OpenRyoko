@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionManager, type RouteOptions } from "../manager.js";
 import { _resetUsageLimitAnnouncements, setEngineInstallProbe } from "../engine-health-gate.js";
+import { _resetEngineLoginKnowledge, hasServedATurn, noteLoginWorked } from "../engine-login.js";
 import { getSession, getSessionBySessionKey } from "../registry.js";
 import { startEngineHealthMonitor } from "../../gateway/engine-health-monitor.js";
 import { readEngineHealth, recordEngineUnavailable } from "../../shared/engine-health.js";
@@ -61,6 +62,12 @@ beforeEach(() => {
   invalidateModelRegistry();
   _resetUsageLimitAnnouncements();
   fs.rmSync(HEALTH_PATH, { force: true });
+  // A session is only ever started on an engine that has answered a turn in
+  // this process. That is the situation these tests are about; the engine that
+  // has not answered yet has its own tests at the end of the file.
+  _resetEngineLoginKnowledge();
+  noteLoginWorked("claude");
+  noteLoginWorked("codex");
 });
 afterEach(() => {
   setEngineInstallProbe(undefined);
@@ -445,5 +452,29 @@ describe("how a wrong record stops steering sessions", () => {
     const next = await f.route(f.message());
     expect(next.engine).toBe("claude");
     expect(f.codexRun).not.toHaveBeenCalled();
+  });
+});
+
+describe("a fallback engine that has not answered a turn in this process yet", () => {
+  // Starting a session on an engine is not something that can be taken back
+  // within the turn, the way a switch after a failed turn can. So a session is
+  // never the first thing to find out whether the fallback engine works.
+  it("is not where a new session is started; the session that then switches to it is what proves it", async () => {
+    const f = setup();
+    _resetEngineLoginKnowledge();
+    seedLimit("claude", 60, "5h");
+    f.claudeRun.mockResolvedValue(limited(inMinutes(60)));
+
+    const first = await f.route(f.message());
+
+    // Started on its own engine, found the limit, switched — and Codex answered.
+    expect(f.claudeRun).toHaveBeenCalledTimes(1);
+    expect(first.engine).toBe("codex");
+    expect(hasServedATurn("codex")).toBe(true);
+
+    // From here on new sessions go straight to it.
+    const next = await f.route(f.message());
+    expect(next.engine).toBe("codex");
+    expect(f.claudeRun).toHaveBeenCalledTimes(1);
   });
 });
