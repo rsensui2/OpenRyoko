@@ -135,12 +135,12 @@ describe("runBackup", () => {
     const diskFull = byName(await runBackup(optionsFor(makeHome(root, "full"), {}, { diskSpace: () => FULL })));
 
     const crowded = makeHome(root, "crowded", { sessionRows: 1 });
-    writeTree(crowded, Object.fromEntries(Array.from({ length: 300 }, (_, index) => [`skills/flood/empty-${index}`, ""])));
+    writeTree(crowded, Object.fromEntries(Array.from({ length: 90 }, (_, index) => [`skills/flood/empty-${index}`, ""])));
     const overCount = byName(await runBackup(optionsFor(crowded, { maxEntries: 100 })));
 
     // The home will be just as large an hour from now, and just as empty.
     expect(overCap.home).toMatchObject({ status: "failed", persistent: true });
-    // Three hundred empty files weigh nothing, so only the entry limit can stop them.
+    // Ninety empty files weigh nothing, so only the entry limit can stop them.
     expect(overCount.home).toMatchObject({ status: "failed", persistent: true, error: expect.stringMatching(/backup\.maxEntries/) });
     expect(overCount.sessions!.status).toBe("ok");
     expect(nothing.home).toMatchObject({ status: "failed", persistent: true, error: expect.stringMatching(/nothing to archive/) });

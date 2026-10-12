@@ -1,25 +1,46 @@
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { detectRunningGateway, RECENT_WRITE_MS } from "../gateway-liveness.js";
-import { databaseFingerprint, leaveMidFlight, makeHome, removeTempDirs, setDatabaseModified, tempDir } from "./fixture.js";
+import { databaseFingerprint, leaveMidFlight, removeTempDirs, setDatabaseModified, tempDir } from "./fixture.js";
+
+/* These are kept light on purpose. What is looked for here is a couple of pid
+ * files and the timestamps of a database, so a home is an empty directory with
+ * those in it - not the whole tree of an instance - and a test arranges one
+ * database where one will do. The suite runs beside others on the same disk,
+ * and a test that spends its time making files waits on all of them. */
 
 const NOW = new Date("2026-10-12T09:30:00.000Z");
 const ago = (ms: number): Date => new Date(NOW.getTime() - ms);
 const HOUR_MS = 60 * 60 * 1000;
 
-/** The pid of a process that has already exited. */
+/**
+ * A pid no process has. Asked of the system rather than got by starting a
+ * process and letting it exit: that cost a whole interpreter's start-up, and
+ * its pid could have been handed to another process by the time it was used.
+ */
 function deadPid(): number {
-  const finished = spawnSync(process.execPath, ["-e", ""]);
-  return finished.pid;
+  // Above the pids macOS and a default Linux hand out, then upwards until one is free.
+  for (let pid = 4_100_000; ; pid += 1) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") return pid;
+    }
+  }
+}
+
+/** An instance home with nothing in it yet. */
+function emptyHome(): string {
+  const home = path.join(tempDir(), "home");
+  fs.mkdirSync(home);
+  return home;
 }
 
 /** A home whose registry looks the way a live one does to a process that cannot see its locks. */
 function homeWithRegistryMidFlight(lastWritten = ago(HOUR_MS)): { home: string; registry: string } {
-  const home = makeHome(tempDir());
+  const home = emptyHome();
   const registry = path.join(home, "sessions", "registry.db");
-  fs.mkdirSync(path.dirname(registry), { recursive: true });
   leaveMidFlight(registry, "sessions", 40);
   setDatabaseModified(registry, lastWritten);
   return { home, registry };
@@ -38,23 +59,32 @@ describe("detectRunningGateway", () => {
     // Opening a database that a gateway on the far side of a container
     // boundary has open makes SQLite checkpoint the WAL and delete it on
     // close. Looking must leave every byte, every sidecar and every timestamp.
-    const quiet = homeWithRegistryMidFlight();
-    const written = homeWithRegistryMidFlight(ago(5_000));
-    const withPid = homeWithRegistryMidFlight();
-    fs.writeFileSync(path.join(withPid.home, "gateway.json"), JSON.stringify({ port: 7901, pid: process.pid, secret: "s" }));
-
-    for (const { home, registry } of [quiet, written, withPid]) {
+    //
+    // One registry, taken through the three answers in turn: looking changes
+    // nothing, so what the first look found is what the next one starts from.
+    const { home, registry } = homeWithRegistryMidFlight();
+    const looksUnchanged = (expected: { running: boolean }): void => {
       const before = databaseFingerprint(registry);
       expect(Object.values(before)).not.toContain("absent");
 
-      detectRunningGateway(home, { now: NOW });
+      expect(detectRunningGateway(home, { now: NOW })).toMatchObject(expected);
 
       expect(databaseFingerprint(registry)).toEqual(before);
-    }
+    };
+
+    // Nothing running.
+    looksUnchanged({ running: false });
+    // Running, by a write five seconds ago.
+    setDatabaseModified(registry, ago(5_000));
+    looksUnchanged({ running: true });
+    // Running, by a pid that is alive - found before the registry is so much as looked at.
+    setDatabaseModified(registry, ago(HOUR_MS));
+    fs.writeFileSync(path.join(home, "gateway.json"), JSON.stringify({ port: 7901, pid: process.pid, secret: "s" }));
+    looksUnchanged({ running: true });
   });
 
   it("recognises a gateway by the live pid in gateway.json", () => {
-    const home = makeHome(tempDir());
+    const home = emptyHome();
     fs.writeFileSync(path.join(home, "gateway.json"), JSON.stringify({ port: 7901, pid: process.pid, secret: "s" }));
 
     const liveness = detectRunningGateway(home, { now: NOW });
@@ -65,14 +95,14 @@ describe("detectRunningGateway", () => {
   });
 
   it("recognises a daemonised gateway by the live pid in gateway.pid", () => {
-    const home = makeHome(tempDir());
+    const home = emptyHome();
     fs.writeFileSync(path.join(home, "gateway.pid"), `${process.pid}\n`);
 
     expect(detectRunningGateway(home, { now: NOW })).toMatchObject({ running: true, reason: expect.stringContaining("gateway.pid") });
   });
 
   it("ignores pid files left behind by a gateway that is gone", () => {
-    const home = makeHome(tempDir());
+    const home = emptyHome();
     const gone = deadPid();
     fs.writeFileSync(path.join(home, "gateway.json"), JSON.stringify({ port: 7901, pid: gone, secret: "s" }));
     fs.writeFileSync(path.join(home, "gateway.pid"), String(gone));
@@ -81,7 +111,7 @@ describe("detectRunningGateway", () => {
   });
 
   it("ignores pid files that hold no usable pid", () => {
-    const home = makeHome(tempDir());
+    const home = emptyHome();
     for (const contents of ["{ not json", "{}", '{"pid":"abc"}', '{"pid":-1}', '{"pid":0}']) {
       fs.writeFileSync(path.join(home, "gateway.json"), contents);
       expect(detectRunningGateway(home, { now: NOW }), contents).toEqual({ running: false });
@@ -144,6 +174,6 @@ describe("detectRunningGateway", () => {
   });
 
   it("finds nothing in a home that has no registry at all", () => {
-    expect(detectRunningGateway(makeHome(tempDir()), { now: NOW })).toEqual({ running: false });
+    expect(detectRunningGateway(emptyHome(), { now: NOW })).toEqual({ running: false });
   });
 });

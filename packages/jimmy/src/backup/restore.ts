@@ -76,6 +76,8 @@ export interface RestoreResult {
   ignored: string[];
   /** The snapshot taken before writing. Null on a dry run or when nothing needed saving. */
   preRestore: { id: string; file: string } | null;
+  /** What the restore did and the operator should still know: at present, a working directory it could not clear away. */
+  warnings: string[];
 }
 
 interface PlanItem {
@@ -366,6 +368,82 @@ function refuseToReplaceUnsaved(plan: PlanItem[], snapshot: Snapshot | null): vo
 }
 
 /**
+ * The directory a restore extracts into before anything is moved into place,
+ * and a record of every file it puts there.
+ *
+ * The record is what lets the directory be cleared away safely. It used to be
+ * removed with a recursive delete, and a recursive delete walks paths: swap a
+ * directory inside for a symlink while it walks, and it follows the link and
+ * deletes what is on the far side, outside the home. Nothing here is deleted
+ * by walking. The files this restore created are removed one by one, by the
+ * names it gave them; the directory is removed only if that leaves it empty;
+ * and anything else found in it was put there by someone else and stays.
+ */
+class StagingDirectory {
+  /** The files created here, in the order they were made. */
+  private readonly made: string[] = [];
+
+  private constructor(readonly directory: string, private readonly device: number, private readonly inode: number) {}
+
+  /** A new, empty, owner-only directory under `scratch`, with a name nobody could have guessed. */
+  static createIn(scratch: string): StagingDirectory {
+    const directory = fs.mkdtempSync(path.join(scratch, "restore-"));
+    const made = fs.lstatSync(directory);
+    return new StagingDirectory(directory, made.dev, made.ino);
+  }
+
+  /** The next file to extract into. Created exclusively, so that nothing already under its name is written through. */
+  create(): { file: string; descriptor: number } {
+    const file = path.join(this.directory, String(this.made.length).padStart(6, "0"));
+    const descriptor = fs.openSync(file, "wx", 0o600);
+    this.made.push(file);
+    return { file, descriptor };
+  }
+
+  /**
+   * Why the directory must be left alone, or null while it is still the one
+   * that was made: a real directory, inside a real directory, and the same
+   * one - not another that has been put under its name.
+   */
+  private displaced(): string | null {
+    const here = lstatOrNull(this.directory);
+    const above = lstatOrNull(path.dirname(this.directory));
+    if (above?.isDirectory() && here?.isDirectory() && here.dev === this.device && here.ino === this.inode) return null;
+    return `${this.directory} is no longer the directory this restore made, so nothing was removed from it and it was left as it is`;
+  }
+
+  /**
+   * Clears the directory away: its own files by name, then the directory if
+   * that emptied it. Asked before every removal whether this is still the
+   * directory that was made, because the names are known and a name removed
+   * through a directory that has become a link is somebody else's file.
+   * Returns what had to be left, in words, or null when nothing was.
+   */
+  remove(): string | null {
+    if (!lstatOrNull(this.directory)) return null;
+    for (const file of this.made) {
+      const moved = this.displaced();
+      if (moved) return moved;
+      try {
+        // unlink, which removes a name and nothing under it: a link under that name goes, what it points at does not.
+        fs.unlinkSync(file);
+      } catch {
+        // Already moved into place, or no longer a file of ours. If anything is still there, the directory will not be empty.
+      }
+    }
+    const moved = this.displaced();
+    if (moved) return moved;
+    try {
+      fs.rmdirSync(this.directory);
+      return null;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? errorMessage(error);
+      return `${this.directory} holds something this restore did not put there (${code}), so it was left as it is`;
+    }
+  }
+}
+
+/**
  * Extracts the files the plan needs into a private staging directory, hashing
  * each as it lands. Staging holds flat numbered files and nothing else - no
  * directories, no links - so no entry name from the archive is ever used as a
@@ -373,7 +451,7 @@ function refuseToReplaceUnsaved(plan: PlanItem[], snapshot: Snapshot | null): vo
  */
 async function stageFiles(
   archive: string,
-  staging: string,
+  staging: StagingDirectory,
   needed: Map<string, ManifestEntry>,
   limits: ArchiveLimits,
 ): Promise<Map<string, string>> {
@@ -384,9 +462,8 @@ async function stageFiles(
     await readHomeArchive(archive, (entry) => {
       const expected = needed.get(entry.path);
       if (!expected || entry.type !== "file" || staged.has(entry.path)) return undefined;
-      const file = path.join(staging, String(staged.size).padStart(6, "0"));
       const hash = crypto.createHash("sha256");
-      const descriptor = fs.openSync(file, "wx", 0o600);
+      const { file, descriptor } = staging.create();
       open.descriptor = descriptor;
       return {
         write: (chunk) => {
@@ -501,30 +578,50 @@ function stagingParent(home: string): string {
   return scratch;
 }
 
-async function writeIntoHome(options: RestoreOptions, home: string, plan: PlanItem[], preRestore: { id: string } | null): Promise<void> {
+/** Extracts what the plan needs into `staging` and moves it into place. */
+async function extractAndPlace(
+  options: RestoreOptions,
+  home: string,
+  plan: PlanItem[],
+  preRestore: { id: string } | null,
+  staging: StagingDirectory,
+): Promise<void> {
+  const needed = new Map(plan
+    .filter((item) => writesContent(item.action) && item.entry.type === "file")
+    .map((item) => [item.entry.path, item.entry]));
+  const staged = await stageFiles(options.archive, staging, needed, options.limits ?? DEFAULT_ARCHIVE_LIMITS);
+  try {
+    applyPlan(home, plan, staged);
+  } catch (error) {
+    // Said exactly: going back is itself a restore, and a restore deletes nothing.
+    const way = preRestore
+      ? ` The state before it is saved as ${preRestore.id}: restoring that puts back what was overwritten. `
+        + "Files this restore had already created are not removed by it."
+      : "";
+    throw new Error(`the restore stopped partway: ${errorMessage(error)}.${way}`);
+  }
+}
+
+/**
+ * Writes the plan into the home through a working directory under its tmp/,
+ * and clears that directory away whichever way it ends. Returns what there is
+ * to warn about; a failure carries the same in its message.
+ */
+async function writeIntoHome(options: RestoreOptions, home: string, plan: PlanItem[], preRestore: { id: string } | null): Promise<string[]> {
   fs.mkdirSync(home, { recursive: true, mode: 0o700 });
   // Asked again here, at the moment of use; the first time was before the snapshot.
   const scratch = stagingParent(home);
   fs.mkdirSync(scratch, { recursive: true, mode: 0o700 });
-  const staging = fs.mkdtempSync(path.join(scratch, "restore-"));
+  const staging = StagingDirectory.createIn(scratch);
+  let failure: unknown;
   try {
-    const needed = new Map(plan
-      .filter((item) => writesContent(item.action) && item.entry.type === "file")
-      .map((item) => [item.entry.path, item.entry]));
-    const staged = await stageFiles(options.archive, staging, needed, options.limits ?? DEFAULT_ARCHIVE_LIMITS);
-    try {
-      applyPlan(home, plan, staged);
-    } catch (error) {
-      // Said exactly: going back is itself a restore, and a restore deletes nothing.
-      const way = preRestore
-        ? ` The state before it is saved as ${preRestore.id}: restoring that puts back what was overwritten. `
-          + "Files this restore had already created are not removed by it."
-        : "";
-      throw new Error(`the restore stopped partway: ${errorMessage(error)}.${way}`);
-    }
-  } finally {
-    fs.rmSync(staging, { recursive: true, force: true });
+    await extractAndPlace(options, home, plan, preRestore, staging);
+  } catch (error) {
+    failure = error ?? new Error("the restore failed");
   }
+  const left = staging.remove();
+  if (failure) throw left ? new Error(`${errorMessage(failure)} ${left}.`, { cause: failure }) : failure;
+  return left ? [left] : [];
 }
 
 /**
@@ -567,6 +664,7 @@ export async function restoreHomeArchive(options: RestoreOptions): Promise<Resto
     untouched: await untouchedInHome(home, manifest, kinds, options.backupDirectory, limits),
     ignored: manifest.entries.filter((entry) => kindOf(entry) === null && !holdsATarget(entry.path)).map((entry) => entry.path),
     preRestore: null,
+    warnings: [],
   };
   if (result.dryRun || changes.length === 0) return result;
 
@@ -576,6 +674,6 @@ export async function restoreHomeArchive(options: RestoreOptions): Promise<Resto
   const snapshot = await snapshotCurrentState(options, home, staged, plan);
   refuseToReplaceUnsaved(plan, snapshot);
   const preRestore = snapshot ? { id: snapshot.id, file: snapshot.file } : null;
-  await writeIntoHome(options, home, plan, preRestore);
-  return { ...result, preRestore };
+  const warnings = await writeIntoHome(options, home, plan, preRestore);
+  return { ...result, preRestore, warnings };
 }
