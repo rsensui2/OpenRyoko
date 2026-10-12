@@ -258,6 +258,23 @@ describe("bundled skill sync: what happens to each skill", () => {
     expect(Object.keys(f.receipt().skills)).toEqual(["example"]);
   });
 
+  it("lets an empty directory keep a shipped skill out, with or without a receipt", () => {
+    const f = fixture();
+    f.ship("unwanted", { "SKILL.md": "v1" });
+    f.ship("dropped-later", { "SKILL.md": "v1" });
+    fs.mkdirSync(path.join(f.skills, "unwanted"), { recursive: true });
+    f.sync("2026.10.10");
+    fs.rmSync(path.join(f.skills, "dropped-later"), { recursive: true });
+    fs.mkdirSync(path.join(f.skills, "dropped-later"));
+
+    const result = f.sync("2026.10.10");
+
+    expect(result.added).toEqual([]);
+    expect(result.kept).toEqual([{ name: "dropped-later", reason: "customized" }, { name: "unwanted", reason: "unmanaged" }]);
+    expect(fs.readdirSync(path.join(f.skills, "unwanted"))).toEqual([]);
+    expect(fs.readdirSync(path.join(f.skills, "dropped-later"))).toEqual([]);
+  });
+
   it("leaves a plain file that occupies a shipped skill's name alone", () => {
     const f = fixture();
     f.ship("example", { "SKILL.md": "v1" });
