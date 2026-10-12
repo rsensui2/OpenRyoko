@@ -2,11 +2,11 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { getDiskSpaceStatus, type DiskSpaceStatus } from "../shared/storage-health.js";
-import { createHomeArchive, inspectHomeArchive, NothingToArchiveError, readHomeArchive } from "./archive.js";
+import { createHomeArchive, inspectHomeArchive, NothingToArchiveError, readHomeArchive, type ArchiveInspection } from "./archive.js";
 import { reserveArchiveName } from "./catalog.js";
 import { errorMessage } from "./format.js";
 import type { BackupManifest, ManifestEntry } from "./manifest.js";
-import { BACKUP_KINDS, HOME_ARCHIVE_TARGETS, kindOfPath, type BackupKind } from "./targets.js";
+import { BACKUP_KINDS, HOME_ARCHIVE_TARGETS, kindOfPath, unsafePathReason, type BackupKind } from "./targets.js";
 import { absolutePathOf, collectHomeEntries } from "./walk.js";
 
 const HASH_CHUNK_BYTES = 64 * 1024;
@@ -26,6 +26,8 @@ export interface RestoreOptions {
   now: Date;
   /** The existing free-space judgement, replaceable in tests. */
   diskSpace?: (directory: string) => DiskSpaceStatus;
+  /** Overrides the verification pass. The seam that lets a test stand in for an inspector that misses something. */
+  inspect?: (file: string) => Promise<ArchiveInspection>;
 }
 
 export type RestoreAction = "create" | "replace" | "unchanged";
@@ -125,6 +127,13 @@ function selectEntries(manifest: BackupManifest, only: readonly BackupKind[] | u
     const kind = kindOfPath(entry.path);
     return kind !== null && wanted.has(kind);
   });
+  // The inspection has already refused these. They are checked again here
+  // because this is the list that becomes destinations: `skills/../../x` sits
+  // under a target by its prefix, and joined to the home it is outside it.
+  for (const entry of selected) {
+    const reason = unsafePathReason(entry.path);
+    if (reason) throw new Error(`refusing to restore an unsafe path (${reason}): ${JSON.stringify(entry.path)}`);
+  }
   if (selected.length > 0) return selected;
   throw new Error(only
     ? `the archive holds nothing of the kind asked for (${only.join(", ")})`
@@ -346,7 +355,7 @@ async function writeIntoHome(options: RestoreOptions, home: string, plan: PlanIt
  * symlink, and never recreates a symlink leading out of the home unless asked.
  */
 export async function restoreHomeArchive(options: RestoreOptions): Promise<RestoreResult> {
-  const inspection = await inspectHomeArchive(options.archive);
+  const inspection = await (options.inspect ?? inspectHomeArchive)(options.archive);
   if (!inspection.ok || !inspection.manifest) {
     throw new Error(`refusing to restore an archive that failed verification - ${listed(inspection.problems)}`);
   }

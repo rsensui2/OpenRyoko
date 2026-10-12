@@ -151,6 +151,18 @@ describe("restoreDatabase", () => {
     expect(result.preRestore!.id).toBe("pre-restore-20261012T093000Z-workflows");
   });
 
+  it("refuses while the workflows store itself is open, in a home whose registry gives nothing away", async () => {
+    const target = await scene("workflows");
+    const owner = new Database(target.live);
+    held.push(owner);
+    owner.prepare("SELECT count(*) FROM workflows").get();
+
+    await expect(restoreDatabase(optionsFor(target, { name: "workflows" })))
+      .rejects.toThrow(/is running.*workflows\.db is open in another process/s);
+
+    expect((owner.prepare("SELECT count(*) AS n FROM workflows").get() as { n: number }).n).toBe(8);
+  });
+
   it("restores into a home that has no database yet", async () => {
     const target = await scene();
     const fresh = path.join(path.dirname(target.home), "fresh");

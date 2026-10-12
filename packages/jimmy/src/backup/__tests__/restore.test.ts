@@ -13,6 +13,7 @@ import {
   rawFile,
   rawSymlink,
   removeTempDirs,
+  sha256,
   tempDir,
   writeRawArchive,
   writeTree,
@@ -289,6 +290,35 @@ describe("restoreHomeArchive, refusing what it must not trust", () => {
 
     // Not the escaping entry, and not the innocent-looking one beside it either.
     expect(snapshotTree(root)).toEqual(before);
+    expect(fs.existsSync(path.join(root, "escaped.txt"))).toBe(false);
+  });
+
+  it("does not lean on the inspection alone to keep a path inside the home", async () => {
+    const root = tempDir();
+    const home = makeHome(root);
+    const archive = writeRawArchive(path.join(root, "home-20261012T030000Z.tar.gz"), [
+      rawDirectory("skills"),
+      rawFile("skills/../../escaped.txt", "outside\n"),
+    ]);
+    // An inspector that waves everything through, as a regression in it would.
+    const lenient: RestoreOptions["inspect"] = async () => ({
+      ok: true,
+      problems: [],
+      manifest: {
+        schemaVersion: 1, format: "openryoko-home-archive", id: "home-20261012T030000Z", createdAt: TAKEN.toISOString(),
+        home, contentBytes: 8, skipped: [],
+        entries: [
+          { path: "skills", type: "directory", mode: 0o755 },
+          // Size and hash are right, so nothing but the path itself can stop this.
+          { path: "skills/../../escaped.txt", type: "file", mode: 0o644, size: 8, sha256: sha256("outside\n") },
+        ],
+      },
+    });
+
+    await expect(restoreHomeArchive({
+      archive, home, backupDirectory: path.join(home, "backups"), now: NOW, diskSpace: () => ROOMY, inspect: lenient,
+    })).rejects.toThrow(/unsafe path/);
+
     expect(fs.existsSync(path.join(root, "escaped.txt"))).toBe(false);
   });
 
