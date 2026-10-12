@@ -91,6 +91,9 @@ export interface EngineRateLimitInfo {
   status?: string;
   /** Unix timestamp in seconds */
   resetsAt?: number;
+  /** The spent quota window as usage telemetry names it (`5h`, `7d`,
+   *  `7d Fable`), when the engine could tell which one bound the turn. */
+  window?: string;
   rateLimitType?: string;
   overageStatus?: string;
   overageDisabledReason?: string;

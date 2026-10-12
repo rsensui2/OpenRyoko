@@ -15,6 +15,7 @@ import type { HookRegistry, HookPayload } from "../gateway/hook-registry.js";
 import { SsePtyProxy, type SseDataEvent, type StreamCtx } from "./sse-pty-proxy.js";
 import { neutralizeForPaste } from "../shared/skill-commands.js";
 import { claudeAutoMemoryEnvFor } from "../shared/claude-auto-memory.js";
+import { claudeLimitReset } from "../shared/claude-limit-reset.js";
 
 export type { PtyControlEvent } from "./pty-view-engine.js";
 
@@ -230,13 +231,17 @@ export function sanitizeAssistantText(text: string): string {
  * Returns null unless the turn failed specifically with error === "rate_limit".
  * The shape matches what ClaudeEngine produces from `rate_limit_event` JSON, so
  * detectRateLimit() / the wait-retry machinery in manager.ts work unchanged.
- * (error_details may carry a reset time, but its format is unconfirmed — left
- * unparsed; manager.ts computes a default backoff when resetsAt is absent.)
+ * The payload never names the reset (error_details' format is unconfirmed), so
+ * a rate-limit failure — and only that one — asks the account's usage source
+ * which window is spent. Without an answer resetsAt stays absent and manager.ts
+ * computes its default backoff, exactly as before.
  */
-function rateLimitFromStopFailure(payload: HookPayload | undefined): EngineRateLimitInfo | null {
+export async function rateLimitFromStopFailure(payload: HookPayload | undefined, model?: string): Promise<EngineRateLimitInfo | null> {
   if (!payload || payload.hook_event_name !== "StopFailure") return null;
   if (payload.error !== "rate_limit") return null;
-  return { status: "rejected", rateLimitType: "interactive_detected" };
+  // The turn has already failed: nothing the lookup does may fail it again.
+  const reset = await claudeLimitReset({ model }).catch(() => undefined);
+  return { status: "rejected", rateLimitType: "interactive_detected", ...(reset ? { resetsAt: reset.resetsAt, window: reset.window } : {}) };
 }
 
 function buildInteractiveArgs(o: InteractiveArgsOpts): string[] {
@@ -961,8 +966,11 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
     }
     // Map a StopFailure rate-limit into result.rateLimit so manager.ts's
     // wait/retry/fallback machinery engages exactly as it does for `claude -p`.
-    const rl = rateLimitFromStopFailure(resolver.stopFailure);
-    if (rl) result.rateLimit = rl;
+    const rl = await rateLimitFromStopFailure(resolver.stopFailure, opts.model);
+    if (rl) {
+      result.rateLimit = rl;
+      logger.info(`InteractiveClaudeEngine: usage limit for ${jinnSessionId} — ${rl.resetsAt ? `${rl.window} window resets ${new Date(rl.resetsAt * 1000).toISOString()}` : "reset time unknown"}`);
+    }
     return result;
   }
 
