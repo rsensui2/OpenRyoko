@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { vi } from "vitest";
-import { CONFIG_PATH } from "../../shared/paths.js";
+import { updateConfigDocument } from "../../shared/config-file.js";
 import { placeTree } from "../home-copy.js";
 import { syncInstanceBundledSkills } from "../../skills-sync/instance.js";
 import type { BundledSkillSync } from "../../skills-sync/types.js";
@@ -17,6 +17,7 @@ export const mockRmSync = vi.mocked(fs.rmSync);
 export const mockSync = vi.mocked(syncInstanceBundledSkills);
 export const mockLstatSync = vi.mocked(fs.lstatSync);
 export const mockPlaceTree = vi.mocked(placeTree);
+export const mockUpdateConfigDocument = vi.mocked(updateConfigDocument);
 
 export const missing = (file: unknown) => Object.assign(new Error(`ENOENT: no such file or directory, lstat '${String(file)}'`), { code: "ENOENT" });
 export const stat = (kind: "file" | "symlink") => ({ isFile: () => kind === "file", isDirectory: () => false, isSymbolicLink: () => kind === "symlink" }) as fs.Stats;
@@ -59,10 +60,13 @@ export const createdInHome = (): string[] => [
   ...placed(),
 ];
 
-/** The versions written to config.yaml, in order. */
-export const stampedVersions = () => mockWriteFileSync.mock.calls
-  .filter(([file]) => file === CONFIG_PATH)
-  .map(([, content]) => /version: (\S+)/.exec(String(content))?.[1]);
+/**
+ * The versions recorded in config.yaml, in order. The stamp goes through the shared
+ * config writer: each one is an update of the config document, and what it sets
+ * jinn.version to is read off by running it on a document that has another.
+ */
+export const stampedVersions = (): (string | undefined)[] => mockUpdateConfigDocument.mock.calls
+  .map(([change]) => (change({ jinn: { version: "0.0.0" } }) as { jinn?: { version?: string } }).jinn?.version);
 
 /** Every path exists, every directory is empty, the sync did nothing, and stdout is captured. */
 export function resetMigrateMocks(): void {

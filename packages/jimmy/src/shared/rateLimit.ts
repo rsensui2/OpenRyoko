@@ -1,5 +1,6 @@
 import type { EngineResult } from "./types.js";
 import { classifyEngineFailureText, hasEngineFailureClass } from "./engine-failure.js";
+import { redactText } from "./redact.js";
 
 /** Whether error text reads as a quota window rather than a fault. Engine
  *  results are one caller; a settled attempt's stored error is the other, and
@@ -58,10 +59,52 @@ export function isPoisonedTranscriptError(result: EngineResult): boolean {
 }
 
 /**
+ * Whether a failed attempt was SEEN doing something before it failed: text of
+ * its own, or a tool call. `handoffContext` is what the session layer's attempt
+ * wrapper observed on the stream.
+ *
+ * `cost` and `numTurns` cannot answer this for every engine. Codex reports no
+ * cost and counts a turn only when it completes, so a turn that ran a command
+ * and then failed reports exactly what a turn that never started does — and
+ * was being run a second time as if nothing had happened, command included.
+ *
+ * The Claude CLI reports an API error as the assistant's own message, so the
+ * error text is also streamed. Text that is nothing but the error is not work.
+ */
+export function attemptMadeProgress(result: EngineResult): boolean {
+  const observed = result.handoffContext?.trim();
+  if (!observed) return false;
+  return !(result.error && redactText(result.error).includes(observed));
+}
+
+/** How much of what an attempt was seen doing is kept on its result. */
+export const MAX_OBSERVED_PROGRESS_CHARS = 8000;
+
+/**
+ * `later`, still carrying what `earlier` was seen doing.
+ *
+ * One turn can take several engine runs — a tracked task and its continuations,
+ * a continuation after a server error, the next engine of a fallback chain —
+ * and is then judged as a single result. If only the last run's observed
+ * progress survived, a run that failed before doing anything would make a turn
+ * that had already run commands look like one that never started.
+ *
+ * Only real progress is carried: text that is nothing but the earlier run's own
+ * error (see attemptMadeProgress) is not work, on that run or on a later one.
+ */
+export function withEarlierProgress(earlier: EngineResult | undefined, later: EngineResult): EngineResult {
+  const before = earlier && attemptMadeProgress(earlier) ? earlier.handoffContext?.trim() : undefined;
+  if (!before) return later;
+  const after = later.handoffContext?.trim();
+  return { ...later, handoffContext: (after ? `${before}\n\n${after}` : before).slice(-MAX_OBSERVED_PROGRESS_CHARS) };
+}
+
+/**
  * Detect whether an engine result indicates a dead/expired session rather than
  * a transient or rate-limit error. A dead session is one where the engine exited
- * with an error but did zero work (no cost, no turns) and there is no rate-limit
- * signal — meaning the --resume ID is stale and should not be retried.
+ * with an error but did zero work (no cost, no turns, nothing observed on its
+ * stream) and there is no rate-limit signal — meaning the --resume ID is stale
+ * and should not be retried.
  */
 export function isDeadSessionError(result: EngineResult): boolean {
   if (result.retryable === false) return false;
@@ -69,6 +112,10 @@ export function isDeadSessionError(result: EngineResult): boolean {
 
   // If rate limit info is present, this is a rate limit, not a dead session
   if (result.rateLimit?.status) return false;
+
+  // An attempt that was seen working is not a stale id, whatever it reports:
+  // the caller answers a dead session by running the prompt again from scratch.
+  if (attemptMadeProgress(result)) return false;
 
   const zeroCost = result.cost === undefined || result.cost === 0;
   const zeroTurns = result.numTurns === undefined || result.numTurns === 0;
@@ -117,6 +164,24 @@ export function detectRateLimit(result: EngineResult): RateLimitDetection {
   }
 
   return { limited: false };
+}
+
+/**
+ * The longest a turn is kept waiting for a usage limit to reset. It was always
+ * the bound when the engine could not say when the reset is; a reset stated to
+ * be further off than this is not waited for at all (see usageLimitOutlastsWait).
+ */
+export const MAX_USAGE_LIMIT_WAIT_MS = 6 * 60 * 60_000;
+
+/**
+ * Whether a limit states a reset further off than a turn is kept waiting for.
+ * Such a wait is known in advance not to end in time: a weekly window can name
+ * a reset days out, and a turn parked for it only comes back as a stale request
+ * alongside every other turn parked in the meantime.
+ */
+export function usageLimitOutlastsWait(resetsAtSeconds: number | undefined, nowMs = Date.now()): boolean {
+  return typeof resetsAtSeconds === "number" && Number.isFinite(resetsAtSeconds)
+    && resetsAtSeconds * 1000 - nowMs > MAX_USAGE_LIMIT_WAIT_MS;
 }
 
 export function computeRateLimitDeadlineMs(resetsAtSeconds?: number, extraMs = 30 * 60_000): number {

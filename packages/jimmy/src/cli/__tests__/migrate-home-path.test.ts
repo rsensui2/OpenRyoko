@@ -54,6 +54,14 @@ vi.mock("../home-copy.js", () => ({
   placeTree: vi.fn(),
 }));
 
+// config.yaml is read and written through the shared config writer, not
+// through fs directly — the version stamp shows up as updateConfigDocument.
+vi.mock("../../shared/config-file.js", () => ({
+  readConfigSnapshot: vi.fn(() => ({ raw: null, bytes: null, mode: null, document: {}, revision: "" })),
+  writeConfigDocument: vi.fn(() => "revision"),
+  updateConfigDocument: vi.fn(() => "revision"),
+}));
+
 // The home exactly as the environment gave it. RYOKO_HOME=/path/ ends in a slash and
 // nothing normalises it; every path joined from it is normalised, the home itself is not.
 const given = vi.hoisted(() => ({ suffix: "/" }));

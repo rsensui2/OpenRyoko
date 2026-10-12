@@ -54,6 +54,14 @@ vi.mock("../home-copy.js", () => ({
   placeTree: vi.fn(),
 }));
 
+// config.yaml is read and written through the shared config writer, not
+// through fs directly — the version stamp shows up as updateConfigDocument.
+vi.mock("../../shared/config-file.js", () => ({
+  readConfigSnapshot: vi.fn(() => ({ raw: null, bytes: null, mode: null, document: {}, revision: "" })),
+  writeConfigDocument: vi.fn(() => "revision"),
+  updateConfigDocument: vi.fn(() => "revision"),
+}));
+
 import fs from "node:fs";
 import path from "node:path";
 import type { BundledSkillSync } from "../../skills-sync/types.js";

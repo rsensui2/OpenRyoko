@@ -91,6 +91,9 @@ export interface EngineRateLimitInfo {
   status?: string;
   /** Unix timestamp in seconds */
   resetsAt?: number;
+  /** The spent quota window as usage telemetry names it (`5h`, `7d`,
+   *  `7d Fable`), when the engine could tell which one bound the turn. */
+  window?: string;
   rateLimitType?: string;
   overageStatus?: string;
   overageDisabledReason?: string;
@@ -125,6 +128,15 @@ export interface Connector {
   getCapabilities(): ConnectorCapabilities;
   getHealth(): ConnectorHealth;
   reconstructTarget(replyContext: ReplyContext): Target;
+  /**
+   * The promise is the delivery outcome: resolve = the whole message reached
+   * the platform (the value is the last message id, when the platform gives
+   * one), reject = it did not. Callers retry a rejected send or record the
+   * conversation as unanswered, so never resolve a send that did not leave.
+   * A send that landed only in part rejects with PartialDeliveryError
+   * (shared/partial-delivery.ts): record it as failed, never retry it from
+   * the top — that would post the delivered part twice.
+   */
   sendMessage(target: Target, text: string): Promise<string | void>;
   replyMessage(target: Target, text: string): Promise<string | void>;
   addReaction(target: Target, emoji: string): Promise<void>;
@@ -533,6 +545,9 @@ export interface SlackConnectorConfig {
   botToken: string;
   allowFrom?: string | string[];
   ignoreOldMessagesOnBoot?: boolean;
+  /** Largest attachment downloaded, in MB (default 200). A larger one is not
+   *  fetched; the session is told so. */
+  maxAttachmentMb?: number;
   /** Deterministic per-scope response gate (DM / group DM / channel). */
   respondTo?: SlackRespondToConfig;
   /** Air-reading triage: decide per-message whether to reply/react/stay silent */
@@ -551,6 +566,14 @@ export interface SlackConnectorConfig {
     pollIntervalMs?: number;
     /** Max sessions rendered per status group. Default 10. */
     maxPerGroup?: number;
+  };
+  /**
+   * Re-login to Claude / Codex from the operator's own Slack DM, for hosts
+   * with no shell to log in from. Off unless `enabled` is exactly true, and
+   * inert until `portal.operatorSlackId` is set. See docs/connectors.md.
+   */
+  providerAuth?: {
+    enabled?: boolean;
   };
 }
 
@@ -598,6 +621,9 @@ export interface DiscordConnectorConfig {
   botToken?: string;       // Make optional — not needed in proxy mode
   allowFrom?: string | string[];
   ignoreOldMessagesOnBoot?: boolean;
+  /** Largest attachment downloaded, in MB (default 200). A larger one is not
+   *  fetched; the session is told so. */
+  maxAttachmentMb?: number;
   guildId?: string;
   /** Only respond to messages in this channel */
   channelId?: string;
@@ -635,6 +661,9 @@ export interface WhatsAppConnectorConfig {
   /** Allowed phone numbers in JID format (e.g. "447700900000@s.whatsapp.net") — empty = allow all */
   allowFrom?: string[];
   ignoreOldMessagesOnBoot?: boolean;
+  /** Largest attachment downloaded, in MB (default 200). A larger one is not
+   *  fetched; the session is told so. */
+  maxAttachmentMb?: number;
 }
 
 export interface ConnectorInstance {
@@ -828,6 +857,8 @@ export interface JinnConfig {
   };
   logging: { file: boolean; stdout: boolean; level: string };
   mcp?: McpGlobalConfig;
+  /** Monthly spend limit (USD) per employee name; written by PUT /api/budgets. */
+  budgets?: { employees?: Record<string, number> };
   sessions?: {
     /** Engine inactivity deadline in milliseconds, reset by streamed activity. Default: 300000; 0 disables. */
     engineNoResponseTimeoutMs?: number;
@@ -847,11 +878,33 @@ export interface JinnConfig {
      *  turn already settled — e.g. a background sub-agent finishing) back to the
      *  session's conversation. Default: true. */
     backgroundDelivery?: boolean;
+    /** After a gateway restart, wake each session it cut off mid-turn with one
+     *  notification telling it to re-check what was in flight and carry on.
+     *  Default: true. false leaves interrupted sessions for the operator. */
+    resumeInterruptedOnBoot?: boolean;
+    /** Interruptions older than this many minutes at boot are not woken.
+     *  Default: 120. */
+    resumeInterruptedMaxAgeMinutes?: number;
   };
   cron?: {
     defaultDelivery?: CronDelivery;
     alertChannel?: string;
     alertConnector?: string;
+    /** Minutes a job's repeated failure (same reason) is not alerted again
+     *  after its alert went out. Default 60; 0 alerts on every failure. */
+    alertThrottleMinutes?: number;
+  };
+  /** Daily backups of the instance home and its databases. On unless `enabled` is false. */
+  backup?: {
+    enabled?: boolean;
+    /** Where backups are written. Default: `<home>/backups`. May point outside the home. */
+    directory?: string;
+    /** Days of home archives to keep: the latest of each day, and up to two more taken the same day. Default: 14. */
+    retention?: number;
+    /** Largest home, in MB of file content, one archive may hold; a larger one is refused. Default: 512. */
+    maxArchiveMb?: number;
+    /** Most files, directories and symlinks one archive may hold; a home with more is refused. Default: 50000. */
+    maxEntries?: number;
   };
   notifications?: {
     connector?: string;  // defaults to "discord"
@@ -880,5 +933,4 @@ export interface JinnConfig {
      *  either way, under the same rules. */
     autoSync?: boolean;
   };
-  remotes?: Record<string, { url: string; label?: string }>;
 }

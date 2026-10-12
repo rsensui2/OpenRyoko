@@ -15,6 +15,10 @@ export class SessionQueue {
   private cancelGeneration = new Map<string, number>();
   /** Track which session keys are paused - queued tasks wait until resumed. */
   private paused = new Set<string>();
+  /** Durable queue rows held by tasks in this process, queued or running, with
+   *  the cancellation generation each holder was enqueued under. A list, because
+   *  a restart replay and a live request can both dispatch the same row. */
+  private inFlightItems = new Map<string, Array<{ sessionKey: string; generation: number }>>();
 
   /**
    * Check if a session is currently running.
@@ -26,6 +30,22 @@ export class SessionQueue {
   getPendingCount(sessionKey: string): number {
     const total = this.pending.get(sessionKey) || 0;
     return this.running.has(sessionKey) ? Math.max(0, total - 1) : total;
+  }
+
+  /**
+   * Who in this process is going to run a durable queue row.
+   * - "live": a queued or running task that will run it.
+   * - "cancelled": only tasks a clearQueue() has cancelled — they will close
+   *   the row without running it, so nothing may be added to it any more.
+   * - "none": nobody. A row that is pending in the database with no dispatcher
+   *   here was left by a restart and needs one.
+   */
+  dispatchState(queueItemId: string): "live" | "cancelled" | "none" {
+    const holders = this.inFlightItems.get(queueItemId);
+    if (!holders || holders.length === 0) return "none";
+    return holders.some((holder) => (this.cancelGeneration.get(holder.sessionKey) ?? 0) === holder.generation)
+      ? "live"
+      : "cancelled";
   }
 
   /** Detect a stop even when no engine process exists between turns. */
@@ -87,6 +107,8 @@ export class SessionQueue {
     // bumps it and skips this task; tasks enqueued after that clearQueue capture the
     // new value and still run.
     const taskGeneration = this.cancelGeneration.get(sessionKey) ?? 0;
+    const holder = { sessionKey, generation: taskGeneration };
+    if (queueItemId) this.inFlightItems.set(queueItemId, [...(this.inFlightItems.get(queueItemId) ?? []), holder]);
     const prev = this.queues.get(sessionKey) || Promise.resolve();
     const runTask = async () => {
       this.running.add(sessionKey);
@@ -114,18 +136,29 @@ export class SessionQueue {
         // Mark the DB row done in finally so an errored/cancelled task can't
         // leave the item stuck as 'running'.
         if (queueItemId && queueItemStarted) markQueueItemCompleted(queueItemId);
+        if (queueItemId) this.releaseInFlightItem(queueItemId, holder);
         this.running.delete(sessionKey);
         this.decrementPending(sessionKey);
       }
     };
     const next = prev.then(runTask, runTask);
     this.queues.set(sessionKey, next);
-    void next.finally(() => {
+    // then(f, f), not finally(f): finally() hands back a promise that rejects
+    // along with the task, and nothing would be listening to it — an unhandled
+    // rejection on top of the one the caller of enqueue() receives.
+    const forget = () => {
       if (this.queues.get(sessionKey) === next) {
         this.queues.delete(sessionKey);
       }
-    });
+    };
+    void next.then(forget, forget);
     return next;
+  }
+
+  private releaseInFlightItem(queueItemId: string, holder: { sessionKey: string; generation: number }): void {
+    const remaining = (this.inFlightItems.get(queueItemId) ?? []).filter((other) => other !== holder);
+    if (remaining.length === 0) this.inFlightItems.delete(queueItemId);
+    else this.inFlightItems.set(queueItemId, remaining);
   }
 
   private decrementPending(sessionKey: string): void {

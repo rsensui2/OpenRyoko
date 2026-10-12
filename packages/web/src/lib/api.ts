@@ -306,6 +306,42 @@ async function patch<T>(path: string, body: unknown): Promise<T> {
   return res.json();
 }
 
+/** Carries the revision of config.yaml (a hash of the file) in both directions. */
+const CONFIG_REVISION_HEADER = "X-Config-Revision"
+
+/** The save was refused: config.yaml changed on disk after the config being
+ *  saved was loaded, and writing it would have put the old values back. */
+export class ConfigConflictError extends Error {
+  constructor() {
+    super("config.yaml changed on disk after it was loaded")
+    this.name = "ConfigConflictError"
+  }
+}
+
+/** The config, and the revision of the file it was read from (null when the
+ *  gateway does not send one). */
+async function getConfigWithRevision(): Promise<{ config: Record<string, unknown>; revision: string | null }> {
+  const res = await fetch(`${BASE}/api/config`, { cache: "no-store" })
+  if (!res.ok) throw new Error(await extractErrorMessage(res))
+  return { config: await res.json(), revision: res.headers.get(CONFIG_REVISION_HEADER) }
+}
+
+/** Save the config as loaded at `revision`. Throws ConfigConflictError when the
+ *  file has changed since; returns the revision the save produced. */
+async function updateConfigAtRevision(
+  data: Record<string, unknown>,
+  revision: string | null,
+): Promise<{ result: ConfigUpdateResult; revision: string | null }> {
+  const res = await fetch(`${BASE}/api/config`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...(revision ? { [CONFIG_REVISION_HEADER]: revision } : {}) },
+    body: JSON.stringify(data),
+  })
+  if (res.status === 409) throw new ConfigConflictError()
+  if (!res.ok) throw new Error(await extractErrorMessage(res))
+  return { result: await res.json(), revision: res.headers.get(CONFIG_REVISION_HEADER) }
+}
+
 /** Credential endpoints never surface response bodies or arbitrary errors to the UI. */
 async function typeSafeRequest<T>(path: string, method = "GET", body?: { apiKey: string }): Promise<T> {
   const response = await fetch(`${BASE}${path}`, {
@@ -426,7 +462,9 @@ export const api = {
   getCronStatus: () => get<CronSchedulerStatus>("/api/cron/status"),
   createCronJob: (data: Record<string, unknown>) =>
     post<Record<string, unknown>>("/api/cron", data),
-  getCronRuns: (id: string) => get<Record<string, unknown>[]>(`/api/cron/${id}/runs`),
+  /** Oldest first. `limit` keeps only the newest N, in that same order. */
+  getCronRuns: (id: string, limit?: number) =>
+    get<Record<string, unknown>[]>(`/api/cron/${id}/runs${limit ? `?limit=${limit}` : ""}`),
   updateCronJob: (id: string, data: Record<string, unknown>) =>
     put<Record<string, unknown>>(`/api/cron/${id}`, data),
   triggerCronJob: (id: string) =>
@@ -440,10 +478,12 @@ export const api = {
   getSkills: () => get<Record<string, unknown>[]>("/api/skills"),
   getSkill: (name: string) => get<Record<string, unknown>>(`/api/skills/${name}`),
   getConfig: () => get<Record<string, unknown>>("/api/config"),
+  getConfigWithRevision,
   reloadConnectors: () =>
     post<{ started: string[]; stopped: string[]; errors: string[] }>("/api/connectors/reload", {}),
   updateConfig: (data: Record<string, unknown>) =>
     put<ConfigUpdateResult>("/api/config", data),
+  updateConfigAtRevision,
   getLogs: (n?: number) =>
     get<{ lines: string[] }>(`/api/logs${n ? `?n=${n}` : ""}`),
   getOnboardingEngines: () =>

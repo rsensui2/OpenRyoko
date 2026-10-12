@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { api, type CronJobSchedulerState, type CronSchedulerStatus, type Employee } from "@/lib/api"
 import { useGateway } from "@/hooks/use-gateway"
-import { describeCron, formatDuration } from "@/lib/cron-utils"
+import { describeCron, formatDuration, newestRuns } from "@/lib/cron-utils"
 import { PageLayout, ToolbarActions } from "@/components/page-layout"
 import { useBreadcrumbs } from "@/context/breadcrumb-context"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
@@ -99,15 +99,17 @@ function registrationDisplay(scheduler: CronJobSchedulerState | undefined, stale
 /*  RecentRuns (lazy-loaded per job)                                    */
 /* ------------------------------------------------------------------ */
 
+const RECENT_RUN_COUNT = 5
+
 function RecentRuns({ jobId }: { jobId: string }) {
   const [runs, setRuns] = useState<CronRun[] | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     api
-      .getCronRuns(jobId)
+      .getCronRuns(jobId, RECENT_RUN_COUNT)
       .then((data) => {
-        setRuns((data as CronRun[]).slice(0, 5))
+        setRuns(newestRuns(data as CronRun[], RECENT_RUN_COUNT))
         setLoading(false)
       })
       .catch(() => {

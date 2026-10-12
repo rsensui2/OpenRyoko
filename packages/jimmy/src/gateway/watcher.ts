@@ -15,6 +15,7 @@ interface WatcherGroup {
   watchers: FSWatcher[];
   timers: Set<ReturnType<typeof setTimeout>>;
   reconciliation?: ReturnType<typeof setInterval>;
+  configReconciliation?: ReturnType<typeof setInterval>;
   stopped: boolean;
 }
 
@@ -103,6 +104,17 @@ export function syncSkillSymlinks(): void {
   }
 }
 
+/** Identifies config.yaml as it is on disk now (a new inode, size or mtime is
+ *  a different file); null while there is no file to load. */
+function configFingerprint(): string | null {
+  try {
+    const stats = fs.statSync(CONFIG_PATH);
+    return `${stats.ino}:${stats.size}:${stats.mtimeMs}`;
+  } catch {
+    return null;
+  }
+}
+
 export function startWatchers(callbacks: WatcherCallbacks): void {
   const DEBOUNCE_MS = 500;
   // Detach the old group synchronously; its eventual close must never clear a
@@ -118,17 +130,41 @@ export function startWatchers(callbacks: WatcherCallbacks): void {
     return watcher;
   };
 
-  const configWatcher = track(watch(CONFIG_PATH, {
+  // Watch the directory, not the file. Every API save replaces config.yaml by
+  // rename, which gives the path a new inode; a watch on the file follows the
+  // old one, and once it misses a single replacement it never fires again. The
+  // directory outlives every replacement. Only config.yaml is followed in it —
+  // the home directory holds plenty that changes for other reasons.
+  const configDir = path.dirname(CONFIG_PATH);
+  const isConfigFile = (file: string) => path.resolve(file) === path.resolve(CONFIG_PATH);
+  const configWatcher = track(watch(configDir, {
     ignoreInitial: true,
+    depth: 0,
+    ignored: (candidate) => path.resolve(candidate) !== path.resolve(configDir) && !isConfigFile(candidate),
     awaitWriteFinish: { stabilityThreshold: 300 },
   }), "config.yaml");
-  configWatcher.on(
-    "change",
-    debounce(group, "config.yaml", () => {
-      logger.info("config.yaml changed, reloading...");
-      return callbacks.onConfigReload();
-    }, DEBOUNCE_MS),
-  );
+  let loadedConfig = configFingerprint();
+  const reloadConfig = debounce(group, "config.yaml", () => {
+    loadedConfig = configFingerprint();
+    logger.info("config.yaml changed, reloading...");
+    return callbacks.onConfigReload();
+  }, DEBOUNCE_MS);
+  // "add" as well as "change": an editor that deletes and recreates the file
+  // shows up as one. Its disappearing is not a reason to load anything.
+  for (const event of ["add", "change"] as const) {
+    configWatcher.on(event, (file) => {
+      if (isConfigFile(file)) reloadConfig();
+    });
+  }
+
+  // Events can also simply not arrive — an edit made from the host side of a
+  // bind-mounted home may never produce one. Compare the file with what was
+  // last loaded, and reload when it changed behind the watcher's back.
+  group.configReconciliation = setInterval(() => {
+    const onDisk = configFingerprint();
+    if (onDisk !== null && onDisk !== loadedConfig) reloadConfig();
+  }, 30_000);
+  group.configReconciliation.unref();
 
   // Watching the directory keeps recreation observable after the original
   // file/inode has been removed. Ignore events for its other contents.
@@ -188,6 +224,7 @@ export async function stopWatchers(): Promise<void> {
   activeGroup = undefined;
   group.stopped = true;
   if (group.reconciliation) clearInterval(group.reconciliation);
+  if (group.configReconciliation) clearInterval(group.configReconciliation);
   for (const timer of group.timers) clearTimeout(timer);
   group.timers.clear();
   await Promise.all(group.watchers.map(async (watcher) => {

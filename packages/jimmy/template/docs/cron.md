@@ -76,14 +76,21 @@ Each job execution is logged to `~/.ryoko/cron/runs/<jobId>.jsonl`. Each line is
 
 ```json
 {
-  "runId": "run_abc123",
-  "jobId": "daily-standup",
-  "startedAt": "2026-01-15T09:00:00.000Z",
-  "completedAt": "2026-01-15T09:00:45.000Z",
+  "timestamp": "2026-01-15T09:00:00.000Z",
+  "sessionKey": "cron:daily-standup:1768467600000",
+  "sessionId": "8b1f0c1e-7a52-4a0e-9d55-2f1f5a0c9b11",
   "status": "success",
-  "output": "..."
+  "durationMs": 45000,
+  "error": null,
+  "resultPreview": null
 }
 ```
+
+`status` is `success`, `error` or `skipped` (with a `reason`). The `kind: "maintenance"` lines an update-notification job writes for its inspection use `notified`, not `success`, once the inspection report has been delivered. A prompt run is an `error`, with the reason in `error`, when its session ended in error, when its result was not delivered (the delivery connector was not running, or refused the message), or when the job names an engine the gateway does not have. It is not a `success` merely because the turn returned. `GET /api/cron/<id>/runs` lists runs oldest first; add `?limit=N` for only the newest N.
+
+## Failure Alerts
+
+A failed prompt run is always written to the run log, and alerts `cron.alertConnector` / `cron.alertChannel` in `config.yaml` when both are set. While the same failure of a job repeats, the alert is sent once and then held back for `cron.alertThrottleMinutes` (default 60; `0` alerts on every failure). A new reason, or a success in between, alerts again at once. No new alert therefore does not mean the job recovered: check its run log. Command jobs alert as described in [Direct command jobs](cron-commands.md).
 
 ## Delegation Pattern
 

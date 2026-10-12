@@ -3,11 +3,16 @@ import type { Employee, Engine, EngineResult, EngineRunOpts, JinnConfig, Session
 import { isInterruptibleEngine } from "../shared/types.js";
 import { resolveFallbackEngine, resolveSubstituteModel } from "../shared/engine-fallback.js";
 import { effortLevelsForModel, getModelRegistry } from "../shared/models.js";
-import { detectRateLimit } from "../shared/rateLimit.js";
+import { logger } from "../shared/logger.js";
+import { detectRateLimit, MAX_OBSERVED_PROGRESS_CHARS, MAX_USAGE_LIMIT_WAIT_MS, usageLimitOutlastsWait, withEarlierProgress } from "../shared/rateLimit.js";
 import { recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { redactText } from "../shared/redact.js";
+import { reportEngineAttempt } from "../provider-auth/failure-signal.js";
 import { getMessages, getSession, updateSession, type UpdateSessionFields } from "./registry.js";
-import { recordTurnAccounting } from "./accounting.js";
+import { recordTurnAccounting, unrecordTurnAccounting } from "./accounting.js";
+import { readEngineHealth, reprobeAtMs } from "../shared/engine-health.js";
+import { claimUsageLimitAnnouncement, HEALTH_OVERRIDE_SOURCE, healthOverrideReleased, isUsableFallbackTarget, noteEngineTurnOutcome } from "./engine-health-gate.js";
+import { confirmLoginRefusal, isLoginRefusal, LOGIN_REFUSAL_HOLD_MS, loginRefusalConfirmed } from "./engine-login.js";
 
 export type EngineFallbackReason = "rate_limit" | "no_response" | "timeout";
 const object = (value: unknown): Record<string, any> => value && typeof value === "object" && !Array.isArray(value) ? { ...value } : {};
@@ -25,19 +30,21 @@ export function engineFallbackFailure(result: EngineResult): EngineFallbackReaso
 }
 
 /** Default to either provider, but an explicit chain (including []) always wins. */
-function fallbackConfig(config: JinnConfig): JinnConfig {
+export function fallbackConfig(config: JinnConfig): JinnConfig {
   return { ...config, engines: { ...config.engines,
     claude: { ...config.engines.claude, fallback: config.engines.claude?.fallback ?? [config.sessions?.fallbackEngine ?? "codex"] },
     codex: { ...config.engines.codex, fallback: config.engines.codex?.fallback ?? ["claude"] },
   } };
 }
 
-export function computeEngineOverrideRevert(session: Session, nowMs = Date.now()): UpdateSessionFields | null {
+/** `released` ends an override ahead of its `until`: the reason it was put in
+ *  place no longer holds (see healthOverrideReleased). */
+export function computeEngineOverrideRevert(session: Session, nowMs = Date.now(), released = false): UpdateSessionFields | null {
   const meta = object(session.transportMeta);
   const override = object(meta.engineOverride);
   if (typeof override.originalEngine !== "string" || typeof override.until !== "string") return null;
   const until = Date.parse(override.until);
-  if (!Number.isFinite(until) || until > nowMs) return null;
+  if (!Number.isFinite(until) || (until > nowMs && !released)) return null;
   const originalEngine = override.originalEngine;
   const engineSessions = object(meta.engineSessions);
   if (session.engineSessionId) engineSessions[session.engine] = session.engineSessionId;
@@ -57,8 +64,29 @@ export function computeEngineOverrideRevert(session: Session, nowMs = Date.now()
 }
 
 export function maybeRevertEngineOverride(session: Session): Session {
-  const updates = computeEngineOverrideRevert(session);
+  const released = healthOverrideReleased(object(object(session.transportMeta).engineOverride));
+  const updates = computeEngineOverrideRevert(session, Date.now(), released);
   return updates ? updateSession(session.id, updates) ?? session : session;
+}
+
+/**
+ * A held session's override once the session has been reset. It is still the
+ * session's way back to the engine, model and effort it was moved off —
+ * dropping it leaves the session on its fallback engine for good — but it no
+ * longer remembers the engine session the reset abandoned: the session goes
+ * back to a new one, and is told what happened from the reset on. Undefined
+ * when there is nothing to keep: no override, or one that names no way back.
+ */
+export function engineOverrideAfterReset(override: unknown, now: Date = new Date()): Record<string, unknown> | undefined {
+  const held = object(override);
+  if (typeof held.originalEngine !== "string" || typeof held.until !== "string") return undefined;
+  return { ...held, originalEngineSessionId: null, syncSince: now.toISOString() };
+}
+
+/** Whether `engine` is the session's own engine and the session is currently
+ *  held on another one — moved off it by a switch, and not yet back. */
+export function isAwayFromEngine(session: Session, engine: string): boolean {
+  return session.engine !== engine && object(object(session.transportMeta).engineOverride).originalEngine === engine;
 }
 
 export function engineSyncSince(session: Session): string | undefined {
@@ -100,6 +128,37 @@ export async function waitForEngineRetry(delayMs: number, shouldStop: () => bool
   return !shouldStop();
 }
 
+const RESET_DAY_AND_TIME: Intl.DateTimeFormatOptions = { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" };
+
+/**
+ * The result a turn ends with after its engine and any fallback: unchanged,
+ * unless it is a usage limit that would now be waited for and that states a
+ * reset further off than a turn is kept waiting. That one is failed here, with
+ * the reset time for an answer, instead of being parked for days.
+ *
+ * Both wait paths (connector and web) take their result through this, so they
+ * park and refuse the same turns. `retryable: false` is what keeps the failed
+ * result out of the wait: it is no longer something to retry.
+ */
+export function failLimitThatOutlastsTheWait(
+  outcome: { result: EngineResult; engine: Engine; attempted: boolean; session?: Pick<Session, "id"> },
+  nowMs = Date.now(),
+): EngineResult {
+  const { result, engine } = outcome;
+  // The wait is only ever entered for a limit nothing was switched away from,
+  // and never for a turn that was interrupted.
+  if (outcome.attempted || result.error?.startsWith("Interrupted")) return result;
+  const limit = detectRateLimit(result);
+  if (!limit.limited || limit.resetsAt === undefined || !usageLimitOutlastsWait(limit.resetsAt, nowMs)) return result;
+  const resetsAt = new Date(limit.resetsAt * 1000);
+  if (engine.name === "claude") recordClaudeRateLimit(limit.resetsAt); // what entering the wait would have noted
+  logger.info(`Session ${outcome.session?.id ?? "(unknown)"} hit ${engine.name} usage limit that resets at ${resetsAt.toISOString()} — ` +
+    `further off than the ${Math.round(MAX_USAGE_LIMIT_WAIT_MS / 3_600_000)}h a turn waits, so it fails now instead of waiting`);
+  return { ...result, result: "", retryable: false,
+    error: `${engine.name} usage limit reached. It resets ${resetsAt.toLocaleString("en-GB", RESET_DAY_AND_TIME)} (${resetsAt.toISOString()}), ` +
+      "which is too far off to wait for. Please try again after that." };
+}
+
 /** Watch actual engine activity, underneath goal supervision. A timed-out process
  * must settle AND stop before another provider can run the same work. */
 export async function runEngineWithResponseTimeout(
@@ -111,6 +170,7 @@ export async function runEngineWithResponseTimeout(
   let timer: ReturnType<typeof setTimeout> | undefined;
   let cancelledPoll: ReturnType<typeof setInterval> | undefined;
   let stopped = false;
+  const startedAt = new Date();
   let lastActivity = Date.now();
   let streamedText = "";
   const toolProgress: string[] = [];
@@ -143,9 +203,12 @@ export async function runEngineWithResponseTimeout(
     arm();
     opts.onStream?.(delta);
   } })).catch((error): EngineResult => ({ sessionId: opts.resumeSessionId ?? "", result: "", error: error instanceof Error ? error.message : String(error) }));
+  // Every engine attempt — connector, cron, workflow, web — settles here, so a
+  // lost provider login is noticed whichever path ran the turn.
+  void running.then((result) => reportEngineAttempt(engine.name, opts, result));
   const withProgress = (result: EngineResult): EngineResult => {
     const progress = [streamedText, toolProgress.length ? `Observed tool events (verify their effects before continuing):\n${toolProgress.join("\n")}` : ""].filter(Boolean).join("\n\n");
-    const annotated = progress ? { ...result, handoffContext: redactText(progress).slice(-8000) } : result;
+    const annotated = progress ? { ...result, handoffContext: redactText(progress).slice(-MAX_OBSERVED_PROGRESS_CHARS) } : result;
     // Goal supervision must see a failed attempt, rather than reviewing an
     // empty answer and converting it into a terminal Goal incomplete result.
     return engineFallbackFailure(annotated) === "no_response" && !annotated.error
@@ -153,7 +216,15 @@ export async function runEngineWithResponseTimeout(
   };
   try {
     const first = await Promise.race([running, timeout]);
-    if (typeof first !== "string") return withProgress(first);
+    if (typeof first !== "string") {
+      const result = withProgress(first);
+      // Every attempt on the local account is evidence about its allowance: a
+      // stated limit is remembered for the next session, a served turn that
+      // started after it forgets it. A run over SSH used the remote machine's
+      // account and says nothing.
+      if (!opts.sshHost) noteEngineTurnOutcome(engine.name, result, opts.model, new Date(), startedAt);
+      return result;
+    }
     stopped = true;
     const cancelled = first === "cancel" || shouldStop?.();
     const reason = cancelled ? "Interrupted: stopped" : "Engine response timeout";
@@ -170,6 +241,68 @@ export async function runEngineWithResponseTimeout(
     if (timer) clearTimeout(timer);
     if (cancelledPoll) clearInterval(cancelledPoll);
   }
+}
+
+/**
+ * Whether the limit a switch is being made for is the one on `engine`'s health
+ * record — a limit the engine declared, with the same stated reset, on a window
+ * it named. Only then does the record speak for the switch, so that forgetting
+ * the record (the engine served a turn; a re-check found the allowance open)
+ * can end the hold. A limit with no such record — unstated, undeclared, or met
+ * on a remote machine's account — keeps its hold until it expires.
+ *
+ * So does one whose window was not named, as `claude -p` reports them. Nothing
+ * then says which model the record is about: it is forgotten when any model is
+ * served, and a conversation tied to it would go back to fail on every message.
+ */
+function restsOnHealthRecord(engine: string, statedMs: number): boolean {
+  const record = readEngineHealth()[engine];
+  return record?.state === "exhausted" && record.window !== undefined && record.until === new Date(statedMs).toISOString();
+}
+
+const ENGINE_SWITCHED = "Interrupted: engine switched";
+
+/** Stop what `engine` still runs for one session — this session's process and
+ *  no other. Failing to stop it is logged and never undoes what the caller did. */
+function stopEngineFor(engine: Engine, sessionId: string, reason: string): void {
+  if (!isInterruptibleEngine(engine)) return;
+  try {
+    engine.kill(sessionId, reason);
+  } catch (error) {
+    logger.warn(`Could not stop ${engine.name} for session ${sessionId} (${reason}): ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/** What one switch replaces, kept so that the switch can be taken back. */
+interface BeforeSwitch {
+  engine: Engine;
+  result: EngineResult;
+  attempted: boolean;
+  /** The session's override before the switch, or undefined if it had none. */
+  override: unknown;
+  row: Pick<Session, "engine" | "engineSessionId" | "model" | "effortLevel">;
+}
+
+/** The first line of an engine error, safe and short enough for a log line. */
+const errorSummary = (result: EngineResult): string => redactText(result.error ?? "").split("\n")[0].slice(0, 200);
+
+/**
+ * A session held on a fallback engine, whose turn there was just refused by an
+ * engine now confirmed unable to sign in: send it back to its own engine, model
+ * and effort instead of leaving it pinned until the hold runs out. The refusal
+ * stays this turn's answer — the turn was built for the fallback engine and
+ * cannot be re-run on another here — but the next message is not refused too.
+ */
+function leaveFallbackThatCannotSignIn(session: Session, engine: Engine, result: EngineResult): { session: Session; result: EngineResult } | null {
+  const override = object(object(session.transportMeta).engineOverride);
+  if (typeof override.originalEngine !== "string" || override.originalEngine === session.engine || engine.name !== session.engine) return null;
+  if (!isLoginRefusal(result) || !loginRefusalConfirmed(engine.name)) return null;
+  const back = computeEngineOverrideRevert(session, Date.now(), true);
+  if (!back) return null;
+  logger.warn(`Session ${session.id} returns to ${override.originalEngine}: ${engine.name} cannot sign in (${errorSummary(result)})`);
+  stopEngineFor(engine, session.id, ENGINE_SWITCHED);
+  // The fallback engine's session id means nothing to the engine it goes back to.
+  return { session: updateSession(session.id, back) ?? session, result: { ...result, sessionId: "" } };
 }
 
 export interface EngineFallbackOptions {
@@ -192,18 +325,29 @@ export async function runFallbackAttempts(options: EngineFallbackOptions): Promi
   let engine = options.initialEngine;
   let result = options.initialResult;
   let attempted = false;
+  const returned = leaveFallbackThatCannotSignIn(session, engine, result);
+  if (returned) return { ...returned, engine, attempted };
   const visited = new Set([engine.name]);
   const plan = fallbackConfig(config);
   while (config.sessions?.rateLimitStrategy !== "wait" && !session.workflowProvenance) {
     const reason = engineFallbackFailure(result);
     if (!reason || options.shouldStop?.() || !getSession(session.id)) break;
     if (reason === "rate_limit" && engine.name === "claude") recordClaudeRateLimit(detectRateLimit(result).resetsAt);
-    const targetName = resolveFallbackEngine(plan, engine.name, (name) => !visited.has(name) && !!options.getEngine(name) && !!config.engines[name]);
+    // A candidate known to be out of allowance, or known to be missing from
+    // this machine, cannot take the turn: the walk moves on to the next member
+    // and, with none left, the failure is returned as it was before.
+    let model: string | undefined;
+    const targetName = resolveFallbackEngine(plan, engine.name, (name) => {
+      if (visited.has(name) || !options.getEngine(name) || !config.engines[name]) return false;
+      const candidateModel = resolveSubstituteModel(config, getModelRegistry(config), { from: engine.name, to: name, model: session.model }) ?? config.engines[name]!.model;
+      if (!isUsableFallbackTarget(config, name, candidateModel)) return false;
+      model = candidateModel;
+      return true;
+    });
     if (!targetName) break;
     visited.add(targetName);
     const target = options.getEngine(targetName)!;
     const targetConfig = config.engines[targetName]!;
-    const model = resolveSubstituteModel(config, getModelRegistry(config), { from: engine.name, to: targetName, model: session.model }) ?? targetConfig.model;
     const levels = effortLevelsForModel(config, targetName, model);
     const childOverride = session.parentSessionId && session.source !== "cron" ? targetConfig.childEffortOverride : undefined;
     const effort = compatibleEffort(childOverride ?? session.effortLevel ?? employee?.effortLevel ?? config.engines[engine.name as "codex" | "claude"]?.effortLevel, levels);
@@ -212,18 +356,43 @@ export async function runFallbackAttempts(options: EngineFallbackOptions): Promi
     if (result.sessionId || session.engineSessionId) engineSessions[engine.name] = result.sessionId || session.engineSessionId;
     const now = new Date().toISOString();
     const reset = detectRateLimit(result).resetsAt;
-    const until = new Date(reset && reset * 1000 > Date.now() ? reset * 1000 + 1000 : Date.now() + (reason === "rate_limit" ? 6 * 60 * 60_000 : 5 * 60_000)).toISOString();
+    // A stated reset is acted on for twelve hours at most, then the session
+    // tries its own engine for real: a weekly window can name a reset six days
+    // out, and the account is often usable again long before that.
+    const stated = reset && reset * 1000 > Date.now() ? reset * 1000 : undefined;
+    const until = new Date(stated ? reprobeAtMs(stated) + 1000 : Date.now() + (reason === "rate_limit" ? 6 * 60 * 60_000 : 5 * 60_000)).toISOString();
     const override = object(meta.engineOverride);
     if (!override.originalEngine) Object.assign(override, { originalEngine: engine.name, originalEngineSessionId: engineSessions[engine.name] ?? null,
-      originalModel: session.model, originalEffortLevel: session.effortLevel, until, syncSince: now });
+      originalModel: session.model, originalEffortLevel: session.effortLevel, until, syncSince: now,
+      // Held on the health record this limit left: let go with it (see healthOverrideReleased).
+      ...(stated && restsOnHealthRecord(engine.name, stated) ? { source: HEALTH_OVERRIDE_SOURCE } : {}) });
     const resume = typeof engineSessions[targetName] === "string" ? engineSessions[targetName] : undefined;
+    // What this switch replaces, in case it has to be taken back (see below).
+    const left: BeforeSwitch = { engine, result, attempted, override: meta.engineOverride,
+      row: { engine: session.engine, engineSessionId: session.engineSessionId, model: session.model, effortLevel: session.effortLevel } };
     recordTurnAccounting(session.id, result);
     session = updateSession(session.id, { engine: targetName, engineSessionId: resume ?? null, model: model ?? null, effortLevel: effort ?? null,
       transportMeta: { ...meta, engineSessions, engineOverride: override }, status: "running", lastActivity: now }) ?? session;
     // Claude's native goal handoff clears the gateway goal. If that attempt
     // failed, a Codex substitute still needs the original tracked condition.
-    if (targetName === "codex" && options.session.goal && !getSession(session.id)?.goal) updateSession(session.id, { goal: options.session.goal });
-    await Promise.resolve(options.onSwitch?.(engine.name, targetName, reason)).catch(() => {});
+    const goalRestored = targetName === "codex" && !!options.session.goal && !getSession(session.id)?.goal;
+    if (goalRestored) updateSession(session.id, { goal: options.session.goal });
+    // The session belongs to `target` from here on. Whatever the engine it
+    // leaves still holds for it — a warm PTY, in Claude's case — could answer
+    // later, as a second reply after the substitute's. Stop it: this session's
+    // only. A timed-out engine was already stopped, and waited for, above.
+    if (reason !== "timeout") stopEngineFor(engine, session.id, ENGINE_SWITCHED);
+    // A limit period — the engine and the reset it stated — is announced once.
+    // A conversation whose own turn just failed is still told every time; a
+    // cron firing has nobody waiting on it, so it only ever carries the first
+    // notice of a period, and sessions that later start away from the engine
+    // (see new-session-engine.ts) do not repeat it either.
+    const period = options.onSwitch && reason === "rate_limit" && reset && reset * 1000 > Date.now()
+      ? new Date(reset * 1000).toISOString() : undefined;
+    const firstOfPeriod = period === undefined || claimUsageLimitAnnouncement(engine.name, period);
+    if (firstOfPeriod || session.source !== "cron") {
+      await Promise.resolve(options.onSwitch?.(engine.name, targetName, reason)).catch(() => {});
+    }
     if (options.shouldStop?.() || !getSession(session.id)) {
       result = { sessionId: resume ?? "", result: "", error: "Interrupted: stopped before fallback", retryable: false };
       break;
@@ -234,6 +403,15 @@ export async function runFallbackAttempts(options: EngineFallbackOptions): Promi
     attempted = true;
     engine = target;
     result = await options.run(target, opts);
+    // Signing in can fail once for a reason that passes — another process won
+    // the race to refresh a shared token. A refused attempt did no work, so
+    // asking once more costs nothing and is what tells that apart from an
+    // engine that is simply not signed in on this machine. The second try gets
+    // a fresh process: a warm one would keep the login it has just failed with.
+    if (isLoginRefusal(result) && !options.shouldStop?.() && getSession(session.id)) {
+      stopEngineFor(target, session.id, "Interrupted: retrying after a login refusal");
+      result = await options.run(target, opts);
+    }
     const latest = getSession(session.id);
     if (!latest) break;
     if (options.shouldStop?.()) {
@@ -241,6 +419,28 @@ export async function runFallbackAttempts(options: EngineFallbackOptions): Promi
       session = latest;
       break;
     }
+    if (isLoginRefusal(result)) {
+      // Not signed in: the switch gave the session nothing but a login prompt
+      // for an answer, and would hold it there until the override ran out.
+      // Take it back — engine, model, effort, and the override this switch
+      // made — leave the engine out of fallback for a while, and carry on from
+      // the failure the session had before, as if it had never been a candidate.
+      confirmLoginRefusal(targetName);
+      logger.warn(`Fallback to ${targetName} taken back for session ${session.id}: it cannot sign in (${errorSummary(result)}). ` +
+        `Not offering it sessions for ${Math.round(LOGIN_REFUSAL_HOLD_MS / 60_000)} minutes — sign it in on this machine to use it as a fallback.`);
+      stopEngineFor(target, session.id, ENGINE_SWITCHED); // the session leaves it again
+      const restored = object(latest.transportMeta);
+      if (left.override === undefined) delete restored.engineOverride;
+      else restored.engineOverride = left.override;
+      unrecordTurnAccounting(session.id, left.result); // the caller accounts that turn, as it does when nothing was tried
+      session = updateSession(session.id, { ...left.row, transportMeta: restored, ...(goalRestored ? { goal: null } : {}) }) ?? latest;
+      ({ engine, result, attempted } = left);
+      continue;
+    }
+    // Whether the target could sign in was about what it did itself. From here
+    // on its result stands for the turn, so it also carries what the engine it
+    // took over from was seen doing: the next engine in the chain is told too.
+    result = withEarlierProgress(left.result, result);
     const nextMeta = object(latest.transportMeta);
     const nextSessions = object(nextMeta.engineSessions);
     if (result.sessionId) nextSessions[targetName] = result.sessionId;

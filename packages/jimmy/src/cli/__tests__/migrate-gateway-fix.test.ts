@@ -54,6 +54,14 @@ vi.mock("../home-copy.js", () => ({
   placeTree: vi.fn(),
 }));
 
+// config.yaml is read and written through the shared config writer, not
+// through fs directly — the version stamp shows up as updateConfigDocument.
+vi.mock("../../shared/config-file.js", () => ({
+  readConfigSnapshot: vi.fn(() => ({ raw: null, bytes: null, mode: null, document: {}, revision: "" })),
+  writeConfigDocument: vi.fn(() => "revision"),
+  updateConfigDocument: vi.fn(() => "revision"),
+}));
+
 // What the audit finds and fixes is its own suite's business. Here it only reports.
 vi.mock("../gateway-audit.js", () => ({
   auditGatewayReferences: vi.fn(),

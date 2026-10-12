@@ -41,6 +41,8 @@ Check that the configured AI engine is installed and accessible:
 
 If the engine command is not found, inform the user that the engine is not installed or not on their PATH.
 
+If the engine is installed but its turns fail with an authentication error, its login has expired. The operator can log in again on the host with the CLI's own login command, or — where the Slack connector has `providerAuth` enabled — by sending `ログイン` to the bot in their own DM (see `docs/connectors.md`, "Provider Re-login").
+
 ### 4. Check Session Database
 
 Look at the session registry for stuck sessions:
@@ -105,6 +107,8 @@ If the gateway cannot bind to its configured port:
 ## Reference
 
 For understanding {{portalName}}'s architecture and component relationships, refer to the documentation in `docs/` if available.
+
+A file that an edit broke (config, cron jobs, persona, memory, org, skills) does not have to be rebuilt by hand: the gateway keeps daily backups. Run `ryoko backup list`, then `ryoko backup restore <id> --only <kind> --dry-run` to see what would come back. Before a risky edit, `ryoko backup run` archives those files on the spot; it leaves the databases alone, which the gateway copies itself once a day. See `docs/backup.md`.
 
 ## Error Handling
 

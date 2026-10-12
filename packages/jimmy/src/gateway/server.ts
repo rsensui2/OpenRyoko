@@ -1,4 +1,4 @@
-import { resolveSubstituteModel } from "../shared/engine-fallback.js";
+import { resolveSubstituteModel, warnEngineFallbackConfigProblems } from "../shared/engine-fallback.js";
 import { ModelManagement } from "../models/service.js";
 import http from "node:http";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -10,12 +10,14 @@ import { randomUUID, randomBytes } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { JinnConfig, Connector, Employee } from "../shared/types.js";
 import { loadConfig } from "../shared/config.js";
+import { configErrorForLog } from "../shared/config-file.js";
+import { startAttachmentSweep } from "../shared/attachments.js";
 import { claudeAutoMemoryEnvFor, configureClaudeAutoMemory } from "../shared/claude-auto-memory.js";
 import { resolveAssistantName } from "../shared/assistant-identity.js";
 import { getTriageCapabilities, invalidateTriageCapabilities } from "../shared/triage-capabilities.js";
 import { invalidateModelRegistry } from "../shared/models.js";
 import { configureLogger, logger } from "../shared/logger.js";
-import { initDb, scheduleFtsBackfill, recoverStaleSessions, recoverStaleWorkflowAttemptSessions, recoverStaleQueueItems, getInterruptedSessions, listSessions, updateSession, getSession } from "../sessions/registry.js";
+import { initDb, scheduleFtsBackfill, recoverStaleSessions, recoverStaleWorkflowAttemptSessions, recoverStaleQueueItems, getInterruptedSessions, getSession } from "../sessions/registry.js";
 import { SessionManager, type RouteOptions } from "../sessions/manager.js";
 import { ClaudeEngine } from "../engines/claude.js";
 import { CodexEngine } from "../engines/codex.js";
@@ -26,6 +28,8 @@ import type { PtyViewEngine } from "../engines/pty-view-engine.js";
 import { attachPtyWebSocket } from "./pty-ws.js";
 import { HookRegistry } from "./hook-registry.js";
 import { startStatusReconciler } from "./status-reconciler.js";
+import { interruptRunningSessionsForShutdown, prepareRestartResume, resumeRestartInterruptedSessions } from "../sessions/restart-resume.js";
+import { startEngineHealth } from "./engine-health-monitor.js";
 import { writeGatewayInfo } from "./gateway-info.js";
 import { cleanupSessionSettings, seedTrust } from "../shared/claude-settings.js";
 import { GATEWAY_INFO_FILE, HOOK_RELAY_SCRIPT, CLAUDE_SETTINGS_DIR, JINN_HOME } from "../shared/paths.js";
@@ -49,6 +53,7 @@ import {
 import { initStt } from "../stt/stt.js";
 import { startWatchers, stopWatchers, syncSkillSymlinks } from "./watcher.js";
 import { SlackConnector } from "../connectors/slack/index.js";
+import { stopProviderAuth } from "../provider-auth/index.js";
 import { DiscordConnector, type DiscordConnectorConfig } from "../connectors/discord/index.js";
 import { RemoteDiscordConnector } from "../connectors/discord/remote.js";
 import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
@@ -58,9 +63,9 @@ import { startScheduler, stopScheduler } from "../cron/scheduler.js";
 import { createCronReconciler } from "../cron/reconcile.js";
 import { stopCommandJobs } from "../cron/command.js";
 import { scanOrg } from "./org.js";
-import { createDailyDatabaseBackup } from "../sessions/backup.js";
+import { startBackupScheduler } from "../backup/scheduler.js";
 import { getDiskSpaceStatus } from "../shared/storage-health.js";
-import { requestOriginAllowed } from "./request-origin.js";
+import { CORS_ALLOWED_REQUEST_HEADERS, CORS_EXPOSED_RESPONSE_HEADERS, requestOriginAllowed } from "./request-origin.js";
 import { hostHeaderAllowed, localInterfaceHosts } from "./host-guard.js";
 import { isWildcardBindHost, localGatewayUrl } from "../shared/gateway-url.js";
 import { staticPathWithinRoot } from "./static-path.js";
@@ -186,6 +191,9 @@ export async function startGateway(
 
   const gatewayName = config.portal?.portalName || "Ryoko";
   logger.info(`Starting ${gatewayName} gateway (boot ${bootId}, pid ${process.pid})...`);
+  // A fallback chain or model map that cannot work as written is worth a line
+  // in the startup log. It is never a reason not to start.
+  warnEngineFallbackConfigProblems(config);
 
   // Initialize database and recover any sessions stuck from a previous run
   const database = initDb();
@@ -195,13 +203,19 @@ export async function startGateway(
     const freeMiB = disk.freeBytes === null ? "unknown" : Math.floor(disk.freeBytes / 1024 ** 2);
     logger.warn(`Low disk space: ${freeMiB} MiB free (${disk.freePercent?.toFixed(1) ?? "unknown"}%)`);
   }
-  try {
-    const backup = await createDailyDatabaseBackup(database);
-    if (backup.created) logger.info(`Created daily database backup: ${backup.file}`);
-  } catch (error) {
-    logger.warn(`Database backup failed: ${error instanceof Error ? error.message : String(error)}`);
-  }
+  // Daily home archive + database copies. Checks once boot has settled, then
+  // for as long as the gateway runs; never awaited here.
+  const backupScheduler = startBackupScheduler({ database, config });
   ensureFilesDir();
+  // Before the sweeps below: they erase what tells a turn was cut off mid-flight.
+  try {
+    const { cancelledNudges } = prepareRestartResume();
+    if (cancelledNudges > 0) {
+      logger.info(`Dropped ${cancelledNudges} restart nudge(s) that were themselves cut off by this restart — not replayed`);
+    }
+  } catch (err) {
+    logger.warn(`Restart resume preparation failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
   const recovered = recoverStaleSessions();
   if (recovered > 0) {
     logger.info(`Recovered ${recovered} stale session(s) — marked as "interrupted" for resume`);
@@ -385,6 +399,7 @@ export async function startGateway(
             triage: cfg.connectors.slack.triage,
             goalExtraction: cfg.connectors.slack.goalExtraction,
             agentsCanvas: cfg.connectors.slack.agentsCanvas,
+            providerAuth: cfg.connectors.slack.providerAuth,
           },
           {
             getModelManagement: () => modelManagement,
@@ -891,16 +906,17 @@ export async function startGateway(
     return reloadInFlight;
   }
 
+  // Mutable config reference for hot-reload
+  let currentConfig = config;
+
   // Start cron scheduler
   let cronJobs: ReturnType<typeof loadJobs> = [];
   try { cronJobs = loadJobs(); } catch (error) {
     logger.error(`Cannot load cron jobs at startup: ${error instanceof Error ? error.message : "read failed"}`);
   }
-  startScheduler(cronJobs, sessionManager, config, connectorMap);
+  startScheduler(cronJobs, sessionManager, () => currentConfig, connectorMap);
   logger.info(`Loaded ${cronJobs.length} cron job(s)`);
 
-  // Mutable config reference for hot-reload
-  let currentConfig = config;
   // Tracks the config version that was last successfully applied to connectors.
   // The watcher diffs against THIS (not currentConfig) so that a failed reload
   // does not poison the next chokidar event into thinking "nothing changed".
@@ -964,7 +980,17 @@ export async function startGateway(
 
   // Backstop for lost completion events: unstick sessions stuck at
   // status:"running" with no live turn (see status-reconciler.ts).
-  const stopStatusReconciler = startStatusReconciler({ engines, emit });
+  const stopStatusReconciler = startStatusReconciler({
+    engines,
+    emit,
+    isOwned: (session) => sessionManager.getQueue().isRunning(session.sessionKey),
+    alwaysNotifyFor: (session) => (session.employee ? employeeRegistry.get(session.employee)?.alwaysNotify : undefined),
+  });
+
+  // Re-check an engine known to be out of allowance on its own clock (no timer
+  // exists while every engine is healthy), and let the session layer see which
+  // engine binaries this machine actually has.
+  const stopEngineHealth = startEngineHealth();
 
   // --- Workflow engine (upstream port). Opt-in via config.workflows.enabled;
   // absent flag = no workflow DB, no trigger arming, no /api/workflows routes.
@@ -1103,7 +1129,8 @@ export async function startGateway(
       res.setHeader("Vary", "Origin");
     }
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.setHeader("Access-Control-Allow-Headers", CORS_ALLOWED_REQUEST_HEADERS);
+    res.setHeader("Access-Control-Expose-Headers", CORS_EXPOSED_RESPONSE_HEADERS);
 
     if (req.method === "OPTIONS") {
       res.writeHead(204);
@@ -1207,6 +1234,9 @@ export async function startGateway(
     logger.warn(`STT init skipped: ${err instanceof Error ? err.message : err}`);
   }
 
+  // Attachments of messages that never got a turn: now, then hourly.
+  const stopAttachmentSweep = startAttachmentSweep();
+
   // Start file watchers
   startWatchers({
     onConfigReload: () => {
@@ -1236,6 +1266,7 @@ export async function startGateway(
         // even when the connectors block didn't change.
         sessionManager.setConfig(currentConfig);
         configureClaudeAutoMemory(currentConfig.engines?.claude?.autoMemory);
+        warnEngineFallbackConfigProblems(currentConfig); // each problem is reported once
         logger.info("Config reloaded successfully");
         emit("config:reloaded", {});
 
@@ -1287,7 +1318,7 @@ export async function startGateway(
         }
       } catch (err) {
         logger.error(
-          `Failed to reload config: ${err instanceof Error ? err.message : err}`,
+          `Failed to reload config: ${configErrorForLog(err)}`,
         );
       }
     },
@@ -1345,6 +1376,15 @@ export async function startGateway(
   // here so the server is listening and gateway.json exists before any interactive
   // recovery turn spawns — so hook-relay.mjs can deliver its Stop hook.
   resumePendingWebQueueItems(apiContext);
+
+  // Nudge the sessions the restart cut off mid-turn to carry on. After the
+  // replay above, so a session it already re-dispatched is not resumed twice.
+  let cancelRestartNudges: () => void = () => {};
+  try {
+    cancelRestartNudges = resumeRestartInterruptedSessions({ config: currentConfig, port, queue: sessionManager.getQueue() }).cancel;
+  } catch (err) {
+    logger.warn(`Restart resume failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   // Workflow engine start, deferred to gateway readiness: constructing the
   // service arms schedule triggers and its wake timer, and both recovery paths
@@ -1420,7 +1460,14 @@ export async function startGateway(
   // Return cleanup function
   return async () => {
     logger.info("Gateway cleanup starting...");
+    cancelRestartNudges(); // before anything is awaited: a nudge accepted now starts a turn only to have it killed
+    // Then, ahead of every step that can take time: end any provider login
+    // in progress (its CLI killed, its chat message blanked). Bounded and brief.
+    await stopProviderAuth();
     clearInterval(modelRefreshTimer);
+    stopEngineHealth();
+    backupScheduler.stop();
+    stopAttachmentSweep();
     modelManagement?.stop();
     stopScheduler();
     await stopCommandJobs();
@@ -1443,16 +1490,7 @@ export async function startGateway(
     if (stoppedWorkflowAttempts > 0) {
       logger.info(`Marked ${stoppedWorkflowAttempts} workflow attempt(s) with gateway-restart receipts for replacement on next boot`);
     }
-    const runningSessions = listSessions({ status: "running" });
-    for (const session of runningSessions) {
-      if (session.workflowProvenance?.kind === "phase") continue; // handled by the sweep above
-      updateSession(session.id, {
-        status: "interrupted",
-        lastActivity: new Date().toISOString(),
-        lastError: "Interrupted: gateway shutting down gracefully",
-      });
-      logger.info(`Marked session ${session.id} as interrupted for resume`);
-    }
+    interruptRunningSessionsForShutdown(); // every other running session; the sweep above owns the attempts
 
     // Terminate live engine subprocesses after marking sessions. When interactive
     // is active, interactiveClaudeEngine.killAll() also kills its headless fallback

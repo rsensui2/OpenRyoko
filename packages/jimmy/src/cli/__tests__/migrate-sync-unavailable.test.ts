@@ -54,6 +54,14 @@ vi.mock("../home-copy.js", () => ({
   placeTree: vi.fn(),
 }));
 
+// config.yaml is read and written through the shared config writer, not
+// through fs directly — the version stamp shows up as updateConfigDocument.
+vi.mock("../../shared/config-file.js", () => ({
+  readConfigSnapshot: vi.fn(() => ({ raw: null, bytes: null, mode: null, document: {}, revision: "" })),
+  writeConfigDocument: vi.fn(() => "revision"),
+  updateConfigDocument: vi.fn(() => "revision"),
+}));
+
 // The add-only installer that releases before the sync ran from `ryoko migrate`. Its own
 // suite covers what it writes; here it only has to be called.
 vi.mock("../bundled-skills.js", () => ({
