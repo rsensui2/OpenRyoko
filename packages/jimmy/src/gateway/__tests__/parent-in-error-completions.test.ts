@@ -7,12 +7,15 @@ import type { Connector, Engine, EngineResult, JinnConfig, Session } from "../..
 
 // A child's completion is not sent to a parent that is in error — a rule that
 // keeps a parent stopped by a usage limit or a lost login from running one
-// failing turn per child that finishes.
+// failing turn per child that finishes. Two things were wrong with it.
 //
 // A parent whose Claude process died mid-turn is in error too (it used to be
 // settled as if it had been interrupted). Nothing about it would fail again,
 // yet every completion that followed was dropped: no turn, no post in its
 // Slack thread — the thread just stopped.
+//
+// And "not sent" meant thrown away. A parent that could not be woken did not
+// even have, in its transcript, the fact that a child had finished.
 //
 // Real registry, real callbacks.ts (authenticated POST), real /message route;
 // only the engine and the Slack connector are fakes.
@@ -163,5 +166,31 @@ describe("child completions for a parent that is in error", () => {
     }
     expect(notifications(parent.id)).toHaveLength(3);
     await vi.waitFor(() => expect(registry.getSession(parent.id)).toMatchObject({ status: "idle", lastError: null }), { timeout: 5_000 });
+  }, 30_000);
+
+  it("a parent stopped by a usage limit is not woken, and finds what its children reported in its transcript", async () => {
+    const parent = slackParent();
+    const limit = "claude usage limit reached. It resets Mon, 19 Oct, 03:00 (2026-10-19T03:00:00.000Z), which is too far off to wait for. Please try again after that.";
+    registry.updateSession(parent.id, { status: "error", lastError: limit });
+
+    const first = complete(parent, "researcher", { result: "一次調査が終わりました" });
+    const second = complete(parent, "analyst", { error: "Something broke" });
+
+    await vi.waitFor(() => expect(notifications(parent.id)).toHaveLength(2), { timeout: 5_000 });
+    await new Promise((r) => setTimeout(r, 300));
+
+    // No turn was started: it would have failed on the limit, once per child.
+    expect(engineRun).not.toHaveBeenCalled();
+    expect(replyMessage).not.toHaveBeenCalled();
+    expect(registry.getQueueItems(parent.sessionKey)).toEqual([]);
+    expect(registry.getSession(parent.id)).toMatchObject({ status: "error", lastError: limit });
+    // Both reports are in the transcript, each marked as not acted on.
+    const notes = notifications(parent.id).map((m) => m.content);
+    expect(notes.some((note) => note.includes(`replied in session ${first.id}`) && note.includes("Preview: 一次調査が終わりました"))).toBe(true);
+    expect(notes.some((note) => note.includes(`(session ${second.id}) encountered an error: Something broke`))).toBe(true);
+    for (const note of notes) expect(note).toContain("no turn was started");
+    // … which is what the parent reads when it next runs.
+    const transcript = await (await fetch(`${baseUrl}/api/sessions/${parent.id}?last=10`)).json() as { messages: Array<{ role: string; content: string }> };
+    expect(transcript.messages.filter((m) => m.role === "notification").map((m) => m.content)).toEqual(notes);
   }, 30_000);
 });
