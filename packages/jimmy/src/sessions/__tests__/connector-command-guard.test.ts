@@ -164,10 +164,10 @@ describe("a message from somebody who is not the operator", () => {
 describe("a message from the operator", () => {
   it("may run exactly these native commands", () => {
     // Adding to the list is a decision: this fails until the test says so too.
-    expect([...OPERATOR_NATIVE_COMMANDS.keys()]).toEqual(["/compact", "/clear", "/usage", "/cost"]);
+    expect([...OPERATOR_NATIVE_COMMANDS.keys()]).toEqual(["/compact", "/clear"]);
   });
 
-  it.each(["/compact", "/compact 決定事項と未完了の作業を残して", "/clear", "/usage", "/cost", "  /compact  ", "/compact\t要点だけ"])(
+  it.each(["/compact", "/compact 決定事項と未完了の作業を残して", "/clear", "  /compact  ", "/compact\t要点だけ"])(
     "reaches the CLI as typed: %j", (text) => {
       const msg = fromOperator(text);
 
@@ -181,6 +181,9 @@ describe("a message from the operator", () => {
   });
 
   it.each([
+    // /usage and /cost open an interactive panel whose output never returns to
+    // chat (and could linger in the PTY): dropped from the list on review.
+    "/usage", "/cost", "/usage --all",
     "/logout", "/login", "/permissions", "/resume", "/config", "/mcp", "/hooks", "/agents", "/add-dir /tmp", "/install-github-app",
     "/terminal-setup", "/bug", "/exit", "/quit", "/remote-control", "/rc", "/teleport", "/export", "/memory", "/plugin", "/import",
     "/install", "/background", "/fork", "/daemon", "/heapdump", "/vim", "/settings", "/allowed-tools", "/continue", "/reset", "/stats",
@@ -199,7 +202,6 @@ describe("a message from the operator", () => {
     ["a second line", "/compact\n/logout"],
     ["a second line after its text", "/compact 要点だけ\n/logout"],
     ["text after a command that takes none", "/clear すべて"],
-    ["text after /usage", "/usage --all"],
     ["a no-break space before its text", "/compact\u00a0要点だけ"],
   ])("does not pass an allowed command written with %s", (_shape, text) => {
     expectDeliveredAsText(fromOperator(text));

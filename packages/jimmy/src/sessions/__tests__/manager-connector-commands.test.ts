@@ -106,9 +106,8 @@ describe("what a chat message hands the engine", () => {
     ["slack", OPERATOR_ON_SLACK, "/compact"],
     ["slack", OPERATOR_ON_SLACK, "/compact 決定事項を残して"],
     ["slack", OPERATOR_ON_SLACK, "/clear"],
-    ["slack", OPERATOR_ON_SLACK, "/usage"],
     ["discord", OPERATOR_ON_DISCORD, "/compact"],
-    ["discord", OPERATOR_ON_DISCORD, "/cost"],
+    ["discord", OPERATOR_ON_DISCORD, "/clear"],
   ])("on %s, from the operator %j: %s is the command, as typed", async (source, sender, text) => {
     const f = setup();
 

@@ -38,16 +38,18 @@ import { resolveOperatorIdentity } from "./context.js";
 
 /**
  * The native Claude commands the operator can run from chat, and whether each
- * takes text after it. Each tidies the conversation or reads its state; none
- * touches the login, permissions, settings or anything outside the session.
- * All are commands the interactive engine knows how to wait for
+ * takes text after it. Both tidy the conversation and finish with nothing to
+ * read; neither touches the login, permissions, settings or anything outside
+ * the session. Both are commands the interactive engine knows how to wait for
  * (isNativeClaudeCommand) — one it does not would hang the turn.
+ *
+ * Deliberately not here: /usage and /cost. They open an interactive panel
+ * whose output never comes back to chat, and the panel can stay up in the PTY
+ * and swallow the next turn — useless from chat, and a way to wedge a session.
  */
 export const OPERATOR_NATIVE_COMMANDS: ReadonlyMap<string, { args: boolean }> = new Map([
   ["/compact", { args: true }], // optional instructions for the summary
   ["/clear", { args: false }],
-  ["/usage", { args: false }],
-  ["/cost", { args: false }],
 ]);
 
 /** Sources whose text the gateway wrote itself. A cron job's prompt is the operator's. */
