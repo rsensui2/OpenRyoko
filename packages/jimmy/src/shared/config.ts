@@ -1,15 +1,11 @@
 import fs from "node:fs";
 import yaml from "js-yaml";
-import { ConfigSyntaxError } from "./config-error.js";
+import { ConfigNotFoundError, ConfigSyntaxError } from "./config-error.js";
 import { CONFIG_PATH } from "./paths.js";
 import type { JinnConfig } from "./types.js";
 
 export function loadConfig(): JinnConfig {
-  if (!fs.existsSync(CONFIG_PATH)) {
-    throw new Error(
-      `Ryoko config not found at ${CONFIG_PATH}. Run "ryoko setup" first.`
-    );
-  }
+  if (!fs.existsSync(CONFIG_PATH)) throw new ConfigNotFoundError(CONFIG_PATH);
   const raw = fs.readFileSync(CONFIG_PATH, "utf-8");
   try {
     return yaml.load(raw) as JinnConfig;

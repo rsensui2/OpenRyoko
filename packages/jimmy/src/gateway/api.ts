@@ -408,8 +408,12 @@ export function deepMerge(target: Record<string, unknown>, source: Record<string
     if (SANITIZED_KEYS.has(key) && sv === "***") continue;
     // JSON cannot carry `undefined`. An explicit null removes an optional
     // override, allowing clients to restore inherited/default behavior.
+    // Unless null is what config.yaml already holds there: a section written
+    // as a heading with only comments under it (`cron:`) is null on disk and
+    // comes back from GET as null, and saving that back removes nothing —
+    // the heading stays, with the comments that belong under it.
     if (sv === null) {
-      delete result[key];
+      if (tv !== null) delete result[key];
       continue;
     }
     if (Array.isArray(sv)) {
