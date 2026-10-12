@@ -188,8 +188,8 @@ function syncBundledSkillsStep(restoreDeleted: boolean | readonly string[]): Syn
   }
   if (result.skipped === "skills-root-symlink") {
     console.log(`  ${DIM}[skills] skills/ が symlink（利用者管理）のため、同梱スキルは同期せず、skills/ 配下には何も作成しません${RESET}`);
-  } else if (result.skipped === "newer-receipt") {
-    console.log(`  ${DIM}[skills] このホームはより新しい OpenRyoko が同期済みのため、同梱スキルは変更せず、skills/ 配下には何も作成しません${RESET}`);
+  } else if (result.skipped === "newer-receipt" || result.skipped === "newer-format") {
+    console.log(`  ${YELLOW}[skills]${RESET} skills/.shipped-skills.json は、より新しい OpenRyoko がこのホームを同期したと記録しています。同梱スキルは変更せず、skills/ 配下には何も作成しません`);
   }
   if (result.skipped) return SYNC_UNAVAILABLE;
   return {

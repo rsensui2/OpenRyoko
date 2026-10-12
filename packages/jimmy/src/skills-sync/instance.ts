@@ -99,5 +99,11 @@ function report(result: BundledSkillSync): void {
     logger.warn(`The bundled skill receipt could not be saved (${result.receiptError}). The skills themselves are in place; the next start records them.`);
   }
   if (result.skipped === "skills-root-symlink") logger.debug("Bundled skills not synced: skills/ is a symlink the user manages.");
-  if (result.skipped === "newer-receipt") logger.debug("Bundled skills not synced: this home was last synced by a newer OpenRyoko.");
+  if (result.skipped === "newer-receipt" || result.skipped === "newer-format") {
+    // Said out loud once: the receipt is a file in the home, and a forged one switches the sync off.
+    const said = "Bundled skills not synced: skills/.shipped-skills.json says a newer OpenRyoko synced this home last. "
+      + "This version leaves the skills as they are. If no newer version runs against this home, the file is wrong: fix or delete it.";
+    if (result.announceSkip) logger.warn(said);
+    else logger.debug(said);
+  }
 }

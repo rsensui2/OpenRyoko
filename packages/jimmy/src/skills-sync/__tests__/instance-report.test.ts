@@ -145,9 +145,26 @@ describe("what gateway start logs about the bundled skill sync", () => {
     expect(said("error")).toEqual([]);
   });
 
-  it.each(["skills-root-symlink", "newer-receipt"] as const)("only mentions a %s skip at debug level", (skipped) => {
-    ran({ skipped });
+  it("only mentions a symlinked skills directory at debug level: it is the user's arrangement", () => {
+    ran({ skipped: "skills-root-symlink" });
 
+    syncBundledSkillsOnBoot({});
+
+    expect(said("debug")).toHaveLength(1);
+    for (const level of ["info", "warn", "error"] as const) expect(said(level), level).toEqual([]);
+  });
+
+  it.each(["newer-receipt", "newer-format"] as const)("warns once that it stood back (%s), then stays at debug level", (skipped) => {
+    ran({ skipped, announceSkip: true });
+    syncBundledSkillsOnBoot({});
+
+    // The sync is switched off by a file anyone with the home can write; that must be visible.
+    expect(said("warn")).toEqual([expect.stringMatching(/newer OpenRyoko/)]);
+    expect(said("warn")[0]).toContain(".shipped-skills.json");
+    expect(said("error")).toEqual([]);
+
+    for (const spy of Object.values(log)) spy.mockClear();
+    ran({ skipped, announceSkip: false });
     syncBundledSkillsOnBoot({});
 
     expect(said("debug")).toHaveLength(1);

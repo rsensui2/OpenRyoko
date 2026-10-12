@@ -60,8 +60,12 @@ export function fixture() {
     backups: path.join(home, ".migration-backups"),
     /** Put a skill in the package (replacing any earlier version of it). */
     ship: (name: string, files: Files) => writeTree(path.join(template, "skills", name), files),
-    /** Drop a skill from the package, as a release that retires it would. */
-    unship: (name: string) => fs.rmSync(path.join(template, "skills", name), { recursive: true, force: true }),
+    /** Drop a skill from the package, as a release that retires it would: the skill is
+     *  gone, and the package's history still lists it as one it once shipped. */
+    unship: (name: string) => {
+      fs.rmSync(path.join(template, "skills", name), { recursive: true, force: true });
+      rememberName(template, name);
+    },
     /** Cut a release: record every skill the package ships right now in its history of
      *  past versions, as the generator does for a release tag. */
     release: (tag = "v-test") => recordRelease(template, tag),
@@ -98,10 +102,27 @@ function listFiles(dir: string, prefix = ""): string[] {
   });
 }
 
+interface FixtureHistory {
+  schemaVersion: 1;
+  source: string;
+  names: string[];
+  skills: Record<string, { since: string; files: Record<string, FileFingerprint> }[]>;
+}
+
+function readHistory(template: string): FixtureHistory {
+  const file = path.join(template, HISTORY_FILE);
+  return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : { schemaVersion: 1, source: "test fixture", names: [], skills: {} };
+}
+
+function rememberName(template: string, name: string): void {
+  const history = readHistory(template);
+  if (!history.names.includes(name)) history.names.push(name);
+  fs.writeFileSync(path.join(template, HISTORY_FILE), `${JSON.stringify(history, null, 2)}\n`);
+}
+
 function recordRelease(template: string, since: string): void {
   const file = path.join(template, HISTORY_FILE);
-  const history: { schemaVersion: 1; source: string; names: string[]; skills: Record<string, { since: string; files: Record<string, FileFingerprint> }[]> } =
-    fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : { schemaVersion: 1, source: "test fixture", names: [], skills: {} };
+  const history = readHistory(template);
   for (const name of fs.readdirSync(path.join(template, "skills")).sort()) {
     const root = path.join(template, "skills", name);
     const files = Object.fromEntries(listFiles(root).sort().map((relative) => [relative, fingerprintFile(relative, fs.readFileSync(path.join(root, relative)))]));

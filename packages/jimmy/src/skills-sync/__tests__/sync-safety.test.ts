@@ -91,6 +91,25 @@ describe("bundled skill sync: staying inside skills/", () => {
     expect(snapshot(f.root)).toEqual(before);
   });
 
+  it("does not retire a skill just because the receipt lists it: the package must know it once shipped it", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    // The user's own skill. Whoever can write the receipt adds an entry that describes
+    // it exactly — which, for a name the package had shipped, would get it moved away.
+    f.place("mine", { "SKILL.md": "written by the user", "notes.md": "theirs too" });
+    const receipt = f.receipt();
+    receipt.skills.mine = { version: "2026.10.10", sha256: sha(""), files: { "SKILL.md": sha("written by the user"), "notes.md": sha("theirs too") } };
+    fs.writeFileSync(path.join(f.skills, RECEIPT_FILE), JSON.stringify(receipt));
+    const before = snapshot(path.join(f.skills, "mine"));
+
+    const result = f.sync("2026.10.11");
+
+    expect(result).toMatchObject({ retired: [], kept: [], failed: [], backupDir: null });
+    expect(snapshot(path.join(f.skills, "mine"))).toEqual(before);
+    expect(fs.existsSync(f.backups)).toBe(false);
+  });
+
   it.each(["yes", false, 1, null])("refuses a receipt whose deleted mark is %j rather than true", (mark) => {
     const f = fixture();
     f.ship("example", { "SKILL.md": "v1" });
@@ -116,15 +135,30 @@ describe("bundled skill sync: staying inside skills/", () => {
     expect(snapshot(f.root)).toEqual(before);
   });
 
-  it("refuses a receipt written in a format it does not know", () => {
+  it.each([0, -1, 1.5, "1", "2", null, true])("refuses a receipt whose format is %j, which no release ever wrote", (schemaVersion) => {
     const f = fixture();
     f.ship("example", { "SKILL.md": "v1" });
     fs.mkdirSync(f.skills);
-    fs.writeFileSync(path.join(f.skills, RECEIPT_FILE), JSON.stringify({ schemaVersion: 2, packageVersion: "2026.10.10", skills: {}, notices: {} }));
+    fs.writeFileSync(path.join(f.skills, RECEIPT_FILE), JSON.stringify({ schemaVersion, packageVersion: "2026.10.10", skills: {}, notices: {} }));
     const before = snapshot(f.root);
 
     expect(() => f.sync()).toThrow(RECEIPT_FILE);
     expect(snapshot(f.root)).toEqual(before);
+  });
+
+  it("tells the truth about what deleting an unusable receipt does", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    fs.mkdirSync(f.skills);
+    fs.writeFileSync(path.join(f.skills, RECEIPT_FILE), "{ not json");
+
+    let message = "";
+    try { f.sync(); } catch (error) { message = (error as Error).message; }
+
+    // Deleting it is not free: the record of which skills the operator deleted goes with it.
+    expect(message).toMatch(/delet/i);
+    expect(message).toMatch(/skills you deleted.*(come back|reinstall)/i);
+    expect(message).not.toMatch(/only resets/);
   });
 
   it("does not write through a symlinked skills directory", () => {
@@ -618,7 +652,7 @@ describe("bundled skill sync: failures and odd states", () => {
     expect(snapshot(f.home)).toEqual(before);
   });
 
-  it("leaves a home last synced by a newer OpenRyoko alone", () => {
+  it("leaves a home last synced by a newer OpenRyoko alone, and says so once", () => {
     const f = fixture();
     f.ship("example", { "SKILL.md": "v2" });
     f.ship("newer-only", { "SKILL.md": "added in the newer release" });
@@ -627,12 +661,58 @@ describe("bundled skill sync: failures and odd states", () => {
     f.ship("example", { "SKILL.md": "v1" });
     f.unship("newer-only");
     f.ship("older-only", { "SKILL.md": "retired by the newer release" });
-    const before = snapshot(f.home);
+    const receipt = fs.readFileSync(path.join(f.skills, RECEIPT_FILE));
+    const skillsBefore = () => Object.fromEntries(Object.entries(snapshot(f.skills)).filter(([entry]) => !entry.startsWith(".")));
+    const before = skillsBefore();
 
-    const result = f.sync("2026.10.10");
+    const first = f.sync("2026.10.10");
+    const second = f.sync("2026.10.10");
 
-    expect(result).toMatchObject({ skipped: "newer-receipt", added: [], updated: [], retired: [] });
-    expect(snapshot(f.home)).toEqual(before);
+    for (const result of [first, second]) expect(result).toMatchObject({ skipped: "newer-receipt", added: [], updated: [], retired: [] });
+    // Anyone can write a far-future version into the receipt and so switch the sync off;
+    // it must not go unnoticed, nor be repeated on every start.
+    expect(first.announceSkip).toBe(true);
+    expect(second.announceSkip).toBe(false);
+    expect(skillsBefore()).toEqual(before);
+    // The receipt is the newer release's: this one does not write to it.
+    expect(fs.readFileSync(path.join(f.skills, RECEIPT_FILE))).toEqual(receipt);
+
+    // A different pair of versions is news again.
+    expect(f.sync("2026.10.9").announceSkip).toBe(true);
+    expect(f.sync("2026.10.9").announceSkip).toBe(false);
+  });
+
+  it("stands back from a receipt in a newer format instead of failing on every start", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    const receipt = f.receipt();
+    fs.writeFileSync(path.join(f.skills, RECEIPT_FILE), JSON.stringify({ ...receipt, schemaVersion: 2, somethingNew: true }));
+    const written = fs.readFileSync(path.join(f.skills, RECEIPT_FILE));
+    f.ship("example", { "SKILL.md": "v2" });
+    f.ship("brand-new", { "SKILL.md": "new" });
+
+    const first = f.sync("2026.10.11");
+    const second = f.sync("2026.10.11");
+
+    for (const result of [first, second]) expect(result).toMatchObject({ skipped: "newer-format", added: [], updated: [], kept: [] });
+    expect(first.announceSkip).toBe(true);
+    expect(second.announceSkip).toBe(false);
+    expect(f.read("example", "SKILL.md")).toBe("v1");
+    expect(fs.existsSync(path.join(f.skills, "brand-new"))).toBe(false);
+    expect(fs.readFileSync(path.join(f.skills, RECEIPT_FILE))).toEqual(written);
+  });
+
+  it("forgets that it stood back once it syncs normally again", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.11");
+    expect(f.sync("2026.10.10").announceSkip).toBe(true);
+
+    // This release catches up, syncs, and later meets a newer receipt again: that is news.
+    expect(f.sync("2026.10.11").skipped).toBeUndefined();
+    expect(fs.readdirSync(f.skills).sort()).toEqual([RECEIPT_FILE, "example"]);
+    expect(f.sync("2026.10.10").announceSkip).toBe(true);
   });
 
   it("forgets a retired skill the user already removed", () => {

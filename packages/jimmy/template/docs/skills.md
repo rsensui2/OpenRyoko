@@ -101,6 +101,9 @@ bundled skill it placed.
 - Do not edit `.shipped-skills.json`. Deleting it is safe, though it also forgets which
   skills you deleted: missing bundled skills are installed again, skills identical to the
   shipped version are tracked again, and everything else is left alone.
+- When the receipt was written by a newer OpenRyoko than the one running (an older CLI
+  pointed at the same home, say), the older one changes no skill and says so once.
+  If no newer version uses the home, the receipt is wrong and can be fixed or deleted.
 - `skills.autoSync: false` in `config.yaml` stops the sync at gateway start.
   `ryoko migrate` syncs either way.
 

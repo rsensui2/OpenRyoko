@@ -48,7 +48,10 @@ export interface PlanInput {
 export function planSkillSync(input: PlanInput): SkillPlan[] {
   const recorded = input.receipt?.skills ?? {};
   const shipped = new Set(input.bundled.map((skill) => skill.name));
-  const retired = Object.keys(recorded).filter((name) => !shipped.has(name)).sort();
+  // Being listed in the receipt is not enough to be retired: the receipt is a file in
+  // the home, and an entry describing the user's own skill would have it moved away.
+  // Only a name the package itself knows it once shipped can be a retired skill.
+  const retired = Object.keys(recorded).filter((name) => !shipped.has(name) && input.history.names.has(name)).sort();
   return [
     ...input.bundled.map((skill) => planShipped(input, skill, own(recorded, skill.name))),
     ...retired.map((name) => planRetired(input.skillsRoot, name, recorded[name])),

@@ -401,6 +401,7 @@ describe("migrate: bundled skill sync", () => {
     ["the sync fails", () => mockSync.mockImplementation(() => { throw new Error("receipt is unreadable"); })],
     ["skills/ is the user's own symlink", () => mockSync.mockReturnValue(synced({ skipped: "skills-root-symlink" }))],
     ["a newer OpenRyoko owns the home", () => mockSync.mockReturnValue(synced({ skipped: "newer-receipt" }))],
+    ["the receipt is in a newer format", () => mockSync.mockReturnValue(synced({ skipped: "newer-format" }))],
   ])("when %s, migrate creates nothing under skills/", (_label, arrange) => {
     const skillsDir = path.join(JINN_HOME, "skills");
     const createdUnderSkills = () => [

@@ -53,6 +53,13 @@ export interface BundledSkillSync {
   /** Why the receipt could not be saved, when it could not. Everything above was
    *  still done and is reported as done; the next run records it. */
   receiptError?: string;
-  /** Set when the run changed nothing by policy rather than by failure. */
-  skipped?: "skills-root-symlink" | "newer-receipt";
+  /**
+   * Set when the run changed nothing by policy rather than by failure: skills/ is the
+   * user's own symlink, or the receipt was written by a newer OpenRyoko (a later
+   * version, or a format this one does not read).
+   */
+  skipped?: "skills-root-symlink" | "newer-receipt" | "newer-format";
+  /** With a newer receipt: whether this is the first time for this pair of versions,
+   *  and so the time to tell the user. */
+  announceSkip?: boolean;
 }

@@ -69,15 +69,25 @@ export function readReceipt(file: string): Receipt | null {
   try {
     return parseReceipt(JSON.parse(text));
   } catch (error) {
+    if (error instanceof NewerReceiptFormat) throw error;
     throw unusable(file, error);
+  }
+}
+
+/** The receipt is in a format a later OpenRyoko introduced. Not damage: this one
+ *  simply cannot read it, and leaves the home to the release that can. */
+export class NewerReceiptFormat extends Error {
+  constructor(readonly format: number) {
+    super(`it uses format ${format}, newer than the format ${SCHEMA_VERSION} this OpenRyoko reads`);
   }
 }
 
 function unusable(file: string, error: unknown): Error {
   const reason = error instanceof Error ? error.message : String(error);
   return new Error(
-    `Cannot use ${file}: ${reason}. Fix or delete the file; deleting it only resets update tracking, `
-    + "and no skill is replaced or removed without it.",
+    `Cannot use ${file}: ${reason}. Fix the file, or delete it. Deleting it forgets what the sync placed and which `
+    + "bundled skills you deleted: on the next run the skills you deleted come back, skills matching a shipped version "
+    + "are tracked again, and everything else is left alone.",
   );
 }
 
@@ -88,6 +98,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** Messages read as the middle of "Cannot use <file>: … ." — hence the subject "it". */
 function parseReceipt(parsed: unknown): Receipt {
   if (!isRecord(parsed)) throw new Error("it is not a JSON object");
+  const format = parsed.schemaVersion;
+  if (typeof format === "number" && Number.isInteger(format) && format > SCHEMA_VERSION) throw new NewerReceiptFormat(format);
   if (parsed.schemaVersion !== SCHEMA_VERSION) {
     throw new Error(`it uses format ${JSON.stringify(parsed.schemaVersion)}, and this OpenRyoko reads format ${SCHEMA_VERSION}`);
   }
