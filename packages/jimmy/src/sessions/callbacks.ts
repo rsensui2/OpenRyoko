@@ -1,3 +1,4 @@
+import { turnFailureOf } from "./origin-delivery.js";
 import { getSession, insertMessage } from "./registry.js";
 import { failedByUnrequestedStop } from "./unrequested-stop.js";
 import { loadConfig } from "../shared/config.js";
@@ -71,9 +72,13 @@ export function notifyRateLimitResumed(
  * parent whose engine stopped without being asked to — its process died. It
  * can run again at once, and it is usually waiting on exactly these
  * notifications: left out, the conversation it answers in just stops.
+ *
+ * What counts is what the parent's turn failed with. That is not always what
+ * lastError reads: when the message saying so could not be delivered either,
+ * lastError holds the record of that, and the turn's failure is kept beside it.
  */
 function wakesForNotifications(parent: Session): boolean {
-  return parent.status !== "error" || failedByUnrequestedStop(parent);
+  return parent.status !== "error" || failedByUnrequestedStop({ status: parent.status, lastError: turnFailureOf(parent) });
 }
 
 const NOT_ACTED_ON = "ℹ️ Not acted on: this session was in an error state when this arrived, so no turn was started for it.";

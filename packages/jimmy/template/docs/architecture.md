@@ -89,7 +89,8 @@ sessions:
 
 - **Not resumed**: cron runs (the job runs again at its next scheduled time), workflow attempts (the workflow replaces them itself), and turns the queue will re-run by itself after the restart — a message sent to a web session, a child's completion, a job wake-up. A turn whose reply had already been delivered, and a conversation that has since been written to and answered again, are left alone too.
 - **Limits**: one start wakes at most 10 sessions, the most recently active first and 15 seconds apart; the others are left as they are. A session is not woken again within 30 minutes unless new work reached it in between, and never more than 3 times in 24 hours, so a turn that itself restarts the gateway cannot loop.
-- **Age**: an interruption older than `sessions.resumeInterruptedMaxAgeMinutes` (default 120) when the gateway starts is not resumed.
+- **Turns waiting for a usage limit**: a turn that had met a usage limit and was waiting for it to reset ("I'll continue automatically") is resumed too, but not before the reset it was waiting for — the session is woken a moment after it, not while the limit is known to be on. Until then it shows as `interrupted`, and a new message to it runs at once.
+- **Age**: an interruption older than `sessions.resumeInterruptedMaxAgeMinutes` (default 120) when the gateway starts is not resumed. For a turn that was waiting for a usage limit, the age counts from the reset.
 - **Turning it off**: set `sessions.resumeInterruptedOnBoot: false`. Interrupted sessions are then left as they are, and continue only when someone writes to them.
 
 Both settings are read when the gateway starts.

@@ -147,6 +147,12 @@ describe("docs/architecture.md — session lifecycle", () => {
     expect(doc()).toContain(`${RESTART_NUDGE_WINDOW_LIMIT} times in ${WINDOW_HOURS} hours`);
   });
 
+  it("says a turn that was waiting for a usage limit is resumed after the reset, not before", () => {
+    expect(doc()).toMatch(/waiting for a usage limit[^.]*not before the reset/s);
+    expect(doc()).toMatch(/shows as `interrupted`/);
+    expect(doc()).toMatch(/the age counts from the reset/);
+  });
+
   it("says how to turn it off", () => {
     expect(doc()).toMatch(/`sessions\.resumeInterruptedOnBoot: false`/);
   });

@@ -164,6 +164,26 @@ describe("cron run log reflects how the session actually ended", () => {
       expect(f.alert.mock.calls[0]![1]).toContain(entry!.error as string);
     });
 
+    // The turn failed, and the message saying so could not be delivered. The
+    // record of the lost message used to replace the turn's error, so the run
+    // log and the alert named the delivery and not the cause.
+    it("is recorded together with the reason the turn itself failed, when both went wrong", async () => {
+      const f = setup();
+      f.claudeRun.mockResolvedValue({ sessionId: "claude-1", result: "", error: "Interrupted: claude process exited" });
+      f.deliver.mockRejectedValue(new Error("channel_not_found"));
+      await f.run();
+
+      const [entry, ...rest] = runs(f.job.id);
+      expect(rest).toEqual([]);
+      expect(entry).toMatchObject({ status: "error" });
+      expect(entry!.error).toContain("channel_not_found");
+      expect(entry!.error).toContain("claude stopped unexpectedly: claude process exited");
+      expect(getSession(entry!.sessionId!)?.status).toBe("error");
+      expect(f.alert).toHaveBeenCalledTimes(1);
+      expect(f.alert.mock.calls[0]![1]).toContain("channel_not_found");
+      expect(f.alert.mock.calls[0]![1]).toContain("claude stopped unexpectedly: claude process exited");
+    });
+
     it("is recorded when the session is left idle with the failure only in lastError", async () => {
       const f = setup();
       // What route() leaves behind once a failed delivery no longer fails the turn.

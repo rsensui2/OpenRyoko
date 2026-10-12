@@ -1,6 +1,6 @@
 import type { Connector, Session } from "../shared/types.js";
 import { normalizeDelivery, deliverPublic, SUPPRESS_PUBLIC_TRAILER, type DeliveryContext } from "./reply-disposition.js";
-import { insertMessage, updateSession } from "./registry.js";
+import { getSession, insertMessage, updateSession } from "./registry.js";
 import { logger } from "../shared/logger.js";
 import { isPartialDelivery } from "../shared/partial-delivery.js";
 import { redactText } from "../shared/redact.js";
@@ -115,6 +115,9 @@ export function isUndeliveredToOrigin(result: OriginDeliveryResult, session: Ses
 
 const DELIVERY_FAILED = "origin delivery failed — reply not posted to the original conversation";
 const MAX_REASON_LENGTH = 300;
+/** transportMeta key: what a turn had failed with, kept while the record of
+ *  its undelivered error message holds lastError (see turnFailureOf). */
+const TURN_FAILURE_META_KEY = "failureBehindUndeliveredReply";
 
 /**
  * A failure reason fit to store on a session and to be quoted from there (the
@@ -127,6 +130,26 @@ function storableReason(reason: string | undefined): string {
   return characters.length > MAX_REASON_LENGTH
     ? `${characters.slice(0, MAX_REASON_LENGTH).join("")}…`
     : characters.join("");
+}
+
+const metaOf = (session: Pick<Session, "transportMeta">): Record<string, unknown> =>
+  session.transportMeta && typeof session.transportMeta === "object" && !Array.isArray(session.transportMeta) ? { ...session.transportMeta } : {};
+
+/**
+ * Why a session's turn itself failed, or null when it did not.
+ *
+ * That is lastError — except while lastError holds the record of an
+ * undelivered reply (see recordFailedOriginDelivery). When the reply that was
+ * lost was the error message of a failed turn, what the turn had failed with
+ * is kept beside the record, and this returns it. Ask here rather than read
+ * lastError when the question is what went wrong with the turn: a session
+ * whose engine merely died must not read as one stopped by a delivery problem.
+ */
+export function turnFailureOf(session: Pick<Session, "lastError" | "transportMeta">): string | null {
+  const error = session.lastError?.trim() || null;
+  if (!error || !error.startsWith(DELIVERY_FAILED)) return error;
+  const kept = metaOf(session)[TURN_FAILURE_META_KEY];
+  return typeof kept === "string" && kept ? kept : null;
 }
 
 /**
@@ -142,6 +165,13 @@ function storableReason(reason: string | undefined): string {
  * appended to both, so an operator reading an alert learns why the reply did
  * not arrive (channel_not_found, or how many chunks landed) without opening
  * the gateway log.
+ *
+ * The record takes lastError — on purpose: the next turn's completion resets
+ * lastError, and that is what ends the record. But lastError may be holding
+ * why the turn failed, when the reply that was lost is that turn's error
+ * message. That reason is not dropped: it is appended, so the run log, the
+ * alert and the screens that quote lastError show both, and it is kept beside
+ * the record for turnFailureOf().
  */
 export function recordFailedOriginDelivery(
   session: Session,
@@ -156,7 +186,17 @@ export function recordFailedOriginDelivery(
     (why ? ` Reason: ${why}` : "");
   try {
     insertMessage(session.id, "notification", note);
-    updateSession(session.id, { lastError: why ? `${DELIVERY_FAILED}: ${why}` : DELIVERY_FAILED });
+    // Read the row again: the turn's completion has just written it, and what was handed in may be older.
+    const current = getSession(session.id) ?? session;
+    const turnFailed = storableReason(turnFailureOf(current) ?? undefined);
+    const meta = metaOf(current);
+    const hadKept = TURN_FAILURE_META_KEY in meta;
+    if (turnFailed) meta[TURN_FAILURE_META_KEY] = turnFailed;
+    else delete meta[TURN_FAILURE_META_KEY];
+    updateSession(session.id, {
+      lastError: (why ? `${DELIVERY_FAILED}: ${why}` : DELIVERY_FAILED) + (turnFailed ? ` (the turn had failed: ${turnFailed})` : ""),
+      ...(turnFailed || hadKept ? { transportMeta: (Object.keys(meta).length > 0 ? meta : null) as Session["transportMeta"] } : {}),
+    });
     emit?.("session:notification", { sessionId: session.id, message: note });
   } catch (err) {
     logger.error(`Failed to record origin-delivery failure for session ${session.id}: ${err instanceof Error ? err.message : String(err)}`);

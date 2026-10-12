@@ -16,7 +16,9 @@ vi.mock("../callbacks.js", async (importOriginal) => ({
 
 import { notifyParentSession } from "../callbacks.js";
 import { SessionManager } from "../manager.js";
+import { hasUndeliveredReply, turnFailureOf } from "../origin-delivery.js";
 import { createSession, getMessages, getSessionBySessionKey } from "../registry.js";
+import { failedByUnrequestedStop } from "../unrequested-stop.js";
 import { interruptRunningSessionsForShutdown, prepareRestartResume, readRestartResumeState, selectRestartResumeCandidates } from "../restart-resume.js";
 
 // When Claude's process dies in the middle of a turn, the interactive engine
@@ -87,6 +89,28 @@ describe("a Slack turn whose engine process died", () => {
       expect.objectContaining({ error: FAILURE }),
       expect.anything(),
     );
+  });
+});
+
+describe("a Slack turn whose engine process died, and whose error could not be posted either", () => {
+  it("is still known as a session whose engine died, with the lost reply on record", async () => {
+    // The record of the undelivered error message replaced lastError. The
+    // session then read as one stopped by a delivery problem, and a child's
+    // completion no longer woke it — though its engine had only died.
+    const f = setup(PROCESS_DIED);
+    f.replyMessage.mockRejectedValue(new Error("connector offline"));
+
+    await f.manager.route(f.msg, f.connector);
+
+    const session = getSessionBySessionKey(f.sessionKey)!;
+    expect(session.status).toBe("error");
+    expect(hasUndeliveredReply(session)).toBe(true);
+    expect(session.lastError).toContain("connector offline");
+    expect(session.lastError).toContain(FAILURE);
+    expect(turnFailureOf(session)).toBe(FAILURE);
+    expect(failedByUnrequestedStop({ status: session.status, lastError: turnFailureOf(session) })).toBe(true);
+    expect(getMessages(session.id).filter((m) => m.role === "notification").map((m) => m.content))
+      .toEqual([expect.stringContaining("Reason: connector offline")]);
   });
 });
 
