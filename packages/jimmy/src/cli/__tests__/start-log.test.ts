@@ -58,13 +58,15 @@ async function written(): Promise<string> {
   await vi.waitFor(() => {
     text = fs.readFileSync(LOG, "utf8");
     expect(text).not.toBe("");
-  });
+  }, { timeout: 10_000 });
   return text;
 }
 
 const count = (text: string, pattern: RegExp) => text.split("\n").filter((line) => pattern.test(line)).length;
 
-describe("ryoko start: where the bundled skill sync's report goes", () => {
+// One test goes round forty times and waits for the log file each time: seconds in
+// all, and more than the default limit of five on a slow disk.
+describe("ryoko start: where the bundled skill sync's report goes", { timeout: 60_000 }, () => {
   beforeEach(() => {
     fs.rmSync(LOG, { force: true });
     mocks.loadConfig.mockReset().mockReturnValue(config({ level: "info", stdout: false, file: true }));

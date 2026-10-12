@@ -17,11 +17,13 @@ async function written(expected: number): Promise<string[]> {
   await vi.waitFor(() => {
     lines = fs.readFileSync(LOG, "utf8").split("\n").filter(Boolean);
     expect(lines).toHaveLength(expected);
-  });
+  }, { timeout: 10_000 });
   return lines;
 }
 
-describe("configureLogger, called again for the same log file", () => {
+// The tests that go round many times wait for the file once a round: seconds in all,
+// and more than the default limit of five on a slow disk.
+describe("configureLogger, called again for the same log file", { timeout: 60_000 }, () => {
   beforeEach(() => {
     fs.rmSync(LOG, { force: true });
   });
