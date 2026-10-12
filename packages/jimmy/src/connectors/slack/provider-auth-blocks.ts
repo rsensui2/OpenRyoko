@@ -141,7 +141,8 @@ function outcomeText(provider: AuthProvider, outcome: FlowOutcome, ttlMinutes: n
   if (outcome.status === "succeeded") return `${name} にログインしました。次のメッセージから通常どおり動きます。`;
   if (outcome.status === "expired") return `${name} のログインは ${ttlMinutes} 分以内に完了しなかったため、中止しました。もう一度お試しください。`;
   if (outcome.status === "cancelled") return `${name} のログインをキャンセルしました。`;
-  if (outcome.reason === "unverified") return `${name} の CLI は終了しましたが、ログインできたことを確認できませんでした。もう一度お試しください。`;
+  // Neither a login nor a failed one: the CLI finished, but nothing it said could be taken as a yes.
+  if (outcome.reason === "unverified") return `${name} の CLI は終了しましたが、ログインできたかどうかを確認できませんでした。${name} が動かないときは、もう一度ログインしてください。`;
   if (outcome.reason === "stopped") return `gateway の停止または再読み込みのため、${name} のログインを中断しました。起動後にもう一度お試しください。`;
   return `${name} のログインは完了しませんでした（CLI がエラーで終了しました）。もう一度お試しください。`;
 }

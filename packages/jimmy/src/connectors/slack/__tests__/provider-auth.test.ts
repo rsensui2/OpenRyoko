@@ -441,6 +441,19 @@ describe("Slack provider login — Codex", () => {
     expect(JSON.stringify(done.blocks)).not.toContain("CLI の表示");
   });
 
+  it("says a Claude login could not be confirmed — not that it succeeded — when a clean exit comes with 'Not logged in'", async () => {
+    const f = fixture();
+    f.core.status.claude = { stdout: "Not logged in\n", exitCode: 0 };
+    const pty = await startLogin(f, "claude");
+
+    pty.emitExit(0);
+    await settle();
+
+    const done = f.lastRendered();
+    expect(done.text).toContain("確認できませんでした");
+    expect(done.text).not.toContain("ログインしました");
+  });
+
   it("does not ask for it after a Claude login, whose code only ever goes in through the dialog", async () => {
     const f = fixture();
     const pty = await startLogin(f, "claude");

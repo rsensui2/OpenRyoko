@@ -46,16 +46,31 @@ function statedLoggedIn(stdout: string): boolean | undefined {
   }
 }
 
+const SAYS_LOGGED_IN = /"loggedIn"\s*:\s*true/;
+const SAYS_LOGGED_OUT = /"loggedIn"\s*:\s*false/;
+
 /**
- * `claude auth status --json` exits `loggedIn ? 0 : 1`, and the exit status is
- * the answer of record. A non-zero exit is never a login, whatever was
- * printed. The JSON cannot be relied on for a yes: the CLI draws it through
- * Ink, which wraps at 80 columns when its output is piped, so a long value —
- * an e-mail address, an organization name — is broken across lines and the
- * output stops parsing. It is consulted only to hear an explicit no.
+ * `claude auth status --json` exits `loggedIn ? 0 : 1`. Both halves of the
+ * answer have to agree before a login is reported:
+ *
+ *   - A non-zero exit is never a login, whatever was printed.
+ *   - A zero exit is not enough either. A CLI version that exits 0 while
+ *     logged out would otherwise be shown as a successful login.
+ *   - JSON that parses is taken at its word.
+ *   - The JSON cannot be relied on to parse: the CLI draws it through
+ *     Ink, which wraps at 80 columns when its output is piped, so a long value —
+ *     an e-mail address, an organization name — is broken across lines. Output
+ *     that does not parse counts only if it still literally says
+ *     `"loggedIn": true`, and nowhere says false.
+ *
+ * Anything else is "could not be confirmed" — reported to the operator as
+ * exactly that, neither as a login nor as a failed one.
  */
 function claudeLoggedIn(result: CommandResult): boolean {
-  return result.exitCode === 0 && statedLoggedIn(result.stdout) !== false;
+  if (result.exitCode !== 0) return false;
+  const stated = statedLoggedIn(result.stdout);
+  if (stated !== undefined) return stated;
+  return SAYS_LOGGED_IN.test(result.stdout) && !SAYS_LOGGED_OUT.test(result.stdout);
 }
 
 export const PROVIDERS: Record<AuthProvider, ProviderSpec> = {
