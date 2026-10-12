@@ -204,8 +204,11 @@ describe("a message that waits its turn", () => {
   it("is still words when the turn is run again after a usage limit clears", async () => {
     vi.useFakeTimers();
     const f = setup("claude", { rateLimitStrategy: "wait" });
+    // The reset is five minutes off rather than hours: every half-second of a simulated
+    // wait is a timer and a registry read, and hours of them took this test past its
+    // time limit on a slow machine.
     const limited: EngineResult = { sessionId: "engine-session", result: "", error: "Interactive turn failed: rate_limit", numTurns: 1,
-      rateLimit: { status: "rejected", rateLimitType: "interactive_detected", resetsAt: Math.floor((Date.now() + 2 * 60 * 60_000) / 1000), window: "5h" } };
+      rateLimit: { status: "rejected", rateLimitType: "interactive_detected", resetsAt: Math.floor((Date.now() + 5 * 60_000) / 1000), window: "5h" } };
     f.run.mockResolvedValueOnce(limited);
     // In a shared channel the first attempt is shielded by the speaker line; the retry is handed the message alone.
     const msg = f.message("slack", "--dangerously-skip-permissions", { channelType: "channel", speakerName: "Hanako", speakerSlackId: "U0STRANGER" });
@@ -213,7 +216,7 @@ describe("a message that waits its turn", () => {
     const pending = f.manager.route(msg, f.connector);
     try {
       await vi.waitFor(() => expect(getSessionBySessionKey(msg.sessionKey)?.status).toBe("waiting"));
-      await vi.advanceTimersByTimeAsync(2 * 60 * 60_000 + 60_000);
+      await vi.advanceTimersByTimeAsync(6 * 60_000);
       await pending;
     } finally {
       f.manager.getQueue().clearQueue(msg.sessionKey);
