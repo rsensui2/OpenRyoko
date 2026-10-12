@@ -81,15 +81,15 @@ function applyChange(plan: Change, context: ApplyContext, staging: string | null
   }
 }
 
-/** Write the rendered skill from memory: what lands is exactly what was hashed. */
+/** Write the rendered skill from memory: what lands is exactly what was hashed.
+ *  The packaged mode is given at creation, which keeps a script executable. There is
+ *  no chmod afterwards: it fails on mounts without POSIX permissions (CIFS). */
 function stageSkill(staging: string, skill: BundledSkill): string {
   const staged = path.join(staging, skill.name);
   fs.mkdirSync(staged);
   for (const directory of skill.directories) fs.mkdirSync(path.join(staged, ...directory.split("/")), { recursive: true });
   for (const [relative, file] of Object.entries(skill.files)) {
-    const target = path.join(staged, ...relative.split("/"));
-    fs.writeFileSync(target, file.bytes, { mode: file.mode });
-    fs.chmodSync(target, file.mode);
+    fs.writeFileSync(path.join(staged, ...relative.split("/")), file.bytes, { mode: file.mode });
   }
   return staged;
 }

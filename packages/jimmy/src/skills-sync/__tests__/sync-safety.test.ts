@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { expectPosixMode } from "../../shared/test-support/posix-mode.js";
+import { POSIX_MODES_SUPPORTED } from "../../shared/test-support/posix-mode.js";
 import { RECEIPT_FILE } from "../receipt.js";
 import { syncBundledSkills } from "../sync.js";
 import { fixture, NOW, removeFixtures, sha, snapshot, writeTree } from "./fixture.js";
@@ -398,11 +398,18 @@ describe("bundled skill sync: failures and odd states", () => {
     f.ship("example", { "SKILL.md": "v1", "scripts/run.sh": "#!/bin/sh\n" });
     fs.chmodSync(path.join(f.template, "skills", "example", "scripts", "run.sh"), 0o755);
     fs.chmodSync(path.join(f.template, "skills", "example", "SKILL.md"), 0o644);
+    const chmod = vi.spyOn(fs, "chmodSync");
 
     f.sync();
 
-    expectPosixMode(path.join(f.skills, "example", "scripts", "run.sh"), 0o755);
-    expectPosixMode(path.join(f.skills, "example", "SKILL.md"), 0o644);
+    // Owner bits only: the rest is the process umask's to decide, as for any new file.
+    if (POSIX_MODES_SUPPORTED) {
+      expect(fs.statSync(path.join(f.skills, "example", "scripts", "run.sh")).mode & 0o700).toBe(0o700);
+      expect(fs.statSync(path.join(f.skills, "example", "SKILL.md")).mode & 0o700).toBe(0o600);
+    }
+    // The mode is set as the file is created. A separate chmod fails with EPERM on
+    // mounts without POSIX permissions (CIFS), and would fail the whole install there.
+    expect(chmod).not.toHaveBeenCalled();
   });
 
   it("neither reads nor writes skills.json, which records what the user installed", () => {
