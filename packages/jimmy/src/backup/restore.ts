@@ -62,6 +62,11 @@ interface PlanItem {
   action: RestoreAction;
 }
 
+/** An entry's kind. Its type goes along because a directory is never one of the documents in the home. */
+function kindOf(entry: { path: string; type: ManifestEntry["type"] }): BackupKind | null {
+  return kindOfPath(entry.path, entry.type);
+}
+
 function parentOf(entryPath: string): string | null {
   const cut = entryPath.lastIndexOf("/");
   return cut === -1 ? null : entryPath.slice(0, cut);
@@ -124,7 +129,7 @@ function listed(items: string[]): string {
 function selectEntries(manifest: BackupManifest, only: readonly BackupKind[] | undefined): ManifestEntry[] {
   const wanted = new Set<BackupKind>(only ?? BACKUP_KINDS);
   const selected = manifest.entries.filter((entry) => {
-    const kind = kindOfPath(entry.path);
+    const kind = kindOf(entry);
     return kind !== null && wanted.has(kind);
   });
   // The inspection has already refused these. They are checked again here
@@ -213,7 +218,7 @@ async function untouchedInHome(home: string, manifest: BackupManifest, kinds: Ba
   return (await collectHomeEntries(home, { excludePaths: [backupDirectory] })).entries
     .filter((entry) => entry.type !== "directory" && !inArchive.has(entry.path))
     .filter((entry) => {
-      const kind = kindOfPath(entry.path);
+      const kind = kindOf(entry);
       return kind !== null && kinds.includes(kind);
     })
     .map((entry) => entry.path);
@@ -371,10 +376,10 @@ export async function restoreHomeArchive(options: RestoreOptions): Promise<Resto
   const selected = selectEntries(manifest, options.only);
   const plan = buildPlan(home, manifest, selected);
   if (!options.allowExternalSymlinks) refuseExternalSymlinks([home, path.resolve(options.home)], plan);
-  const kinds = BACKUP_KINDS.filter((kind) => selected.some((entry) => kindOfPath(entry.path) === kind));
+  const kinds = BACKUP_KINDS.filter((kind) => selected.some((entry) => kindOf(entry) === kind));
   const changes = plan
     .filter((item): item is PlanItem & { action: "create" | "replace" } => item.action !== "unchanged")
-    .map((item) => ({ path: item.entry.path, type: item.entry.type, kind: kindOfPath(item.entry.path), action: item.action }));
+    .map((item) => ({ path: item.entry.path, type: item.entry.type, kind: kindOf(item.entry), action: item.action }));
   const result: RestoreResult = {
     id: manifest.id,
     archive: options.archive,
@@ -384,7 +389,7 @@ export async function restoreHomeArchive(options: RestoreOptions): Promise<Resto
     changes,
     unchanged: plan.length - changes.length,
     untouched: await untouchedInHome(home, manifest, kinds, options.backupDirectory),
-    ignored: manifest.entries.filter((entry) => kindOfPath(entry.path) === null && !holdsATarget(entry.path)).map((entry) => entry.path),
+    ignored: manifest.entries.filter((entry) => kindOf(entry) === null && !holdsATarget(entry.path)).map((entry) => entry.path),
     preRestore: null,
   };
   if (result.dryRun || changes.length === 0) return result;

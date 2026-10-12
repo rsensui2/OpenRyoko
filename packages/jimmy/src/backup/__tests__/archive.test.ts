@@ -71,6 +71,47 @@ describe("createHomeArchive", () => {
     expect(paths).not.toContain(MANIFEST_ENTRY_PATH);
   });
 
+  it("takes every Markdown file directly in the home, and .env with the config", async () => {
+    // Not a list of names: BOOTSTRAP.md and a document the operator added
+    // (MANIFEST.md) are in, because they are documents in the home.
+    const root = tempDir();
+    const home = makeHome(root);
+    writeTree(home, { "運用メモ.md": "書き足した文書\n" });
+
+    const paths = (await entriesOf((await archiveInto(root, home)).file)).map((entry) => entry.path);
+
+    expect(paths).toEqual(expect.arrayContaining([
+      "AGENTS.md", "CLAUDE.md", "SOUL.md", "IDENTITY.md", "TOOLS.md", "MEMORY.md", "BOOTSTRAP.md", "MANIFEST.md", "運用メモ.md", ".env",
+    ]));
+    // A retired copy does not end in .md, and a directory is not a document however it is named.
+    expect(paths).not.toContain("AGENTS.md.bak-20261001");
+    expect(paths).not.toContain("notes.txt");
+    expect(paths.filter((entry) => entry === "drafts.md" || entry.startsWith("drafts.md/"))).toEqual([]);
+  });
+
+  it("archives a home that has no .env without remark", async () => {
+    const root = tempDir();
+    const home = makeHome(root);
+    fs.rmSync(path.join(home, ".env"));
+
+    const result = await archiveInto(root, home);
+
+    expect((await entriesOf(result.file)).map((entry) => entry.path)).not.toContain(".env");
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("records a document in the home that is a symlink as the link, and says so", async () => {
+    const root = tempDir();
+    const home = makeHome(root);
+    fs.symlinkSync("AGENTS.md", path.join(home, "CODEX.md"));
+
+    const result = await archiveInto(root, home);
+    const entries = await entriesOf(result.file);
+
+    expect(entries.find((entry) => entry.path === "CODEX.md")).toMatchObject({ type: "symlink", target: "AGENTS.md" });
+    expect(result.warnings.join("\n")).toMatch(/CODEX\.md is a symlink/);
+  });
+
   it("records every file's size, mode and sha256 in the manifest it carries", async () => {
     const root = tempDir();
     const home = makeHome(root);

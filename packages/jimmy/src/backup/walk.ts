@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { SkippedEntry } from "./manifest.js";
-import { HOME_ARCHIVE_TARGETS, isExcludedPath } from "./targets.js";
+import { HOME_ARCHIVE_TARGETS, isExcludedPath, TOP_LEVEL_FILE_TARGETS } from "./targets.js";
 
 /** One thing in the home the archive will carry. */
 export interface HomeEntry {
@@ -165,18 +165,45 @@ async function enterParents(state: WalkState, target: string): Promise<boolean> 
   return true;
 }
 
+/** Records a target that is itself a symlink, and warns: the thing the operator meant to back up is elsewhere. */
+async function recordTargetSymlink(state: WalkState, target: string, stat: fs.Stats): Promise<void> {
+  const linkTarget = await recordSymlink(state, target, stat);
+  if (linkTarget !== null) {
+    state.warnings.push(`${target} is a symlink to ${linkTarget}; what it points at is not in this backup`);
+  }
+}
+
 async function visitTarget(state: WalkState, target: string): Promise<void> {
   if (!(await enterParents(state, target))) return;
   const stat = await inspect(state, target);
   if (!stat) return;
-  if (stat.isSymbolicLink()) {
-    const linkTarget = await recordSymlink(state, target, stat);
-    if (linkTarget !== null) {
-      state.warnings.push(`${target} is a symlink to ${linkTarget}; what it points at is not in this backup`);
+  if (stat.isSymbolicLink()) return recordTargetSymlink(state, target, stat);
+  if (await visit(state, target)) await walkDirectory(state, target);
+}
+
+/**
+ * Takes the files directly in the home whose name matches `pattern`. Only
+ * files: a directory with a matching name is somebody's folder, not a
+ * document, and is left for the named targets to claim or not.
+ */
+async function visitTopLevelFiles(state: WalkState, pattern: RegExp): Promise<void> {
+  let names: string[];
+  try {
+    names = (await fs.promises.readdir(state.home)).sort();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      state.skipped.push({ path: ".", reason: `the home could not be listed (${errorCode(error)})` });
     }
     return;
   }
-  if (await visit(state, target)) await walkDirectory(state, target);
+  for (const name of names) {
+    if (!pattern.test(name) || state.entries.has(name)) continue;
+    const stat = await inspect(state, name);
+    if (!stat || stat.isDirectory()) continue;
+    if (stat.isSymbolicLink()) await recordTargetSymlink(state, name, stat);
+    else if (stat.isFile()) record(state, name, stat, "file");
+    else state.skipped.push({ path: name, reason: "not a regular file" });
+  }
 }
 
 /**
@@ -196,6 +223,8 @@ export async function collectHomeEntries(home: string, options: { excludePaths?:
   for (const target of HOME_ARCHIVE_TARGETS) {
     for (const root of target.paths) await visitTarget(state, root);
   }
+  // After the named paths, so a file one of them already claimed (MEMORY.md) is not taken twice.
+  for (const { pattern } of TOP_LEVEL_FILE_TARGETS) await visitTopLevelFiles(state, pattern);
   const entries = [...state.entries.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   return { entries, skipped: state.skipped, warnings: state.warnings };
 }

@@ -116,6 +116,32 @@ describe("restoreHomeArchive", () => {
     expect(result.changes.map((change) => change.path).sort()).toEqual(["MEMORY.md", "config.yaml"]);
   });
 
+  it("restores the operator's own documents with the persona, and .env with the config", async () => {
+    const target = await scene();
+    fs.writeFileSync(path.join(target.home, "MANIFEST.md"), "rewritten by mistake\n");
+    fs.rmSync(path.join(target.home, "BOOTSTRAP.md"));
+    fs.writeFileSync(path.join(target.home, ".env"), "SCRIPT_API_KEY=\n");
+    fs.writeFileSync(path.join(target.home, "MEMORY.md"), "rewritten by mistake\n");
+    writeTree(target.home, { "NEW.md": "written after the backup\n" });
+
+    const persona = await restoreHomeArchive(optionsFor(target, { only: ["persona"] }));
+
+    expect(read(target.home, "MANIFEST.md")).toBe(HOME_CONTENT["MANIFEST.md"]);
+    expect(read(target.home, "BOOTSTRAP.md")).toBe(HOME_CONTENT["BOOTSTRAP.md"]);
+    expect(persona.changes.map((change) => [change.path, change.action, change.kind]).sort()).toEqual([
+      ["BOOTSTRAP.md", "create", "persona"], ["MANIFEST.md", "replace", "persona"],
+    ]);
+    // Not persona: MEMORY.md is the memory's, .env the config's. And a document added since is left alone.
+    expect(read(target.home, "MEMORY.md")).toBe("rewritten by mistake\n");
+    expect(read(target.home, ".env")).toBe("SCRIPT_API_KEY=\n");
+    expect(persona.untouched).toEqual(["NEW.md"]);
+
+    const config = await restoreHomeArchive(optionsFor(target, { only: ["config"], now: new Date(NOW.getTime() + 60_000) }));
+
+    expect(read(target.home, ".env")).toBe(HOME_CONTENT[".env"]);
+    expect(config.changes.map((change) => [change.path, change.kind])).toEqual([[".env", "config"]]);
+  });
+
   it("restores the cron jobs without rewinding the run history beside them", async () => {
     const target = await scene();
     fs.writeFileSync(path.join(target.home, "cron", "jobs.json"), "[]\n");

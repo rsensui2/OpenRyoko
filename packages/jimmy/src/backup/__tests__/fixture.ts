@@ -11,6 +11,8 @@ import { MANIFEST_ENTRY_PATH } from "../targets.js";
 /** Every path a home fixture writes that a home archive must carry. */
 export const HOME_CONTENT: Record<string, string> = {
   "config.yaml": "gateway:\n  port: 7901\n  host: 127.0.0.1\n",
+  // Keys some operators keep beside the config for their scripts.
+  ".env": "SCRIPT_API_KEY=placeholder\n",
   "cron/jobs.json": '[{"id":"daily","schedule":"0 7 * * *"}]\n',
   "cron/runs/daily.jsonl": '{"status":"ok"}\n',
   "AGENTS.md": "# Agents\n",
@@ -18,6 +20,9 @@ export const HOME_CONTENT: Record<string, string> = {
   "SOUL.md": "# Soul\n",
   "IDENTITY.md": "# Identity\n",
   "TOOLS.md": "# Tools\n",
+  "BOOTSTRAP.md": "first run\n",
+  // A document the operator added: not a name the template knows.
+  "MANIFEST.md": "# What lives where\n",
   "MEMORY.md": "- remembers things\n",
   "memory/2026-10-11.md": "daily note\n",
   "org/lead.yaml": "name: lead\n",
@@ -44,8 +49,12 @@ export const HOME_JUNK: Record<string, string> = {
   "cron/commands/abc/running.lock": "{}\n",
   "sessions/notes.json": "{}\n",
   "gateway-auth.json": '{"value":"placeholder"}\n',
-  "BOOTSTRAP.md": "first run\n",
   ".claude/settings.local.json": "{}\n",
+  // Beside the documents, and not one of them: a retired copy, a plain note,
+  // and a directory whose name only ends like a document's.
+  "AGENTS.md.bak-20261001": "an older copy\n",
+  "notes.txt": "not a document the backup knows\n",
+  "drafts.md/inner.txt": "a directory, not a document\n",
 };
 
 const scratch: string[] = [];
