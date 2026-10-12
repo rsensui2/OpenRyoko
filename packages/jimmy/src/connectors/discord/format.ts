@@ -1,3 +1,8 @@
+import { safeAttachmentName } from "../../shared/safe-file-name.js";
+
+// Lives in shared/: the upload route applies the same rule to its file names.
+export { safeAttachmentName };
+
 const DISCORD_MAX_LENGTH = 2000;
 
 export function formatResponse(text: string): string[] {
@@ -24,18 +29,6 @@ export interface DownloadAttachmentOptions {
   allowedHosts?: readonly string[];
   /** A larger file is refused and nothing is left on disk. Default: 50 MB. */
   maxBytes?: number;
-}
-
-/**
- * The file name an attachment may be saved under: the last segment of the name
- * it arrived with, or null when that names no file. The name comes from
- * another machine, so both separators count and `..` never survives.
- */
-export function safeAttachmentName(name: unknown): string | null {
-  if (typeof name !== "string") return null;
-  const base = name.split(/[\\/]/).pop() ?? "";
-  if (base === "" || base === "." || base === ".." || /[\u0000-\u001f]/.test(base)) return null;
-  return base;
 }
 
 /** Throws unless `url` is an https URL on one of `allowedHosts`. The message

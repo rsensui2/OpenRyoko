@@ -2,12 +2,10 @@ import type { IncomingMessage as HttpRequest, ServerResponse } from "node:http";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import os from "node:os";
-import { pipeline } from "node:stream/promises";
-import { Readable } from "node:stream";
 import Busboy from "busboy";
 import { FILES_DIR } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
+import { safeAttachmentName } from "../shared/safe-file-name.js";
 import { insertFile, getFile, listFiles, deleteFile, type FileMeta } from "../sessions/registry.js";
 import type { ApiContext } from "./api.js";
 
@@ -61,13 +59,6 @@ function mimeFromFilename(filename: string): string {
   return MIME_MAP[ext] || "application/octet-stream";
 }
 
-function expandPath(p: string): string {
-  if (p.startsWith("~/") || p === "~") {
-    return path.join(os.homedir(), p.slice(2));
-  }
-  return p;
-}
-
 function readBody(req: HttpRequest): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -96,13 +87,27 @@ function serverError(res: ServerResponse, message: string): void {
 
 interface UploadResult {
   id: string;
+  /** Already through {@link safeAttachmentName}: one path segment, never `..`. */
   filename: string;
   buffer: Buffer;
-  customPath: string | null;
   open: boolean;
 }
 
-/** Save buffer to managed storage and optionally to a custom path. */
+/**
+ * What POST /api/files answers to a `path`. The route used to write a second
+ * copy of the upload to any path the request named — anywhere the gateway can
+ * write, config.yaml included. Nothing shipped ever sent one (the chat page
+ * uploads the file and nothing else), so the option is gone rather than
+ * fenced in; refusing it out loud beats storing the file and silently not
+ * writing the copy the caller asked for.
+ */
+const PATH_RETIRED = "`path` is no longer supported: an upload is kept in the gateway's own storage and read back with GET /api/files/:id";
+/** Likewise for `url`: the gateway fetched whatever URL it was given — the
+ *  cloud metadata address, its own API — and served the answer back. */
+const URL_RETIRED = "`url` is no longer supported: send the file's contents (multipart, or base64 in `content`)";
+const BAD_FILENAME = "filename is required and must name a file";
+
+/** Save buffer to managed storage: files/<id>/<filename>, and nowhere else. */
 async function saveFile(result: UploadResult, context: ApiContext): Promise<FileMeta> {
   const fileDir = path.join(FILES_DIR, result.id);
   fs.mkdirSync(fileDir, { recursive: true });
@@ -115,21 +120,13 @@ async function saveFile(result: UploadResult, context: ApiContext): Promise<File
     filename: result.filename,
     size: result.buffer.length,
     mimetype,
-    path: result.customPath,
+    path: null,
   });
-
-  // Write to custom path if provided
-  if (result.customPath) {
-    const expanded = expandPath(result.customPath);
-    fs.mkdirSync(path.dirname(expanded), { recursive: true });
-    fs.writeFileSync(expanded, result.buffer);
-  }
 
   // Open file if requested
   if (result.open) {
-    const targetPath = result.customPath ? expandPath(result.customPath) : storagePath;
     const { spawn } = await import("node:child_process");
-    spawn("open", [targetPath], { stdio: "ignore", detached: true }).unref();
+    spawn("open", [storagePath], { stdio: "ignore", detached: true }).unref();
   }
 
   context.emit("file:uploaded", { id: result.id, filename: result.filename, size: result.buffer.length });
@@ -145,7 +142,7 @@ async function handleMultipartUpload(req: HttpRequest, res: ServerResponse, cont
     const busboy = Busboy({ headers: req.headers, limits: { fileSize: MAX_FILE_SIZE } });
     let filename = "";
     let fileBuffer: Buffer | null = null;
-    let customPath: string | null = null;
+    let pathGiven = false;
     let open = false;
     let fileTruncated = false;
 
@@ -158,7 +155,7 @@ async function handleMultipartUpload(req: HttpRequest, res: ServerResponse, cont
     });
 
     busboy.on("field", (name: string, val: string) => {
-      if (name === "path") customPath = val;
+      if (name === "path" && val) pathGiven = true;
       if (name === "open") open = val === "true" || val === "1";
     });
 
@@ -173,12 +170,17 @@ async function handleMultipartUpload(req: HttpRequest, res: ServerResponse, cont
         resolve();
         return;
       }
+      const safeName = safeAttachmentName(filename);
+      if (pathGiven || safeName === null) {
+        badRequest(res, pathGiven ? PATH_RETIRED : BAD_FILENAME);
+        resolve();
+        return;
+      }
       try {
         const meta = await saveFile({
           id: crypto.randomUUID(),
-          filename,
+          filename: safeName,
           buffer: fileBuffer,
-          customPath,
           open,
         }, context);
         json(res, meta, 201);
@@ -197,7 +199,7 @@ async function handleMultipartUpload(req: HttpRequest, res: ServerResponse, cont
   });
 }
 
-/** Handle POST /api/files — JSON body (base64 content or URL fetch) */
+/** Handle POST /api/files — JSON body (base64 content) */
 async function handleJsonUpload(req: HttpRequest, res: ServerResponse, context: ApiContext): Promise<void> {
   let body: Record<string, unknown>;
   try {
@@ -206,37 +208,23 @@ async function handleJsonUpload(req: HttpRequest, res: ServerResponse, context: 
     return badRequest(res, "Invalid JSON body");
   }
 
-  const filename = body.filename as string | undefined;
-  const content = body.content as string | undefined;
-  const url = body.url as string | undefined;
-  const customPath = (body.path as string) || null;
+  if (!body || typeof body !== "object") return badRequest(res, "Invalid JSON body");
+  if (body.path) return badRequest(res, PATH_RETIRED);
+  if (body.url) return badRequest(res, URL_RETIRED);
+
+  const filename = safeAttachmentName(body.filename);
+  const content = body.content;
   const open = !!body.open;
 
-  if (!filename) return badRequest(res, "filename is required");
-  if (content && url) return badRequest(res, "content and url are mutually exclusive");
-  if (!content && !url) return badRequest(res, "content or url is required");
+  if (filename === null) return badRequest(res, BAD_FILENAME);
+  if (typeof content !== "string" || !content) return badRequest(res, "content is required");
 
+  // Base64 decode
   let buffer: Buffer;
-
-  if (content) {
-    // Base64 decode
-    try {
-      buffer = Buffer.from(content, "base64");
-    } catch {
-      return badRequest(res, "Invalid base64 content");
-    }
-  } else {
-    // URL fetch
-    try {
-      const response = await fetch(url!);
-      if (!response.ok) {
-        return serverError(res, `Failed to fetch URL: ${response.status} ${response.statusText}`);
-      }
-      const arrayBuf = await response.arrayBuffer();
-      buffer = Buffer.from(arrayBuf);
-    } catch (err) {
-      return serverError(res, `Failed to fetch URL: ${err instanceof Error ? err.message : String(err)}`);
-    }
+  try {
+    buffer = Buffer.from(content, "base64");
+  } catch {
+    return badRequest(res, "Invalid base64 content");
   }
 
   try {
@@ -244,7 +232,6 @@ async function handleJsonUpload(req: HttpRequest, res: ServerResponse, context: 
       id: crypto.randomUUID(),
       filename,
       buffer,
-      customPath,
       open,
     }, context);
     json(res, meta, 201);
@@ -292,8 +279,11 @@ export async function handleFilesRequest(
   if (method === "GET" && dlMatch) {
     const meta = getFile(dlMatch[1]);
     if (!meta) { notFound(res); return true; }
-    const filePath = path.join(FILES_DIR, meta.id, meta.filename);
-    if (!fs.existsSync(filePath)) {
+    // A record written before file names were checked may point out of its
+    // directory; only what lies directly inside files/<id>/ is an upload.
+    const fileDir = path.join(FILES_DIR, meta.id);
+    const filePath = path.join(fileDir, meta.filename);
+    if (path.dirname(filePath) !== fileDir || !fs.existsSync(filePath)) {
       notFound(res);
       return true;
     }
