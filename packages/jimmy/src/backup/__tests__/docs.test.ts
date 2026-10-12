@@ -5,6 +5,7 @@ import { DATABASE_BACKUP_RETENTION } from "../../sessions/backup.js";
 import { TEMPLATE_DIR } from "../../shared/paths.js";
 import { SAME_DAY_BACKUPS_KEPT } from "../catalog.js";
 import { GATEWAY_STOPPED_FLAG } from "../database-restore.js";
+import { INCLUDE_DATABASES_FLAG } from "../database-source.js";
 import { DEFAULT_ARCHIVE_RETENTION, DEFAULT_MAX_ARCHIVE_MB, DEFAULT_MAX_ENTRIES } from "../settings.js";
 import { BACKUP_KINDS } from "../targets.js";
 
@@ -25,10 +26,19 @@ describe("docs/backup.md", () => {
   it("gives the commands to take, list, check and restore a backup, with the flags that matter", () => {
     for (const needed of [
       "ryoko backup run", "ryoko backup list", "ryoko backup verify", "ryoko backup restore",
-      "--only", "--dry-run", "--allow-external-symlinks", GATEWAY_STOPPED_FLAG,
+      "--only", "--dry-run", "--allow-external-symlinks", GATEWAY_STOPPED_FLAG, INCLUDE_DATABASES_FLAG,
     ]) {
       expect(doc(), needed).toContain(needed);
     }
+  });
+
+  it("says a backup taken by hand holds the files, and that the databases are the gateway's to copy", () => {
+    // Whoever runs it before a risky change must not think the registry is in what they just took.
+    expect(doc()).toMatch(/DB をコピーするのは gateway だけ/);
+    expect(doc()).toMatch(/`ryoko backup run` が取るのは[^。]*ファイル[^。]*。DB は開きません/);
+    expect(doc()).toContain(`ryoko backup run ${INCLUDE_DATABASES_FLAG}`);
+    // What asking for them under a running gateway comes to, in the words a script can test for.
+    for (const said of ["withheld", "gateway-running", "not-requested", "終了コード 1"]) expect(doc(), said).toContain(said);
   });
 
   it("says a database is restored with the gateway stopped, inside the container", () => {
@@ -82,6 +92,13 @@ describe("the way to docs/backup.md", () => {
 
     expect(skill).toContain("docs/backup.md");
     expect(skill).toContain("ryoko backup list");
+  });
+
+  it("tells that agent what a backup taken by hand holds, and what it leaves to the gateway", () => {
+    const skill = read("skills/self-heal/SKILL.md");
+
+    expect(skill).toContain("ryoko backup run");
+    expect(skill).toMatch(/databases[^.]*gateway[^.]*once a day/);
   });
 
   it("leads there from the doc an agent reads before editing its own files", () => {

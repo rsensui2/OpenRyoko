@@ -106,7 +106,7 @@ If the gateway cannot bind to its configured port:
 
 For understanding {{portalName}}'s architecture and component relationships, refer to the documentation in `docs/` if available.
 
-A file that an edit broke (config, cron jobs, persona, memory, org, skills) does not have to be rebuilt by hand: the gateway keeps daily backups. Run `ryoko backup list`, then `ryoko backup restore <id> --only <kind> --dry-run` to see what would come back. See `docs/backup.md`.
+A file that an edit broke (config, cron jobs, persona, memory, org, skills) does not have to be rebuilt by hand: the gateway keeps daily backups. Run `ryoko backup list`, then `ryoko backup restore <id> --only <kind> --dry-run` to see what would come back. Before a risky edit, `ryoko backup run` archives those files on the spot; it leaves the databases alone, which the gateway copies itself once a day. See `docs/backup.md`.
 
 ## Error Handling
 

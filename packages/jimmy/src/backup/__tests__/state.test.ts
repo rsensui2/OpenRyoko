@@ -20,8 +20,11 @@ const NOW = new Date("2026-10-12T03:00:00.000Z");
 const ago = (ms: number): string => new Date(NOW.getTime() - ms).toISOString();
 const HOUR_MS = 60 * 60 * 1000;
 
-/** "failed for good" is a failure that trying again cannot change, like a home over the size cap. */
-type Outcome = "ok" | "skipped" | "failed" | "failed for good";
+/**
+ * "failed for good" is a failure that trying again cannot change, like a home
+ * over the size cap. "withheld" is a database the run deliberately did not open.
+ */
+type Outcome = "ok" | "skipped" | "withheld" | "failed" | "failed for good";
 
 function report(statuses: Record<string, Outcome>, startedAt = NOW): BackupRunReport {
   const targets = Object.entries(statuses).map(([name, outcome]) => ({
@@ -30,6 +33,7 @@ function report(statuses: Record<string, Outcome>, startedAt = NOW): BackupRunRe
     warnings: [],
     ...(outcome === "failed" || outcome === "failed for good" ? { error: `${name} broke` } : {}),
     ...(outcome === "failed for good" ? { persistent: true as const } : {}),
+    ...(outcome === "withheld" ? { reason: "not-requested" as const, detail: "not asked for" } : {}),
   }));
   return {
     directory: "/backups",
@@ -194,6 +198,29 @@ describe("applyRunReport", () => {
     const before: BackupState = { version: 1, targets: { sessions: { lastAttemptAt: ago(HOUR_MS), lastSuccessAt: ago(HOUR_MS) } } };
 
     expect(applyRunReport(before, report({ home: "ok" })).targets.sessions).toEqual(before.targets.sessions);
+  });
+
+  it("takes no notice of a database the run left alone, so the gateway still owes it a copy", () => {
+    // `ryoko backup run` reports the databases as withheld. Recorded like a
+    // skip, that would read as "backed up just now" and the gateway would not
+    // copy them again for a day - having never copied them at all.
+    const never = applyRunReport({ version: 1, targets: {} }, report({ home: "ok", sessions: "withheld", workflows: "withheld" }));
+
+    expect(never.targets).toEqual({ home: { lastAttemptAt: NOW.toISOString(), lastSuccessAt: NOW.toISOString() } });
+    expect(dueTargets(never, NOW)).toEqual(["sessions", "workflows"]);
+
+    // What was known about it before stays exactly as it was: an old success, or a failure still waiting out its hour.
+    const before: BackupState = {
+      version: 1,
+      targets: {
+        sessions: { lastAttemptAt: ago(30 * HOUR_MS), lastSuccessAt: ago(30 * HOUR_MS) },
+        workflows: { lastAttemptAt: ago(10 * 60_000), lastError: "disk full" },
+      },
+    };
+    const after = applyRunReport(before, report({ home: "ok", sessions: "withheld", workflows: "withheld" }));
+    expect(after.targets.sessions).toEqual(before.targets.sessions);
+    expect(after.targets.workflows).toEqual(before.targets.workflows);
+    expect(dueTargets(after, NOW)).toEqual(["sessions"]);
   });
 });
 

@@ -55,8 +55,27 @@ function take(lines: string[]): string {
 const json = <T>(state: Cli): T => JSON.parse(take(state.out)) as T;
 const later = (state: Cli, minutes: number): void => { state.clock.now = new Date(state.clock.now.getTime() + minutes * 60_000); };
 const read = (home: string, relative: string): string => fs.readFileSync(path.join(home, ...relative.split("/")), "utf8");
+const liveDatabases = (home: string): string[] => [path.join(home, "sessions", "registry.db"), path.join(home, "workflows", "workflows.db")];
 
-interface RunReport { status: string; directory: string; targets: { name: string; status: string; file?: string; error?: string }[] }
+/**
+ * Stamps the home's databases as untouched for the last hour of the test's own
+ * clock, the way they are once a gateway has been stopped for a while. File
+ * times come from the wall clock otherwise, and a database written within the
+ * minute is what a running gateway looks like.
+ */
+function quiet(state: Cli): void {
+  for (const live of liveDatabases(state.home)) setDatabaseModified(live, new Date(state.clock.now.getTime() - 60 * 60_000));
+}
+
+const gatewayRunning = (state: Cli): void => {
+  fs.writeFileSync(path.join(state.home, "gateway.json"), JSON.stringify({ port: 7901, pid: process.pid, secret: "s" }));
+};
+
+interface RunReport {
+  status: string;
+  directory: string;
+  targets: { name: string; status: string; reason?: string; detail?: string; file?: string; error?: string }[];
+}
 interface Listing { directory: string; backups: { id: string; kind: string; preRestore: boolean; bytes: number; createdAt: string }[] }
 
 beforeEach(() => {
@@ -70,11 +89,12 @@ afterEach(() => {
 });
 
 describe("ryoko backup", () => {
-  it("goes all the way round: run, list, verify, break something, restore", async () => {
+  it("goes all the way round with the gateway stopped: run with the databases, list, verify, break something, restore", async () => {
     const home = makeHome(tempDir(), "home", { sessionRows: 6, workflowRows: 2 });
     const state = cli(home);
+    quiet(state);
 
-    await runBackupRun({ json: true }, state.deps);
+    await runBackupRun({ json: true, includeDatabases: true }, state.deps);
     const report = json<RunReport>(state);
     expect(report.status).toBe("ok");
     expect(report.targets.map((target) => [target.name, target.status])).toEqual([["home", "ok"], ["sessions", "ok"], ["workflows", "ok"]]);
@@ -113,16 +133,159 @@ describe("ryoko backup", () => {
     const ran = take(state.out);
     expect(ran).toContain(path.join(home, "backups"));
     expect(ran).toMatch(/ok\s+home\s+home-20261012T030000Z/);
-    expect(ran).toMatch(/ok\s+sessions\s+sessions-2026-10-12/);
+    // The registry is there and is not this command's to open. Said, not passed over in silence.
+    expect(ran).toMatch(/対象外\s+sessions/);
     expect(ran).toMatch(/workflows.*no database in this home/);
+    expect(process.exitCode).toBeUndefined();
 
     await runBackupList({}, state.deps);
     const listed = take(state.out);
     expect(listed).toMatch(/home-20261012T030000Z\s+home/);
-    expect(listed).toMatch(/sessions-2026-10-12\s+sessions/);
+    expect(listed).not.toMatch(/sessions-/);
 
     await runBackupVerify("home-20261012T030000Z", {}, state.deps);
     expect(take(state.out)).toMatch(/^ok\s+home-20261012T030000Z/);
+  });
+});
+
+describe("ryoko backup run and the databases", () => {
+  /** A home whose databases look the way a gateway's do from outside: rows still in the WAL, nobody visibly holding them. */
+  function withLiveDatabases(config: Pick<JinnConfig, "backup"> = {}): { state: Cli; fingerprints: () => Record<string, string>[] } {
+    const home = makeHome(tempDir());
+    const [sessions, workflows] = liveDatabases(home);
+    leaveMidFlight(sessions!, "sessions", 5);
+    leaveMidFlight(workflows!, "workflows", 3);
+    const state = cli(home, config);
+    quiet(state);
+    return { state, fingerprints: () => liveDatabases(home).map(databaseFingerprint) };
+  }
+
+  const outcomes = (report: RunReport): (string | undefined)[][] => report.targets.map((target) => [target.name, target.status, target.reason]);
+  const kindsKept = (state: Cli): string[] => listBackups(path.join(state.home, "backups")).map((item) => item.kind).sort();
+
+  it("takes the files and does not open a database, unless it is asked for them", async () => {
+    // Read-only or not, a connection writes beside the database it opens, and
+    // from the host it cannot see a gateway in a container holding it. What
+    // cannot be checked is not left as what the command does by default.
+    const { state, fingerprints } = withLiveDatabases();
+    const before = fingerprints();
+
+    await runBackupRun({ json: true }, state.deps);
+
+    const report = json<RunReport>(state);
+    expect(report.status).toBe("ok");
+    expect(outcomes(report)).toEqual([["home", "ok", undefined], ["sessions", "withheld", "not-requested"], ["workflows", "withheld", "not-requested"]]);
+    expect(report.targets[1]!.detail).toContain("--include-databases");
+    expect(process.exitCode).toBeUndefined();
+    expect(kindsKept(state)).toEqual(["home"]);
+    expect(fingerprints()).toEqual(before);
+  });
+
+  it("says who does copy the databases, and what this command is for", async () => {
+    const { state } = withLiveDatabases();
+
+    await runBackupRun({}, state.deps);
+
+    const printed = take(state.out);
+    expect(printed).toMatch(/対象外\s+sessions/);
+    expect(printed).toMatch(/対象外\s+workflows/);
+    expect(printed).toMatch(/DB.*gateway.*1日1回/);
+    expect(printed).toMatch(/設定・cron・人格/);
+    expect(printed).toContain("ryoko backup run --include-databases");
+  });
+
+  it("does not claim a daily copy that is not being made when the daily backups are off", async () => {
+    const { state } = withLiveDatabases({ backup: { enabled: false } });
+
+    await runBackupRun({}, state.deps);
+
+    const printed = take(state.out);
+    expect(printed).toContain("backup.enabled: false");
+    expect(printed).not.toMatch(/1日1回/);
+    await runBackupRun({ json: true }, state.deps);
+    expect(json<RunReport>(state).targets[1]!.detail).toContain("backup.enabled: false");
+  });
+
+  it("copies the databases as well when asked to, on a home nothing is running on", async () => {
+    const { state } = withLiveDatabases();
+
+    await runBackupRun({ json: true, includeDatabases: true }, state.deps);
+
+    const report = json<RunReport>(state);
+    expect(report.status).toBe("ok");
+    expect(outcomes(report)).toEqual([["home", "ok", undefined], ["sessions", "ok", undefined], ["workflows", "ok", undefined]]);
+    expect(process.exitCode).toBeUndefined();
+    expect(rowCount(report.targets[1]!.file!, "sessions")).toBe(5);
+    expect(rowCount(report.targets[2]!.file!, "workflows")).toBe(3);
+  });
+
+  it("takes the files, leaves the databases unopened and exits non-zero when asked for them under a running gateway", async () => {
+    const { state, fingerprints } = withLiveDatabases();
+    gatewayRunning(state);
+    const before = fingerprints();
+
+    await runBackupRun({ json: true, includeDatabases: true }, state.deps);
+
+    const report = json<RunReport>(state);
+    expect(report.status).toBe("incomplete");
+    expect(outcomes(report)).toEqual([["home", "ok", undefined], ["sessions", "withheld", "gateway-running"], ["workflows", "withheld", "gateway-running"]]);
+    expect(report.targets[1]!.detail).toMatch(/gateway\.json names pid \d+/);
+    expect(process.exitCode).toBe(1);
+    expect(kindsKept(state)).toEqual(["home"]);
+    expect(fingerprints()).toEqual(before);
+  });
+
+  it("tells a person why the databases were left, and what to do, when the registry was written a moment ago", async () => {
+    const { state, fingerprints } = withLiveDatabases();
+    const justNow = new Date(state.clock.now.getTime() - 8_000);
+    fs.utimesSync(`${liveDatabases(state.home)[0]}-wal`, justNow, justNow);
+    const before = fingerprints();
+
+    await runBackupRun({ includeDatabases: true }, state.deps);
+
+    const printed = take(state.out);
+    expect(printed).toMatch(/ok\s+home\s+home-20261012T030000Z/);
+    expect(printed).toMatch(/見送り\s+sessions/);
+    expect(printed).toMatch(/見送り\s+workflows/);
+    expect(printed).toContain("registry.db-wal was written 8 seconds ago");
+    expect(printed).toContain("wait a minute");
+    expect(printed).toMatch(/DB.*gateway.*1日1回/);
+    expect(process.exitCode).toBe(1);
+    expect(fingerprints()).toEqual(before);
+  });
+
+  it("has nothing left to do for the databases, gateway or no gateway, once today's copies are there", async () => {
+    const { state } = withLiveDatabases();
+    await runBackupRun({ json: true, includeDatabases: true }, state.deps);
+    take(state.out);
+    later(state, 5);
+    gatewayRunning(state);
+    const before = liveDatabases(state.home).map(databaseFingerprint);
+
+    await runBackupRun({ json: true, includeDatabases: true }, state.deps);
+
+    const report = json<RunReport>(state);
+    expect(report.status).toBe("ok");
+    expect(report.targets.map((target) => [target.name, target.status])).toEqual([["home", "ok"], ["sessions", "skipped"], ["workflows", "skipped"]]);
+    expect(process.exitCode).toBeUndefined();
+    // Not opened to find that out, either.
+    expect(liveDatabases(state.home).map(databaseFingerprint)).toEqual(before);
+  });
+
+  it("records the files as backed up and leaves the databases owed, so the gateway still copies them", async () => {
+    const { state } = withLiveDatabases();
+
+    await runBackupRun({ json: true }, state.deps);
+
+    expect(readBackupState(path.join(state.home, "backups")).targets).toEqual({
+      home: { lastAttemptAt: START.toISOString(), lastSuccessAt: START.toISOString() },
+    });
+
+    // The same when it was asked for them and a gateway turned out to be there.
+    gatewayRunning(state);
+    later(state, 5);
+    await runBackupRun({ json: true, includeDatabases: true }, state.deps);
+    expect(Object.keys(readBackupState(path.join(state.home, "backups")).targets)).toEqual(["home"]);
   });
 });
 
@@ -131,8 +294,9 @@ describe("ryoko backup run", () => {
     const home = makeHome(tempDir(), "home", { sessionRows: 3 });
     writeTree(home, { "workflows/workflows.db": "this is not a database" });
     const state = cli(home);
+    quiet(state);
 
-    await runBackupRun({ json: true }, state.deps);
+    await runBackupRun({ json: true, includeDatabases: true }, state.deps);
 
     const report = json<RunReport>(state);
     expect(process.exitCode).toBe(1);
@@ -151,11 +315,12 @@ describe("ryoko backup run", () => {
     expect(take(state.out)).toMatch(/失敗\s+home\s+.*over the 1\.0 MB limit/);
   });
 
-  it("counts towards the gateway's daily schedule", async () => {
+  it("counts towards the gateway's daily schedule for everything it did copy", async () => {
     const home = makeHome(tempDir(), "home", { sessionRows: 1 });
     const state = cli(home);
+    quiet(state);
 
-    await runBackupRun({ json: true }, state.deps);
+    await runBackupRun({ json: true, includeDatabases: true }, state.deps);
 
     const recorded = readBackupState(path.join(home, "backups"));
     expect(recorded.targets).toEqual({
@@ -330,7 +495,8 @@ describe("ryoko backup verify", () => {
   it("checks a database copy with SQLite's own integrity check", async () => {
     const home = makeHome(tempDir(), "home", { sessionRows: 4 });
     const state = cli(home);
-    await runBackupRun({ json: true }, state.deps);
+    quiet(state);
+    await runBackupRun({ json: true, includeDatabases: true }, state.deps);
     take(state.out);
 
     await runBackupVerify("sessions-2026-10-12", { json: true }, state.deps);
@@ -380,9 +546,11 @@ describe("ryoko backup verify", () => {
 });
 
 describe("ryoko backup restore", () => {
+  /** A home with an archive and a copy of each database it has, as after a day with the gateway up - taken here with it stopped. */
   async function backedUp(options: Parameters<typeof makeHome>[2] = {}, config: Pick<JinnConfig, "backup"> = {}): Promise<Cli> {
     const state = cli(makeHome(tempDir(), "home", options), config);
-    await runBackupRun({ json: true }, state.deps);
+    quiet(state);
+    await runBackupRun({ json: true, includeDatabases: true }, state.deps);
     take(state.out);
     later(state, 30);
     return state;

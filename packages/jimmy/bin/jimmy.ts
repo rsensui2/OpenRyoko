@@ -393,9 +393,10 @@ program
 
   backupCmd
     .command("run")
-    .description("今すぐバックアップを取る（ホームのアーカイブと DB のコピー）")
+    .description("今すぐホームのファイル（設定・cron・人格・記憶など）をアーカイブする。DB は gateway が毎日自分でコピーするので、ここでは開かない")
+    .option("--include-databases", "DB もコピーする。gateway を止めているときだけ使う（稼働の気配があれば DB は開かず、終了コード 1）")
     .option("--json", "JSON形式で出力")
-    .action(async (opts: { json?: boolean }) => {
+    .action(async (opts: { includeDatabases?: boolean; json?: boolean }) => {
       const cli = await import("../src/cli/backup.js");
       await cli.runBackupRun(opts);
     });

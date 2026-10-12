@@ -4,7 +4,9 @@ import { logger } from "../shared/logger.js";
 import { JINN_HOME } from "../shared/paths.js";
 import { redactText } from "../shared/redact.js";
 import type { JinnConfig } from "../shared/types.js";
+import { readOnlyDatabaseSource } from "./database-source.js";
 import { errorMessage, formatBytes } from "./format.js";
+import { databasePath } from "./layout.js";
 import { BACKUP_TARGETS, runBackup, type BackupRunOptions, type BackupRunReport, type BackupTargetName } from "./run.js";
 import { resolveBackupSettings, type BackupSettings } from "./settings.js";
 import { applyRunReport, dueTargets, mergeStates, readBackupState, writeBackupState, type BackupState } from "./state.js";
@@ -200,7 +202,12 @@ class GatewayBackupScheduler {
       settings: this.settings,
       now: this.now(),
       targets: due,
-      databases: { sessions: () => ({ database: this.options.database, release: () => {} }) },
+      databases: {
+        sessions: () => ({ database: this.options.database, release: () => {} }),
+        // The workflow store lives in this home and is opened, if at all, by
+        // this process: a second connection here sees the first one's locks.
+        workflows: readOnlyDatabaseSource(databasePath(this.home, "workflows")),
+      },
     });
     this.state = applyRunReport(this.state, report);
     try {

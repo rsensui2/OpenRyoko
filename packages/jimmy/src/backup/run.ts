@@ -1,10 +1,11 @@
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
 import fs from "node:fs";
-import { createDailyDatabaseBackup, type DatabaseBackupName } from "../sessions/backup.js";
+import { createDailyDatabaseBackup, dailyDatabaseBackupFile, type DatabaseBackupName } from "../sessions/backup.js";
 import { ensureOwnerOnlyDirectory } from "../shared/owner-only.js";
 import { getDiskSpaceStatus, type DiskSpaceStatus } from "../shared/storage-health.js";
 import { ArchiveTooLargeError, createHomeArchive, NothingToArchiveError } from "./archive.js";
 import { pruneBackups, reserveArchiveName } from "./catalog.js";
+import { INCLUDE_DATABASES_FLAG, type DatabaseSource, type WithheldReason } from "./database-source.js";
 import { errorMessage } from "./format.js";
 import { databasePath } from "./layout.js";
 import { archiveLimits, type BackupSettings } from "./settings.js";
@@ -16,12 +17,18 @@ export type BackupTargetName = (typeof BACKUP_TARGETS)[number];
 
 export interface BackupTargetReport {
   name: BackupTargetName;
-  /** "skipped" is not a failure: there was nothing to do (no such database, or today's copy exists). */
-  status: "ok" | "skipped" | "failed";
+  /**
+   * "skipped" is not a failure: there was nothing to do (no such database, or
+   * today's copy exists). "withheld" is neither a result nor an attempt: the
+   * database is there, has no copy for today, and was deliberately not opened.
+   */
+  status: "ok" | "skipped" | "withheld" | "failed";
   file?: string;
   bytes?: number;
-  /** Why a skipped target wrote nothing. */
+  /** Why a skipped or withheld target wrote nothing. */
   detail?: string;
+  /** With "withheld": which of the reasons for leaving a database alone applied. */
+  reason?: WithheldReason;
   /** For a database whose copy for today was already there: when that copy was made. */
   copiedAt?: string;
   error?: string;
@@ -39,20 +46,16 @@ export interface BackupRunReport {
   directory: string;
   startedAt: string;
   finishedAt: string;
-  status: "ok" | "failed";
+  /**
+   * "incomplete": nothing failed, but a database that was asked for was left
+   * alone because a gateway appears to be running. A database nobody asked
+   * for does not make a run incomplete.
+   */
+  status: "ok" | "incomplete" | "failed";
   targets: BackupTargetReport[];
   /** Files retention removed. */
   pruned: string[];
 }
-
-/** A database to copy, and how to give it back. */
-export interface DatabaseHandle {
-  database: Database.Database;
-  release(): void;
-}
-
-/** Returns null when the home has no such database. */
-export type DatabaseSource = () => DatabaseHandle | null;
 
 export interface BackupRunOptions {
   home: string;
@@ -60,34 +63,14 @@ export interface BackupRunOptions {
   now: Date;
   /** Default: every target. The gateway's scheduler passes only the ones that are due. */
   targets?: readonly BackupTargetName[];
-  /** Where a database comes from. Default: a read-only connection to the file inside `home`. */
+  /**
+   * Where each database is read from. There is no default: a database with no
+   * source here is not opened at all, and is reported as withheld. Whether it
+   * is safe to open a database file is for the caller to have decided.
+   */
   databases?: Partial<Record<DatabaseBackupName, DatabaseSource>>;
   /** The existing free-space judgement, replaceable in tests. */
   diskSpace?: (directory: string) => DiskSpaceStatus;
-}
-
-/**
- * Opens a database read-only for copying. A read-only connection cannot
- * checkpoint, and does not delete the WAL on close - which a read-write one
- * does the moment it believes itself the last, and is how a database in use
- * gets damaged from the far side of a container boundary, where the gateway's
- * locks cannot be seen.
- *
- * Remaining risk, measured rather than assumed: a read-only connection leaves
- * the main file and the -wal byte for byte as they were, but it does write the
- * -shm (the WAL's index), and creates one when there is none. On the machine
- * the gateway runs on that is ordinary SQLite, coordinated by locks. Across a
- * bind mount into a container it is not coordinated at all, and what a gateway
- * makes of an index written from outside has not been tested. `ryoko backup
- * run` belongs where the gateway runs. Inside the gateway the registry is
- * copied through the gateway's own connection and none of this applies.
- */
-export function readOnlyDatabaseSource(file: string): DatabaseSource {
-  return () => {
-    if (!fs.existsSync(file)) return null;
-    const database = new Database(file, { readonly: true, fileMustExist: true });
-    return { database, release: () => { database.close(); } };
-  };
 }
 
 /** Why nothing can be written this run, or null when the directory is ready. */
@@ -138,10 +121,39 @@ function databaseBytes(database: Database.Database): number {
   return database.memory ? 0 : fileBytes(database.name) + fileBytes(`${database.name}-wal`);
 }
 
+function alreadyCopied(name: DatabaseBackupName, file: string): BackupTargetReport {
+  return { name, status: "skipped", file, detail: "already copied today", warnings: [], copiedAt: fs.statSync(file).mtime.toISOString() };
+}
+
+const absent = (name: DatabaseBackupName): BackupTargetReport =>
+  ({ name, status: "skipped", detail: "no database in this home", warnings: [] });
+
+/** A database the run was handed no source for. Whether there is one at all is read from the directory, not by opening it. */
+function notHandedOver(name: DatabaseBackupName, options: BackupRunOptions): BackupTargetReport {
+  if (!fs.existsSync(databasePath(options.home, name))) return absent(name);
+  const daily = options.settings.enabled
+    ? "The gateway copies it itself once a day"
+    : "Daily backups are switched off (backup.enabled: false), so nothing is copying it";
+  return {
+    name, status: "withheld", reason: "not-requested", warnings: [],
+    detail: `not opened: this run was not handed the database. ${daily}. `
+      + `"ryoko backup run ${INCLUDE_DATABASES_FLAG}" copies it from the command line while the gateway is stopped`,
+  };
+}
+
+/**
+ * Copies one database, if there is a copy to make and a connection to make it
+ * through. Asked in that order, so that a database is never opened for nothing:
+ * with today's copy already there, its source is not so much as called.
+ */
 async function backupDatabase(name: DatabaseBackupName, options: BackupRunOptions, written: number): Promise<BackupTargetReport> {
-  const source = options.databases?.[name] ?? readOnlyDatabaseSource(databasePath(options.home, name));
+  const todays = dailyDatabaseBackupFile(options.settings.directory, name, options.now);
+  if (fs.existsSync(todays)) return alreadyCopied(name, todays);
+  const source = options.databases?.[name];
+  if (!source) return notHandedOver(name, options);
   const handle = source();
-  if (!handle) return { name, status: "skipped", detail: "no database in this home", warnings: [] };
+  if (!handle) return absent(name);
+  if ("withheld" in handle) return { name, status: "withheld", reason: handle.withheld, detail: handle.detail, warnings: [] };
   try {
     const result = await createDailyDatabaseBackup(handle.database, {
       directory: options.settings.directory,
@@ -149,12 +161,8 @@ async function backupDatabase(name: DatabaseBackupName, options: BackupRunOption
       name,
       beforeWrite: () => requireRoom(options, databaseBytes(handle.database), written),
     });
-    if (!result.created) {
-      return {
-        name, status: "skipped", file: result.file, detail: "already copied today", warnings: [],
-        copiedAt: fs.statSync(result.file).mtime.toISOString(),
-      };
-    }
+    // Only if another run wrote today's copy in the moment since it was looked for.
+    if (!result.created) return alreadyCopied(name, result.file);
     return { name, status: "ok", file: result.file, bytes: fs.statSync(result.file).size, warnings: [] };
   } finally {
     handle.release();
@@ -186,9 +194,14 @@ function prune(options: BackupRunOptions): string[] {
   }
 }
 
+function statusOf(targets: BackupTargetReport[]): BackupRunReport["status"] {
+  if (targets.some((target) => target.status === "failed")) return "failed";
+  return targets.some((target) => target.status === "withheld" && target.reason === "gateway-running") ? "incomplete" : "ok";
+}
+
 /**
  * Backs up the running instance's home: an archive of its files, then a copy
- * of each database.
+ * of each database the caller hands over.
  *
  * Targets are independent. One failing is recorded in its own report and the
  * rest still run, so a home too large to archive does not cost the registry
@@ -211,7 +224,7 @@ export async function runBackup(options: BackupRunOptions): Promise<BackupRunRep
     directory: options.settings.directory,
     startedAt: options.now.toISOString(),
     finishedAt: new Date().toISOString(),
-    status: targets.some((target) => target.status === "failed") ? "failed" : "ok",
+    status: statusOf(targets),
     targets,
     pruned: prune(options),
   };

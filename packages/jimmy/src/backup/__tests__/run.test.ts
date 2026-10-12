@@ -6,9 +6,11 @@ import { expectPosixMode, POSIX_MODES_SUPPORTED } from "../../shared/test-suppor
 import type { DiskSpaceStatus } from "../../shared/storage-health.js";
 import { inspectHomeArchive } from "../archive.js";
 import { archiveStamp, listBackups } from "../catalog.js";
+import { readOnlyDatabaseSource } from "../database-source.js";
+import { databasePath } from "../layout.js";
 import { runBackup, type BackupRunOptions } from "../run.js";
 import { resolveBackupSettings } from "../settings.js";
-import { makeHome, removeTempDirs, rowCount, tempDir, writeTree } from "./fixture.js";
+import { databaseFingerprint, leaveMidFlight, makeHome, removeTempDirs, rowCount, tempDir, writeTree } from "./fixture.js";
 
 const NOW = new Date("2026-10-12T03:00:00.000Z");
 const DAY_MS = 86_400_000;
@@ -24,8 +26,24 @@ function freeAbove(reserve: number, spare: number): DiskSpaceStatus {
   return { level: "warning", freeBytes, totalBytes, freePercent: (freeBytes / totalBytes) * 100 };
 }
 
+/** A run that is handed both of the home's databases, the way the gateway hands them over. Nothing is opened by default. */
 function optionsFor(home: string, config: Parameters<typeof resolveBackupSettings>[0] = {}, extra: Partial<BackupRunOptions> = {}): BackupRunOptions {
-  return { home, settings: resolveBackupSettings(config, home), now: NOW, diskSpace: () => ROOMY, ...extra };
+  return {
+    home,
+    settings: resolveBackupSettings(config, home),
+    now: NOW,
+    diskSpace: () => ROOMY,
+    databases: {
+      sessions: readOnlyDatabaseSource(databasePath(home, "sessions")),
+      workflows: readOnlyDatabaseSource(databasePath(home, "workflows")),
+    },
+    ...extra,
+  };
+}
+
+/** The same run with no database handed over at all: what a command gets that was not asked for them. */
+function withoutDatabases(home: string, extra: Partial<BackupRunOptions> = {}): BackupRunOptions {
+  return { home, settings: resolveBackupSettings({}, home), now: NOW, diskSpace: () => ROOMY, ...extra };
 }
 
 const byName = (report: Awaited<ReturnType<typeof runBackup>>) =>
@@ -281,6 +299,78 @@ describe("runBackup", () => {
 
     expect(inspection.ok).toBe(true);
     expect(inspection.manifest!.entries.filter((entry) => entry.path.startsWith("knowledge/backups"))).toEqual([]);
+  });
+
+  it("opens no database it was handed no source for, and does not call that a copy", async () => {
+    // Opening a database file is the caller's decision, never this function's
+    // default: read-only or not, a connection writes beside a database in use.
+    const home = makeHome(tempDir());
+    const live = [path.join(home, "sessions", "registry.db"), path.join(home, "workflows", "workflows.db")];
+    leaveMidFlight(live[0]!, "sessions", 5);
+    leaveMidFlight(live[1]!, "workflows", 3);
+    const before = live.map(databaseFingerprint);
+
+    const report = await runBackup(withoutDatabases(home));
+
+    expect(report.status).toBe("ok");
+    expect(report.targets.map((target) => [target.name, target.status])).toEqual([["home", "ok"], ["sessions", "withheld"], ["workflows", "withheld"]]);
+    expect(byName(report).sessions).toMatchObject({ reason: "not-requested", detail: expect.any(String) });
+    expect(live.map(databaseFingerprint)).toEqual(before);
+    expect(listBackups(path.join(home, "backups")).map((item) => item.kind)).toEqual(["home"]);
+  });
+
+  it("says a database is absent, not withheld, when the home has none", async () => {
+    const report = await runBackup(withoutDatabases(makeHome(tempDir())));
+
+    for (const name of ["sessions", "workflows"] as const) {
+      expect(byName(report)[name], name).toMatchObject({ status: "skipped", detail: expect.stringMatching(/no database/) });
+    }
+  });
+
+  it("reports today's copy without opening the database a second time", async () => {
+    const home = makeHome(tempDir(), "home", { sessionRows: 2, workflowRows: 1 });
+    await runBackup(optionsFor(home));
+    let opened = 0;
+    const counting = (): never => {
+      opened += 1;
+      throw new Error("the database was opened although there was nothing left to copy");
+    };
+
+    const again = await runBackup(optionsFor(home, {}, {
+      now: new Date(NOW.getTime() + 60_000), databases: { sessions: counting, workflows: counting },
+    }));
+
+    expect(opened).toBe(0);
+    expect(byName(again).sessions).toMatchObject({ status: "skipped", detail: expect.stringMatching(/already/) });
+    expect(byName(again).sessions!.copiedAt).toBe(fs.statSync(byName(again).sessions!.file!).mtime.toISOString());
+    // With no source at all it is still today's copy that gets reported, not "withheld".
+    const unasked = await runBackup(withoutDatabases(home, { now: new Date(NOW.getTime() + 120_000) }));
+    expect(byName(unasked).sessions).toMatchObject({ status: "skipped", detail: expect.stringMatching(/already/) });
+  });
+
+  it("passes on a source's refusal, and calls the run incomplete rather than ok or failed", async () => {
+    const home = makeHome(tempDir(), "home", { sessionRows: 2, workflowRows: 1 });
+    const refusal = { withheld: "gateway-running" as const, detail: "a gateway appears to be running on this home" };
+
+    const report = await runBackup(optionsFor(home, {}, { databases: { sessions: () => refusal, workflows: () => refusal } }));
+
+    expect(report.status).toBe("incomplete");
+    expect(byName(report).home!.status).toBe("ok");
+    expect(byName(report).sessions).toEqual({
+      name: "sessions", status: "withheld", reason: "gateway-running", detail: "a gateway appears to be running on this home", warnings: [],
+    });
+    expect(listBackups(path.join(home, "backups")).map((item) => item.kind)).toEqual(["home"]);
+  });
+
+  it("is failed, not incomplete, when something failed beside what was withheld", async () => {
+    const home = makeHome(tempDir(), "home", { sessionRows: 2 });
+    writeTree(home, { "knowledge/dump.bin": "x".repeat(3 * 1024 * 1024) });
+    const refusal = { withheld: "gateway-running" as const, detail: "a gateway appears to be running on this home" };
+
+    const report = await runBackup(optionsFor(home, { maxArchiveMb: 1 }, { databases: { sessions: () => refusal } }));
+
+    expect(report.status).toBe("failed");
+    expect(report.targets.map((target) => target.status)).toEqual(["failed", "withheld", "skipped"]);
   });
 
   it.skipIf(!POSIX_MODES_SUPPORTED)("tightens its own backups directory but leaves one the operator chose as it is", async () => {

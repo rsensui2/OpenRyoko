@@ -96,10 +96,15 @@ function lastSuccess(target: BackupRunReport["targets"][number], previous: Targe
  * Folds a run into the state. Success is dated from the moment the run started,
  * so the next one falls due a day after that and the schedule does not creep
  * later by however long each backup takes.
+ *
+ * A withheld database is left out altogether. It was neither copied nor tried,
+ * and recording it like the skip it resembles would tell the gateway that its
+ * registry was backed up a moment ago by a command that never opened it.
  */
 export function applyRunReport(state: BackupState, report: BackupRunReport): BackupState {
   const targets = { ...state.targets };
   for (const target of report.targets) {
+    if (target.status === "withheld") continue;
     const previous = state.targets[target.name];
     targets[target.name] = target.status === "failed"
       ? {

@@ -34,6 +34,11 @@ export interface DailyDatabaseBackupOptions {
   beforeWrite?: () => void;
 }
 
+/** Where a database's copy for the day of `now` is kept. Its being there is what "already copied today" means. */
+export function dailyDatabaseBackupFile(directory: string, name: DatabaseBackupName, now: Date): string {
+  return path.join(directory, `${name}-${now.toISOString().slice(0, 10)}.db`);
+}
+
 export async function createDailyDatabaseBackup(
   database: Database.Database,
   options: DailyDatabaseBackupOptions = {},
@@ -41,8 +46,7 @@ export async function createDailyDatabaseBackup(
   const name = options.name ?? "sessions";
   const directory = options.directory ?? path.join(JINN_HOME, "backups");
   const retention = Math.max(1, Math.floor(options.retention ?? DATABASE_BACKUP_RETENTION));
-  const day = (options.now ?? new Date()).toISOString().slice(0, 10);
-  const file = path.join(directory, `${name}-${day}.db`);
+  const file = dailyDatabaseBackupFile(directory, name, options.now ?? new Date());
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   if (fs.existsSync(file)) return { created: false, file };
   options.beforeWrite?.();

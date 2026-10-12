@@ -1,25 +1,27 @@
 /**
  * `ryoko backup run | list | verify <id> | restore <id>`.
  *
- * Works on the home the command resolves to and on nothing else. Run on the
- * machine the gateway runs on, it is safe with the gateway up or down: a backup
- * reads files and copies databases through a read-only connection, and a
- * restore of files is safe under a running gateway (its watchers reload what
- * changed). Only a database restore needs the gateway stopped. It looks for one
- * without opening any database, and because pid files and timestamps cannot
- * prove a gateway absent - least of all from the host side of a bind mount
- * into a container - it also asks the operator to say so with
- * `--gateway-stopped`.
+ * Works on the home the command resolves to and on nothing else. By default no
+ * command here opens a database in that home. `run` archives the files and
+ * leaves the registry and the workflow store to the gateway, which copies them
+ * itself once a day through connections of its own. `list`, `verify` and
+ * `restore` open only files in the backup directory, and a database that is
+ * being replaced is replaced without being opened.
  *
- * From the host side of such a mount, "up or down" does not hold for `backup
- * run`: see `readOnlyDatabaseSource` for what a read-only connection still
- * writes beside a database in use.
+ * The reason is the same throughout. A connection to a database a gateway has
+ * open is not harmless even read-only (see `readOnlyDatabaseSource`), and from
+ * the host side of a bind mount into a container this command cannot tell that
+ * the gateway is there. So `run --include-databases` copies the databases only
+ * while nothing suggests a gateway is running, and a database restore also
+ * asks the operator to say that none is, with `--gateway-stopped`. Restoring
+ * files is safe under a running gateway: its watchers reload what changed.
  *
  * Every command takes `--json`, and reports failure through the exit code.
  */
 import { inspectHomeArchive } from "../backup/archive.js";
 import { findBackup, listBackups, pruneBackups, type BackupItem } from "../backup/catalog.js";
 import { GATEWAY_STOPPED_FLAG, inspectDatabaseBackup, restoreDatabase, type DatabaseRestoreResult } from "../backup/database-restore.js";
+import { INCLUDE_DATABASES_FLAG, standaloneDatabaseSources, type WithheldReason } from "../backup/database-source.js";
 import { errorMessage, formatBytes } from "../backup/format.js";
 import { restoreHomeArchive, type RestoreResult } from "../backup/restore.js";
 import { runBackup, type BackupRunReport, type BackupTargetReport } from "../backup/run.js";
@@ -49,7 +51,10 @@ export interface BackupCliDeps {
 interface Context {
   home: string;
   io: BackupCliIo;
+  /** When the command started. */
   now: Date;
+  /** The time as it is when asked, for a judgement made later in the command. */
+  clock: () => Date;
   settings: BackupSettings;
   json: boolean;
 }
@@ -97,7 +102,8 @@ function contextFor(deps: BackupCliDeps, json: boolean | undefined): Context {
   }
   const settings = resolveBackupSettings(section, home);
   for (const warning of settings.warnings) io.err(`設定の警告: ${warning}`);
-  return { home, io, now: (deps.now ?? (() => new Date()))(), settings, json: json === true };
+  const clock = deps.now ?? (() => new Date());
+  return { home, io, now: clock(), clock, settings, json: json === true };
 }
 
 function printJson(io: BackupCliIo, value: unknown): void {
@@ -116,10 +122,21 @@ async function guarded(deps: BackupCliDeps, json: boolean | undefined, command: 
 }
 
 /** Padded by hand to ten columns: full-width characters take two, which padEnd does not know. */
-const STATUS_LABELS: Record<BackupTargetReport["status"], string> = { ok: "ok        ", skipped: "スキップ  ", failed: "失敗      " };
+const STATUS_LABELS: Record<Exclude<BackupTargetReport["status"], "withheld">, string> = {
+  ok: "ok        ", skipped: "スキップ  ", failed: "失敗      ",
+};
+
+/** A database left unopened: 対象外 when nobody asked for it, 見送り when it was asked for and a gateway seems to be there. */
+const WITHHELD: Record<WithheldReason, { label: string; why: string }> = {
+  "not-requested": { label: "対象外    ", why: "このコマンドでは開きません" },
+  "gateway-running": { label: "見送り    ", why: "gateway が動いているようなので開いていません" },
+};
+
+const withheldAs = (target: BackupTargetReport): (typeof WITHHELD)[WithheldReason] => WITHHELD[target.reason ?? "not-requested"];
 
 function describeTarget(target: BackupTargetReport): string {
   if (target.status === "failed") return target.error ?? "failed";
+  if (target.status === "withheld") return withheldAs(target).why;
   if (target.status === "skipped") return target.detail ?? "";
   const id = target.file ? listingId(target.file) : "";
   return `${id}  ${target.bytes === undefined ? "" : formatBytes(target.bytes)}`.trim();
@@ -130,27 +147,54 @@ function listingId(file: string): string {
   return name.replace(/\.tar\.gz$|\.db$/, "");
 }
 
-function printRun(io: BackupCliIo, report: BackupRunReport): void {
+/**
+ * What a person is owed when a database was left unopened: who does copy it,
+ * and how to get it from here. Somebody running this before a risky change
+ * should not walk away believing the registry is in the backup they just took.
+ */
+function databaseNotes(report: BackupRunReport, settings: BackupSettings): string[] {
+  const withheld = report.targets.filter((target) => target.status === "withheld");
+  if (withheld.length === 0) return [];
+  const daily = settings.enabled
+    ? "DB は、gateway が動いている間、1日1回、自分でコピーします。"
+    : "日次のバックアップは無効（backup.enabled: false）なので、DB はいまどこからもコピーされていません。";
+  const held = withheld.find((target) => target.reason === "gateway-running");
+  if (held) return [held.detail ?? "", `${daily}ファイルのアーカイブは取りました。`];
+  return [
+    `${daily}このコマンドが取るのは、設定・cron・人格・記憶などのファイルです。`,
+    `DB もここで取るのは、gateway を止めているときだけです: ryoko backup run ${INCLUDE_DATABASES_FLAG}`,
+  ];
+}
+
+function printRun(io: BackupCliIo, report: BackupRunReport, settings: BackupSettings): void {
   io.out(`バックアップ先: ${report.directory}`);
   for (const target of report.targets) {
-    io.out(`${STATUS_LABELS[target.status]}${target.name.padEnd(11)}${describeTarget(target)}`);
+    const label = target.status === "withheld" ? withheldAs(target).label : STATUS_LABELS[target.status];
+    io.out(`${label}${target.name.padEnd(11)}${describeTarget(target)}`);
     for (const warning of target.warnings.slice(0, MAX_LISTED_PATHS)) io.out(`  警告: ${warning}`);
     if (target.warnings.length > MAX_LISTED_PATHS) io.out(`  警告: ほか ${target.warnings.length - MAX_LISTED_PATHS} 件`);
   }
+  for (const note of databaseNotes(report, settings)) io.out(note);
   if (report.pruned.length > 0) io.out(`保持の範囲を外れたバックアップを ${report.pruned.length} 件削除しました`);
 }
 
-/** `ryoko backup run`: back everything up now, whatever the daily schedule says. */
-export async function runBackupRun(options: { json?: boolean } = {}, deps: BackupCliDeps = {}): Promise<void> {
-  await guarded(deps, options.json, async ({ home, io, now, settings, json }) => {
-    const report = await runBackup({ home, settings, now });
+/**
+ * `ryoko backup run`: archive the home's files now, whatever the daily schedule
+ * says. The databases are copied as well only on request, and then only while
+ * nothing suggests a gateway is running; left alone after being asked for, they
+ * make the exit code non-zero.
+ */
+export async function runBackupRun(options: { json?: boolean; includeDatabases?: boolean } = {}, deps: BackupCliDeps = {}): Promise<void> {
+  await guarded(deps, options.json, async ({ home, io, now, clock, settings, json }) => {
+    const databases = options.includeDatabases ? { databases: standaloneDatabaseSources(home, clock) } : {};
+    const report = await runBackup({ home, settings, now, ...databases });
     try {
-      // Shared with the gateway's scheduler: a backup taken by hand counts as today's.
+      // Shared with the gateway's scheduler: what was copied by hand counts as today's, and what was left alone does not.
       writeBackupState(settings.directory, applyRunReport(readBackupState(settings.directory), report));
     } catch { /* the report already says why this directory cannot be written */ }
     if (json) printJson(io, report);
-    else printRun(io, report);
-    if (report.status === "failed") process.exitCode = 1;
+    else printRun(io, report, settings);
+    if (report.status !== "ok") process.exitCode = 1;
   });
 }
 

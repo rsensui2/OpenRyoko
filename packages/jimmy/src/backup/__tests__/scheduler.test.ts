@@ -9,6 +9,7 @@ import type { DiskSpaceStatus } from "../../shared/storage-health.js";
 import type { JinnConfig } from "../../shared/types.js";
 import { inspectHomeArchive } from "../archive.js";
 import { listBackups } from "../catalog.js";
+import type { DatabaseHandle, DatabaseSource } from "../database-source.js";
 import { runBackup, type BackupRunOptions, type BackupRunReport, type BackupTargetName } from "../run.js";
 import { getBackupStatus, startBackupScheduler, type BackupScheduler } from "../scheduler.js";
 import { applyRunReport, BACKUP_STATE_FILE, readBackupState, writeBackupState } from "../state.js";
@@ -81,6 +82,13 @@ function start(config: BackupConfig = {}, extra: Partial<Parameters<typeof start
 }
 
 const targetsOf = (harness: Harness): (readonly BackupTargetName[] | undefined)[] => harness.calls.map((call) => call.targets);
+
+/** The connection a source hands over, for a test that expects it to hand one over. */
+function connectionFrom(source: DatabaseSource): DatabaseHandle {
+  const result = source();
+  if (!result || "withheld" in result) throw new Error(`expected a connection, got ${JSON.stringify(result)}`);
+  return result;
+}
 
 beforeEach(() => {
   vi.useFakeTimers({ now: START });
@@ -301,11 +309,30 @@ describe("startBackupScheduler", () => {
 
     await vi.advanceTimersByTimeAsync(MINUTE_MS);
 
-    const handle = harness.calls[0]!.databases!.sessions!()!;
+    const handle = connectionFrom(harness.calls[0]!.databases!.sessions!);
     expect(handle.database).toBe(harness.database);
     handle.release();
     expect(harness.database.open).toBe(true);
-    expect(harness.calls[0]!.databases!.workflows).toBeUndefined();
+  });
+
+  it("hands the run the workflow store itself, read-only, because a run opens nothing it is not handed", async () => {
+    const harness = start();
+    await vi.advanceTimersByTimeAsync(MINUTE_MS);
+    const workflows = harness.calls[0]!.databases!.workflows!;
+
+    // No workflow store in this home: nothing to hand over, and asking creates none.
+    const store = path.join(harness.home, "workflows", "workflows.db");
+    expect(workflows()).toBeNull();
+    expect(fs.existsSync(store)).toBe(false);
+
+    const seeded = new Database(store);
+    seeded.exec("CREATE TABLE workflows (id INTEGER PRIMARY KEY, label TEXT)");
+    seeded.close();
+    const handle = connectionFrom(workflows);
+    expect(handle.database.name).toBe(store);
+    expect(handle.database.readonly).toBe(true);
+    handle.release();
+    expect(handle.database.open).toBe(false);
   });
 
   it("counts a backup taken from the CLI towards the daily schedule", async () => {
