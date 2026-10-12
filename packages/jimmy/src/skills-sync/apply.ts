@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { BundledSkill } from "./bundled.js";
+import { shippedHashes, type BundledSkill } from "./bundled.js";
 import { hashFiles, inspectHomeSkill } from "./home-skill.js";
 import { sameList } from "./names.js";
 import { skillDirectory, type SkillPlan } from "./plan.js";
@@ -100,35 +100,67 @@ function applyChange(plan: Change, context: ApplyContext, staging: string | null
   }
   if (!staging) throw new Error("no staging directory");
   const staged = stageSkill(staging, plan.skill);
+  // Both ends of the move in. skills/ is checked last: the user's own directories
+  // are reachable through it, and nothing comes between that check and the rename.
+  const moveIn = (): void => {
+    assertStagedIntact(staged, plan.skill);
+    assertPlainDirectory(context.skillsRoot);
+    fs.renameSync(staged, destination);
+  };
   if (plan.action === "install") {
     fs.mkdirSync(context.skillsRoot, { recursive: true });
     if (inspectHomeSkill(destination).kind !== "missing") throw new Error("something appeared at its path while the sync was running; it was left alone");
-    assertPlainDirectory(context.skillsRoot);
-    fs.renameSync(staged, destination);
+    moveIn();
     return;
   }
+  // The previous copy is not moved away for a staged one that is already wrong.
+  assertStagedIntact(staged, plan.skill);
   assertUnchanged(destination, plan.observed);
   const previous = backup.take(plan.name, destination);
   try {
-    assertPlainDirectory(context.skillsRoot);
-    fs.renameSync(staged, destination);
+    moveIn();
   } catch (error) {
     backup.giveBack(previous, destination);
     throw error;
   }
 }
 
-/** Write the rendered skill from memory: what lands is exactly what was hashed.
- *  The packaged mode is given at creation, which keeps a script executable. There is
- *  no chmod afterwards: it fails on mounts without POSIX permissions (CIFS). */
+/**
+ * Write the rendered skill from memory: what lands is exactly what was hashed.
+ *
+ * The staging directory is in the home, where anything can be planted while this
+ * runs. So nothing is created over, or through, what is already there: directories
+ * one level at a time (parents come before their children in `directories`), since
+ * `recursive` walks straight through a link left where a directory belongs, and files
+ * with "wx", which refuses a link or a file at the path instead of writing through it.
+ *
+ * The packaged mode is given at creation, which keeps a script executable. There is
+ * no chmod afterwards: it fails on mounts without POSIX permissions (CIFS).
+ */
 function stageSkill(staging: string, skill: BundledSkill): string {
   const staged = path.join(staging, skill.name);
   fs.mkdirSync(staged);
-  for (const directory of skill.directories) fs.mkdirSync(path.join(staged, ...directory.split("/")), { recursive: true });
+  for (const directory of skill.directories) fs.mkdirSync(path.join(staged, ...directory.split("/")));
   for (const [relative, file] of Object.entries(skill.files)) {
-    fs.writeFileSync(path.join(staged, ...relative.split("/")), file.bytes, { mode: file.mode });
+    fs.writeFileSync(path.join(staged, ...relative.split("/")), file.bytes, { mode: file.mode, flag: "wx" });
   }
   return staged;
+}
+
+/**
+ * Is the staged copy still exactly what the sync wrote, where it wrote it? With the
+ * staging directory (or the copy itself) replaced by a link, the move would take a
+ * directory from wherever the link leads. With a file rewritten, something the
+ * package never shipped would land in skills/ and be recorded as the shipped version.
+ */
+function assertStagedIntact(staged: string, skill: BundledSkill): void {
+  try {
+    // Resolves to itself only while neither it nor the staging directory is a link.
+    assertPlainDirectory(staged);
+    assertUnchanged(staged, shippedHashes(skill));
+  } catch (error) {
+    throw new Error(`its staged copy was no longer what the sync wrote when it came to be moved into place, so it was not moved (${messageOf(error)})`);
+  }
 }
 
 /** The plan was made from a snapshot. A skill edited since then is the user's again. */
@@ -165,8 +197,9 @@ function backupRun(context: ApplyContext) {
     take(name: string, source: string): string {
       run ??= createRun(root, context);
       const target = path.join(run.skills, name);
-      assertPlainDirectory(context.skillsRoot);
+      // skills/ last, as everywhere: it is the end the user's own directories hang off.
       assertPlainDirectory(run.skills);
+      assertPlainDirectory(context.skillsRoot);
       fs.renameSync(source, target);
       held += 1;
       return target;

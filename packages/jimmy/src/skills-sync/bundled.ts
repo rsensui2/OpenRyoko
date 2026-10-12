@@ -26,6 +26,11 @@ export function sha256(bytes: Buffer | string): string {
   return crypto.createHash("sha256").update(bytes).digest("hex");
 }
 
+/** The sha256 of every file of the skill, as it is once installed. */
+export function shippedHashes(skill: BundledSkill): Record<string, string> {
+  return Object.fromEntries(Object.entries(skill.files).map(([relative, file]) => [relative, file.sha256]));
+}
+
 /**
  * Read every skill the package ships, rendered the way setup would install it.
  * A directory without SKILL.md is not a skill. Anything that is not a plain file

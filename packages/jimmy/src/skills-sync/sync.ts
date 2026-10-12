@@ -3,7 +3,7 @@ import path from "node:path";
 import { buildTemplateReplacements } from "../shared/templateReplacements.js";
 import { compareSemver } from "../shared/version.js";
 import { applyPlans, assertBackupRootUsable, needsBackup, type Applied, type ApplyContext } from "./apply.js";
-import { loadBundledSkills, type BundledSkill } from "./bundled.js";
+import { loadBundledSkills, shippedHashes } from "./bundled.js";
 import { loadShippedHistory } from "./history.js";
 import { own } from "./names.js";
 import { planSkillSync, type SkillPlan } from "./plan.js";
@@ -212,10 +212,6 @@ function recordedSkills(previous: Receipt | null, done: readonly SkillPlan[], ve
       markReplacing(foundDeleted.has(name) ? markDeleted(skill, foundDeleted.get(name) === true) : skill, false),
     ]);
   return Object.fromEntries([...carried, ...placed]);
-}
-
-function shippedHashes(skill: BundledSkill): Record<string, string> {
-  return Object.fromEntries(Object.entries(skill.files).map(([relative, file]) => [relative, file.sha256]));
 }
 
 /** Written only when it says something new, so a run with nothing to do writes
