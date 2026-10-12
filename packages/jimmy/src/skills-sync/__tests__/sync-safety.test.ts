@@ -4,7 +4,7 @@ import path from "node:path";
 import { POSIX_MODES_SUPPORTED } from "../../shared/test-support/posix-mode.js";
 import { RECEIPT_FILE } from "../receipt.js";
 import { syncBundledSkills } from "../sync.js";
-import { fixture, NOW, removeFixtures, sha, snapshot, writeTree } from "./fixture.js";
+import { fixture, NOW, removeFixtures, sha, snapshot, STAMP, writeTree } from "./fixture.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -87,6 +87,20 @@ describe("bundled skill sync: staying inside skills/", () => {
     const before = snapshot(f.root);
 
     expect(() => f.sync("2026.10.11")).toThrow(RECEIPT_FILE);
+    expect(snapshot(f.root)).toEqual(before);
+  });
+
+  it.each(["yes", false, 1, null])("refuses a receipt whose deleted mark is %j rather than true", (mark) => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    const receipt = f.receipt();
+    receipt.skills.example.deleted = mark;
+    fs.writeFileSync(path.join(f.skills, RECEIPT_FILE), JSON.stringify(receipt));
+    fs.rmSync(path.join(f.skills, "example"), { recursive: true });
+    const before = snapshot(f.root);
+
+    expect(() => f.migrate("2026.10.10")).toThrow(RECEIPT_FILE);
     expect(snapshot(f.root)).toEqual(before);
   });
 
@@ -267,6 +281,33 @@ describe("bundled skill sync: failures and odd states", () => {
     expect(fs.readdirSync(f.home).filter((name) => name.startsWith(".bundled-skill-"))).toEqual([]);
   });
 
+  it("does not mistake a skill it lost in a failed update for one the operator deleted", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    f.ship("example", { "SKILL.md": "v2" });
+    const rename = fs.renameSync;
+    // The previous copy moves to the backup, then neither the new copy nor the rollback can land.
+    vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (String(to) === path.join(f.skills, "example")) throw new Error("rename refused");
+      return rename(from, to);
+    });
+
+    const failed = f.sync("2026.10.11");
+
+    expect(failed.updated).toEqual([]);
+    expect(failed.failed).toEqual([{ name: "example", error: expect.stringContaining(path.join(f.backups, `2026.10.11-${STAMP}`, "skills", "example")) }]);
+    expect(fs.existsSync(path.join(f.skills, "example"))).toBe(false);
+    expect(fs.readFileSync(path.join(f.backups, `2026.10.11-${STAMP}`, "skills", "example", "SKILL.md"), "utf8")).toBe("v1");
+    expect(f.receipt().skills).not.toHaveProperty("example");
+    vi.restoreAllMocks();
+
+    // The next start repairs it instead of recording a deletion nobody made.
+    const repaired = f.sync("2026.10.11");
+    expect(repaired).toMatchObject({ added: ["example"], kept: [] });
+    expect(f.read("example", "SKILL.md")).toBe("v2");
+  });
+
   it("does not replace a skill that is edited while the sync is running", () => {
     const f = fixture();
     f.ship("example", { "SKILL.md": "v1" });
@@ -389,16 +430,6 @@ describe("bundled skill sync: failures and odd states", () => {
 
     expect(result).toMatchObject({ retired: [], kept: [], backupDir: null });
     expect(Object.keys(f.receipt().skills)).toEqual(["staying"]);
-  });
-
-  it("puts back a shipped skill the user removed", () => {
-    const f = fixture();
-    f.ship("example", { "SKILL.md": "v1" });
-    f.sync("2026.10.10");
-    fs.rmSync(path.join(f.skills, "example"), { recursive: true });
-
-    expect(f.sync("2026.10.10").added).toEqual(["example"]);
-    expect(f.read("example", "SKILL.md")).toBe("v1");
   });
 
   it("ignores Finder and git housekeeping files when deciding whether a skill was edited", () => {

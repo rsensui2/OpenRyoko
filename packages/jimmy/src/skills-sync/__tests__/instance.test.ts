@@ -114,6 +114,37 @@ describe("bundled skill sync at gateway start", () => {
     for (const level of ["info", "warn", "error"] as const) expect(log[level], level).not.toHaveBeenCalled();
   });
 
+  it("does not put back a skill the operator deleted, and says so once", () => {
+    syncBundledSkillsOnBoot({});
+    fs.rmSync(path.join(SKILLS_DIR, "status"), { recursive: true });
+    for (const spy of Object.values(log)) spy.mockClear();
+
+    syncBundledSkillsOnBoot({});
+
+    expect(fs.existsSync(path.join(SKILLS_DIR, "status"))).toBe(false);
+    expect(receipt().skills.status.deleted).toBe(true);
+    expect(log.info.mock.calls.map((call) => call[0])).toEqual([expect.stringMatching(/removed from this home: status\./)]);
+    expect(log.info.mock.calls[0][0]).toContain("ryoko migrate");
+    expect(log.warn).not.toHaveBeenCalled();
+
+    for (const spy of Object.values(log)) spy.mockClear();
+    syncBundledSkillsOnBoot({});
+    expect(fs.existsSync(path.join(SKILLS_DIR, "status"))).toBe(false);
+    for (const level of ["info", "warn", "error"] as const) expect(log[level], level).not.toHaveBeenCalled();
+  });
+
+  it("puts a deleted skill back when the sync runs for ryoko migrate", () => {
+    syncBundledSkillsOnBoot({});
+    fs.rmSync(path.join(SKILLS_DIR, "status"), { recursive: true });
+    syncBundledSkillsOnBoot({});
+
+    const result = syncInstanceBundledSkills({ restoreDeleted: true });
+
+    expect(result.added).toEqual(["status"]);
+    expect(readSkill("status")).toBe(fs.readFileSync(path.join(TEMPLATE_DIR, "skills", "status", "SKILL.md"), "utf8"));
+    expect(receipt().skills.status).not.toHaveProperty("deleted");
+  });
+
   it("does nothing when skills.autoSync is false", () => {
     syncBundledSkillsOnBoot({ skills: { autoSync: false } });
 

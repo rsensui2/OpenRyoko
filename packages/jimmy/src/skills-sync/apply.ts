@@ -24,14 +24,25 @@ export interface ApplyContext {
 
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
+/** A replacement failed and so did putting the previous copy back: the skill is now
+ *  missing from skills/, moved there by the sync itself and not by the operator. */
+class SkillLostError extends Error {}
+
+export interface Applied {
+  failed: FailedSkill[];
+  /** Failed skills that ended up missing. Their previous copy is in the backup directory. */
+  lost: string[];
+  backupDir: string | null;
+}
+
 /**
  * Carry out the planned changes, one skill at a time. Each skill is built in full
  * before it is moved into place, and the copy it replaces is moved away, never
  * deleted. A skill that fails is left as it was and does not stop the others.
  */
-export function applyPlans(plans: readonly SkillPlan[], context: ApplyContext): { failed: FailedSkill[]; backupDir: string | null } {
+export function applyPlans(plans: readonly SkillPlan[], context: ApplyContext): Applied {
   const changes = plans.filter((plan): plan is Change => plan.action === "install" || plan.action === "update" || plan.action === "retire");
-  if (changes.length === 0) return { failed: [], backupDir: null };
+  if (changes.length === 0) return { failed: [], lost: [], backupDir: null };
 
   const backup = backupRun(context);
   if (changes.some((plan) => plan.action !== "install")) backup.assertUsable();
@@ -39,15 +50,19 @@ export function applyPlans(plans: readonly SkillPlan[], context: ApplyContext): 
     ? fs.mkdtempSync(path.join(context.home, STAGING_PREFIX))
     : null;
   try {
-    const failed = changes.flatMap((plan): FailedSkill[] => {
+    const failures = changes.flatMap((plan) => {
       try {
         applyChange(plan, context, staging, backup);
         return [];
       } catch (error) {
-        return [{ name: plan.name, error: messageOf(error) }];
+        return [{ name: plan.name, error: messageOf(error), lost: error instanceof SkillLostError }];
       }
     });
-    return { failed, backupDir: backup.directory() };
+    return {
+      failed: failures.map(({ name, error }) => ({ name, error })),
+      lost: failures.filter((failure) => failure.lost).map((failure) => failure.name),
+      backupDir: backup.directory(),
+    };
   } finally {
     if (staging) fs.rmSync(staging, { recursive: true, force: true });
   }
@@ -144,7 +159,7 @@ function backupRun(context: ApplyContext) {
       try {
         fs.renameSync(previous, destination);
       } catch (error) {
-        throw new Error(`its previous copy could not be put back and is at ${previous} (${messageOf(error)})`);
+        throw new SkillLostError(`its previous copy could not be put back and is at ${previous} (${messageOf(error)})`);
       }
       if (directory && removeIfEmpty(path.dirname(previous)) && removeIfEmpty(directory)) directory = null;
     },

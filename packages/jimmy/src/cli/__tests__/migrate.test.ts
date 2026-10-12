@@ -241,6 +241,17 @@ describe("migrate: bundled skill sync", () => {
     expect(fs.symlinkSync).not.toHaveBeenCalled();
   });
 
+  it.each([{}, { auto: true }, { fix: true }])("asks the sync to put back skills the operator deleted (%j)", async (opts) => {
+    // --auto finishes by stamping the version, so there has to be a config to stamp.
+    vi.mocked(fs.readFileSync).mockReturnValue("jinn:\n  version: 1.0.0\n");
+    const { runMigrate } = await import("../migrate.js");
+
+    await runMigrate(opts);
+
+    // Gateway start leaves a deleted skill out; the explicit command is how it comes back.
+    expect(mockSync).toHaveBeenCalledExactlyOnceWith({ restoreDeleted: true });
+  });
+
   it("carries on with the migrations when the sync cannot run", async () => {
     mockSync.mockImplementation(() => { throw new Error("receipt is unreadable"); });
     const { runMigrate } = await import("../migrate.js");

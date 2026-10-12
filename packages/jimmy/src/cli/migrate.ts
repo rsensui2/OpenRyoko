@@ -83,11 +83,14 @@ const KEPT_SKILL_NOTES: Partial<Record<KeepReason, string>> = {
  * Run the bundled skill sync — the same one the gateway runs at start — and
  * report it. Returns the skills that now match the shipped version. A sync that
  * cannot run is reported and does not block the versioned migrations.
+ *
+ * Unlike gateway start, this explicit command puts back a bundled skill the
+ * operator deleted: it is how a removed skill is restored.
  */
 function syncBundledSkillsStep(): Set<string> {
   let result: BundledSkillSync;
   try {
-    result = syncInstanceBundledSkills();
+    result = syncInstanceBundledSkills({ restoreDeleted: true });
   } catch (err: any) {
     console.log(`  ${YELLOW}[skills]${RESET} 同梱スキルを同期できませんでした: ${err?.message ?? err}`);
     return new Set();

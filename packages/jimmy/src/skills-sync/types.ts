@@ -12,6 +12,9 @@ export type KeepReason =
   | "unmanaged"
   /** No longer shipped, but the user edited the copy we placed. */
   | "retired-modified"
+  /** We placed it and it is gone from the home: the operator removed it. Gateway
+   *  start leaves it out; only an explicit `ryoko migrate` puts it back. */
+  | "deleted"
   /** It could not be inspected (permissions, I/O). */
   | "unreadable";
 

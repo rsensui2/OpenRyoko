@@ -73,6 +73,9 @@ describe("what gateway start logs about the bundled skill sync", () => {
 
     expect(said("warn")).toHaveLength(1);
     expect(said("warn")[0]).toMatch(/edited locally: onboarding\./);
+    // Moving a recorded skill aside and restarting would only record a deletion.
+    expect(said("warn")[0]).toContain("ryoko migrate");
+    expect(said("warn")[0]).not.toContain("restart");
     expect(said("warn")[0]).toContain("docs/skills.md");
   });
 
@@ -88,8 +91,24 @@ describe("what gateway start logs about the bundled skill sync", () => {
     expect(said("warn")[0]).toContain("docs/skills.md");
   });
 
-  it("keeps the two kinds of untouched skill apart", () => {
-    ran({ notices: [{ name: "onboarding", reason: "modified" }, { name: "migrate", reason: "unmanaged" }, { name: "status", reason: "unmanaged" }] });
+  it("says a skill the operator removed was left out, and how to put it back", () => {
+    ran({ kept: [{ name: "status", reason: "deleted" }], notices: [{ name: "status", reason: "deleted" }] });
+
+    syncBundledSkillsOnBoot({});
+
+    // The operator's own choice: worth a line, not a warning.
+    expect(said("info")).toEqual([expect.stringMatching(/removed from this home: status\./)]);
+    expect(said("info")[0]).toContain("ryoko migrate");
+    expect(said("warn")).toEqual([]);
+  });
+
+  it("keeps the kinds of untouched skill apart", () => {
+    ran({ notices: [
+      { name: "onboarding", reason: "modified" },
+      { name: "migrate", reason: "unmanaged" },
+      { name: "new", reason: "deleted" },
+      { name: "status", reason: "unmanaged" },
+    ] });
 
     syncBundledSkillsOnBoot({});
 
@@ -97,6 +116,7 @@ describe("what gateway start logs about the bundled skill sync", () => {
       expect.stringMatching(/edited locally: onboarding\./),
       expect.stringMatching(/older shipped copy.*: migrate, status\./),
     ]);
+    expect(said("info")).toEqual([expect.stringMatching(/removed from this home: new\./)]);
   });
 
   it("warns once for each skill that could not be synced", () => {

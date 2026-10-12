@@ -15,12 +15,16 @@ export interface ReceiptSkill {
   sha256: string;
   /** "/"-separated path inside the skill → sha256 of the file as it was placed. */
   files: Record<string, string>;
+  /** A tombstone: the sync placed this skill and later found it gone, so the
+   *  operator removed it. `files` still says what was placed, in case it returns. */
+  deleted?: true;
 }
 
 /**
  * The record of which shipped skills the sync placed, and with what bytes. The
  * package alone says what ships now; only this says whether a skill in the home is
- * still the copy we put there, which is what makes replacing or retiring it safe.
+ * still the copy we put there, which is what makes replacing or retiring it safe —
+ * and whether a missing skill is one the operator deleted or one never installed.
  */
 export interface Receipt {
   /** The package version that last synced this home. */
@@ -36,6 +40,12 @@ export function skillDigest(files: Record<string, string>): string {
 
 export function receiptSkill(files: Record<string, string>, version: string): ReceiptSkill {
   return { version, sha256: skillDigest(files), files };
+}
+
+/** The same record with or without its tombstone. */
+export function markDeleted(skill: ReceiptSkill, deleted: boolean): ReceiptSkill {
+  const { deleted: _mark, ...placed } = skill;
+  return deleted ? { ...placed, deleted: true } : placed;
 }
 
 /**
@@ -104,7 +114,8 @@ function parseSkill(name: string, entry: unknown): ReceiptSkill {
   }));
   // Every skill the sync places has one, so an entry without it was not written here.
   if (!Object.hasOwn(files, "SKILL.md")) throw new Error(`its entry for "${name}" lists no SKILL.md`);
-  return receiptSkill(files, entry.version);
+  if (entry.deleted !== undefined && entry.deleted !== true) throw new Error(`its "deleted" mark for "${name}" is not true`);
+  return markDeleted(receiptSkill(files, entry.version), entry.deleted === true);
 }
 
 const sortedByKey = <T>(record: Record<string, T>): Record<string, T> =>
@@ -113,8 +124,8 @@ const sortedByKey = <T>(record: Record<string, T>): Record<string, T> =>
 /** Stable key order, so an unchanged receipt serializes to the same bytes. */
 export function serializeReceipt(receipt: Receipt): string {
   const skills = Object.fromEntries(Object.keys(receipt.skills).sort().map((name) => {
-    const { version, sha256: digest, files } = receipt.skills[name];
-    return [name, { version, sha256: digest, files: sortedByKey(files) }];
+    const { version, sha256: digest, files, deleted } = receipt.skills[name];
+    return [name, { version, sha256: digest, ...(deleted ? { deleted } : {}), files: sortedByKey(files) }];
   }));
   const body = { schemaVersion: SCHEMA_VERSION, packageVersion: receipt.packageVersion, skills, notices: sortedByKey(receipt.notices) };
   return `${JSON.stringify(body, null, 2)}\n`;

@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { RECEIPT_FILE } from "../receipt.js";
-import { fixture, removeFixtures, sha, snapshot, STAMP, writeTree } from "./fixture.js";
+import { syncBundledSkills } from "../sync.js";
+import { fixture, NOW, removeFixtures, sha, snapshot, STAMP, writeTree } from "./fixture.js";
 
 /** Every fs call that changes the disk. A run with nothing to do must reach none of them. */
 const MUTATORS = [
@@ -267,10 +268,11 @@ describe("bundled skill sync: what happens to each skill", () => {
     fs.rmSync(path.join(f.skills, "dropped-later"), { recursive: true });
     fs.mkdirSync(path.join(f.skills, "dropped-later"));
 
-    const result = f.sync("2026.10.10");
-
-    expect(result.added).toEqual([]);
-    expect(result.kept).toEqual([{ name: "dropped-later", reason: "customized" }, { name: "unwanted", reason: "unmanaged" }]);
+    // Neither a gateway start nor an explicit ryoko migrate fills them in.
+    for (const result of [f.sync("2026.10.10"), f.migrate("2026.10.10")]) {
+      expect(result.added).toEqual([]);
+      expect(result.kept).toEqual([{ name: "dropped-later", reason: "customized" }, { name: "unwanted", reason: "unmanaged" }]);
+    }
     expect(fs.readdirSync(path.join(f.skills, "unwanted"))).toEqual([]);
     expect(fs.readdirSync(path.join(f.skills, "dropped-later"))).toEqual([]);
   });
@@ -292,9 +294,10 @@ describe("bundled skill sync: repeat runs", () => {
   it("writes nothing on a second run", () => {
     const f = fixture();
     // One skill in every state the sync distinguishes.
-    for (const name of ["pristine", "edited", "retiring"]) f.ship(name, { "SKILL.md": `${name} v1`, "references/a.md": "a1" });
+    for (const name of ["pristine", "edited", "retiring", "removed"]) f.ship(name, { "SKILL.md": `${name} v1`, "references/a.md": "a1" });
     f.sync("2026.10.10");
     fs.writeFileSync(path.join(f.skills, "edited", "SKILL.md"), "edited by the user");
+    fs.rmSync(path.join(f.skills, "removed"), { recursive: true });
     for (const name of ["pristine", "edited", "unrecorded", "linked"]) f.ship(name, { "SKILL.md": `${name} v2`, "references/a.md": "a1" });
     f.unship("retiring");
     f.place("unrecorded", { "SKILL.md": "something else" });
@@ -305,9 +308,14 @@ describe("bundled skill sync: repeat runs", () => {
     expect(first.kept).toEqual([
       { name: "edited", reason: "modified" },
       { name: "linked", reason: "symlink" },
+      { name: "removed", reason: "deleted" },
       { name: "unrecorded", reason: "unmanaged" },
     ]);
-    expect(first.notices).toEqual([{ name: "edited", reason: "modified" }, { name: "unrecorded", reason: "unmanaged" }]);
+    expect(first.notices).toEqual([
+      { name: "edited", reason: "modified" },
+      { name: "removed", reason: "deleted" },
+      { name: "unrecorded", reason: "unmanaged" },
+    ]);
 
     const before = snapshot(f.home);
     const spies = MUTATORS.map((name) => vi.spyOn(fs, name));
@@ -371,5 +379,167 @@ describe("bundled skill sync: repeat runs", () => {
     expect(path.dirname(second.backupDir!)).toBe(f.backups);
     expect(fs.readFileSync(path.join(first.backupDir!, "skills", "example", "SKILL.md"), "utf8")).toBe("v1");
     expect(fs.readFileSync(path.join(second.backupDir!, "skills", "example", "SKILL.md"), "utf8")).toBe("v2");
+  });
+});
+
+describe("bundled skill sync: skills the operator deleted", () => {
+  it("does not put back a skill it placed and the operator then deleted", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1", "references/a.md": "a1" });
+    f.ship("other", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    const placed = f.receipt().skills.example;
+    fs.rmSync(path.join(f.skills, "example"), { recursive: true });
+
+    const result = f.sync("2026.10.10");
+
+    expect(result).toMatchObject({ added: [], updated: [], adopted: [], retired: [], failed: [], backupDir: null });
+    expect(result.kept).toEqual([{ name: "example", reason: "deleted" }]);
+    expect(result.notices).toEqual([{ name: "example", reason: "deleted" }]);
+    expect(result.inSync).toEqual(["other"]);
+    expect(fs.existsSync(path.join(f.skills, "example"))).toBe(false);
+    // The tombstone keeps what was placed, so tracking can resume if the directory returns.
+    expect(f.receipt().skills.example).toEqual({ ...placed, deleted: true });
+    expect(f.receipt().skills.other).not.toHaveProperty("deleted");
+  });
+
+  it("keeps the skill out on every later start, and mentions it once per package version", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    fs.rmSync(path.join(f.skills, "example"), { recursive: true });
+    expect(f.sync("2026.10.10").notices).toEqual([{ name: "example", reason: "deleted" }]);
+    const before = snapshot(f.home);
+
+    const again = f.sync("2026.10.10");
+    expect(again.notices).toEqual([]);
+    expect(again.kept).toEqual([{ name: "example", reason: "deleted" }]);
+    expect(snapshot(f.home)).toEqual(before);
+
+    // A newer package, even one that changed the skill, still leaves it out.
+    f.ship("example", { "SKILL.md": "v2" });
+    const upgraded = f.sync("2026.10.11");
+    expect(upgraded.added).toEqual([]);
+    expect(upgraded.notices).toEqual([{ name: "example", reason: "deleted" }]);
+    expect(f.sync("2026.10.11").notices).toEqual([]);
+    expect(fs.existsSync(path.join(f.skills, "example"))).toBe(false);
+  });
+
+  it("puts the skill back on an explicit ryoko migrate, and tracks it again", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    fs.rmSync(path.join(f.skills, "example"), { recursive: true });
+    f.sync("2026.10.10");
+    f.ship("example", { "SKILL.md": "v2" });
+
+    const result = f.migrate("2026.10.11");
+
+    expect(result).toMatchObject({ added: ["example"], kept: [], notices: [], inSync: ["example"] });
+    expect(f.read("example", "SKILL.md")).toBe("v2");
+    expect(f.receipt().skills.example).toMatchObject({ version: "2026.10.11", files: { "SKILL.md": sha("v2") } });
+    expect(f.receipt().skills.example).not.toHaveProperty("deleted");
+    expect(f.receipt().notices).toEqual({});
+    // Back under the sync's care: the next start leaves it in place.
+    expect(f.sync("2026.10.11")).toMatchObject({ added: [], kept: [], inSync: ["example"] });
+  });
+
+  it("leaves a deleted skill out unless a caller explicitly asks for it back", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    fs.rmSync(path.join(f.skills, "example"), { recursive: true });
+
+    // No restoreDeleted at all: the safe reading is the default.
+    const result = syncBundledSkills({ templateDir: f.template, home: f.home, packageVersion: "2026.10.10", now: NOW, replacements: {} });
+
+    expect(result.added).toEqual([]);
+    expect(result.kept).toEqual([{ name: "example", reason: "deleted" }]);
+    expect(fs.existsSync(path.join(f.skills, "example"))).toBe(false);
+  });
+
+  it("puts a deleted skill back on ryoko migrate even if no start has seen the deletion", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    fs.rmSync(path.join(f.skills, "example"), { recursive: true });
+
+    expect(f.migrate("2026.10.10").added).toEqual(["example"]);
+    expect(f.read("example", "SKILL.md")).toBe("v1");
+  });
+
+  it("still installs a missing skill it has no record of placing", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    // A release adds a skill: missing, but never placed, so nobody deleted it.
+    f.ship("brand-new", { "SKILL.md": "new" });
+
+    const result = f.sync("2026.10.11");
+
+    expect(result).toMatchObject({ added: ["brand-new"], kept: [] });
+    expect(f.read("brand-new", "SKILL.md")).toBe("new");
+  });
+
+  it("installs a missing skill at start after one it never recorded was moved aside", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v2" });
+    f.place("example", { "SKILL.md": "an older copy" });
+    expect(f.sync("2026.10.10").kept).toEqual([{ name: "example", reason: "unmanaged" }]);
+    fs.renameSync(path.join(f.skills, "example"), path.join(f.root, "example-aside"));
+
+    expect(f.sync("2026.10.10").added).toEqual(["example"]);
+    expect(f.read("example", "SKILL.md")).toBe("v2");
+  });
+
+  it("drops the tombstone when the deleted skill is retired", () => {
+    const f = fixture();
+    f.ship("staying", { "SKILL.md": "stays" });
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    fs.rmSync(path.join(f.skills, "example"), { recursive: true });
+    f.sync("2026.10.10");
+    f.unship("example");
+
+    const result = f.sync("2026.10.11");
+
+    expect(result).toMatchObject({ retired: [], kept: [], notices: [], backupDir: null });
+    expect(Object.keys(f.receipt().skills)).toEqual(["staying"]);
+    expect(f.receipt().notices).toEqual({});
+  });
+
+  it("resumes tracking when the deleted skill's directory comes back", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    const aside = path.join(f.root, "example-aside");
+    fs.renameSync(path.join(f.skills, "example"), aside);
+    expect(f.sync("2026.10.10").kept).toEqual([{ name: "example", reason: "deleted" }]);
+    fs.renameSync(aside, path.join(f.skills, "example"));
+
+    const returned = f.sync("2026.10.10");
+    expect(returned).toMatchObject({ added: [], updated: [], kept: [], notices: [], inSync: ["example"] });
+    expect(f.receipt().skills.example).not.toHaveProperty("deleted");
+    expect(f.receipt().notices).toEqual({});
+
+    // The copy that came back is the one the sync placed, so it follows the next release.
+    f.ship("example", { "SKILL.md": "v2" });
+    expect(f.sync("2026.10.11").updated).toEqual(["example"]);
+    expect(f.read("example", "SKILL.md")).toBe("v2");
+  });
+
+  it("clears the tombstone, without touching the skill, when the operator recreates it differently", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    fs.rmSync(path.join(f.skills, "example"), { recursive: true });
+    f.sync("2026.10.10");
+    f.place("example", { "SKILL.md": "rewritten by the operator" });
+
+    const result = f.sync("2026.10.10");
+
+    expect(result.kept).toEqual([{ name: "example", reason: "customized" }]);
+    expect(f.read("example", "SKILL.md")).toBe("rewritten by the operator");
+    expect(f.receipt().skills.example).not.toHaveProperty("deleted");
   });
 });

@@ -5,7 +5,7 @@ import { applyPlans } from "./apply.js";
 import { loadBundledSkills, type BundledSkill } from "./bundled.js";
 import { own } from "./names.js";
 import { planSkillSync, type SkillPlan } from "./plan.js";
-import { RECEIPT_FILE, readReceipt, receiptSkill, serializeReceipt, writeReceipt, type Receipt, type ReceiptSkill } from "./receipt.js";
+import { markDeleted, RECEIPT_FILE, readReceipt, receiptSkill, serializeReceipt, writeReceipt, type Receipt, type ReceiptSkill } from "./receipt.js";
 import type { BundledSkillSync, KeepReason, KeptSkill } from "./types.js";
 
 export interface SyncBundledSkillsOptions {
@@ -16,11 +16,18 @@ export interface SyncBundledSkillsOptions {
   /** Placeholder values, as `ryoko setup` fills them into .md and .yaml files. */
   replacements: Record<string, string>;
   packageVersion: string;
+  /**
+   * Put back shipped skills the operator deleted. Off by default: a skill the sync
+   * placed and later finds gone was removed on purpose, and starting the gateway
+   * must not undo that. An explicit `ryoko migrate` turns it on.
+   */
+  restoreDeleted?: boolean;
   now?: Date;
 }
 
-/** Kept skills worth telling the user about: a shipped update they are not getting. */
-const ANNOUNCED: ReadonlySet<KeepReason> = new Set<KeepReason>(["modified", "unmanaged"]);
+/** Kept skills worth telling the user about, once per package version: a shipped
+ *  update they are not getting, or a shipped skill they removed and can have back. */
+const ANNOUNCED: ReadonlySet<KeepReason> = new Set<KeepReason>(["modified", "unmanaged", "deleted"]);
 
 const nothing = (): BundledSkillSync => ({
   added: [], updated: [], adopted: [], retired: [], kept: [], notices: [], inSync: [], failed: [], backupDir: null,
@@ -30,7 +37,8 @@ const nothing = (): BundledSkillSync => ({
  * Bring the skills the package ships into <home>/skills without touching anything
  * the user owns. A skill is replaced or retired only when a receipt proves the copy
  * in the home is byte-for-byte the one this sync placed; edited skills, symlinks,
- * and skills it has no record of stay exactly as they are.
+ * and skills it has no record of stay exactly as they are. A skill it placed that is
+ * gone stays gone, unless `restoreDeleted` asks for it back.
  *
  * The whole run is planned and validated before the first write. It never reads or
  * writes config.yaml (so `jinn.version` is untouched) or skills.json.
@@ -50,7 +58,7 @@ export function syncBundledSkills(options: SyncBundledSkillsOptions): BundledSki
   // An older CLI sharing this home must not undo what a newer one synced.
   if (receipt && compareSemver(options.packageVersion, receipt.packageVersion) < 0) return { ...nothing(), skipped: "newer-receipt" };
 
-  const plans = planSkillSync({ skillsRoot, bundled, receipt });
+  const plans = planSkillSync({ skillsRoot, bundled, receipt, restoreDeleted: options.restoreDeleted === true });
   const applied = applyPlans(plans, { home, skillsRoot, packageVersion: options.packageVersion, now: options.now ?? new Date() });
   const failed = new Set(applied.failed.map((failure) => failure.name));
   const done = plans.filter((plan) => !failed.has(plan.name));
@@ -61,7 +69,7 @@ export function syncBundledSkills(options: SyncBundledSkillsOptions): BundledSki
   const announced = kept.filter((skill) => ANNOUNCED.has(skill.reason));
   const next: Receipt = {
     packageVersion: options.packageVersion,
-    skills: recordedSkills(receipt, done, options.packageVersion),
+    skills: recordedSkills(receipt, done, options.packageVersion, applied.lost),
     notices: Object.fromEntries(announced.map((skill) => [skill.name, options.packageVersion])),
   };
   saveReceipt(receiptPath, skillsRoot, receipt, next);
@@ -92,16 +100,25 @@ function skillsRootKind(skillsRoot: string): "missing" | "directory" | "symlink"
   return "directory";
 }
 
-/** The receipt after this run: what was placed or adopted is recorded, what was
- *  retired is dropped, and everything else keeps the entry it had. */
-function recordedSkills(previous: Receipt | null, done: readonly SkillPlan[], version: string): Record<string, ReceiptSkill> {
-  const dropped = new Set(done.filter((plan) => plan.action === "retire" || plan.action === "forget").map((plan) => plan.name));
+/**
+ * The receipt after this run: what was placed or adopted is recorded, what was
+ * retired is dropped, and everything else keeps the entry it had — with a tombstone
+ * exactly when the skill was found deleted. A skill the sync itself lost in a failed
+ * update is dropped as well, so the next run reinstalls it rather than taking its
+ * absence for the operator's doing.
+ */
+function recordedSkills(previous: Receipt | null, done: readonly SkillPlan[], version: string, lost: readonly string[]): Record<string, ReceiptSkill> {
+  const dropped = new Set([...lost, ...done.filter((plan) => plan.action === "retire" || plan.action === "forget").map((plan) => plan.name)]);
   const placed = done.flatMap((plan): [string, ReceiptSkill][] => {
     if (plan.action === "install" || plan.action === "update") return [[plan.name, receiptSkill(shippedHashes(plan.skill), version)]];
     if (plan.action === "adopt") return [[plan.name, receiptSkill(plan.observed, version)]];
     return [];
   });
-  const carried = Object.entries(previous?.skills ?? {}).filter(([name]) => !dropped.has(name));
+  // Every plan that completed looked at the skill's path: "deleted" found nothing there.
+  const foundDeleted = new Map(done.map((plan) => [plan.name, plan.action === "keep" && plan.reason === "deleted"]));
+  const carried = Object.entries(previous?.skills ?? {})
+    .filter(([name]) => !dropped.has(name))
+    .map(([name, skill]): [string, ReceiptSkill] => [name, foundDeleted.has(name) ? markDeleted(skill, foundDeleted.get(name) === true) : skill]);
   return Object.fromEntries([...carried, ...placed]);
 }
 

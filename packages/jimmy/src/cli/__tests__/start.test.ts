@@ -56,6 +56,8 @@ describe("ryoko start", () => {
       home: JINN_HOME,
       templateDir: TEMPLATE_DIR,
       packageVersion: getPackageVersion(),
+      // Starting the gateway never puts back a skill the operator deleted.
+      restoreDeleted: false,
     });
     expect(startForeground).toHaveBeenCalledTimes(1);
     expect(startDaemon).not.toHaveBeenCalled();

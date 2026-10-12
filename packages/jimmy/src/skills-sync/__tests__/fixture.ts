@@ -64,14 +64,22 @@ export function fixture() {
     place: (name: string, files: Files) => writeTree(path.join(skills, name), files),
     read: (...relative: string[]) => fs.readFileSync(path.join(skills, ...relative), "utf8"),
     receipt: () => JSON.parse(fs.readFileSync(path.join(skills, RECEIPT_FILE), "utf8")),
-    sync: (packageVersion = "2026.10.10", portalName = "Momo") => syncBundledSkills({
+    /** The sync as the gateway runs it at start. */
+    sync: (packageVersion = "2026.10.10", portalName = "Momo") => run(packageVersion, portalName, false),
+    /** The sync as an explicit `ryoko migrate` runs it: skills the operator deleted come back. */
+    migrate: (packageVersion = "2026.10.10", portalName = "Momo") => run(packageVersion, portalName, true),
+  };
+
+  function run(packageVersion: string, portalName: string, restoreDeleted: boolean) {
+    return syncBundledSkills({
       templateDir: template,
       home,
       packageVersion,
+      restoreDeleted,
       now: NOW,
       replacements: { "{{portalName}}": portalName, "{{portalSlug}}": portalName.toLowerCase() },
-    }),
-  };
+    });
+  }
 }
 
 export function removeFixtures(): void {

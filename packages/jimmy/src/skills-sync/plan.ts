@@ -34,21 +34,27 @@ export function planSkillSync(input: {
   skillsRoot: string;
   bundled: readonly BundledSkill[];
   receipt: Receipt | null;
+  /** Put back shipped skills the operator deleted. Only an explicit `ryoko migrate` asks for this. */
+  restoreDeleted: boolean;
 }): SkillPlan[] {
   const recorded = input.receipt?.skills ?? {};
   const shipped = new Set(input.bundled.map((skill) => skill.name));
   const retired = Object.keys(recorded).filter((name) => !shipped.has(name)).sort();
   return [
-    ...input.bundled.map((skill) => planShipped(input.skillsRoot, skill, own(recorded, skill.name))),
+    ...input.bundled.map((skill) => planShipped(input.skillsRoot, skill, own(recorded, skill.name), input.restoreDeleted)),
     ...retired.map((name) => planRetired(input.skillsRoot, name, recorded[name])),
   ];
 }
 
-function planShipped(skillsRoot: string, skill: BundledSkill, entry: ReceiptSkill | undefined): SkillPlan {
+function planShipped(skillsRoot: string, skill: BundledSkill, entry: ReceiptSkill | undefined, restoreDeleted: boolean): SkillPlan {
   const name = skill.name;
   const directory = skillDirectory(skillsRoot, name);
   const home = inspectHomeSkill(directory);
-  if (home.kind === "missing") return { action: "install", name, skill };
+  if (home.kind === "missing") {
+    // No record of placing it: a skill this home never had (or a first run), so it is
+    // installed. A record means the operator removed what we placed, and that stands.
+    return entry && !restoreDeleted ? { action: "keep", name, reason: "deleted" } : { action: "install", name, skill };
+  }
   if (home.kind !== "directory") return { action: "keep", name, reason: home.kind };
 
   const shippedPaths = Object.keys(skill.files).sort();
