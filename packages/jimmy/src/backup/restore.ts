@@ -534,7 +534,8 @@ function makeDirectory(destination: string, mode: number): void {
   const stat = lstatOrNull(destination);
   if (stat?.isDirectory()) return;
   // A file or a link in the way is unlinked - never followed, never recursed into.
-  if (stat) fs.rmSync(destination);
+  // unlink, not rm: from Node 23 on, rmSync refuses a link that points at a directory.
+  if (stat) fs.unlinkSync(destination);
   fs.mkdirSync(destination, { mode: (mode & 0o777) | 0o700 });
 }
 

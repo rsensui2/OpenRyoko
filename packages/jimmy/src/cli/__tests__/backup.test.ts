@@ -906,7 +906,7 @@ describe("ryoko backup restore", () => {
     await runBackupRun({ json: true }, state.deps);
     take(state.out);
     later(state, 30);
-    fs.rmSync(path.join(home, "skills", "shared"));
+    fs.unlinkSync(path.join(home, "skills", "shared"));
 
     await runBackupRestore("home-20261012T030000Z", {}, state.deps);
     expect(take(state.err)).toMatch(/--allow-external-symlinks/);

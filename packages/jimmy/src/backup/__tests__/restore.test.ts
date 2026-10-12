@@ -956,7 +956,7 @@ describe("restoreHomeArchive, refusing what it must not trust", () => {
     const taken = await createHomeArchive({
       home, destination: path.join(backups, "home-20261012T030000Z.tar.gz"), id: "home-20261012T030000Z", createdAt: TAKEN,
     });
-    fs.rmSync(path.join(home, "skills", "shared"));
+    fs.unlinkSync(path.join(home, "skills", "shared"));
     fs.rmSync(path.join(home, "knowledge", "overview-link.md"));
     const options: RestoreOptions = { archive: taken.file, home, backupDirectory: backups, now: NOW, diskSpace: () => ROOMY };
 
@@ -999,7 +999,7 @@ describe("restoreHomeArchive, refusing what it must not trust", () => {
     expect(result.changes.map((change) => change.path)).toEqual(["config.yaml"]);
 
     // Pointed somewhere else since the backup, putting it back is a write, and that does need the flag.
-    fs.rmSync(path.join(home, "skills", "shared"));
+    fs.unlinkSync(path.join(home, "skills", "shared"));
     fs.symlinkSync(path.join(root, "somewhere-else"), path.join(home, "skills", "shared"));
     await expect(restoreHomeArchive({ ...options, now: new Date(NOW.getTime() + 60_000) })).rejects.toThrow(/--allow-external-symlinks/);
     expect(fs.readlinkSync(path.join(home, "skills", "shared"))).toBe(path.join(root, "somewhere-else"));
@@ -1023,7 +1023,7 @@ describe("restoreHomeArchive, refusing what it must not trust", () => {
     // Refused before the snapshot was taken, not after.
     expect(listBackups(target.backups).filter((item) => item.preRestore)).toEqual([]);
 
-    fs.rmSync(scratch);
+    fs.unlinkSync(scratch);
     fs.writeFileSync(scratch, "a file where the directory should be\n");
     await expect(restoreHomeArchive(optionsFor(target))).rejects.toThrow(/tmp is not a directory.*nothing was restored/s);
     expect(read(target.home, "config.yaml")).toBe("broken\n");
