@@ -203,6 +203,21 @@ describe("Slack connector — providerAuth wiring", () => {
     expect(app.client.chat.postMessage).not.toHaveBeenCalled();
   });
 
+  it("says once at startup why it is inert when the operator ID is not a Slack user ID", async () => {
+    const { app, routed, receive } = await connect({ providerAuth: { enabled: true } }, "C0CHANNEL1");
+
+    await receive("ログイン", { user: "C0CHANNEL1" });
+    world.core.service.reportAuthFailure("claude");
+    await settle();
+
+    const reasons = world.log.filter((line) => line.includes("provider-auth") && line.includes("not a Slack user ID"));
+    expect(reasons).toHaveLength(1);
+    expect(reasons[0]).not.toContain("C0CHANNEL1");
+    expect(world.log.join("\n")).not.toContain("provider-auth: enabled");
+    expect(routed).toHaveBeenCalledTimes(1);
+    expect(app.client.chat.postMessage).not.toHaveBeenCalled();
+  });
+
   it("stops a login in progress when the connector stops", async () => {
     const { connector, app, click } = await connect({ providerAuth: { enabled: true } });
     await click("ryoko_auth_start_claude");

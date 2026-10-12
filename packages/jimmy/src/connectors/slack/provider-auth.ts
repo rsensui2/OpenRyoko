@@ -108,14 +108,28 @@ function typedText(text: string): string {
     .trim();
 }
 
-/** The configured operator, read fresh each time. An unreadable config means nobody is the operator. */
-function operatorId(read: () => string | undefined): string | undefined {
+/** A Slack user ID — a member (`U…`) or an Enterprise Grid member (`W…`). */
+const SLACK_USER_ID = /^[UW][A-Z0-9]+$/;
+
+/** `portal.operatorSlackId` as written. An unreadable config reads as unset. */
+function configuredOperator(read: () => string | undefined): string | undefined {
   try {
     const id = read();
     return typeof id === "string" && id ? id : undefined;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The operator, read fresh each time — or nobody. Anything that is not a Slack
+ * user ID counts as unset, and the feature does nothing. The value is also the
+ * address the automatic notice is sent to: a channel ID there would post the
+ * notice, with its login button, into that channel.
+ */
+function operatorId(read: () => string | undefined): string | undefined {
+  const id = configuredOperator(read);
+  return id && SLACK_USER_ID.test(id) ? id : undefined;
 }
 
 export class SlackProviderAuth {
@@ -373,8 +387,12 @@ export function createSlackProviderAuth(
     sharedLogger.warn(`${TAG} providerAuth is enabled but this connector cannot identify the operator; it stays off`);
     return undefined;
   }
+  // Said once, here at startup. The value itself is not echoed: whatever was
+  // put in that field by mistake does not belong in the log.
   if (operatorId(gates.getOperatorSlackId)) {
     sharedLogger.info(`${TAG} enabled — the operator can log in to Claude / Codex again from their DM`);
+  } else if (configuredOperator(gates.getOperatorSlackId)) {
+    sharedLogger.warn(`${TAG} providerAuth is enabled but portal.operatorSlackId is not a Slack user ID (U… or W…); it does nothing until it is`);
   } else {
     sharedLogger.warn(`${TAG} providerAuth is enabled but portal.operatorSlackId is not set; it does nothing until it is`);
   }

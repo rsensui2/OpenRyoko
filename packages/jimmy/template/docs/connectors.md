@@ -113,7 +113,9 @@ connectors:
 A named Slack instance under `connectors.instances[]` takes the same
 `providerAuth` block. Saving the config reloads the connector; the gateway log
 then shows `[slack] provider-auth: enabled`. If it shows a warning about
-`portal.operatorSlackId` instead, the feature is inert until that is set.
+`portal.operatorSlackId` instead, the feature is inert until that is fixed:
+the value must be the operator's Slack *user* ID (`U…`, or `W…` on Enterprise
+Grid). A channel ID, a handle or a display name is treated as unset.
 
 **Using it** — in your own 1:1 DM with the bot:
 

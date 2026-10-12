@@ -141,6 +141,33 @@ describe("Slack provider login — who may use it", () => {
     expect(f.postMessage).not.toHaveBeenCalled();
   });
 
+  it.each([
+    "C0CHANNEL1", "D0OPERATOR", "G0GROUP1", "B0BOT", "#general", "operator", "u0operator", " UOPERATOR", "UOPERATOR ",
+    "U-OPERATOR", "@UOPERATOR", "U",
+  ])("treats an operator ID that is not a Slack user ID as unset: %j", async (configured) => {
+    const f = fixture({ operator: configured });
+
+    // Not even a message "from" that ID is accepted, and no notice is sent "to" it:
+    // with a channel ID here, the notice — buttons included — would land in that channel.
+    expect(await f.message("ログイン", { user: configured })).toBe(false);
+    await f.click("ryoko_auth_start_claude", { user: configured });
+    f.core.service.reportAuthFailure("claude");
+    await settle();
+
+    expect(f.core.spawnPty).not.toHaveBeenCalled();
+    expect(f.postMessage).not.toHaveBeenCalled();
+  });
+
+  it.each(["U0123ABCDE", "W0123ABCDE"])("accepts a Slack user ID: %s", async (configured) => {
+    const f = fixture({ operator: configured });
+
+    expect(await f.message("ログイン", { user: configured })).toBe(true);
+    f.core.service.reportAuthFailure("codex");
+    await settle();
+
+    expect(f.postMessage.mock.calls.map(([args]) => args.channel)).toEqual([DM, configured]);
+  });
+
   it("treats an unreadable config as no operator, without failing the message", async () => {
     const f = fixture({ readOperator: () => { throw new Error("config.yaml is being rewritten"); } });
 
