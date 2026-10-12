@@ -39,12 +39,16 @@ describe("restart resume — a Slack session interrupted mid-turn is nudged and 
   let replyMessage: ReturnType<typeof vi.fn>;
   let registry: typeof import("../../sessions/registry.js");
   let restartResume: typeof import("../../sessions/restart-resume.js");
+  let api: typeof import("../api.js");
   let sessionManager: import("../../sessions/manager.js").SessionManager;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let context: any;
   const realFetch = globalThis.fetch;
   const requests: Array<{ url: string; authorization: string | undefined; body: Record<string, unknown> }> = [];
 
   beforeAll(async () => {
-    const { handleApiRequest } = await import("../api.js");
+    api = await import("../api.js");
+    const { handleApiRequest } = api;
     registry = await import("../../sessions/registry.js");
     restartResume = await import("../../sessions/restart-resume.js");
     const { SessionManager } = await import("../../sessions/manager.js");
@@ -67,7 +71,7 @@ describe("restart resume — a Slack session interrupted mid-turn is nudged and 
       }),
     } as unknown as Connector;
 
-    const context = {
+    context = {
       config: STUB_CONFIG,
       getConfig: () => STUB_CONFIG,
       sessionManager,
@@ -76,8 +80,7 @@ describe("restart resume — a Slack session interrupted mid-turn is nudged and 
       connectors: new Map([["slack", fakeSlack]]),
     };
     server = http.createServer((req, res) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      handleApiRequest(req, res, context as any);
+      handleApiRequest(req, res, context);
     });
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
     const addr = server.address();
@@ -190,5 +193,70 @@ describe("restart resume — a Slack session interrupted mid-turn is nudged and 
     expect(restartResume.readRestartResumeState(registry.getSession(sessionId)!.transportMeta).interruptedAt).toBeUndefined();
     finish();
     await replayed;
+    registry.updateSession(sessionId, { status: "idle" }); // the replayed turn settles
+  });
+  it("the boot sequence, in the order startGateway runs it, resumes each interrupted session exactly once", async () => {
+    engineRun.mockClear();
+    replyMessage.mockClear();
+    requests.length = 0;
+    const lastAlive = new Date(Date.now() - 60_000).toISOString();
+
+    // (a) A Slack turn the previous process was killed in: still "running", no queue row.
+    const slack = registry.createSession({
+      engine: "claude", source: "slack", sourceRef: "C_DEPLOY", connector: "slack", sessionKey: "slack:C_DEPLOY:555.666",
+      replyContext: { channel: "C_DEPLOY", thread: "555.666" }, transportMeta: { channelExternal: false }, prompt: "ログを調べて",
+    });
+    registry.insertMessage(slack.id, "user", "ログを調べて");
+    registry.updateSession(slack.id, { status: "running", lastActivity: lastAlive });
+
+    // (b) A web turn killed the same way: its queue row was running, so the queue replays it.
+    const web = registry.createSession({
+      engine: "claude", source: "web", sourceRef: "web:boot-order", connector: "web", sessionKey: "web:boot-order",
+      replyContext: { source: "web" }, prompt: "レポートを作って",
+    });
+    registry.insertMessage(web.id, "user", "レポートを作って");
+    const webRow = registry.enqueueQueueItem(web.id, web.sessionKey, "レポートを作って");
+    registry.markQueueItemRunning(webRow);
+    registry.updateSession(web.id, { status: "running", lastActivity: lastAlive });
+
+    // (c) A session whose restart nudge was itself in flight — the turn that may have restarted the gateway.
+    const looping = registry.createSession({
+      engine: "claude", source: "slack", sourceRef: "C_DEPLOY", connector: "slack", sessionKey: "slack:C_DEPLOY:777.888",
+      replyContext: { channel: "C_DEPLOY", thread: "777.888" }, prompt: "アップデートして",
+    });
+    const nudgedAt = new Date(Date.now() - 2 * 60_000).toISOString();
+    const nudgeText = restartResume.restartResumeMessage(looping, new Date(Date.now() - 3 * 60_000).toISOString());
+    registry.insertMessage(looping.id, "notification", nudgeText);
+    const nudgeRow = registry.enqueueQueueItem(looping.id, looping.sessionKey, nudgeText);
+    registry.markQueueItemRunning(nudgeRow);
+    registry.updateSession(looping.id, {
+      status: "running", lastActivity: lastAlive,
+      transportMeta: { [restartResume.RESTART_RESUME_META_KEY]: { nudgedAt: [nudgedAt] } },
+    });
+
+    // startGateway, boot half:
+    expect(restartResume.prepareRestartResume()).toEqual({ marked: 3, cancelledNudges: 1 });
+    expect(registry.recoverStaleSessions()).toBe(3);
+    registry.recoverStaleQueueItems();
+    api.resumePendingWebQueueItems(context);
+    const summary = restartResume.resumeRestartInterruptedSessions(bootDeps());
+
+    // (a) is nudged; (b) was replayed and (c) falls under the loop guard.
+    expect(summary).toMatchObject({ planned: 1, skipped: 2 });
+    await vi.waitFor(() => expect(engineRun).toHaveBeenCalledTimes(2), { timeout: 10_000 });
+    await vi.waitFor(() => expect(replyMessage).toHaveBeenCalledTimes(1), { timeout: 10_000 });
+    await new Promise((r) => setTimeout(r, 300));
+
+    const prompts = engineRun.mock.calls.map((call) => (call[0] as { prompt: string }).prompt);
+    expect(prompts.filter((prompt) => prompt === "レポートを作って")).toHaveLength(1); // (b): its own prompt, once
+    expect(prompts.filter((prompt) => prompt.startsWith(restartResume.RESTART_NUDGE_PREFIX))).toHaveLength(1); // (a): one nudge
+    expect(engineRun).toHaveBeenCalledTimes(2); // (c): nothing ran
+    expect(requests.map((request) => request.url)).toEqual([`${baseUrl}/api/sessions/${slack.id}/message`]);
+    expect(replyMessage.mock.calls[0][0]).toMatchObject({ channel: "C_DEPLOY", thread: "555.666" });
+    expect(registry.getQueueItem(nudgeRow)?.status).toBe("cancelled");
+    for (const session of [slack, web, looping]) {
+      await vi.waitFor(() => expect(restartResume.readRestartResumeState(registry.getSession(session.id)!.transportMeta).interruptedAt).toBeUndefined());
+    }
+    expect(registry.getSession(looping.id)?.status).toBe("interrupted"); // left for the operator
   });
 });
