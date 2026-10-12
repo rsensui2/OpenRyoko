@@ -219,6 +219,97 @@ describe("GET /api/config and a custom MCP server's env and headers", () => {
   });
 });
 
+describe("placeholders and lists", () => {
+  /* A hidden value is put back by finding the stored item it was taken from.
+   * Under a key that is easy; a list item has no name, only an `id` when it
+   * was given one. An item without an id used to be taken for the first item
+   * of the stored list — so every hidden apiKey in a list came back as the
+   * first one's. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const disk = () => yaml.load(fs.readFileSync(CONFIG_PATH, "utf-8")) as any;
+  const write = (config: unknown) => fs.writeFileSync(CONFIG_PATH, yaml.dump(config));
+
+  it("leaves an apiKey inside a list as it is: saving the served document keeps every item's own key", async () => {
+    const mcp = { pool: [{ label: "first", apiKey: "KEY-A" }, { label: "second", apiKey: "KEY-B" }] };
+    write({ ...CONFIG, mcp });
+
+    const served = (await call("GET", "/api/config")).body;
+    expect((await call("PUT", "/api/config", served)).status).toBe(200);
+
+    expect(disk().mcp).toEqual(mcp); // the second key used to come back as KEY-A
+    expect(served.mcp.pool).toEqual(mcp.pool); // not hidden: a list item cannot be found again to put it back
+  });
+
+  it("does not give a list item without an id the fields of the first item", async () => {
+    const links = [{ label: "docs", url: "https://a.example", pinned: true }, { label: "status", url: "https://b.example" }];
+    write({ ...CONFIG, portal: { ...CONFIG.portal, links } });
+
+    const served = (await call("GET", "/api/config")).body;
+    expect((await call("PUT", "/api/config", served)).status).toBe(200);
+
+    expect(disk().portal.links).toEqual(links); // "status" used to come back pinned
+  });
+
+  it("keeps each connector instance's tokens with its id, whatever order the instances come back in", async () => {
+    const served = (await call("GET", "/api/config")).body;
+    const reordered = { connectors: { instances: [...served.connectors.instances].reverse() } };
+    expect((await call("PUT", "/api/config", reordered)).status).toBe(200);
+    expect(disk().connectors.instances).toEqual([...CONFIG.connectors.instances].reverse());
+  });
+
+  it("writes no placeholder for a list item that is not in config.yaml", async () => {
+    const served = (await call("GET", "/api/config")).body;
+    const added = { id: "support", type: "slack", botToken: "***", appToken: "xapp-NEW", channelRouting: { "9": { url: "http://y:7777", token: "***" } } };
+    const saved = await call("PUT", "/api/config", { connectors: { instances: [...served.connectors.instances, added, { type: "telegram", token: "***" }] } });
+
+    expect(saved.status).toBe(200);
+    expect(fs.readFileSync(CONFIG_PATH, "utf-8")).not.toContain("***");
+    expect(disk().connectors.instances).toEqual([
+      ...CONFIG.connectors.instances, // their own tokens, put back by id
+      { id: "support", type: "slack", appToken: "xapp-NEW", channelRouting: { "9": { url: "http://y:7777" } } },
+      { type: "telegram" }, // no id: no stored item it could stand for
+    ]);
+  });
+});
+
+describe("placeholders for a block config.yaml does not have", () => {
+  /* "***" means "keep what is stored". Where nothing is stored — the block the
+   * request adds is not in config.yaml — there is nothing to keep, and the
+   * placeholder itself must not become the token. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const disk = () => yaml.load(fs.readFileSync(CONFIG_PATH, "utf-8")) as any;
+  const { discord: _discord, instances: _instances, ...withoutDiscord } = CONFIG.connectors;
+
+  beforeEach(() => {
+    fs.writeFileSync(CONFIG_PATH, yaml.dump({ ...CONFIG, connectors: withoutDiscord, mcp: undefined }));
+  });
+
+  it("drops it from a connector block that is new", async () => {
+    const saved = await call("PUT", "/api/config", {
+      connectors: { discord: { botToken: "***", guildId: "42", channelRouting: { "111": { url: "http://remote:7777", token: "***" } } } },
+    });
+    expect(saved.status).toBe(200);
+    expect(disk().connectors.discord).toEqual({ guildId: "42", channelRouting: { "111": { url: "http://remote:7777" } } });
+    expect(disk().connectors.slack).toEqual(CONFIG.connectors.slack); // the blocks that are there keep their tokens
+  });
+
+  it("drops it from a top-level block that is new", async () => {
+    expect((await call("PUT", "/api/config", { mcp: { search: { enabled: true, apiKey: "***" } } })).status).toBe(200);
+    expect(disk().mcp).toEqual({ search: { enabled: true } });
+  });
+
+  it("drops it from every item of a list that is new", async () => {
+    const saved = await call("PUT", "/api/config", { connectors: { instances: [{ id: "sales", type: "slack", botToken: "***", appToken: "***" }] } });
+    expect(saved.status).toBe(200);
+    expect(disk().connectors.instances).toEqual([{ id: "sales", type: "slack" }]);
+  });
+
+  it("still stores a real value in a new block", async () => {
+    expect((await call("PUT", "/api/config", { connectors: { discord: { botToken: "discord-NEW" } } })).status).toBe(200);
+    expect(disk().connectors.discord).toEqual({ botToken: "discord-NEW" });
+  });
+});
+
 describe("GET /api/config served from disk", () => {
   /** What the handler has always answered for CONFIG — written out, so that a change to it has to be made here on purpose. */
   const EXPECTED = {

@@ -18,9 +18,14 @@ const holdsSomething = (value: unknown): boolean => value !== undefined && value
  */
 const CUSTOM_SERVER_SECRET_BLOCKS = new Set(["env", "headers"]);
 
-/** Every `apiKey` under `value` that holds something, hidden. */
+/**
+ * Every `apiKey` under `value` that holds something, hidden — but not inside a
+ * list. A hidden value has to be put back on PUT from the stored item it was
+ * taken from, and a list item has no name to find that item by: hidden, the
+ * keys of two items came back swapped for one another. No list in the `mcp`
+ * schema carries a key, so nothing that is meant to be there goes unhidden.
+ */
 function hideApiKeys(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map((item) => hideApiKeys(item));
   if (!isMapping(value)) return value;
   return Object.fromEntries(
     Object.entries(value).map(([key, child]) => [key, key === "apiKey" && child ? REDACTED : hideApiKeys(child)]),
@@ -48,14 +53,43 @@ function hideCustomServers(custom: unknown): unknown {
 
 /**
  * A copy of the config's `mcp` block with its secrets hidden: every `apiKey`
- * (today that is mcp.search.apiKey), and every value of a custom server's
- * `env` and `headers`. Only a value that holds something is replaced; nothing
- * is added where there is none.
+ * outside a list (today that is mcp.search.apiKey), and every value of a
+ * custom server's `env` and `headers`. Only a value that holds something is
+ * replaced; nothing is added where there is none.
  */
 export function redactMcpSecrets<T>(mcp: T): T {
   const hidden = hideApiKeys(mcp);
   if (!isMapping(hidden) || !("custom" in hidden)) return hidden as T;
   return { ...hidden, custom: hideCustomServers(hidden.custom) } as T;
+}
+
+/**
+ * The item of the stored list that `item` is an update of: the mapping with
+ * the same `id`. An item that carries no id is not an update of any stored
+ * item — it must not be taken for the first one, whose tokens and fields it
+ * would then be given.
+ */
+export function storedItemWithSameId(stored: unknown, item: unknown): Mapping | undefined {
+  if (!Array.isArray(stored) || !isMapping(item)) return undefined;
+  const id = item.id;
+  if (typeof id !== "string" && typeof id !== "number") return undefined;
+  return stored.find((candidate): candidate is Mapping => isMapping(candidate) && candidate.id === id);
+}
+
+/**
+ * `value` without its placeholders: every "***" under one of `secretKeys` is
+ * left out, at any depth. For what a request adds where config.yaml has
+ * nothing — "***" means "keep what is stored", and with nothing stored the
+ * placeholder itself would be saved as the token.
+ */
+export function withoutPlaceholders(value: unknown, secretKeys: ReadonlySet<string>): unknown {
+  if (Array.isArray(value)) return value.map((item) => withoutPlaceholders(item, secretKeys));
+  if (!isMapping(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value).flatMap(([key, child]): [string, unknown][] =>
+      secretKeys.has(key) && child === REDACTED ? [] : [[key, withoutPlaceholders(child, secretKeys)]],
+    ),
+  );
 }
 
 /**

@@ -2,7 +2,7 @@ import type { ModelManagement } from "../models/service.js";
 import { withConfigLock } from "../shared/config-lock.js";
 import { readConfigSnapshot, writeConfigDocument } from "../shared/config-file.js";
 import { CONFIG_CONFLICT_BODY, CONFIG_REVISION_HEADER, configForApi, isStaleConfigRevision } from "./config-revision.js";
-import { redactMcpSecrets, restoreCustomMcpSecrets } from "./config-redaction.js";
+import { redactMcpSecrets, restoreCustomMcpSecrets, storedItemWithSameId, withoutPlaceholders } from "./config-redaction.js";
 import { validateCommandJob } from "../cron/command.js";
 import { validateCronSchedule } from "../cron/validation.js";
 import type { IncomingMessage as HttpRequest, ServerResponse } from "node:http";
@@ -402,26 +402,18 @@ export function deepMerge(target: Record<string, unknown>, source: Record<string
       continue;
     }
     if (Array.isArray(sv)) {
-      // For arrays (e.g. instances), preserve secrets from matching items
-      if (Array.isArray(tv)) {
-        result[key] = sv.map((item: unknown) => {
-          if (item && typeof item === "object" && !Array.isArray(item)) {
-            const srcItem = item as Record<string, unknown>;
-            // Find matching target item by id
-            const matchTarget = (tv as unknown[]).find(
-              (t) => t && typeof t === "object" && (t as Record<string, unknown>).id === srcItem.id
-            ) as Record<string, unknown> | undefined;
-            if (matchTarget) return deepMerge(matchTarget, srcItem);
-          }
-          return item;
-        });
-      } else {
-        result[key] = sv;
-      }
+      // For arrays (e.g. instances), preserve secrets from matching items:
+      // the stored item with the same id. Any other item is stored as sent,
+      // minus the placeholders — there is nothing stored they could stand for.
+      result[key] = sv.map((item: unknown) => {
+        const matchTarget = storedItemWithSameId(tv, item);
+        return matchTarget ? deepMerge(matchTarget, item as Record<string, unknown>) : withoutPlaceholders(item, SANITIZED_KEYS);
+      });
     } else if (sv && typeof sv === "object" && !Array.isArray(sv) && tv && typeof tv === "object" && !Array.isArray(tv)) {
       result[key] = deepMerge(tv as Record<string, unknown>, sv as Record<string, unknown>);
     } else {
-      result[key] = sv;
+      // A block config.yaml does not have: same rule, no placeholder is written.
+      result[key] = withoutPlaceholders(sv, SANITIZED_KEYS);
     }
   }
   return result;
