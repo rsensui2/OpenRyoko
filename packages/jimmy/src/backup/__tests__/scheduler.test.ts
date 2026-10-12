@@ -1,10 +1,13 @@
 import Database from "better-sqlite3";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { logger } from "../../shared/logger.js";
+import { CONFIG_PATH, JINN_HOME } from "../../shared/paths.js";
 import type { DiskSpaceStatus } from "../../shared/storage-health.js";
 import type { JinnConfig } from "../../shared/types.js";
+import { inspectHomeArchive } from "../archive.js";
 import { listBackups } from "../catalog.js";
 import { runBackup, type BackupRunOptions, type BackupRunReport, type BackupTargetName } from "../run.js";
 import { getBackupStatus, startBackupScheduler, type BackupScheduler } from "../scheduler.js";
@@ -363,6 +366,41 @@ describe("getBackupStatus", () => {
     harness.scheduler.stop();
 
     expect(getBackupStatus()).toEqual({ level: "unknown", directory: null, targets: {} });
+  });
+});
+
+describe("startBackupScheduler as the gateway calls it", () => {
+  // server.ts passes the registry connection and the boot config, nothing
+  // else: the home, the config reader and the run are the real ones. The home
+  // is the throwaway one vitest resolves for this worker.
+  const seeded = [CONFIG_PATH, path.join(JINN_HOME, "AGENTS.md"), path.join(JINN_HOME, "backups")];
+
+  afterEach(() => {
+    for (const target of seeded) fs.rmSync(target, { recursive: true, force: true });
+  });
+
+  it("backs up the home this process resolved, reading its settings from config.yaml", async () => {
+    vi.useRealTimers();
+    expect(JINN_HOME.startsWith(fs.realpathSync(os.tmpdir())) || JINN_HOME.startsWith(os.tmpdir())).toBe(true);
+    fs.mkdirSync(JINN_HOME, { recursive: true });
+    fs.writeFileSync(CONFIG_PATH, "gateway:\n  port: 7901\nbackup:\n  retention: 3\n");
+    fs.writeFileSync(path.join(JINN_HOME, "AGENTS.md"), "# Agents\n");
+    const database = new Database(":memory:");
+    databases.push(database);
+    database.exec("CREATE TABLE sessions (id INTEGER PRIMARY KEY, label TEXT); INSERT INTO sessions (label) VALUES ('live')");
+
+    const scheduler = startBackupScheduler({ database, config: {} });
+    schedulers.push(scheduler);
+    await scheduler.check();
+
+    const directory = path.join(JINN_HOME, "backups");
+    const items = listBackups(directory);
+    expect(items.map((item) => item.kind).sort()).toEqual(["home", "sessions"]);
+    const archive = await inspectHomeArchive(items.find((item) => item.kind === "home")!.file);
+    expect(archive.ok).toBe(true);
+    expect(archive.manifest!.entries.map((entry) => entry.path).sort()).toEqual(["AGENTS.md", "config.yaml"]);
+    expect(getBackupStatus()).toMatchObject({ level: "ok", directory });
+    expect(vi.mocked(logger.error)).not.toHaveBeenCalled();
   });
 });
 
