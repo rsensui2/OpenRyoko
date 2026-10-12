@@ -1955,6 +1955,8 @@ Handle this as a priority request from a colleague.`;
       }
       // Validate known top-level keys
       // Keep this aligned with `JinnConfig` in src/shared/types.ts
+      // (`remotes` is legacy: nothing reads it since /api/files/transfer was
+      // retired, but existing configs may still carry it.)
       const KNOWN_KEYS = [
         "jinn",
         "gateway",

@@ -50,7 +50,7 @@ const savedConfig = () => yaml.load(fs.readFileSync(CONFIG_PATH, "utf-8")) as Re
 const DECLARED_KEYS: Record<keyof JinnConfig, true> = {
   jinn: true, gateway: true, engines: true, models: true, modelManagement: true, workflows: true,
   connectors: true, logging: true, mcp: true, budgets: true, sessions: true, cron: true,
-  notifications: true, portal: true, context: true, stt: true, remotes: true,
+  notifications: true, portal: true, context: true, stt: true,
 };
 
 beforeEach(() => {
