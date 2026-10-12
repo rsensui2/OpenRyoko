@@ -847,6 +847,13 @@ export interface JinnConfig {
      *  turn already settled — e.g. a background sub-agent finishing) back to the
      *  session's conversation. Default: true. */
     backgroundDelivery?: boolean;
+    /** After a gateway restart, wake each session it cut off mid-turn with one
+     *  notification telling it to re-check what was in flight and carry on.
+     *  Default: true. false leaves interrupted sessions for the operator. */
+    resumeInterruptedOnBoot?: boolean;
+    /** Interruptions older than this many minutes at boot are not woken.
+     *  Default: 120. */
+    resumeInterruptedMaxAgeMinutes?: number;
   };
   cron?: {
     defaultDelivery?: CronDelivery;

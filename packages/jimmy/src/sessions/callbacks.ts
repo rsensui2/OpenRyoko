@@ -137,6 +137,19 @@ async function _sendRaw(parentSessionId: string, message: string): Promise<void>
 }
 
 /**
+ * Wake a session on this instance's own gateway with a notification turn: the
+ * message is persisted, queued and run, and a connector-origin session answers
+ * in the conversation it came from. Rejects when the gateway does not accept it.
+ */
+export function postSessionNotification(
+  port: number,
+  sessionId: string,
+  body: { message: string; dedupeKey?: string },
+): Promise<void> {
+  return _postToGateway(port, `/api/sessions/${sessionId}/message`, { ...body, role: "notification" }, `waking session ${sessionId}`);
+}
+
+/**
  * POST to this instance's own gateway API.
  *
  * The gateway requires a bearer token on every /api/ route except /api/health, so an
