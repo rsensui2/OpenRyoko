@@ -19,6 +19,10 @@ const QUIET_FLUSH_MS = 1_500;
 /** No link or code recognized by now means the CLI's output is not being read. */
 const STALL_NOTICE_MS = 30_000;
 const STATUS_TIMEOUT_MS = 15_000;
+/** The pause between typing a code and pressing Enter. A CLI that reads its
+ *  prompt in raw mode takes a CR arriving in the same chunk as part of the
+ *  paste; the interactive engine found 150 ms to be the beat that is reliable. */
+const SUBMIT_BEAT_MS = 150;
 /** Read this much per chunk, so a link at the head of a large one is seen… */
 const SCAN_BYTES = 64 * 1024;
 /** …but keep only this much between chunks. */
@@ -28,7 +32,7 @@ const PTY_COLS = 2000;
 const PTY_ROWS = 50;
 const TAG = "[provider-auth]";
 
-type TimerName = "ttl" | "quiet" | "stall" | "kill";
+type TimerName = "ttl" | "quiet" | "stall" | "kill" | "submit";
 
 interface Flow {
   readonly id: string;
@@ -112,13 +116,26 @@ export class ProviderAuthService implements ProviderAuthPort {
     const input = parseAuthInput(raw);
     if (!input) return this.refuse(provider, "invalid");
     if (!spec.acceptedInput.includes(input.kind)) return this.refuse(provider, "unsupported");
+    if (flow.timers.submit !== undefined) {
+      // An earlier code is still waiting for its Enter: finish it first.
+      this.disarm(flow, "submit");
+      this.pressEnter(flow);
+    }
     try {
-      flow.pty.write(`${input.value}\r`);
+      flow.pty.write(input.value);
     } catch {
       return this.refuse(provider, "write-failed");
     }
+    this.arm(flow, "submit", SUBMIT_BEAT_MS, () => this.pressEnter(flow));
     this.deps.logger.info(`${TAG} ${spec.label} login: input sent to the CLI (${input.kind})`);
     return { ok: true };
+  }
+
+  private pressEnter(flow: Flow): void {
+    if (flow.settled || flow.exited) return;
+    try {
+      flow.pty.write("\r");
+    } catch { /* the CLI is gone; its exit settles the flow */ }
   }
 
   private refuse(provider: AuthProvider, reason: "invalid" | "unsupported" | "write-failed"): InputResult {
@@ -246,7 +263,7 @@ export class ProviderAuthService implements ProviderAuthPort {
     flow.exited = true;
     this.disarm(flow, "kill");
     if (flow.settled) return;
-    for (const name of ["ttl", "quiet", "stall"] as const) this.disarm(flow, name);
+    for (const name of ["ttl", "quiet", "stall", "submit"] as const) this.disarm(flow, name);
     this.deps.logger.info(`${TAG} ${PROVIDERS[flow.provider].label} login: CLI exited with code ${Number(exitCode)}`);
     if (exitCode !== 0) {
       this.settle(flow, { status: "failed", reason: "exit" });
@@ -297,7 +314,7 @@ export class ProviderAuthService implements ProviderAuthPort {
   private settle(flow: Flow, outcome: FlowOutcome): void {
     if (flow.settled) return;
     flow.settled = true;
-    for (const name of ["ttl", "quiet", "stall"] as const) this.disarm(flow, name);
+    for (const name of ["ttl", "quiet", "stall", "submit"] as const) this.disarm(flow, name);
     try { flow.dataSubscription?.dispose(); } catch { /* best effort */ }
     flow.tail = "";
     if (this.flows.get(flow.provider) === flow) this.flows.delete(flow.provider);

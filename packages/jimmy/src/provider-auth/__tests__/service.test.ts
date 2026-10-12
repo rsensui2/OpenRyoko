@@ -31,7 +31,11 @@ describe("ProviderAuthService — Claude", () => {
     expect(flow.prompts).toEqual([{ flowId: flow.flowId, provider: "claude", url: CLAUDE_URL, acceptsInput: true }]);
 
     expect(harness.service.submitInput("claude", flow.flowId, `${OAUTH_CODE}#${OAUTH_STATE}`)).toEqual({ ok: true });
-    expect(flow.pty.write).toHaveBeenCalledExactlyOnceWith(`${OAUTH_CODE}#${OAUTH_STATE}\r`);
+    // The code and the Enter that submits it are separate writes: a CLI reading
+    // its prompt in raw mode takes a CR inside the same chunk as pasted text.
+    expect(flow.pty.write.mock.calls).toEqual([[`${OAUTH_CODE}#${OAUTH_STATE}`]]);
+    harness.clock.advance(150);
+    expect(flow.pty.write.mock.calls).toEqual([[`${OAUTH_CODE}#${OAUTH_STATE}`], ["\r"]]);
 
     flow.pty.emitExit(0);
     expect(flow.outcomes).toEqual([]);
@@ -53,7 +57,42 @@ describe("ProviderAuthService — Claude", () => {
 
     const callback = `http://localhost:58741/callback?code=${OAUTH_CODE}&state=${OAUTH_STATE}`;
     expect(harness.service.submitInput("claude", flow.flowId, callback)).toEqual({ ok: true });
-    expect(flow.pty.write).toHaveBeenCalledExactlyOnceWith(`${OAUTH_CODE}#${OAUTH_STATE}\r`);
+    harness.clock.advance(150);
+    expect(flow.pty.write.mock.calls).toEqual([[`${OAUTH_CODE}#${OAUTH_STATE}`], ["\r"]]);
+  });
+
+  it("does not press Enter for a login that ended before the keystroke was due", async () => {
+    const harness = makeHarness();
+    const flow = await startFlow(harness, "claude");
+
+    harness.service.submitInput("claude", flow.flowId, `${OAUTH_CODE}#${OAUTH_STATE}`);
+    harness.service.cancel("claude", flow.flowId);
+    harness.clock.advance(150);
+
+    expect(flow.pty.write.mock.calls).toEqual([[`${OAUTH_CODE}#${OAUTH_STATE}`]]);
+  });
+
+  it("finishes one code before typing the next", async () => {
+    const harness = makeHarness();
+    const flow = await startFlow(harness, "claude");
+    const first = `${OAUTH_CODE}#${OAUTH_STATE}`;
+    const second = `${"Cd".repeat(24)}#${OAUTH_STATE}`;
+
+    harness.service.submitInput("claude", flow.flowId, first);
+    harness.service.submitInput("claude", flow.flowId, second);
+    harness.clock.advance(150);
+
+    expect(flow.pty.write.mock.calls).toEqual([[first], ["\r"], [second], ["\r"]]);
+  });
+
+  it("survives a CLI that has gone away by the time Enter is due", async () => {
+    const harness = makeHarness();
+    const flow = await startFlow(harness, "claude");
+    flow.pty.write.mockImplementationOnce(() => {}).mockImplementationOnce(() => { throw new Error("EIO"); });
+
+    expect(harness.service.submitInput("claude", flow.flowId, `${OAUTH_CODE}#${OAUTH_STATE}`)).toEqual({ ok: true });
+    expect(() => harness.clock.advance(150)).not.toThrow();
+    expect(flow.pty.write).toHaveBeenCalledTimes(2);
   });
 
   it("never passes input to the CLI unless it is a code, code#state or a loopback callback", async () => {
