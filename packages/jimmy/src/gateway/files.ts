@@ -90,7 +90,6 @@ interface UploadResult {
   /** Already through {@link safeAttachmentName}: one path segment, never `..`. */
   filename: string;
   buffer: Buffer;
-  open: boolean;
 }
 
 /**
@@ -105,6 +104,11 @@ const PATH_RETIRED = "`path` is no longer supported: an upload is kept in the ga
 /** Likewise for `url`: the gateway fetched whatever URL it was given — the
  *  cloud metadata address, its own API — and served the answer back. */
 const URL_RETIRED = "`url` is no longer supported: send the file's contents (multipart, or base64 in `content`)";
+/** And for `open`, which ran `open <the uploaded file>` on the gateway's
+ *  host: on a Mac that hands the upload to whatever application claims its
+ *  type, and where there is no such command the failed spawn, with nobody
+ *  listening for it, takes the gateway down. Nothing shipped sent it either. */
+const OPEN_RETIRED = "`open` is no longer supported: the gateway does not launch uploaded files";
 const BAD_FILENAME = "filename is required and must name a file";
 
 /** Save buffer to managed storage: files/<id>/<filename>, and nowhere else. */
@@ -123,12 +127,6 @@ async function saveFile(result: UploadResult, context: ApiContext): Promise<File
     path: null,
   });
 
-  // Open file if requested
-  if (result.open) {
-    const { spawn } = await import("node:child_process");
-    spawn("open", [storagePath], { stdio: "ignore", detached: true }).unref();
-  }
-
   context.emit("file:uploaded", { id: result.id, filename: result.filename, size: result.buffer.length });
   logger.info(`File uploaded: ${result.filename} (${result.id}, ${result.buffer.length} bytes)`);
 
@@ -142,8 +140,7 @@ async function handleMultipartUpload(req: HttpRequest, res: ServerResponse, cont
     const busboy = Busboy({ headers: req.headers, limits: { fileSize: MAX_FILE_SIZE } });
     let filename = "";
     let fileBuffer: Buffer | null = null;
-    let pathGiven = false;
-    let open = false;
+    let refusal: string | null = null;
     let fileTruncated = false;
 
     busboy.on("file", (_fieldname: string, file: NodeJS.ReadableStream, info: { filename: string }) => {
@@ -155,8 +152,8 @@ async function handleMultipartUpload(req: HttpRequest, res: ServerResponse, cont
     });
 
     busboy.on("field", (name: string, val: string) => {
-      if (name === "path" && val) pathGiven = true;
-      if (name === "open") open = val === "true" || val === "1";
+      if (name === "path" && val) refusal ??= PATH_RETIRED;
+      if (name === "open" && (val === "true" || val === "1")) refusal ??= OPEN_RETIRED;
     });
 
     busboy.on("finish", async () => {
@@ -171,8 +168,8 @@ async function handleMultipartUpload(req: HttpRequest, res: ServerResponse, cont
         return;
       }
       const safeName = safeAttachmentName(filename);
-      if (pathGiven || safeName === null) {
-        badRequest(res, pathGiven ? PATH_RETIRED : BAD_FILENAME);
+      if (refusal !== null || safeName === null) {
+        badRequest(res, refusal ?? BAD_FILENAME);
         resolve();
         return;
       }
@@ -181,7 +178,6 @@ async function handleMultipartUpload(req: HttpRequest, res: ServerResponse, cont
           id: crypto.randomUUID(),
           filename: safeName,
           buffer: fileBuffer,
-          open,
         }, context);
         json(res, meta, 201);
       } catch (err) {
@@ -211,10 +207,10 @@ async function handleJsonUpload(req: HttpRequest, res: ServerResponse, context: 
   if (!body || typeof body !== "object") return badRequest(res, "Invalid JSON body");
   if (body.path) return badRequest(res, PATH_RETIRED);
   if (body.url) return badRequest(res, URL_RETIRED);
+  if (body.open) return badRequest(res, OPEN_RETIRED);
 
   const filename = safeAttachmentName(body.filename);
   const content = body.content;
-  const open = !!body.open;
 
   if (filename === null) return badRequest(res, BAD_FILENAME);
   if (typeof content !== "string" || !content) return badRequest(res, "content is required");
@@ -232,7 +228,6 @@ async function handleJsonUpload(req: HttpRequest, res: ServerResponse, context: 
       id: crypto.randomUUID(),
       filename,
       buffer,
-      open,
     }, context);
     json(res, meta, 201);
   } catch (err) {
