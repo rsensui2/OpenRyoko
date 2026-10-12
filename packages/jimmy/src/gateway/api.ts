@@ -13,7 +13,7 @@ import cron from "node-cron";
 import type { CronJob, Engine, EngineRunOpts, IncomingMessage, JinnConfig, Session, Target } from "../shared/types.js";
 import { isInterruptibleEngine } from "../shared/types.js";
 import { runWithSessionGoal, sessionGoalOptions } from "../sessions/goal-execution.js";
-import { buildEngineSyncPrompt, clearEngineSyncMarker, engineSyncSince, failLimitThatOutlastsTheWait, maybeRevertEngineOverride, runEngineWithResponseTimeout, runFallbackAttempts, waitForEngineRetry } from "../sessions/engine-fallback.js";
+import { buildEngineSyncPrompt, clearEngineSyncMarker, engineOverrideAfterReset, engineSyncSince, failLimitThatOutlastsTheWait, maybeRevertEngineOverride, runEngineWithResponseTimeout, runFallbackAttempts, waitForEngineRetry } from "../sessions/engine-fallback.js";
 import { cleanupMcpConfigFile, resolveMcpServers, writeMcpConfigFile } from "../mcp/resolver.js";
 import type { SessionManager } from "../sessions/manager.js";
 import { buildContext } from "../sessions/context.js";
@@ -1034,7 +1034,11 @@ export async function handleApiRequest(
       context.sessionManager.getQueue().clearQueue(session.sessionKey || session.sourceRef || session.id);
       const meta = { ...(session.transportMeta || {}) } as Record<string, unknown>;
       delete meta["engineSessions"];
-      delete meta["engineOverride"];
+      // The override is kept: it is the session's way back to the engine it was
+      // moved off, and deleting it left the session on its fallback for good.
+      const override = engineOverrideAfterReset(meta["engineOverride"]);
+      if (override) meta["engineOverride"] = override;
+      else delete meta["engineOverride"];
       delete meta["engineSyncSince"];
       delete meta["claudeSyncSince"];
       updateSession(params.id, {
@@ -1045,7 +1049,7 @@ export async function handleApiRequest(
         transportMeta: meta as any,
       });
       ptySnapshotStore.deleteSync(params.id);
-      logger.info(`Session ${params.id} reset via API (cleared engineSessions, engineOverride, engineSessionId, lastError)`);
+      logger.info(`Session ${params.id} reset via API (cleared engineSessions, engineSessionId, lastError)`);
       context.emit("session:updated", { sessionId: params.id });
       return json(res, { status: "reset", sessionId: params.id });
     }

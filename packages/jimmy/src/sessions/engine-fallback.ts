@@ -68,6 +68,20 @@ export function maybeRevertEngineOverride(session: Session): Session {
   return updates ? updateSession(session.id, updates) ?? session : session;
 }
 
+/**
+ * A held session's override once the session has been reset. It is still the
+ * session's way back to the engine, model and effort it was moved off —
+ * dropping it leaves the session on its fallback engine for good — but it no
+ * longer remembers the engine session the reset abandoned: the session goes
+ * back to a new one, and is told what happened from the reset on. Undefined
+ * when there is nothing to keep: no override, or one that names no way back.
+ */
+export function engineOverrideAfterReset(override: unknown, now: Date = new Date()): Record<string, unknown> | undefined {
+  const held = object(override);
+  if (typeof held.originalEngine !== "string" || typeof held.until !== "string") return undefined;
+  return { ...held, originalEngineSessionId: null, syncSince: now.toISOString() };
+}
+
 /** Whether `engine` is the session's own engine and the session is currently
  *  held on another one — moved off it by a switch, and not yet back. */
 export function isAwayFromEngine(session: Session, engine: string): boolean {
