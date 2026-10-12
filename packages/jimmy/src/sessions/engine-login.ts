@@ -19,6 +19,7 @@
  */
 
 import { classifyEngineFailureText, hasEngineFailureClass } from "../shared/engine-failure.js";
+import { attemptMadeProgress } from "../shared/rateLimit.js";
 import type { EngineResult } from "../shared/types.js";
 
 /** How long an engine that refused to sign in twice running is left out of
@@ -43,17 +44,21 @@ const LOGIN_PROMPT_SIGNATURES: readonly RegExp[] = [
   /\binvalid auth token\b/i,
 ];
 
-/** The interactive Claude PTY settles every failure with one synthetic turn, so
- *  its turn count says nothing about whether any work was done. */
-const INTERACTIVE_FAILURE = /^Interactive turn failed: /;
-
 /**
  * Whether an attempt ended because the engine could not sign in.
  *
  * Narrow on purpose: no answer at all, an error that speaks of signing in, none
  * of the signals of a limit, an outage or a network fault, and no work done. An
- * engine that ran turns or spent money failed some other way — whatever its
- * error says about credentials is then about something it touched, not itself.
+ * engine that did something failed some other way — whatever its error says
+ * about credentials is then about something it touched, or about a login that
+ * lapsed halfway. Either way the turn has had effects, and the caller answers a
+ * refusal by running it again.
+ *
+ * "No work" is read from what was seen on the attempt's stream first, because
+ * the numbers do not mean the same thing on every engine: Codex reports no cost
+ * and no turn for a failed turn however much it did, while both Claude engines
+ * report one turn for a failure that did nothing. So one turn is not evidence
+ * of work, more than one is, and neither outweighs a tool call that was seen.
  */
 export function isLoginRefusal(result: EngineResult): boolean {
   const error = result.error;
@@ -61,8 +66,7 @@ export function isLoginRefusal(result: EngineResult): boolean {
   const failure = classifyEngineFailureText(error);
   if (hasEngineFailureClass(failure, "rate-limit", "quota", "provider-outage", "network")) return false;
   if (!failure.classes.has("auth-terminal") && !LOGIN_PROMPT_SIGNATURES.some((signature) => signature.test(error))) return false;
-  if ((result.cost ?? 0) > 0) return false;
-  return INTERACTIVE_FAILURE.test(error) || !result.numTurns;
+  return !attemptMadeProgress(result) && !((result.cost ?? 0) > 0) && !((result.numTurns ?? 0) > 1);
 }
 
 interface Refusals { running: number; lastAt: number; confirmedAt?: number }

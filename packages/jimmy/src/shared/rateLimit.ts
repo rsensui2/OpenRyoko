@@ -1,5 +1,6 @@
 import type { EngineResult } from "./types.js";
 import { classifyEngineFailureText, hasEngineFailureClass } from "./engine-failure.js";
+import { redactText } from "./redact.js";
 
 /** Whether error text reads as a quota window rather than a fault. Engine
  *  results are one caller; a settled attempt's stored error is the other, and
@@ -58,10 +59,30 @@ export function isPoisonedTranscriptError(result: EngineResult): boolean {
 }
 
 /**
+ * Whether a failed attempt was SEEN doing something before it failed: text of
+ * its own, or a tool call. `handoffContext` is what the session layer's attempt
+ * wrapper observed on the stream.
+ *
+ * `cost` and `numTurns` cannot answer this for every engine. Codex reports no
+ * cost and counts a turn only when it completes, so a turn that ran a command
+ * and then failed reports exactly what a turn that never started does — and
+ * was being run a second time as if nothing had happened, command included.
+ *
+ * The Claude CLI reports an API error as the assistant's own message, so the
+ * error text is also streamed. Text that is nothing but the error is not work.
+ */
+export function attemptMadeProgress(result: EngineResult): boolean {
+  const observed = result.handoffContext?.trim();
+  if (!observed) return false;
+  return !(result.error && redactText(result.error).includes(observed));
+}
+
+/**
  * Detect whether an engine result indicates a dead/expired session rather than
  * a transient or rate-limit error. A dead session is one where the engine exited
- * with an error but did zero work (no cost, no turns) and there is no rate-limit
- * signal — meaning the --resume ID is stale and should not be retried.
+ * with an error but did zero work (no cost, no turns, nothing observed on its
+ * stream) and there is no rate-limit signal — meaning the --resume ID is stale
+ * and should not be retried.
  */
 export function isDeadSessionError(result: EngineResult): boolean {
   if (result.retryable === false) return false;
@@ -69,6 +90,10 @@ export function isDeadSessionError(result: EngineResult): boolean {
 
   // If rate limit info is present, this is a rate limit, not a dead session
   if (result.rateLimit?.status) return false;
+
+  // An attempt that was seen working is not a stale id, whatever it reports:
+  // the caller answers a dead session by running the prompt again from scratch.
+  if (attemptMadeProgress(result)) return false;
 
   const zeroCost = result.cost === undefined || result.cost === 0;
   const zeroTurns = result.numTurns === undefined || result.numTurns === 0;

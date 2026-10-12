@@ -20,6 +20,8 @@ const config = { engines: { default: "claude", claude: { bin: "claude-bin", mode
 
 const failed = (error: string, extra: Partial<EngineResult> = {}): EngineResult => ({ sessionId: "", result: "", error, ...extra });
 const served: EngineResult = { sessionId: "s", result: "Done." };
+/** What the attempt wrapper attaches when it saw the engine call a tool. */
+const TOOL_EVENTS = "Observed tool events (verify their effects before continuing):\ntool_use: command_execution\ntool_result: command_execution";
 
 beforeEach(() => {
   fs.rmSync(STATE_PATH, { force: true });
@@ -47,8 +49,13 @@ describe("isLoginRefusal — an engine that is installed but cannot sign in", ()
     expect(isLoginRefusal(failed(error))).toBe(true);
   });
 
-  it("recognises the interactive Claude PTY's own code, whatever turn count it reports", () => {
+  it("recognises the interactive Claude PTY's own code; the one turn it always reports is not work", () => {
     expect(isLoginRefusal(failed("Interactive turn failed: authentication_failed", { numTurns: 1 }))).toBe(true);
+  });
+
+  it("recognises claude -p echoing the prompt as its own message: text that is only the error is not work", () => {
+    const prompt = "Not logged in · Please run /login";
+    expect(isLoginRefusal(failed(prompt, { cost: 0, numTurns: 1, handoffContext: prompt }))).toBe(true);
   });
 
   it.each([
@@ -60,8 +67,13 @@ describe("isLoginRefusal — an engine that is installed but cannot sign in", ()
     ["an unrelated crash", failed("Codex exited with code 1: stream disconnected before completion")],
     ["another PTY failure code", failed("Interactive turn failed: server_error", { numTurns: 1 })],
     ["a stop the application asked for", failed("Interrupted: stopped", { retryable: false })],
-    ["a failure after real work", failed("tool failed: 403 Forbidden from the deploy API", { cost: 0.42, numTurns: 3 })],
-    ["a failure after completed turns", failed("credential helper exited", { numTurns: 2 })],
+    // The three below are each engine's real shape for a turn that did
+    // something first (engine-work-evidence.test.ts produces them with the
+    // actual engines). Codex has no cost or turn count to go by at all.
+    ["a Codex turn that ran a command first", failed("unexpected status 401 Unauthorized: token expired", { sessionId: "codex-thread", handoffContext: TOOL_EVENTS })],
+    ["an interactive Claude turn that used a tool first", failed("Interactive turn failed: authentication_failed", { numTurns: 1, handoffContext: TOOL_EVENTS })],
+    ["a claude -p turn that spent money first", failed("OAuth token revoked · Please run /login", { cost: 0.42, numTurns: 3 })],
+    ["a turn that said something of its own first", failed("Login expired · Please run /login", { numTurns: 1, handoffContext: "I have started the release." })],
     ["an answer that talks about signing in", { sessionId: "s", result: "Run `codex login` to sign in, then retry." }],
     ["an answer delivered with a warning", { sessionId: "s", result: "Here is the summary.", error: "Not logged in · Please run /login" }],
   ] as [string, EngineResult][])("does not mistake %s for one", (_label, result) => {

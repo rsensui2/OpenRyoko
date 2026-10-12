@@ -142,7 +142,11 @@ describe("a fallback engine that cannot sign in", () => {
   it.each<[string, EngineResult]>([
     ["crashed for another reason", { sessionId: "", result: "", error: "Codex exited with code 1: stream disconnected before completion" }],
     ["ran into a limit of its own", { sessionId: "", result: "", error: "Rate limited" }],
-    ["failed after doing real work", { sessionId: "codex-new", result: "", error: "tool failed: 403 Forbidden from the deploy API", cost: 0.4, numTurns: 3 }],
+    // Codex's real shape for a turn that ran a command and then lost its login:
+    // no cost and no turn count, only what was seen on its stream. It must not
+    // be asked again — that would run the command a second time.
+    ["was refused its login only after running a command", { sessionId: "codex-new", result: "", error: "unexpected status 401 Unauthorized: token expired",
+      handoffContext: "Observed tool events (verify their effects before continuing):\ntool_use: command_execution\ntool_result: command_execution" }],
   ])("keeps the switch when the fallback engine %s", async (_label, failure) => {
     const f = limitedClaudeTurn();
     f.runs.codex.mockResolvedValue(failure);
