@@ -49,20 +49,20 @@ function setup(sessions: Record<string, unknown> = {}, fallback: { claude?: stri
     sessions: { transientRetryDelaysMs: [], ...sessions },
     connectors: {},
     logging: { level: "error", stdout: false, file: false },
-    cron: { alertConnector: "slack", alertChannel: "C-alerts" },
+    cron: { alertConnector: "ops", alertChannel: "C-alerts" },
   } as unknown as JinnConfig;
   const claudeRun = vi.fn<Engine["run"]>().mockResolvedValue({ sessionId: "claude-1", result: "Briefing is ready.", cost: 0.01, numTurns: 1 });
   const codexRun = vi.fn<Engine["run"]>().mockResolvedValue({ sessionId: "codex-1", result: "Briefing is ready (Codex).", cost: 0.01, numTurns: 1 });
   const manager = new SessionManager(config, new Map<string, Engine>([
     ["claude", { name: "claude", run: claudeRun }], ["codex", { name: "codex", run: codexRun }],
   ]));
+  // Results are delivered through "slack"; failure alerts go out through "ops".
   const alert = vi.fn<Connector["sendMessage"]>(async () => "alert-ts");
   const deliver = vi.fn<Connector["replyMessage"]>(async () => "delivery-ts");
-  const slack = {
-    name: "slack", sendMessage: alert, replyMessage: deliver,
-    getCapabilities: () => ({ threading: true, messageEdits: false, reactions: true, attachments: false }),
-  } as unknown as Connector;
-  const connectors = new Map<string, Connector>([["slack", slack]]);
+  const getCapabilities = () => ({ threading: true, messageEdits: false, reactions: true, attachments: false });
+  const slack = { name: "slack", sendMessage: vi.fn(async () => "sent-ts"), replyMessage: deliver, getCapabilities } as unknown as Connector;
+  const ops = { name: "ops", sendMessage: alert, replyMessage: vi.fn(async () => "reply-ts"), getCapabilities } as unknown as Connector;
+  const connectors = new Map<string, Connector>([["slack", slack], ["ops", ops]]);
   apiContext = { config, getConfig: () => config, sessionManager: manager, startTime: 0, emit: () => {}, connectors } as unknown as ApiContext;
   const run = () => runCronJob(job, manager, config, connectors);
   return { job, config, manager, connectors, claudeRun, codexRun, alert, deliver, run };
@@ -123,6 +123,37 @@ describe("cron run log reflects how the session actually ended", () => {
 
     expect(runs(f.job.id)).toEqual([expect.objectContaining({ status: "error", error: "channel_not_found" })]);
     expect(f.alert).toHaveBeenCalledExactlyOnceWith({ channel: "C-alerts" }, expect.stringContaining("channel_not_found"));
+  });
+
+  // The cron connector only drops what it is given when the delivery connector
+  // is not running: the turn succeeds, the session is idle, and nobody was told.
+  it("records a run whose delivery connector is not running, though the turn itself succeeded", async () => {
+    const f = setup();
+    f.connectors.delete("slack");
+    await f.run();
+
+    const [entry, ...rest] = runs(f.job.id);
+    expect(rest).toEqual([]);
+    expect(entry).toMatchObject({ status: "error", sessionId: expect.any(String) });
+    expect(entry!.error).toContain('"slack"');
+    expect(entry!.error).toContain("not delivered");
+    expect(f.claudeRun).toHaveBeenCalledTimes(1);
+    expect(getSession(entry!.sessionId!)?.status).toBe("idle");
+    expect(f.deliver).not.toHaveBeenCalled();
+    expect(f.alert).toHaveBeenCalledExactlyOnceWith({ channel: "C-alerts" }, expect.stringContaining('"slack"'));
+  });
+
+  it.each([
+    ["nothing", undefined],
+    ["the dashboard", { connector: "web", channel: "general" }],
+    ["a channel with no connector", { connector: "", channel: "C-briefing" }],
+  ])("keeps a run green when its output is meant for %s", async (_label, delivery) => {
+    const f = setup();
+    f.job.delivery = delivery;
+    await f.run();
+
+    expect(runs(f.job.id)).toEqual([expect.objectContaining({ status: "success", error: null })]);
+    expect(f.alert).not.toHaveBeenCalled();
   });
 
   it("keeps a turn green when a fallback engine answered for the failed one", async () => {
