@@ -1,0 +1,144 @@
+import fs from "node:fs";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SessionManager } from "../manager.js";
+import { getMessages, getSession, getSessionBySessionKey } from "../registry.js";
+import { invalidateModelRegistry } from "../../shared/models.js";
+import { JINN_HOME } from "../../shared/paths.js";
+import type { Connector, Engine, EngineResult, IncomingMessage, InterruptibleEngine, JinnConfig } from "../../shared/types.js";
+
+vi.mock("../context.js", () => ({ buildContext: () => "context" }));
+vi.mock("../callbacks.js", () => ({ notifyParentSession: vi.fn(), notifyRateLimited: vi.fn(), notifyRateLimitResumed: vi.fn(), notifyDiscordChannel: vi.fn() }));
+vi.mock("../goal-review.js", () => ({ reviewGoal: vi.fn(async () => ({ status: "complete", reason: "verified" })) }));
+
+/**
+ * When a session is moved to its fallback engine, the engine it left can still
+ * hold a live process for it: the interactive Claude PTY stays warm for minutes
+ * after a turn. A Stop hook that process sends later has no turn to settle, so
+ * it is delivered as a late completion — a second answer, from the engine the
+ * conversation has just left, after the fallback engine already replied.
+ */
+
+const HEALTH_PATH = path.join(JINN_HOME, "tmp", "engine-health.json");
+const SWITCH_NOTICE = "⚠️ claude usage limit reached. Switching to codex.";
+const inMinutes = (minutes: number) => Math.floor(Date.now() / 1000) + minutes * 60;
+const limited = (resetsAt: number): EngineResult => ({ sessionId: "claude-thread", result: "", error: "Interactive turn failed: rate_limit",
+  numTurns: 1, rateLimit: { status: "rejected", rateLimitType: "interactive_detected", resetsAt, window: "5h" } });
+
+let sequence = 0;
+function setup() {
+  const config = { engines: { default: "claude", claude: { bin: "claude-bin", model: "claude-model", interactive: true },
+    codex: { bin: "codex-bin", model: "codex-model" } }, sessions: {}, connectors: { slack: { goalExtraction: { enabled: false } } },
+    logging: { level: "error", stdout: false } } as unknown as JinnConfig;
+  /** What happened, in order: which process was stopped, and when the fallback engine ran. */
+  const events: string[] = [];
+  const kill = vi.fn((sessionId: string, reason?: string) => { events.push(`kill ${sessionId} (${reason})`); });
+  const claudeRun = vi.fn<Engine["run"]>().mockResolvedValue({ sessionId: "claude-thread", result: "Answered by claude." });
+  const claude: InterruptibleEngine & { isTurnRunning: (id: string) => boolean } = {
+    name: "claude", run: claudeRun, kill, killAll: vi.fn(), isAlive: () => true, isTurnRunning: () => false,
+  };
+  const codexRun = vi.fn<Engine["run"]>(async () => {
+    events.push("codex runs");
+    return { sessionId: "codex-thread", result: "Answered by codex." };
+  });
+  const manager = new SessionManager(config, new Map<string, Engine>([["claude", claude], ["codex", { name: "codex", run: codexRun }]]));
+  const replyMessage = vi.fn(async (_target: unknown, _text: string) => undefined);
+  const connector = { name: "slack", replyMessage, sendMessage: replyMessage,
+    addReaction: vi.fn(async () => {}), removeReaction: vi.fn(async () => {}), setTypingStatus: vi.fn(async () => {}),
+    getCapabilities: () => ({ threading: true, reactions: true, attachments: false, messageEdits: false }),
+    reconstructTarget: (context: Record<string, unknown>) => ({ channel: String(context.channel), thread: String(context.thread) }),
+  } as unknown as Connector;
+  manager.setConnectorProvider(() => new Map([["slack", connector]]));
+  const message = (text = "今日の予定を教えてください"): IncomingMessage => ({
+    connector: "slack", source: "slack", sessionKey: `slack:switch-${++sequence}`, channel: "C-switch", thread: "thread",
+    text, user: "Test", userId: "U-test", messageId: "message", attachments: [],
+    replyContext: { channel: "C-switch", thread: "thread" }, raw: {}, transportMeta: { channelExternal: false },
+  } as IncomingMessage);
+  const route = async (msg: IncomingMessage) => {
+    await manager.route(msg, connector);
+    return getSessionBySessionKey(msg.sessionKey)!;
+  };
+  const replies = () => replyMessage.mock.calls.map(([, text]) => text);
+  const answers = (sessionId: string) => getMessages(sessionId).filter((entry) => entry.role === "assistant").map((entry) => entry.content);
+  return { manager, message, route, replies, answers, events, kill, claudeRun, codexRun };
+}
+
+beforeEach(() => {
+  invalidateModelRegistry();
+  fs.rmSync(HEALTH_PATH, { force: true });
+});
+afterEach(() => vi.useRealTimers());
+
+describe("the engine a session leaves when it switches on a usage limit", () => {
+  // Known defect, reproduced: nothing stops the limited engine's process, and
+  // its late Stop is delivered. `it.fails` records that these expectations do
+  // not hold yet; the fix turns them into ordinary tests.
+  it.fails("has that session's process stopped before the fallback engine runs, and no other session's", async () => {
+    const f = setup();
+    const bystander = await f.route(f.message("別件です")); // a second conversation, served by Claude
+    f.claudeRun.mockResolvedValueOnce(limited(inMinutes(60)));
+
+    const switched = await f.route(f.message());
+
+    expect(switched.engine).toBe("codex");
+    expect(f.events).toEqual([`kill ${switched.id} (Interrupted: engine switched)`, "codex runs"]);
+    expect(f.kill).not.toHaveBeenCalledWith(bystander.id, expect.anything());
+  });
+
+  it.fails("cannot answer a second time: a Stop it sends after the switch is not delivered", async () => {
+    const f = setup();
+    f.claudeRun.mockResolvedValueOnce(limited(inMinutes(60)));
+    const switched = await f.route(f.message());
+
+    await f.manager.handleOrphanHook(switched.id, { hook_event_name: "Stop", last_assistant_message: "Late answer from the limited engine." });
+
+    expect(f.replies()).toEqual([SWITCH_NOTICE, "Answered by codex."]);
+    expect(f.answers(switched.id)).toEqual(["Answered by codex."]);
+  });
+
+  it.fails("does not have a late failure of its own recorded against the session either", async () => {
+    const f = setup();
+    f.claudeRun.mockResolvedValueOnce(limited(inMinutes(60)));
+    const switched = await f.route(f.message());
+
+    await f.manager.handleOrphanHook(switched.id, { hook_event_name: "StopFailure", error: "rate_limit" });
+
+    expect(getSession(switched.id)).toMatchObject({ engine: "codex", status: "idle", lastError: null });
+  });
+});
+
+describe("late completions that are still the session's own", () => {
+  it("are delivered as before for a session that never switched", async () => {
+    const f = setup();
+    const session = await f.route(f.message());
+
+    await f.manager.handleOrphanHook(session.id, { hook_event_name: "Stop", last_assistant_message: "Background task finished." });
+
+    expect(f.kill).not.toHaveBeenCalled();
+    expect(f.replies()).toEqual(["Answered by claude.", "Background task finished."]);
+    expect(f.answers(session.id)).toEqual(["Answered by claude.", "Background task finished."]);
+  });
+
+  it("are delivered again once the limit has cleared and the session is back on its own engine, with its conversation intact", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const f = setup();
+    const reopensAt = inMinutes(60);
+    f.claudeRun.mockResolvedValueOnce(limited(reopensAt));
+    const msg = f.message();
+    await f.route(msg);
+
+    vi.setSystemTime(reopensAt * 1000 + 2000);
+    const back = await f.route({ ...msg, text: "続きをお願いします" });
+
+    // Claude picks its own conversation up where the limit cut it off, and is
+    // told what the fallback engine did in the meantime.
+    expect(back.engine).toBe("claude");
+    expect(f.claudeRun).toHaveBeenCalledTimes(2);
+    expect(f.claudeRun.mock.calls[1][0].resumeSessionId).toBe("claude-thread");
+    expect(f.claudeRun.mock.calls[1][0].prompt).toContain("Answered by codex.");
+    expect(f.claudeRun.mock.calls[1][0].prompt).toContain("続きをお願いします");
+
+    await f.manager.handleOrphanHook(back.id, { hook_event_name: "Stop", last_assistant_message: "Background task finished." });
+    expect(f.replies().at(-1)).toBe("Background task finished.");
+  });
+});
