@@ -14,6 +14,14 @@ vi.mock("../context.js", () => ({ buildContext: () => "Test context" }));
 vi.mock("../callbacks.js", async (original) => ({
   ...await original<typeof import("../callbacks.js")>(),
   notifyParentSession: vi.fn(),
+  notifyRateLimited: vi.fn(),
+  notifyRateLimitResumed: vi.fn(),
+  notifyDiscordChannel: vi.fn(),
+}));
+// The usage-limit wait polls a real clock for at least ten seconds.
+vi.mock("../engine-fallback.js", async (original) => ({
+  ...await original<typeof import("../engine-fallback.js")>(),
+  waitForEngineRetry: vi.fn(async () => true),
 }));
 
 const CONFIG = {
@@ -147,6 +155,53 @@ describe("SessionManager — the reply cannot be delivered", () => {
 
     expect(unhandled).toEqual([]);
     expect(manager.getQueue().isRunning(sessionKey)).toBe(false);
+  });
+
+  it("leaves the same record when the reply after a usage-limit wait cannot be delivered", async () => {
+    const { manager, run, connector, replyMessage, msg, sessionKey } = setup();
+    run
+      .mockResolvedValueOnce({
+        sessionId: "engine-session-1",
+        result: "",
+        error: "usage limit reached",
+        rateLimit: { status: "rejected", resetsAt: Math.floor(Date.now() / 1000) + 60 },
+      })
+      .mockResolvedValueOnce({ sessionId: "engine-session-2", result: "再開して完了しました。", numTurns: 1 });
+
+    await manager.route(msg, connector);
+
+    expect(run).toHaveBeenCalledTimes(2);
+    const session = getSessionBySessionKey(sessionKey)!;
+    // The resumed turn is saved as a completed one …
+    expect(session.engineSessionId).toBe("engine-session-2");
+    expect(session.status).toBe("idle");
+    const [, outcome] = vi.mocked(notifyParentSession).mock.calls.at(-1)!;
+    expect(outcome).toMatchObject({ result: "再開して完了しました。", error: null });
+    // … and, as on the ordinary path, the lost reply is on record.
+    expect(session.lastError).toContain("origin delivery failed");
+    const notes = getMessages(session.id).filter((m) => m.role === "notification");
+    expect(notes.some((m) => m.content.includes("NOT delivered to the original conversation"))).toBe(true);
+    expect(replyMessage.mock.calls.at(-1)![1]).toBe("再開して完了しました。");
+  });
+
+  it("leaves no undelivered record when the reply after a usage-limit wait lands", async () => {
+    const { manager, run, connector, replyMessage, msg, sessionKey } = setup();
+    replyMessage.mockResolvedValue("M1");
+    run
+      .mockResolvedValueOnce({
+        sessionId: "engine-session-1",
+        result: "",
+        error: "usage limit reached",
+        rateLimit: { status: "rejected", resetsAt: Math.floor(Date.now() / 1000) + 60 },
+      })
+      .mockResolvedValueOnce({ sessionId: "engine-session-2", result: "再開して完了しました。", numTurns: 1 });
+
+    await manager.route(msg, connector);
+
+    const session = getSessionBySessionKey(sessionKey)!;
+    expect(session.status).toBe("idle");
+    expect(session.lastError).toBeNull();
+    expect(getMessages(session.id).filter((m) => m.role === "notification")).toEqual([]);
   });
 
   it("leaves no undelivered record when the reply lands", async () => {

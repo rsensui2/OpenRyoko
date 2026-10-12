@@ -40,7 +40,7 @@ import { conversationOutcome } from "./conversation-outcome.js";
 import { buildEngineSyncPrompt, clearEngineSyncMarker, engineFallbackFailure, engineSyncSince, maybeRevertEngineOverride, runEngineWithResponseTimeout, runFallbackAttempts, waitForEngineRetry } from "./engine-fallback.js";
 import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "./callbacks.js";
 import { buildContext } from "./context.js";
-import { normalizeDelivery, normalizeTurns, deliverPublic, type DeliveryContext } from "./reply-disposition.js";
+import { normalizeDelivery, normalizeTurns, type DeliveryContext } from "./reply-disposition.js";
 import { deliverToOriginConnector, isUndeliveredToOrigin, recordFailedOriginDelivery } from "./origin-delivery.js";
 import { deliverTurn, recordUndeliveredTurn } from "./turn-delivery.js";
 import { SessionQueue } from "./queue.js";
@@ -1084,12 +1084,11 @@ export class SessionManager {
               await connector.removeReaction(target, waitEmoji).catch(() => {});
             }
 
-            {
-              const { publicAction } = normalizeDelivery(retryText, this.buildDeliveryContext(session, msg, capabilities));
-              const deliveredReply = await deliverPublic(connector, target, publicAction)
-                .then(() => publicAction.kind === "reply", () => false);
-              recordDeliveredOutcome(retryResult, deliveredReply);
-            }
+            // Same rule as the ordinary path below: a reply the connector refuses
+            // is recorded as undelivered once the turn's state is written.
+            const { publicAction } = normalizeDelivery(retryText, this.buildDeliveryContext(session, msg, capabilities));
+            const retryDelivery = await deliverTurn(connector, target, [publicAction]);
+            recordDeliveredOutcome(retryResult, retryDelivery.deliveredReply);
             const retryUpdated = updateSession(session.id, {
               ...(retryResult.sessionId?.trim() ? { engineSessionId: retryResult.sessionId } : {}),
               status: retryResult.error ? "error" : "idle",
@@ -1101,6 +1100,7 @@ export class SessionManager {
               ...(typeof retryResult.contextTokens === "number" ? { lastContextTokens: retryResult.contextTokens } : {}),
             });
             if (retryUpdated) {
+              if (retryDelivery.failure !== undefined) recordUndeliveredTurn(retryUpdated, retryDelivery.failure);
               notifyRateLimitResumed(retryUpdated);
               notifyDiscordChannel(
                 `✅ ${session.engine} usage limit cleared. Session ${session.id}${session.employee ? ` (${session.employee})` : ""} resumed.`,
