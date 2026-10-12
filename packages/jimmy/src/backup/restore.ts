@@ -481,7 +481,11 @@ async function writeIntoHome(options: RestoreOptions, home: string, plan: PlanIt
     try {
       applyPlan(home, plan, staged);
     } catch (error) {
-      const way = preRestore ? ` The state before it is saved as ${preRestore.id}; restore that to go back.` : "";
+      // Said exactly: going back is itself a restore, and a restore deletes nothing.
+      const way = preRestore
+        ? ` The state before it is saved as ${preRestore.id}: restoring that puts back what was overwritten. `
+          + "Files this restore had already created are not removed by it."
+        : "";
       throw new Error(`the restore stopped partway: ${errorMessage(error)}.${way}`);
     }
   } finally {

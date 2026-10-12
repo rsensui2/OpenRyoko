@@ -426,6 +426,43 @@ describe("ryoko backup restore", () => {
     expect(printed).toMatch(/置換\s+config\.yaml/);
     expect(printed).toContain("ryoko backup restore pre-restore-20261012T033000Z");
     expect(printed).toContain("knowledge/new.md");
+    // Nothing was created this time, so there is nothing that going back would leave behind.
+    expect(printed).not.toContain("消えません");
+  });
+
+  it("says that going back will not remove the files this restore created", async () => {
+    const state = await backedUp();
+    fs.rmSync(path.join(state.home, "MEMORY.md"));
+    fs.writeFileSync(path.join(state.home, "config.yaml"), "broken\n");
+
+    await runBackupRestore("home-20261012T030000Z", {}, state.deps);
+
+    const printed = take(state.out);
+    expect(printed).toMatch(/作成\s+MEMORY\.md/);
+    expect(printed).toContain("ryoko backup restore pre-restore-20261012T033000Z");
+    // The snapshot holds config.yaml as it was. It cannot hold the absence of MEMORY.md.
+    expect(printed).toMatch(/新しく作成した 1 件.*消えません/s);
+  });
+
+  it("shows, in a dry run of the way back, which files going back would leave behind", async () => {
+    // What docs/backup.md tells an operator to do to find them, held to the code.
+    const state = await backedUp();
+    fs.rmSync(path.join(state.home, "MEMORY.md"));
+    fs.writeFileSync(path.join(state.home, "config.yaml"), "broken\n");
+    await runBackupRestore("home-20261012T030000Z", { json: true }, state.deps);
+    take(state.out);
+    later(state, 30);
+
+    await runBackupRestore("pre-restore-20261012T033000Z", { dryRun: true, json: true }, state.deps);
+    const wayBack = json<{ untouched: string[]; changes: Array<{ path: string; action: string }> }>(state);
+
+    expect(wayBack.untouched).toEqual(["MEMORY.md"]);
+    expect(wayBack.changes).toEqual([expect.objectContaining({ path: "config.yaml", action: "replace" })]);
+
+    await runBackupRestore("pre-restore-20261012T033000Z", {}, state.deps);
+
+    expect(read(state.home, "config.yaml")).toBe("broken\n");
+    expect(read(state.home, "MEMORY.md")).toBe(HOME_CONTENT["MEMORY.md"]);
   });
 
   it("rejects a kind it does not know, naming the ones it does", async () => {

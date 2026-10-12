@@ -229,6 +229,24 @@ function printPaths(io: BackupCliIo, label: string, paths: string[]): void {
   io.out(`${label}: ${paths.length} 件（${shown}${paths.length > MAX_LISTED_PATHS ? " ほか" : ""}）`);
 }
 
+/**
+ * Where the previous state went, and what going back to it does and does not
+ * do. Going back is itself a restore, and a restore only ever writes: what was
+ * overwritten returns, and what this restore created - which was not there to
+ * be saved - stays. Said here, at the moment someone might count on it.
+ */
+function printWayBack(io: BackupCliIo, result: RestoreResult): void {
+  if (!result.preRestore) return;
+  const { id } = result.preRestore;
+  io.out(`復元前の状態は ${id} に退避しました。上書きした内容を戻すには: ryoko backup restore ${id}`);
+  const created = result.changes.filter((change) => change.action === "create").length;
+  if (created === 0) return;
+  io.out(
+    `この復元で新しく作成した ${created} 件は、${id} へ戻しても消えません（復元は上書きだけで、削除はしません）。`
+    + "不要なものは、上の「作成」の行を見て手で消してください。",
+  );
+}
+
 function printFileRestore(io: BackupCliIo, result: RestoreResult): void {
   io.out(`${result.dryRun ? "[dry-run] " : ""}${result.id} から復元${result.dryRun ? "する場合" : "しました"}（種類: ${result.kinds.join(", ")}）`);
   for (const change of result.changes.slice(0, MAX_LISTED_CHANGES)) {
@@ -239,16 +257,14 @@ function printFileRestore(io: BackupCliIo, result: RestoreResult): void {
   io.out(`変更なし: ${result.unchanged} 件`);
   printPaths(io, "バックアップに無いので手を付けないファイル", result.untouched);
   printPaths(io, "アーカイブ対象外のため無視したエントリ", result.ignored);
-  if (result.preRestore) {
-    io.out(`復元前の状態は ${result.preRestore.id} に退避しました。元に戻すには: ryoko backup restore ${result.preRestore.id}`);
-  }
+  printWayBack(io, result);
 }
 
 function printDatabaseRestore(io: BackupCliIo, result: DatabaseRestoreResult): void {
   io.out(`${result.dryRun ? "[dry-run] " : ""}${result.name} の DB を ${result.destination} へ復元${result.dryRun ? "できます" : "しました"}`);
   if (result.dryRun) {
     io.out(`実際に復元するには、gateway を止めてから ${GATEWAY_STOPPED_FLAG} を付けて実行してください。`);
-    io.out("ホームをコンテナに bind mount している場合は、gateway が動いているコンテナの中で実行します（ホスト側からは稼働中の gateway を検知できません）。");
+    io.out("ホームをコンテナに bind mount している場合は、gateway が動いているコンテナの中で実行します（ホスト側からは、稼働中の gateway を確実には検知できません）。");
     return;
   }
   if (result.preRestore) {

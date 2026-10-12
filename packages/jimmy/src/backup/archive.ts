@@ -96,6 +96,19 @@ function noteSkipped(state: WriteState, entryPath: string, reason: string): void
  * that went in. A file that cannot be opened is left out and reported; a file
  * that turns out shorter than its header promised fails the archive, because
  * the alternative is padding a backup with zeros and calling it good.
+ *
+ * A known gap, left open. O_NOFOLLOW refuses a symlink only as the last
+ * component of the path. Every directory above this file was a real directory
+ * when the walk looked at it with lstat, but the walk and this open are apart
+ * in time - seconds, in a large home - and a directory swapped for a symlink in
+ * between is followed here. The file then read is whatever carries this name on
+ * the far side of the link, and it goes into the archive under the path it was
+ * listed by. Closing the gap takes resolving each component against an open
+ * directory (openat), which Node does not offer. Using it takes the ability to
+ * write in the home at the right moment; what it yields is the content of a
+ * file this process can read, inside an archive in the backup directory. That
+ * is worth something only to a writer that cannot read the file itself and can
+ * read the backups - an agent confined to the home by a sandbox, say.
  */
 async function* fileBlocks(entry: HomeEntry, state: WriteState): AsyncGenerator<Buffer> {
   let handle: fs.promises.FileHandle;

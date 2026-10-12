@@ -60,6 +60,12 @@ DB のコピーは1日1つ、7 世代で固定です。
 
 失敗は gateway のログ（`Backup failed (...)`）と、`GET /api/status` の `backup` に出ます。`level` が `warning` のときは、どの対象がなぜ失敗したかが `targets` に入っています。
 
+## どこで実行するか
+
+`ryoko backup` は、gateway が動いている場所で実行します。ホームをコンテナに bind mount している場合は、コンテナの中です。
+
+ホスト側から同じホームへ向けて実行しないでください。コンテナの境界を越えると、プロセスの番号は通じません。ファイルのロックも、構成によっては共有されません。そのため、ホスト側のコマンドは動いている gateway を確実には見つけられず、`ryoko backup run` は、gateway が使っている DB を gateway に知られないまま読むことがあります。
+
 ## 戻し方
 
 ```bash
@@ -72,7 +78,7 @@ ryoko backup restore <id> --only config              # 実際に戻す
 - `--only` には上の表の種類をカンマ区切りで渡します（`--only config,cron`）。省くと、アーカイブにあるすべての種類が対象です。まず `--dry-run` で確かめてください。
 - ファイルの復元は、gateway が動いたままで構いません。`config.yaml`・`cron/jobs.json`・`org/`・`skills/` は、gateway が変更を検知して読み直します。
 - **復元は上書きだけ**です。バックアップにあるファイルを戻し、バックアップに無いファイル（あとから足したメモや Skill）は消しません。消したいものは、表示された一覧を見て自分で消します。
-- 戻す直前の状態は、自動で `pre-restore-<日時>` として退避されます。戻しすぎたら `ryoko backup restore pre-restore-<日時>` で元に戻せます。
+- 戻す直前の状態は、自動で `pre-restore-<日時>` として退避されます。戻しすぎたら `ryoko backup restore pre-restore-<日時>` で、上書きされたファイルを復元前の内容に戻せます。ただし、これも上書きだけの復元です。**復元で新しく作られたファイルは、`pre-restore-…` へ戻しても消えません**。要らないものは自分で消します。どれが残るかは、`ryoko backup restore pre-restore-<日時> --dry-run` の「バックアップに無いので手を付けないファイル」で確かめられます（件数が多いときは `--json` で全件が出ます）。
 - `cron` が戻すのは `jobs.json` だけです。実行履歴まで巻き戻したいときだけ `cron-history` を指定します。
 - `persona` を戻すと、オンボーディングが終わる前のバックアップなら `BOOTSTRAP.md` も戻ります。`--dry-run` に「作成 BOOTSTRAP.md」と出たら、戻したあとで消してください（残すとオンボーディングがやり直しになります）。
 - ホームの外を指す symlink を新しく作ることになる復元は、既定では拒否されます。自分で張ったリンクを戻すときは `--allow-external-symlinks` を付けます。
@@ -85,11 +91,19 @@ ryoko backup restore <id> --only config              # 実際に戻す
 DB（`sessions-…`、`workflows-…`）の復元は、**gateway を止めてから**行います。動いている gateway の下で DB を差し替えると、記録が壊れます。
 
 1. gateway を止める（`ryoko stop`。サービスやコンテナで動かしている場合は、その方法で止める）
-2. gateway が動いていた場所で実行する。ホームをコンテナに bind mount している場合は、**コンテナの中**で実行する。gateway を止めるとコンテナごと終了する構成では、同じホームを mount した一回限りのコンテナで実行する
-3. `ryoko backup restore sessions-<日付> --gateway-stopped`
-4. gateway を起動する
+2. 1分ほど待つ
+3. gateway が動いていた場所で実行する。ホームをコンテナに bind mount している場合は、**コンテナの中**で実行する。gateway を止めるとコンテナごと終了する構成では、同じホームを mount した一回限りのコンテナで実行する
+4. `ryoko backup restore sessions-<日付> --gateway-stopped`
+5. gateway を起動する
 
-`--gateway-stopped` は「止めたことを確認した」という申告で、必須です。コマンドは稼働中の gateway を自分でも探しますが、コンテナの中で動いている gateway は、ホスト側からは見つけられません。ホスト側で実行すると、動いている gateway に気づかないまま差し替えてしまいます。
+`--gateway-stopped` は「止めたことを確認した」という申告で、必須です。コマンドも稼働中の gateway を自分で探しますが、DB を開いて確かめることはしません。使われているかもしれない DB は、開くだけで記録を壊すことがあるためです。見るのは次の2つだけです。
+
+- PID ファイル（`gateway.json`・`gateway.pid`）が指すプロセスが生きているか
+- DB と、その `-wal`・`-shm` が、直近1分以内に書き換えられているか
+
+どちらかに当たると、何も変えずに断ります。gateway を止めた直後は、たいてい2つ目に当たります。手順2で1分ほど待つのはそのためです。
+
+この確認は確実ではありません。コンテナの中の gateway の PID は、ホスト側からは見えません。1分以上なにも書いていない gateway は、動いていても見つけられません。ホスト側で実行すると、動いている gateway に気づかないまま差し替えてしまうことがあります。手順3のとおり、gateway が動いていた場所で実行してください。
 
 置き換える前の DB は `pre-restore-<日時>-sessions` として退避されます。
 

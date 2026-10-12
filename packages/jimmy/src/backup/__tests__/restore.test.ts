@@ -298,8 +298,10 @@ describe("restoreHomeArchive", () => {
     const locked = path.join(target.home, "knowledge", "議事録");
     fs.chmodSync(locked, 0o555);
     try {
+      // Not "restore that to go back": a restore deletes nothing, so the way
+      // back returns what was overwritten and leaves what had been created.
       await expect(restoreHomeArchive(optionsFor(target)))
-        .rejects.toThrow(/stopped partway.*saved as pre-restore-20261012T093000Z.*restore that to go back/s);
+        .rejects.toThrow(/stopped partway.*saved as pre-restore-20261012T093000Z.*puts back what was overwritten.*created.*not removed/s);
     } finally {
       fs.chmodSync(locked, 0o755);
     }

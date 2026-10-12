@@ -55,6 +55,19 @@ describe("docs/backup.md", () => {
     expect(doc()).toContain(`${DATABASE_BACKUP_RETENTION} 世代`);
   });
 
+  it("does not promise that going back to the pre-restore snapshot undoes everything", () => {
+    // A restore only ever writes; it never deletes. Restoring the snapshot it
+    // took first puts back what was overwritten, and leaves in place the files
+    // the restore created, which were not there to be snapshotted.
+    expect(doc()).toMatch(/新しく作られたファイル.*消えません/s);
+    expect(doc()).not.toMatch(/で元に戻せます/);
+  });
+
+  it("says the commands belong where the gateway runs, and that a database is never opened to check", () => {
+    expect(doc()).toMatch(/`ryoko backup` は、gateway が動いている場所で実行/);
+    expect(doc()).toMatch(/DB を開いて確かめることはしません/);
+  });
+
   it("says retention is counted in days, and how many of one day are kept", () => {
     // It recommends taking a backup before a big change, so it owes the reader
     // what doing that often does to the history: nothing.
