@@ -222,6 +222,30 @@ describe("ryoko backup run", () => {
     expect(process.exitCode).toBeUndefined();
   });
 
+  it("says where config.yaml stopped parsing without repeating any of it", async () => {
+    // A YAML error names what it tripped over and quotes the lines around it.
+    // In this file, those are the lines that hold the tokens.
+    const home = makeHome(tempDir());
+    const state = cli(home);
+    const token = "xoxb-not-a-real-token-0000";
+    const parseError = Object.assign(
+      new Error(`unidentified alias "${token}" (4:13)\n\n 3 | connectors:\n 4 |   botToken: *${token}\n-----------------^`),
+      { name: "YAMLException", reason: `unidentified alias "${token}"`, mark: { line: 3, column: 12, snippet: ` 4 |   botToken: *${token}` } },
+    );
+    state.deps = { ...state.deps, loadConfig: () => { throw parseError; } };
+
+    await runBackupRun({ json: true }, state.deps);
+
+    const note = take(state.err);
+    expect(note).not.toContain(token);
+    expect(note).not.toContain("botToken");
+    expect(note).not.toContain("alias");
+    expect(note).toContain("config.yaml");
+    expect(note).toContain("4 行目 13 桁目");
+    expect(note).toContain("既定");
+    expect(json<RunReport>(state).status).toBe("ok");
+  });
+
   it("passes on a setting it had to ignore", async () => {
     const home = makeHome(tempDir());
     const state = cli(home, { backup: { retention: -3 } });

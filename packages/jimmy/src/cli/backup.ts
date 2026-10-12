@@ -53,6 +53,28 @@ const STANDARD_IO: BackupCliIo = {
 };
 
 /**
+ * Why config.yaml could not be read, in words that carry none of it.
+ *
+ * A YAML parse error is the dangerous one. Its message quotes the lines around
+ * the fault, and its one-line reason can name the very thing it tripped over -
+ * `unidentified alias "..."` repeats whatever followed a `*`. In this file the
+ * lines are the ones that hold tokens, and this goes to a terminal, a log or an
+ * agent's transcript. So only the position is passed on: enough to open the
+ * file at the right place.
+ */
+function describeConfigError(error: unknown): string {
+  const parse = error as { name?: unknown; mark?: { line?: unknown; column?: unknown } } | null;
+  if (parse?.name === "YAMLException") {
+    const { line, column } = parse.mark ?? {};
+    return typeof line === "number" && typeof column === "number"
+      ? `YAML の構文エラー: ${line + 1} 行目 ${column + 1} 桁目`
+      : "YAML の構文エラー";
+  }
+  // Anything else is about the file as a whole - missing, unreadable - and names at most its path.
+  return errorMessage(error).split("\n")[0]!;
+}
+
+/**
  * Resolves the settings the way the gateway does, except that an unreadable
  * config.yaml is not fatal here. It is the very thing a restore may have been
  * asked to fix, so the defaults are used and the operator is told.
@@ -64,8 +86,7 @@ function contextFor(deps: BackupCliDeps, json: boolean | undefined): Context {
   try {
     section = (deps.loadConfig ?? loadConfig)()?.backup;
   } catch (error) {
-    // A YAML error carries a multi-line excerpt of the file; its first line says what and where.
-    io.err(`config.yaml を読めないため、既定のバックアップ設定で続けます（${errorMessage(error).split("\n")[0]}）`);
+    io.err(`config.yaml を読めないため、既定のバックアップ設定で続けます（${describeConfigError(error)}）`);
   }
   const settings = resolveBackupSettings(section, home);
   for (const warning of settings.warnings) io.err(`設定の警告: ${warning}`);
