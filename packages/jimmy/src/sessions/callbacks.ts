@@ -1,4 +1,5 @@
-import { getSession } from "./registry.js";
+import { getSession, insertMessage } from "./registry.js";
+import { failedByUnrequestedStop } from "./unrequested-stop.js";
 import { loadConfig } from "../shared/config.js";
 import { logger } from "../shared/logger.js";
 import { readGatewayAuthToken } from "../gateway/auth.js";
@@ -62,6 +63,35 @@ export function notifyRateLimitResumed(
   });
 }
 
+/**
+ * Whether a notification should start a turn in this parent.
+ *
+ * A parent in error is not woken: one stopped by a usage limit or a lost login
+ * would fail again, once for every child that finishes. The exception is a
+ * parent whose engine stopped without being asked to — its process died. It
+ * can run again at once, and it is usually waiting on exactly these
+ * notifications: left out, the conversation it answers in just stops.
+ */
+function wakesForNotifications(parent: Session): boolean {
+  return parent.status !== "error" || failedByUnrequestedStop(parent);
+}
+
+const NOT_ACTED_ON = "ℹ️ Not acted on: this session was in an error state when this arrived, so no turn was started for it.";
+
+/**
+ * Keep a notification for a parent that is not woken: write it into the
+ * parent's transcript, where the parent finds it when it runs again and the
+ * operator sees it in the meantime. It used to be dropped, and the parent had
+ * no trace that the child had finished at all.
+ *
+ * Written straight to the registry rather than through the gateway route: the
+ * route's job is to start a turn, and this must not depend on it.
+ */
+function recordWithoutWaking(parent: Session, childId: string, message: string): void {
+  insertMessage(parent.id, "notification", `${message}\n\n${NOT_ACTED_ON}`);
+  logger.info(`[callbacks] Parent ${parent.id} is in error — recorded the notification for child ${childId} in its transcript without waking it.`);
+}
+
 async function _sendNotification(
   childSession: Session,
   result: { result?: string | null; error?: string | null; cost?: number; durationMs?: number },
@@ -72,10 +102,6 @@ async function _sendNotification(
   if (!parent) {
     logger.info(`[callbacks] Parent ${childSession.parentSessionId} not found for child ${childSession.id} — no notification sent.`);
     return; // Parent gone or expired
-  }
-  if (parent.status === "error") {
-    logger.info(`[callbacks] Parent ${parent.id} is in error — skipping notification for child ${childSession.id}. The child's result will not reach it.`);
-    return; // Parent already in error — skip
   }
 
   const employeeName = childSession.employee || "Unknown";
@@ -88,6 +114,11 @@ async function _sendNotification(
     const raw = result.result || "(no output)";
     const preview = raw.length > 200 ? raw.substring(0, 200) + "..." : raw;
     message = `📩 Employee "${employeeName}" replied in session ${childId}.\nRead the latest messages: GET /api/sessions/${childId}?last=N\n\nPreview: ${preview}`;
+  }
+
+  if (!wakesForNotifications(parent)) {
+    recordWithoutWaking(parent, childId, message);
+    return;
   }
 
   // A successful completion names its child so the gateway can fold the ones

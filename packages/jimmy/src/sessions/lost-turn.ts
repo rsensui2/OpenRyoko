@@ -40,7 +40,7 @@ export interface SettleLostTurnInput {
  * Settle a lost turn. The status is "interrupted", not "error": the engine
  * session and transcript are intact, so the next message resumes it, and a
  * parent that lost its own turn keeps receiving its children's completions
- * (callbacks skip a parent that is in "error").
+ * (callbacks do not wake a parent that is in "error").
  */
 export function settleLostTurn(input: SettleLostTurnInput): Session | undefined {
   const settled = updateSession(input.session.id, {
