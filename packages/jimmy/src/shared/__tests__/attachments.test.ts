@@ -1,7 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ATTACHMENTS_DIR, newAttachmentDir, removeAttachmentDirs } from "../attachments.js";
+import {
+  ATTACHMENTS_DIR,
+  holdAttachmentDirs,
+  newAttachmentDir,
+  removeAttachmentDirs,
+  STALE_ATTACHMENTS_AFTER_MS,
+  startAttachmentSweep,
+  sweepStaleAttachmentDirs,
+} from "../attachments.js";
 import { JINN_HOME, TMP_DIR } from "../paths.js";
 import { confineRemovals, type ConfinedRemovals } from "../test-support/confined-removals.js";
 
@@ -141,5 +149,162 @@ describe("removeAttachmentDirs", () => {
     expect(() => removeAttachmentDirs([kept, gone])).not.toThrow();
 
     expect(fs.existsSync(gone)).toBe(false);
+  });
+});
+
+/* A connector saves a message's attachments before anyone decides what to do
+ * with the message. One that is then dropped — the bot stays silent, the
+ * gateway restarts mid-turn — never reaches the end-of-turn cleanup, and its
+ * files stayed for good: anyone who could post in a channel the bot reads
+ * could fill the disk. The sweep takes what is left. */
+describe("sweepStaleAttachmentDirs", () => {
+  const HOUR = 60 * 60 * 1000;
+  const now = Date.UTC(2026, 9, 12, 12, 0, 0);
+  /** Make `target` look as if it was last written `ageMs` before `now`. */
+  const aged = (target: string, ageMs: number) => {
+    const when = new Date(now - ageMs);
+    fs.lutimesSync(target, when, when);
+    return target;
+  };
+
+  it("removes the directory of a message that arrived more than a day ago, and keeps a recent one", () => {
+    const stale = newAttachmentDir();
+    const fresh = newAttachmentDir();
+    save(stale, "0", "old.png");
+    save(fresh, "0", "new.png");
+    aged(stale, STALE_ATTACHMENTS_AFTER_MS + HOUR);
+    aged(fresh, STALE_ATTACHMENTS_AFTER_MS - HOUR);
+
+    expect(sweepStaleAttachmentDirs(now)).toBe(1);
+
+    expect(removals.requests).toEqual([stale]);
+    expect(fs.existsSync(stale)).toBe(false);
+    expect(fs.existsSync(path.join(fresh, "0", "new.png"))).toBe(true);
+    expect(STALE_ATTACHMENTS_AFTER_MS).toBe(24 * HOUR);
+  });
+
+  it("keeps what a queued or running turn still needs, however old, until that turn lets go of it", () => {
+    const waiting = newAttachmentDir();
+    const file = save(waiting, "0", "report.pdf");
+    aged(waiting, 5 * STALE_ATTACHMENTS_AFTER_MS); // a turn paused for days on a usage limit
+    holdAttachmentDirs([file]);
+
+    expect(sweepStaleAttachmentDirs(now)).toBe(0);
+    expect(fs.existsSync(file)).toBe(true);
+
+    removeAttachmentDirs([file]); // the turn ended: this is its own cleanup
+    expect(fs.existsSync(waiting)).toBe(false);
+
+    // The same directory name coming back is no longer protected.
+    save(waiting, "0", "report.pdf");
+    aged(waiting, 5 * STALE_ATTACHMENTS_AFTER_MS);
+    expect(sweepStaleAttachmentDirs(now)).toBe(1);
+  });
+
+  it("holds nothing on the say-so of a path outside tmp/attachments", () => {
+    holdAttachmentDirs([stateFile, outsideTmp, ATTACHMENTS_DIR, "relative/path", ""]);
+    const stale = aged(path.dirname(path.dirname(save(newAttachmentDir(), "0", "old.png"))), 2 * STALE_ATTACHMENTS_AFTER_MS);
+    expect(sweepStaleAttachmentDirs(now)).toBe(1);
+    expect(removals.requests).toEqual([stale]);
+  });
+
+  it("takes a stray old file too: everything in tmp/attachments is an attachment", () => {
+    const stray = aged(save(ATTACHMENTS_DIR, "left-behind.bin"), 2 * STALE_ATTACHMENTS_AFTER_MS);
+    expect(sweepStaleAttachmentDirs(now)).toBe(1);
+    expect(fs.existsSync(stray)).toBe(false);
+  });
+
+  it("removes an old link by itself and leaves what it points at alone", () => {
+    const link = path.join(ATTACHMENTS_DIR, "planted-link");
+    fs.symlinkSync(JINN_HOME, link);
+    aged(link, 2 * STALE_ATTACHMENTS_AFTER_MS);
+
+    sweepStaleAttachmentDirs(now);
+
+    expect(removals.requests).toEqual([link]); // never the directory the link leads to
+    expect(fs.existsSync(link)).toBe(false);
+    expect(fs.readFileSync(outsideTmp, "utf-8")).toBe("keep me");
+    expect(fs.readFileSync(stateFile, "utf-8")).toBe('{"engines":{}}');
+  });
+
+  it("asks to remove nothing but direct children of tmp/attachments, and never tmp/attachments itself", () => {
+    for (let n = 0; n < 5; n++) aged(path.dirname(path.dirname(save(newAttachmentDir(), "0", `f${n}.png`))), 3 * STALE_ATTACHMENTS_AFTER_MS);
+    aged(ATTACHMENTS_DIR, 3 * STALE_ATTACHMENTS_AFTER_MS);
+
+    expect(sweepStaleAttachmentDirs(now)).toBe(5);
+
+    expect(removals.requests).toHaveLength(5);
+    for (const request of removals.requests) expect(path.dirname(request)).toBe(ATTACHMENTS_DIR);
+    expect(fs.existsSync(ATTACHMENTS_DIR)).toBe(true);
+  });
+
+  it("does nothing, and does not fail, when no attachment was ever saved", () => {
+    removals.remove(ATTACHMENTS_DIR, { recursive: true, force: true }); // the test's own, inside its sandbox
+    expect(sweepStaleAttachmentDirs(now)).toBe(0);
+    expect(removals.requests).toEqual([]);
+    fs.mkdirSync(ATTACHMENTS_DIR, { recursive: true }); // for afterEach
+  });
+
+  it("carries on past an entry it cannot remove", () => {
+    const stuck = aged(path.dirname(path.dirname(save(newAttachmentDir(), "0", "a.png"))), 2 * STALE_ATTACHMENTS_AFTER_MS);
+    const fine = aged(path.dirname(path.dirname(save(newAttachmentDir(), "0", "b.png"))), 2 * STALE_ATTACHMENTS_AFTER_MS);
+    const real = vi.mocked(fs.rmSync).getMockImplementation()!;
+    vi.mocked(fs.rmSync).mockImplementation((target, options) => {
+      if (target === stuck) throw Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" });
+      return real(target, options);
+    });
+
+    expect(sweepStaleAttachmentDirs(now)).toBe(1);
+
+    expect(fs.existsSync(fine)).toBe(false);
+    expect(fs.existsSync(stuck)).toBe(true);
+  });
+});
+
+describe("startAttachmentSweep", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("sweeps when the gateway starts, then every hour, until it is stopped", () => {
+    vi.useFakeTimers({ now: Date.UTC(2026, 9, 12, 12, 0, 0) });
+    const leftBehind = (ageMs: number) => {
+      const dir = path.dirname(path.dirname(save(newAttachmentDir(), "0", "x.png")));
+      const when = new Date(Date.now() - ageMs);
+      fs.lutimesSync(dir, when, when);
+      return dir;
+    };
+    const fromBeforeTheRestart = leftBehind(2 * STALE_ATTACHMENTS_AFTER_MS);
+    const almostStale = leftBehind(STALE_ATTACHMENTS_AFTER_MS - 30 * 60 * 1000);
+
+    const stop = startAttachmentSweep();
+    expect(fs.existsSync(fromBeforeTheRestart)).toBe(false); // at start
+    expect(fs.existsSync(almostStale)).toBe(true);
+
+    vi.advanceTimersByTime(60 * 60 * 1000);
+    expect(fs.existsSync(almostStale)).toBe(false); // an hour later it is over a day old
+
+    stop();
+    const afterStop = leftBehind(2 * STALE_ATTACHMENTS_AFTER_MS);
+    vi.advanceTimersByTime(3 * 60 * 60 * 1000);
+    expect(fs.existsSync(afterStop)).toBe(true);
+  });
+
+  it("is started when the gateway boots and stopped when it shuts down", () => {
+    // Wiring, checked in the source: the boot function cannot be run in a test.
+    const server = fs.readFileSync(new URL("../../gateway/server.ts", import.meta.url), "utf-8");
+    expect(server).toContain("const stopAttachmentSweep = startAttachmentSweep();");
+    expect(server).toContain("stopAttachmentSweep();");
+  });
+
+  it("does not keep the process alive for the sake of the sweep", () => {
+    const unref = vi.fn();
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval").mockReturnValue({ unref } as unknown as ReturnType<typeof setInterval>);
+    vi.spyOn(globalThis, "clearInterval").mockImplementation(() => {});
+
+    startAttachmentSweep()();
+
+    expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 60 * 60 * 1000);
+    expect(unref).toHaveBeenCalledTimes(1);
   });
 });

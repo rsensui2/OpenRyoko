@@ -11,6 +11,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import type { JinnConfig, Connector, Employee } from "../shared/types.js";
 import { loadConfig } from "../shared/config.js";
 import { configErrorForLog } from "../shared/config-file.js";
+import { startAttachmentSweep } from "../shared/attachments.js";
 import { claudeAutoMemoryEnvFor, configureClaudeAutoMemory } from "../shared/claude-auto-memory.js";
 import { resolveAssistantName } from "../shared/assistant-identity.js";
 import { getTriageCapabilities, invalidateTriageCapabilities } from "../shared/triage-capabilities.js";
@@ -1209,6 +1210,9 @@ export async function startGateway(
     logger.warn(`STT init skipped: ${err instanceof Error ? err.message : err}`);
   }
 
+  // Attachments of messages that never got a turn: now, then hourly.
+  const stopAttachmentSweep = startAttachmentSweep();
+
   // Start file watchers
   startWatchers({
     onConfigReload: () => {
@@ -1423,6 +1427,7 @@ export async function startGateway(
   return async () => {
     logger.info("Gateway cleanup starting...");
     clearInterval(modelRefreshTimer);
+    stopAttachmentSweep();
     modelManagement?.stop();
     stopScheduler();
     await stopCommandJobs();

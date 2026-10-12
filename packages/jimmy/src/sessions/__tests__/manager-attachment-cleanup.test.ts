@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionManager } from "../manager.js";
-import { ATTACHMENTS_DIR, attachmentSlot, newAttachmentDir } from "../../shared/attachments.js";
+import { ATTACHMENTS_DIR, attachmentSlot, newAttachmentDir, STALE_ATTACHMENTS_AFTER_MS, sweepStaleAttachmentDirs } from "../../shared/attachments.js";
 import { TMP_DIR } from "../../shared/paths.js";
 import { confineRemovals, type ConfinedRemovals } from "../../shared/test-support/confined-removals.js";
 import type { Attachment, Connector, Engine, EngineRunOpts, IncomingMessage, JinnConfig } from "../../shared/types.js";
@@ -108,5 +108,40 @@ describe("attachment cleanup at the end of a turn", () => {
 
     expect(removals.requests).toEqual([]);
     expect(fs.readFileSync(stateFile, "utf-8")).toBe('{"engines":{}}');
+  });
+});
+
+describe("attachments of a message that gets no turn", () => {
+  it("removes what came attached to a slash command: the command is answered and nothing reads the files", async () => {
+    const dir = newAttachmentDir();
+    const file = saved(dir, 0, "image.png");
+    const { manager, connector, msg, seen } = setup([{ name: "image.png", url: "", mimeType: "image/png", localPath: file }]);
+
+    await manager.route({ ...msg, text: "/status" }, connector);
+
+    expect(seen).toEqual([]); // no turn
+    expect(connector.replyMessage).toHaveBeenCalledTimes(1); // the command was answered
+    expect(removals.requests).toEqual([dir]);
+    expect(fs.existsSync(dir)).toBe(false);
+  });
+});
+
+describe("attachments and the sweep of old leftovers", () => {
+  it("keeps a turn's attachments out of the sweep for as long as the turn runs, however long that is", async () => {
+    const dir = newAttachmentDir();
+    const file = saved(dir, 0, "report.pdf");
+    const { manager, connector, msg } = setup([{ name: "report.pdf", url: "", mimeType: "application/pdf", localPath: file }]);
+    const daysLater = Date.now() + 5 * STALE_ATTACHMENTS_AFTER_MS;
+    const duringTheTurn: Array<{ swept: number; stillThere: boolean }> = [];
+    vi.spyOn(manager.getQueue(), "enqueue").mockImplementationOnce(async (_key, task) => {
+      // The message waits in the queue — say, behind a usage-limit pause — while the hourly sweep keeps coming.
+      duringTheTurn.push({ swept: sweepStaleAttachmentDirs(daysLater), stillThere: fs.existsSync(file) });
+      await task();
+    });
+
+    await manager.route(msg, connector);
+
+    expect(duringTheTurn).toEqual([{ swept: 0, stillThere: true }]);
+    expect(fs.existsSync(dir)).toBe(false); // and the turn's own cleanup still removes it at the end
   });
 });

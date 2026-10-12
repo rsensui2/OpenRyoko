@@ -53,7 +53,7 @@ import { buildSpeakerPrefix, type SpeakerPrefixMeta } from "./speaker-prefix.js"
 import { loadJobs } from "../cron/jobs.js";
 import { setCronJobEnabled, triggerCronJob } from "../cron/scheduler.js";
 import { checkBudget } from "../gateway/budgets.js";
-import { removeAttachmentDirs } from "../shared/attachments.js";
+import { holdAttachmentDirs, removeAttachmentDirs } from "../shared/attachments.js";
 import { resolveMcpServers, writeMcpConfigFile, cleanupMcpConfigFile } from "../mcp/resolver.js";
 
 const WORKFLOW_CAPABILITIES = { threading: false, messageEdits: false, reactions: false, attachments: false };
@@ -353,7 +353,11 @@ export class SessionManager {
   }
 
   async route(msg: IncomingMessage, connector: Connector, opts: RouteOptions = {}): Promise<{ sessionId: string } | void> {
-    if (await this.handleCommand(msg, connector)) return;
+    if (await this.handleCommand(msg, connector)) {
+      // A command is answered on the spot: nothing will read what came attached to it.
+      removeAttachmentDirs(msg.attachments.flatMap((attachment) => attachment.localPath ?? []));
+      return;
+    }
 
     let session = getSessionBySessionKey(msg.sessionKey);
     if (!session) {
@@ -395,6 +399,9 @@ export class SessionManager {
     const attachmentPaths = msg.attachments
       .map((attachment) => attachment.localPath)
       .filter((filePath): filePath is string => !!filePath);
+    // Until this message's turn is over — it may wait a long time for it — the
+    // hourly sweep of old attachments must leave these alone.
+    holdAttachmentDirs(attachmentPaths);
 
     if (session.status === "waiting") {
       const expectedResetAt = getClaudeExpectedResetAt();
