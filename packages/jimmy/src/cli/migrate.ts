@@ -75,7 +75,7 @@ function ensureSkillSymlinks(skillName: string): void {
  *  no shipped update waiting, need nothing from them and are not listed. */
 const KEPT_SKILL_NOTES: Partial<Record<KeepReason, string>> = {
   modified: "編集済み。同梱版に更新があります",
-  unmanaged: "同梱版と内容が違います",
+  unmanaged: "同梱版と内容が違います。導入時の記録が無く、古い同梱版か編集済みかを区別できません",
   "retired-modified": "同梱から外れましたが、編集済みのため残しました",
 };
 

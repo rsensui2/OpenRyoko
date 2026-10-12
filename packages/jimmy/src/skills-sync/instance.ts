@@ -33,6 +33,8 @@ export function syncBundledSkillsOnBoot(config: Pick<JinnConfig, "skills">): voi
 
 const listed = (label: string, names: readonly string[]): string[] => (names.length > 0 ? [`${label} ${names.join(", ")}`] : []);
 
+const TAKE_SHIPPED = "To take the shipped version, move the skill's directory aside and restart; see docs/skills.md.";
+
 /** A run that changed nothing logs nothing, and a skill left untouched is mentioned
  *  once per package version (the sync keeps that tally), so restarts stay quiet. */
 function report(result: BundledSkillSync): void {
@@ -45,10 +47,17 @@ function report(result: BundledSkillSync): void {
   if (changes.length > 0) {
     logger.info(`Bundled skills synced: ${changes.join("; ")}.${result.backupDir ? ` Previous copies are in ${result.backupDir}.` : ""}`);
   }
-  if (result.notices.length > 0) {
+  // Only a receipt proves an edit. Without one, a skill that differs may simply be the
+  // copy an earlier release installed, so it is not described as the user's change.
+  const edited = result.notices.filter((skill) => skill.reason === "modified").map((skill) => skill.name);
+  const unrecorded = result.notices.filter((skill) => skill.reason !== "modified").map((skill) => skill.name);
+  if (edited.length > 0) {
+    logger.warn(`Bundled skills not updated to the newer shipped version because they were edited locally: ${edited.join(", ")}. ${TAKE_SHIPPED}`);
+  }
+  if (unrecorded.length > 0) {
     logger.warn(
-      `Bundled skills left untouched because they differ from the shipped version: ${result.notices.map((skill) => skill.name).join(", ")}. `
-      + "Local changes are never overwritten. To take the shipped version, move the skill's directory aside and restart; see docs/skills.md.",
+      "Bundled skills left untouched because they differ from the shipped version and nothing records how they were installed, "
+      + `so an older shipped copy cannot be told from your own edits: ${unrecorded.join(", ")}. ${TAKE_SHIPPED}`,
     );
   }
   for (const failure of result.failed) logger.warn(`Bundled skill "${failure.name}" was not synced: ${failure.error}`);

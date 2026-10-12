@@ -93,8 +93,10 @@ describe("bundled skill sync at gateway start", () => {
     expect(log.info).toHaveBeenCalledTimes(1);
     expect(log.info.mock.calls[0][0]).toMatch(/added sync/);
     expect(log.info.mock.calls[0][0]).toMatch(new RegExp(`${untouched.length} unmodified`));
+    // No receipt yet, so the edit cannot be told from an older shipped copy — and is not called one.
     expect(log.warn).toHaveBeenCalledTimes(1);
     expect(log.warn.mock.calls[0][0]).toMatch(/left untouched.*: migrate\./);
+    expect(log.warn.mock.calls[0][0]).not.toContain("edited locally");
     expect(log.warn.mock.calls[0][0]).not.toContain("status");
     expect(log.error).not.toHaveBeenCalled();
   });
