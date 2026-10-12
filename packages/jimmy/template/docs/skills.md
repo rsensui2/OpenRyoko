@@ -67,7 +67,7 @@ bundled skill it placed.
 | The skill in `~/.ryoko/skills/` | What the sync does |
 |---|---|
 | Missing, and the sync has no record of placing it | Installs it |
-| Missing, but the sync placed it earlier (you deleted it) | Gateway start leaves it out and says so once per release. `ryoko migrate` puts it back |
+| Missing, but the sync placed it earlier (you deleted it) | Leaves it out and says so once per release. Only `ryoko migrate --restore-deleted-skills` puts it back |
 | Unedited since the sync placed it, and a newer version ships | Replaces it and keeps the previous copy |
 | Edited, or holding files you added | Leaves it alone; tells you once per release when a newer version ships |
 | A symlink, or holding a symlink | Leaves it alone |
@@ -78,11 +78,11 @@ bundled skill it placed.
 
 - **Your changes are never overwritten.** To customize a bundled skill, edit it in place;
   it stops following releases. To return to the shipped version, move the skill's
-  directory aside and run `ryoko migrate`.
-- **A bundled skill you delete stays deleted.** Restarting the gateway does not bring it
-  back; the receipt keeps a `"deleted": true` mark for it. `ryoko migrate` (and so
-  `ryoko update`, which runs it) reinstalls it. To keep a skill out even then, leave an
-  empty directory with its name.
+  directory aside and run `ryoko migrate --restore-deleted-skills`.
+- **A bundled skill you delete stays deleted.** Neither restarting the gateway, nor
+  `ryoko migrate`, nor `ryoko update` brings it back; the receipt keeps a
+  `"deleted": true` mark for it. `ryoko migrate --restore-deleted-skills` reinstalls
+  every bundled skill you deleted, so delete again any you still do not want.
 - **Nothing is deleted.** A replaced or retired skill is moved to
   `~/.ryoko/.migration-backups/<version>-<time>/skills/<name>/`. Remove old backups by
   hand when you no longer need them.

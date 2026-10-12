@@ -98,7 +98,7 @@ cron:
 
 # 同梱スキル（パッケージに入っているスキル）は gateway の起動時に同期される。
 # 新しく同梱されたものを追加し、手を入れていないものだけを新しい版に置き換える。編集したスキルと
-# symlink には触れず、自分で削除したスキルも戻さない（戻すときは ryoko migrate）。
+# symlink には触れず、自分で削除したスキルも戻さない（戻すときは ryoko migrate --restore-deleted-skills）。
 # 置き換える前の中身は .migration-backups/ に残る。docs/skills.md を参照。
 # 起動時の同期を止めるときだけ指定する（ryoko migrate は指定に関係なく同期する）:
 # skills:
