@@ -42,6 +42,7 @@ import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyD
 import { buildContext } from "./context.js";
 import { normalizeDelivery, normalizeTurns, deliverPublic, type DeliveryContext } from "./reply-disposition.js";
 import { deliverToOriginConnector, isUndeliveredToOrigin, recordFailedOriginDelivery } from "./origin-delivery.js";
+import { deliverTurn, recordUndeliveredTurn } from "./turn-delivery.js";
 import { SessionQueue } from "./queue.js";
 import { JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
@@ -1154,6 +1155,10 @@ export class SessionManager {
       if (decorateMessages && capabilities.reactions) {
         await connector.removeReaction(target, "eyes").catch(() => {});
       }
+      // A reply the connector refuses must not undo the turn: the engine has
+      // finished, so its state is saved below either way, and the failure is
+      // recorded as an undelivered reply once that state is written.
+      let undelivered: string | undefined;
       if (!wasInterrupted && responseText) {
         // Sanitize engine output before posting: strip operator-facing notes
         // (reply-disposition trailer) so they never reach an external channel,
@@ -1164,17 +1169,12 @@ export class SessionManager {
         // without ack multiplication; a single ack is added only if no turn was
         // public. The last entry equals `result.result`.
         const turns = result.turns ?? [];
-        if (turns.length > 1) {
-          const { actions } = normalizeTurns(turns, deliveryCtx);
-          for (const action of actions) {
-            await deliverPublic(connector, target, action);
-          }
-          recordDeliveredOutcome(result, actions.at(-1)?.kind === "reply");
-        } else {
-          const { publicAction } = normalizeDelivery(responseText, deliveryCtx);
-          await deliverPublic(connector, target, publicAction);
-          recordDeliveredOutcome(result, publicAction.kind === "reply");
-        }
+        const actions = turns.length > 1
+          ? normalizeTurns(turns, deliveryCtx).actions
+          : [normalizeDelivery(responseText, deliveryCtx).publicAction];
+        const delivery = await deliverTurn(connector, target, actions);
+        recordDeliveredOutcome(result, delivery.deliveredReply);
+        undelivered = delivery.failure;
       }
       const updatedSession = updateSession(session.id, {
         ...(result.sessionId?.trim() ? { engineSessionId: result.sessionId } : {}),
@@ -1191,6 +1191,7 @@ export class SessionManager {
         ...(typeof result.contextTokens === "number" ? { lastContextTokens: result.contextTokens } : {}),
       });
       if (updatedSession) {
+        if (undelivered !== undefined) recordUndeliveredTurn(updatedSession, undelivered);
         notifyParentSession(updatedSession, { result: result.result, error: wasInterrupted ? null : (result.error ?? null), cost: result.cost, durationMs: result.durationMs }, { alwaysNotify: employee?.alwaysNotify });
       }
 
