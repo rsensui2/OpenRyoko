@@ -39,11 +39,42 @@ describe("readConfigSnapshot", () => {
     expect(snapshot.document).toEqual({ engines: { default: "claude" } });
   });
 
-  it("identifies the bytes it read with their sha256, and a missing file with the empty revision", () => {
+  it("identifies the bytes it read: the same bytes the same revision, other bytes another, a missing file the empty one", () => {
     expect(readConfigSnapshot(configPath).revision).toBe("");
     const raw = "engines:\n  default: claude\n";
     fs.writeFileSync(configPath, raw);
-    expect(readConfigSnapshot(configPath).revision).toBe(createHash("sha256").update(raw).digest("hex"));
+    const first = readConfigSnapshot(configPath).revision;
+    expect(first).toMatch(/^[0-9a-f]{64}$/);
+    expect(readConfigSnapshot(configPath).revision).toBe(first);
+    fs.writeFileSync(configPath, `${raw}# a note\n`);
+    expect(readConfigSnapshot(configPath).revision).not.toBe(first);
+    fs.writeFileSync(configPath, raw);
+    expect(readConfigSnapshot(configPath).revision).toBe(first);
+  });
+
+  /* The revision goes to every client of the API, and config.yaml holds
+   * tokens. A plain digest of the file would let whoever sees it check guesses
+   * about the contents offline, and tell two instances with the same file
+   * apart from two that differ. So it is keyed with a secret that exists only
+   * in this process's memory. */
+  it("is not a digest anyone could recompute from the file", () => {
+    const raw = "connectors:\n  slack:\n    botToken: xoxb-SECRET\n";
+    fs.writeFileSync(configPath, raw);
+    const revision = readConfigSnapshot(configPath).revision;
+    for (const algorithm of ["sha256", "sha512", "sha1", "md5", "sha3-256"]) {
+      expect(createHash(algorithm).update(raw).digest("hex")).not.toContain(revision.slice(0, 32));
+    }
+  });
+
+  it("is keyed per process: another process gives the same file another revision", async () => {
+    fs.writeFileSync(configPath, "engines:\n  default: claude\n");
+    const here = readConfigSnapshot(configPath).revision;
+    vi.resetModules(); // the module as a freshly started gateway loads it
+    const elsewhere = await import("../config-file.js");
+    const there = elsewhere.readConfigSnapshot(configPath).revision;
+    expect(there).toMatch(/^[0-9a-f]{64}$/);
+    expect(there).not.toBe(here);
+    expect(elsewhere.readConfigSnapshot(configPath).revision).toBe(there); // and is as stable there as here
   });
 
   it("reads an empty or comment-only file as an empty document", () => {
@@ -113,7 +144,7 @@ describe("writeConfigDocument", () => {
     fs.writeFileSync(configPath, "engines:\n  default: claude\n");
     const written = writeConfigDocument(readConfigSnapshot(configPath), { engines: { default: "codex" } }, configPath);
     expect(written).toBe(readConfigSnapshot(configPath).revision);
-    expect(written).toBe(createHash("sha256").update(fs.readFileSync(configPath)).digest("hex"));
+    expect(written).not.toBe("");
   });
 
   it("leaves no temporary file behind", () => {

@@ -5,6 +5,7 @@ import yaml from "js-yaml";
 import { Readable } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readConfigSnapshot } from "../../shared/config-file.js";
 import { CONFIG_PATH } from "../../shared/paths.js";
 import type { JinnConfig } from "../../shared/types.js";
 import { handleApiRequest, type ApiContext } from "../api.js";
@@ -82,6 +83,8 @@ async function call(method: string, pathname: string, body?: unknown, headers: R
 
 const sha256 = (bytes: Buffer | string) => crypto.createHash("sha256").update(bytes).digest("hex");
 const onDisk = () => fs.readFileSync(CONFIG_PATH);
+/** The revision of the file as it is on disk now, as this process names it. */
+const revisionOnDisk = () => readConfigSnapshot().revision;
 const savedConfig = () => yaml.load(fs.readFileSync(CONFIG_PATH, "utf-8")) as typeof BASE;
 
 /** The page's own move: load the config and remember what it was reading. */
@@ -111,8 +114,14 @@ afterEach(() => {
 });
 
 describe("GET /api/config revision", () => {
-  it("hands back the sha256 of the bytes on disk", async () => {
-    expect((await loadPage()).revision).toBe(sha256(onDisk()));
+  it("hands back the revision of the bytes on disk", async () => {
+    expect((await loadPage()).revision).toBe(revisionOnDisk());
+  });
+
+  it("does not hand back a plain digest of the file, which holds tokens", async () => {
+    const revision = (await loadPage()).revision;
+    expect(revision).toMatch(/^[0-9a-f]{64}$/);
+    expect(revision).not.toBe(sha256(onDisk()));
   });
 
   it("changes when the file changes, and only then", async () => {
@@ -129,7 +138,7 @@ describe("GET /api/config revision", () => {
     // save would pass the check and put the old values back.
     handEdit((doc) => { doc.logging.level = "debug"; });
     const got = await loadPage();
-    expect(got.revision).toBe(sha256(onDisk()));
+    expect(got.revision).toBe(revisionOnDisk());
     expect(got.body.logging.level).toBe("debug");
   });
 
@@ -205,7 +214,7 @@ describe("PUT /api/config against a stale revision", () => {
     const page = await loadPage();
     const put = await call("PUT", "/api/config", { logging: { level: "warn" } }, { [HEADER]: page.revision! });
     expect(put.status).toBe(200);
-    expect(put.revision).toBe(sha256(onDisk()));
+    expect(put.revision).toBe(revisionOnDisk());
     // And it really is usable: saving straight back with it is not a conflict.
     expect((await call("PUT", "/api/config", { logging: { level: "error" } }, { [HEADER]: put.revision! })).status).toBe(200);
   });
@@ -215,7 +224,7 @@ describe("PUT /api/config against a stale revision", () => {
     const put = await call("PUT", "/api/config", { connectors: { slack: { botToken: "xoxb-NEW" } } }, { [HEADER]: page.revision! });
     expect(put.status).toBe(200);
     expect(reload).toHaveBeenCalledTimes(1);
-    expect(put.revision).toBe(sha256(onDisk()));
+    expect(put.revision).toBe(revisionOnDisk());
   });
 
   it("checks the revision under the config lock: of two saves holding the same revision, the second loses", async () => {
@@ -247,7 +256,7 @@ describe("PUT /api/config without a revision", () => {
     const page = await loadPage();
     const put = await call("PUT", "/api/config", { logging: { level: "debug" } }, { [HEADER]: page.revision! });
     expect(put.status).toBe(200);
-    expect(put.revision).toBe(sha256(onDisk()));
+    expect(put.revision).toBe(revisionOnDisk());
   });
 });
 

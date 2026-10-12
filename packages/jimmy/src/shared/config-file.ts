@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import yaml from "js-yaml";
@@ -30,14 +30,26 @@ export interface ConfigSnapshot {
   /** Permission bits of the file that was read; null when it does not exist yet. */
   mode: number | null;
   document: Record<string, unknown>;
-  /** Identifies these exact bytes (sha256); empty while the file does not exist. */
+  /** Identifies these exact bytes, within this process (see revisionOf); empty while the file does not exist. */
   revision: string;
 }
 
-/** Hashed from the bytes rather than read off an mtime: a rename-based write
- *  moves the mtime even when it changed nothing. */
+/** Made when the process starts and kept in its memory only. */
+const REVISION_KEY = randomBytes(32);
+
+/**
+ * Derived from the bytes rather than read off an mtime: a rename-based write
+ * moves the mtime even when it changed nothing.
+ *
+ * Keyed (HMAC), not a plain hash. The revision is sent to every client of the
+ * API, and the file it is made from holds tokens: a plain digest would let
+ * whoever sees it test guesses about the file offline. With a key that never
+ * leaves this process it says one thing only — whether the file is still the
+ * one that was read. A revision therefore does not survive a restart: a page
+ * left open across one gets a single conflict on its next save, and reloads.
+ */
 function revisionOf(bytes: Buffer | string): string {
-  return createHash("sha256").update(bytes).digest("hex");
+  return createHmac("sha256", REVISION_KEY).update(bytes).digest("hex");
 }
 
 function parseConfigMapping(raw: string): Record<string, unknown> {

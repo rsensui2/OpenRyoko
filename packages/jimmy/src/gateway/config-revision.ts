@@ -10,13 +10,14 @@ import type { JinnConfig } from "../shared/types.js";
  * gateway merges that document over whatever is on disk now. A key somebody
  * changed in between (by hand, an agent, another tab, another endpoint) loses
  * to the page's stale copy, silently. The revision closes that window: it is
- * the sha256 of the file's bytes, because the file is what the merge reads and
- * therefore what a conflict is actually about.
+ * derived from the file's bytes, because the file is what the merge reads and
+ * therefore what a conflict is actually about. It is opaque to the client and
+ * keyed per gateway process — never a digest of the file, which holds tokens.
  */
 export const CONFIG_REVISION_HEADER = "X-Config-Revision";
 
-/** Stands in for a revision while config.yaml cannot be read. Not a sha256, so
- *  it can never match once the file is readable again. */
+/** Stands in for a revision while config.yaml cannot be read. Not 64 hex
+ *  digits, so it can never match once the file is readable again. */
 const UNREADABLE_REVISION = "unreadable";
 
 /**
