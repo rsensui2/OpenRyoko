@@ -155,6 +155,7 @@ export async function runEngineWithResponseTimeout(
   let timer: ReturnType<typeof setTimeout> | undefined;
   let cancelledPoll: ReturnType<typeof setInterval> | undefined;
   let stopped = false;
+  const startedAt = new Date();
   let lastActivity = Date.now();
   let streamedText = "";
   const toolProgress: string[] = [];
@@ -200,9 +201,10 @@ export async function runEngineWithResponseTimeout(
     if (typeof first !== "string") {
       const result = withProgress(first);
       // Every attempt on the local account is evidence about its allowance: a
-      // stated limit is remembered for the next session, a served turn forgets
-      // it. A run over SSH used the remote machine's account and says nothing.
-      if (!opts.sshHost) noteEngineTurnOutcome(engine.name, result, opts.model);
+      // stated limit is remembered for the next session, a served turn that
+      // started after it forgets it. A run over SSH used the remote machine's
+      // account and says nothing.
+      if (!opts.sshHost) noteEngineTurnOutcome(engine.name, result, opts.model, new Date(), startedAt);
       return result;
     }
     stopped = true;

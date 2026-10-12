@@ -63,6 +63,26 @@ describe("what an engine attempt leaves on the health record", () => {
     expect(exhaustedRecordFor("claude", "claude-model")).toBeUndefined();
   });
 
+  it("keeps the record when a turn that was already running at the limit finishes afterwards", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    let finish!: (result: EngineResult) => void;
+    const alreadyRunning = attempt({ name: "claude", run: () => new Promise<EngineResult>((resolve) => { finish = resolve; }) });
+
+    vi.setSystemTime(Date.now() + 60_000); // a minute later another turn is refused
+    await attempt({ name: "claude", run: async () => ({ sessionId: "s", result: "", error: "Interactive turn failed: rate_limit",
+      numTurns: 1, rateLimit: { status: "rejected", resetsAt: inMinutes(45), window: "5h" } }) });
+    vi.setSystemTime(Date.now() + 60_000); // and a minute after that the first one finishes what it had started
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+    finish({ sessionId: "s", result: "Finished what it had started." });
+    await alreadyRunning;
+
+    expect(exhaustedRecordFor("claude", "claude-model")).toBeDefined();
+
+    // A turn that starts now and is served is the evidence the record waits for.
+    await attempt({ name: "claude", run: async () => ({ sessionId: "s", result: "All done." }) });
+    expect(exhaustedRecordFor("claude", "claude-model")).toBeUndefined();
+  });
+
   it("does not let a turn that ran on a remote machine speak for the local account", async () => {
     await attempt({ name: "claude", run: async () => ({ sessionId: "s", result: "", error: "Rate limited",
       rateLimit: { status: "rejected", resetsAt: inMinutes(45) } }) }, { sshHost: "worker-box" });

@@ -95,6 +95,37 @@ describe("noteEngineTurnOutcome — a turn that was served", () => {
     expect(readEngineHealth(NOW).claude).toBeUndefined();
   });
 
+  // The allowance ran out while this turn was already under way. That it still
+  // finished says nothing about whether a turn started now would be served —
+  // and forgetting the record on it sent the next few sessions back to fail.
+  it.each([
+    ["an outage with a stated reset", secondsAt(90), "exhausted"],
+    ["a limit that named no reset", undefined, "degraded"],
+  ] as const)("keeps %s on record when the turn that was served had started before it was seen", (_label, reset, state) => {
+    recordEngineUnavailable("claude", "claude usage limit", reset, NOW, "5h");
+
+    noteEngineTurnOutcome("claude", answered(), "claude-opus-5", at(2), at(-10));
+
+    expect(readEngineHealth(at(2)).claude).toMatchObject({ state, observedAt: NOW.toISOString() });
+  });
+
+  it("forgets the record when the served turn started after the limit was seen", () => {
+    recordEngineUnavailable("claude", "claude usage limit", secondsAt(90), NOW, "5h");
+
+    noteEngineTurnOutcome("claude", answered(), "claude-opus-5", at(5), at(1));
+
+    expect(readEngineHealth(at(5)).claude).toBeUndefined();
+  });
+
+  it("forgets it, as it does without a start time, when the record does not say when it was written", () => {
+    fs.mkdirSync(path.dirname(STATE_PATH), { recursive: true });
+    fs.writeFileSync(STATE_PATH, JSON.stringify({ claude: { state: "exhausted", until: at(90).toISOString(), observedAt: "not a date" } }));
+
+    noteEngineTurnOutcome("claude", answered(), "claude-opus-5", at(2), at(-10));
+
+    expect(readEngineHealth(at(2)).claude).toBeUndefined();
+  });
+
   it("keeps a scoped record when a different model family answered", () => {
     recordEngineUnavailable("claude", "claude usage limit", secondsAt(600), NOW, "7d Fable");
 

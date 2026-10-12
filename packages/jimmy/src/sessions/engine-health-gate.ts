@@ -13,7 +13,8 @@
  *    employee's own machine says nothing about it, so callers do not report
  *    those here.
  *  - A turn that was actually served is evidence the record is stale, and
- *    forgets it.
+ *    forgets it — if it started after the record was written. One that was
+ *    already under way when the limit was seen proves nothing about it.
  */
 
 import { limitWindowBindsModel } from "../shared/claude-limit-reset.js";
@@ -48,17 +49,31 @@ function servedATurn(result: EngineResult): boolean {
 }
 
 /**
+ * Whether a turn had started before `record` was written. That such a turn
+ * still finished is not evidence against the record: the allowance ran out
+ * while it was already under way. A start or a record time that is not known
+ * decides nothing, and the record is forgotten as before — advice fails open.
+ */
+function startedBefore(record: EngineHealth, startedAt: Date | undefined): boolean {
+  if (!startedAt || record.observedAt === undefined) return false;
+  const observedAt = Date.parse(record.observedAt);
+  return Number.isFinite(observedAt) && startedAt.getTime() < observedAt;
+}
+
+/**
  * Write down what one engine attempt showed: a usage limit, with the reset it
  * stated if that is still ahead; a refusal to sign in; or a served turn, which
  * proves the engine can sign in and forgets a record that was held against the
- * model that just answered. Anything else is not evidence either way. Never
- * throws — health is advisory.
+ * model that just answered — unless the turn started (`startedAt`) before that
+ * record was written. Anything else is not evidence either way. Never throws —
+ * health is advisory.
  */
 export function noteEngineTurnOutcome(
   engine: string,
   result: EngineResult,
   model?: string | null,
   now: Date = new Date(),
+  startedAt?: Date,
 ): void {
   try {
     const limit = detectRateLimit(result);
@@ -80,7 +95,8 @@ export function noteEngineTurnOutcome(
     if (!servedATurn(result)) return;
     noteLoginWorked(engine);
     const record = readEngineHealth(now)[engine];
-    if (record && record.state !== "ok" && limitWindowBindsModel(record.window, model)) clearEngineHealth(engine);
+    if (!record || record.state === "ok" || !limitWindowBindsModel(record.window, model)) return;
+    if (!startedBefore(record, startedAt)) clearEngineHealth(engine);
   } catch {
     // best-effort only
   }
