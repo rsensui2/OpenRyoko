@@ -190,6 +190,13 @@ describe("config.yaml watcher against a real directory", () => {
     });
     startWatchers(callbacks);
     await Promise.all(realWatchers.map((watcher) => new Promise<void>((resolve) => watcher.once("ready", resolve))));
+    // "ready" can come before the poller has taken its first look at config.yaml,
+    // and that first look only records what it starts from: a replacement that
+    // lands ahead of it is never reported. On a busy runner the first round below
+    // did land ahead of it, and timed out. Give the poller its first look. (The
+    // gateway does not depend on this: its 30-second reconciliation picks up a
+    // change no event announced.)
+    await new Promise((resolve) => setTimeout(resolve, 300));
 
     for (let round = 1; round <= 3; round++) {
       replaceConfig(`engines:\n  default: codex\n  round: ${round}\n`);
