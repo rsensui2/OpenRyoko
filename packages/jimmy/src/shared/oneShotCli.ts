@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { resolveBin, formatSpawnError } from "./resolveBin.js";
-import { buildChildEnv } from "./childEnv.js";
+import { buildChildEnv, CLAUDE_LOCAL_ENV } from "./childEnv.js";
 
 export type OneShotEngine = "claude" | "codex";
 
@@ -34,7 +34,9 @@ export async function invokeOneShot(prompt: string, opts: OneShotOptions): Promi
     const resolvedBin = resolveBin(opts.bin);
     const proc = (opts.spawnFn ?? spawn)(resolvedBin, args, {
       stdio: ["ignore", "pipe", "pipe"],
-      env: buildChildEnv(),
+      // The Claude one-shot gets the same local launch guards as any gateway-run
+      // Claude; Codex has no such flag.
+      env: engine === "claude" ? { ...buildChildEnv(), ...CLAUDE_LOCAL_ENV } : buildChildEnv(),
       ...(cwd ? { cwd, detached: process.platform !== "win32" } : {}),
     });
 
