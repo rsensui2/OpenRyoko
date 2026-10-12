@@ -27,6 +27,7 @@ import {
   setCronJobEnabled,
   startScheduler,
   stopScheduler,
+  triggerCronJob,
 } from "../scheduler.js";
 
 const job = (id: string, extra: Partial<CronJob> = {}): CronJob => ({
@@ -213,5 +214,65 @@ describe("cron scheduler reconciliation", () => {
     expect(mocks.saveJobs).toHaveBeenCalledExactlyOnceWith([disabled]);
     expect(getCronJobScheduleStatus(disabled!)).toEqual({ state: "disabled", registered: false });
     expect(mocks.tasks[0]!.destroy).toHaveBeenCalledOnce();
+  });
+});
+
+// A config reload replaces the gateway's config object. A scheduler holding the
+// boot-time one kept alerting the old channel and starting sessions on the old
+// default engine/model until the gateway was restarted.
+describe("cron scheduler configuration", () => {
+  const bootConfig = { cron: { alertChannel: "C-old" }, engines: { default: "claude" } } as JinnConfig;
+  const reloadedConfig = { cron: { alertChannel: "C-new" }, engines: { default: "codex" } } as JinnConfig;
+
+  it("fires a scheduled job with the config that is current when it fires", async () => {
+    let live = bootConfig;
+    const getConfig = vi.fn(() => live);
+    const scheduled = job("scheduled");
+    startScheduler([scheduled], manager, getConfig, connectors);
+    // The gateway wires the thunk in before its live config binding exists.
+    expect(getConfig).not.toHaveBeenCalled();
+
+    live = reloadedConfig;
+    mocks.tasks[0]!.callback();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(mocks.runCronJob).toHaveBeenCalledExactlyOnceWith(scheduled, manager, reloadedConfig, connectors);
+  });
+
+  it("runs a manually triggered job (/cron run) with the current config", async () => {
+    let live = bootConfig;
+    const manual = job("manual", { enabled: false });
+    mocks.loadJobs.mockReturnValue([manual]);
+    startScheduler([manual], manager, () => live, connectors);
+
+    live = reloadedConfig;
+    expect(await triggerCronJob(" MANUAL ")).toEqual(manual);
+    expect(mocks.runCronJob).toHaveBeenCalledExactlyOnceWith(manual, manager, reloadedConfig, connectors);
+  });
+
+  it("keeps resolving the config on every fire rather than once", async () => {
+    let live = bootConfig;
+    const scheduled = job("repeating");
+    startScheduler([scheduled], manager, () => live, connectors);
+    mocks.tasks[0]!.callback();
+    await vi.advanceTimersByTimeAsync(20_000);
+    live = reloadedConfig;
+    mocks.tasks[0]!.callback();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(mocks.runCronJob.mock.calls.map(([, , config]) => config)).toEqual([bootConfig, reloadedConfig]);
+  });
+
+  // Connector reloads refill the gateway's one Map in place, so the Map itself
+  // (unlike the config) is safe to hold; it must not be copied at start.
+  it("hands each fire the live connector map, including connectors started after boot", async () => {
+    const live = new Map<string, Connector>();
+    const scheduled = job("delivery");
+    startScheduler([scheduled], manager, bootConfig, live);
+    const slack = { name: "slack" } as Connector;
+    live.set("slack", slack);
+    mocks.tasks[0]!.callback();
+    await vi.advanceTimersByTimeAsync(20_000);
+    const passed = mocks.runCronJob.mock.calls[0]![3] as Map<string, Connector>;
+    expect(passed).toBe(live);
+    expect(passed.get("slack")).toBe(slack);
   });
 });

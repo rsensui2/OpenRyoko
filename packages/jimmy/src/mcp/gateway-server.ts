@@ -11,9 +11,12 @@
  */
 
 import { createInterface } from "node:readline";
+import { readGatewayAuthToken } from "../gateway/auth.js";
 import { currentConversationFromEnv, isSendToCurrentConversation } from "./current-conversation.js";
 
 const GATEWAY_URL = process.env.JINN_GATEWAY_URL || "http://127.0.0.1:7777";
+/** This instance's home, passed by the gateway through the MCP config. */
+const GATEWAY_HOME = process.env.JINN_HOME;
 
 // ─── MCP Protocol Types ───
 
@@ -189,8 +192,22 @@ const TOOLS = [
 
 // ─── API Helpers ───
 
+/**
+ * Headers for a call to this instance's gateway. A gateway that requires auth
+ * (any network bind) answers 401 on /api/* without its bearer token, so every
+ * tool here failed on such an instance.
+ *
+ * The token is read from the instance home on each request, as the gateway's
+ * own callbacks and `ryoko api` do: it is never placed in this process's
+ * environment or in the MCP config file, and a gateway restart may rotate it.
+ */
+function gatewayHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  const token = GATEWAY_HOME ? readGatewayAuthToken(GATEWAY_HOME) : null;
+  return { ...extra, ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+}
+
 async function apiGet(path: string): Promise<unknown> {
-  const res = await fetch(`${GATEWAY_URL}${path}`);
+  const res = await fetch(`${GATEWAY_URL}${path}`, { headers: gatewayHeaders(), redirect: "error" });
   if (!res.ok) throw new Error(`API ${path}: ${res.status} ${res.statusText}`);
   return res.json();
 }
@@ -198,8 +215,9 @@ async function apiGet(path: string): Promise<unknown> {
 async function apiPost(path: string, body: unknown): Promise<unknown> {
   const res = await fetch(`${GATEWAY_URL}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: gatewayHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body),
+    redirect: "error",
   });
   if (!res.ok) {
     const text = await res.text();
@@ -211,8 +229,9 @@ async function apiPost(path: string, body: unknown): Promise<unknown> {
 async function apiPut(path: string, body: unknown): Promise<unknown> {
   const res = await fetch(`${GATEWAY_URL}${path}`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: gatewayHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body),
+    redirect: "error",
   });
   if (!res.ok) throw new Error(`API ${path}: ${res.status} ${res.statusText}`);
   return res.json();

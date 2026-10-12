@@ -2,12 +2,11 @@ import type { IncomingMessage as HttpRequest, ServerResponse } from "node:http";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import os from "node:os";
-import { pipeline } from "node:stream/promises";
-import { Readable } from "node:stream";
 import Busboy from "busboy";
+import { megabytes } from "../shared/attachment-download.js";
 import { FILES_DIR } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
+import { safeAttachmentName } from "../shared/safe-file-name.js";
 import { insertFile, getFile, listFiles, deleteFile, type FileMeta } from "../sessions/registry.js";
 import type { ApiContext } from "./api.js";
 
@@ -61,18 +60,39 @@ function mimeFromFilename(filename: string): string {
   return MIME_MAP[ext] || "application/octet-stream";
 }
 
-function expandPath(p: string): string {
-  if (p.startsWith("~/") || p === "~") {
-    return path.join(os.homedir(), p.slice(2));
-  }
-  return p;
-}
+/**
+ * The largest file POST /api/files stores — however it is sent. A multipart
+ * upload was always held to this; a JSON body with the file in base64 was
+ * not, and was read into memory in full whatever its size.
+ */
+export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
-function readBody(req: HttpRequest): Promise<string> {
+const exceedsLimit = (maxBytes: number): string => `File exceeds ${megabytes(maxBytes)} MB limit`;
+
+/** Room in a JSON upload for everything but the file: the name and the punctuation. */
+const JSON_ENVELOPE_BYTES = 64 * 1024;
+
+/**
+ * The request body as text, or null once it runs past `maxBytes`: from then
+ * on nothing more of it is kept, however much is still sent.
+ */
+function readBodyWithin(req: HttpRequest, maxBytes: number): Promise<string | null> {
   return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
+    let chunks: Buffer[] | null = [];
+    let received = 0;
+    req.on("data", (chunk: Buffer) => {
+      if (chunks === null) return;
+      received += chunk.length;
+      if (received <= maxBytes) {
+        chunks.push(chunk);
+        return;
+      }
+      chunks = null;
+      resolve(null);
+    });
+    req.on("end", () => {
+      if (chunks !== null) resolve(Buffer.concat(chunks).toString("utf-8"));
+    });
     req.on("error", reject);
   });
 }
@@ -96,13 +116,31 @@ function serverError(res: ServerResponse, message: string): void {
 
 interface UploadResult {
   id: string;
+  /** Already through {@link safeAttachmentName}: one path segment, never `..`. */
   filename: string;
   buffer: Buffer;
-  customPath: string | null;
-  open: boolean;
 }
 
-/** Save buffer to managed storage and optionally to a custom path. */
+/**
+ * What POST /api/files answers to a `path`. The route used to write a second
+ * copy of the upload to any path the request named — anywhere the gateway can
+ * write, config.yaml included. Nothing shipped ever sent one (the chat page
+ * uploads the file and nothing else), so the option is gone rather than
+ * fenced in; refusing it out loud beats storing the file and silently not
+ * writing the copy the caller asked for.
+ */
+const PATH_RETIRED = "`path` is no longer supported: an upload is kept in the gateway's own storage and read back with GET /api/files/:id";
+/** Likewise for `url`: the gateway fetched whatever URL it was given — the
+ *  cloud metadata address, its own API — and served the answer back. */
+const URL_RETIRED = "`url` is no longer supported: send the file's contents (multipart, or base64 in `content`)";
+/** And for `open`, which ran `open <the uploaded file>` on the gateway's
+ *  host: on a Mac that hands the upload to whatever application claims its
+ *  type, and where there is no such command the failed spawn, with nobody
+ *  listening for it, takes the gateway down. Nothing shipped sent it either. */
+const OPEN_RETIRED = "`open` is no longer supported: the gateway does not launch uploaded files";
+const BAD_FILENAME = "filename is required and must name a file";
+
+/** Save buffer to managed storage: files/<id>/<filename>, and nowhere else. */
 async function saveFile(result: UploadResult, context: ApiContext): Promise<FileMeta> {
   const fileDir = path.join(FILES_DIR, result.id);
   fs.mkdirSync(fileDir, { recursive: true });
@@ -115,22 +153,8 @@ async function saveFile(result: UploadResult, context: ApiContext): Promise<File
     filename: result.filename,
     size: result.buffer.length,
     mimetype,
-    path: result.customPath,
+    path: null,
   });
-
-  // Write to custom path if provided
-  if (result.customPath) {
-    const expanded = expandPath(result.customPath);
-    fs.mkdirSync(path.dirname(expanded), { recursive: true });
-    fs.writeFileSync(expanded, result.buffer);
-  }
-
-  // Open file if requested
-  if (result.open) {
-    const targetPath = result.customPath ? expandPath(result.customPath) : storagePath;
-    const { spawn } = await import("node:child_process");
-    spawn("open", [targetPath], { stdio: "ignore", detached: true }).unref();
-  }
 
   context.emit("file:uploaded", { id: result.id, filename: result.filename, size: result.buffer.length });
   logger.info(`File uploaded: ${result.filename} (${result.id}, ${result.buffer.length} bytes)`);
@@ -139,14 +163,14 @@ async function saveFile(result: UploadResult, context: ApiContext): Promise<File
 }
 
 /** Handle POST /api/files — multipart upload */
-async function handleMultipartUpload(req: HttpRequest, res: ServerResponse, context: ApiContext): Promise<void> {
+async function handleMultipartUpload(req: HttpRequest, res: ServerResponse, context: ApiContext, maxBytes: number): Promise<void> {
   return new Promise((resolve) => {
-    const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
-    const busboy = Busboy({ headers: req.headers, limits: { fileSize: MAX_FILE_SIZE } });
+    // busboy reports its limit when a file *reaches* it, so one byte more than
+    // ours: a file of exactly the limit is stored, as it is for a JSON upload.
+    const busboy = Busboy({ headers: req.headers, limits: { fileSize: maxBytes + 1 } });
     let filename = "";
     let fileBuffer: Buffer | null = null;
-    let customPath: string | null = null;
-    let open = false;
+    let refusal: string | null = null;
     let fileTruncated = false;
 
     busboy.on("file", (_fieldname: string, file: NodeJS.ReadableStream, info: { filename: string }) => {
@@ -158,13 +182,13 @@ async function handleMultipartUpload(req: HttpRequest, res: ServerResponse, cont
     });
 
     busboy.on("field", (name: string, val: string) => {
-      if (name === "path") customPath = val;
-      if (name === "open") open = val === "true" || val === "1";
+      if (name === "path" && val) refusal ??= PATH_RETIRED;
+      if (name === "open" && (val === "true" || val === "1")) refusal ??= OPEN_RETIRED;
     });
 
     busboy.on("finish", async () => {
       if (fileTruncated) {
-        badRequest(res, `File exceeds ${MAX_FILE_SIZE / 1024 / 1024} MB limit`);
+        badRequest(res, exceedsLimit(maxBytes));
         resolve();
         return;
       }
@@ -173,13 +197,17 @@ async function handleMultipartUpload(req: HttpRequest, res: ServerResponse, cont
         resolve();
         return;
       }
+      const safeName = safeAttachmentName(filename);
+      if (refusal !== null || safeName === null) {
+        badRequest(res, refusal ?? BAD_FILENAME);
+        resolve();
+        return;
+      }
       try {
         const meta = await saveFile({
           id: crypto.randomUUID(),
-          filename,
+          filename: safeName,
           buffer: fileBuffer,
-          customPath,
-          open,
         }, context);
         json(res, meta, 201);
       } catch (err) {
@@ -197,223 +225,53 @@ async function handleMultipartUpload(req: HttpRequest, res: ServerResponse, cont
   });
 }
 
-/** Handle POST /api/files — JSON body (base64 content or URL fetch) */
-async function handleJsonUpload(req: HttpRequest, res: ServerResponse, context: ApiContext): Promise<void> {
+/** Handle POST /api/files — JSON body (base64 content) */
+async function handleJsonUpload(req: HttpRequest, res: ServerResponse, context: ApiContext, maxBytes: number): Promise<void> {
+  // A body that cannot hold a file within the limit is not read: by its
+  // announced size where there is one, and by count while reading either way.
+  const bodyLimit = Math.ceil(maxBytes / 3) * 4 + JSON_ENVELOPE_BYTES;
+  const announced = Number(req.headers["content-length"] ?? Number.NaN);
+  if (Number.isFinite(announced) && announced > bodyLimit) return badRequest(res, exceedsLimit(maxBytes));
+  const raw = await readBodyWithin(req, bodyLimit);
+  if (raw === null) return badRequest(res, exceedsLimit(maxBytes));
+
   let body: Record<string, unknown>;
   try {
-    body = JSON.parse(await readBody(req));
+    body = JSON.parse(raw);
   } catch {
     return badRequest(res, "Invalid JSON body");
   }
 
-  const filename = body.filename as string | undefined;
-  const content = body.content as string | undefined;
-  const url = body.url as string | undefined;
-  const customPath = (body.path as string) || null;
-  const open = !!body.open;
+  if (!body || typeof body !== "object") return badRequest(res, "Invalid JSON body");
+  if (body.path) return badRequest(res, PATH_RETIRED);
+  if (body.url) return badRequest(res, URL_RETIRED);
+  if (body.open) return badRequest(res, OPEN_RETIRED);
 
-  if (!filename) return badRequest(res, "filename is required");
-  if (content && url) return badRequest(res, "content and url are mutually exclusive");
-  if (!content && !url) return badRequest(res, "content or url is required");
+  const filename = safeAttachmentName(body.filename);
+  const content = body.content;
 
+  if (filename === null) return badRequest(res, BAD_FILENAME);
+  if (typeof content !== "string" || !content) return badRequest(res, "content is required");
+
+  // Base64 decode
   let buffer: Buffer;
-
-  if (content) {
-    // Base64 decode
-    try {
-      buffer = Buffer.from(content, "base64");
-    } catch {
-      return badRequest(res, "Invalid base64 content");
-    }
-  } else {
-    // URL fetch
-    try {
-      const response = await fetch(url!);
-      if (!response.ok) {
-        return serverError(res, `Failed to fetch URL: ${response.status} ${response.statusText}`);
-      }
-      const arrayBuf = await response.arrayBuffer();
-      buffer = Buffer.from(arrayBuf);
-    } catch (err) {
-      return serverError(res, `Failed to fetch URL: ${err instanceof Error ? err.message : String(err)}`);
-    }
+  try {
+    buffer = Buffer.from(content, "base64");
+  } catch {
+    return badRequest(res, "Invalid base64 content");
   }
+  if (buffer.length > maxBytes) return badRequest(res, exceedsLimit(maxBytes));
 
   try {
     const meta = await saveFile({
       id: crypto.randomUUID(),
       filename,
       buffer,
-      customPath,
-      open,
     }, context);
     json(res, meta, 201);
   } catch (err) {
     serverError(res, err instanceof Error ? err.message : "Upload failed");
   }
-}
-
-// ── Transfer types ──────────────────────────────────────────────
-
-interface TransferSpec {
-  file: string;       // absolute local path OR file ID from /api/files
-  remotePath?: string; // destination path on remote (defaults to same relative path)
-}
-
-interface TransferRequest {
-  destination: string; // remote gateway URL or remote name from config
-  files: TransferSpec[];
-}
-
-interface TransferResult {
-  file: string;
-  remotePath: string | null;
-  status: "ok" | "error";
-  remoteId?: string;
-  error?: string;
-}
-
-const MAX_TRANSFER_SIZE = 50 * 1024 * 1024; // 50 MB
-
-/** Resolve a file spec to { buffer, filename, relativePath }. */
-function resolveFileSpec(spec: TransferSpec): { buffer: Buffer; filename: string; relativePath: string | null } {
-  const expanded = expandPath(spec.file);
-
-  // Try as absolute/home path first
-  if (fs.existsSync(expanded)) {
-    const stat = fs.statSync(expanded);
-    if (stat.size > MAX_TRANSFER_SIZE) {
-      throw new Error(`File ${spec.file} is ${(stat.size / 1024 / 1024).toFixed(1)} MB — exceeds 50 MB transfer limit`);
-    }
-    const buffer = fs.readFileSync(expanded);
-    const filename = path.basename(expanded);
-    // Compute relative path from ~/.jinn/ for default remotePath
-    const jinnHome = path.join(os.homedir(), ".jinn");
-    const relativePath = expanded.startsWith(jinnHome)
-      ? path.relative(jinnHome, expanded)
-      : null;
-    return { buffer, filename, relativePath };
-  }
-
-  // Try as file ID from managed storage
-  const meta = getFile(spec.file);
-  if (meta) {
-    const filePath = path.join(FILES_DIR, meta.id, meta.filename);
-    if (!fs.existsSync(filePath)) {
-      throw new Error(`Managed file ${spec.file} exists in DB but not on disk`);
-    }
-    const stat = fs.statSync(filePath);
-    if (stat.size > MAX_TRANSFER_SIZE) {
-      throw new Error(`File ${spec.file} is ${(stat.size / 1024 / 1024).toFixed(1)} MB — exceeds 50 MB transfer limit`);
-    }
-    return {
-      buffer: fs.readFileSync(filePath),
-      filename: meta.filename,
-      relativePath: meta.path || null,
-    };
-  }
-
-  throw new Error(`File not found: ${spec.file}`);
-}
-
-/** Resolve destination URL — accept raw URL or remote name from config. Whitelist is enforced after resolution. */
-function resolveDestination(destination: string, config: { remotes?: Record<string, { url: string }> }): string {
-  // If it looks like a URL, use directly
-  if (destination.startsWith("http://") || destination.startsWith("https://")) {
-    return destination.replace(/\/+$/, "");
-  }
-  // Look up in config remotes
-  const remote = config.remotes?.[destination];
-  if (!remote) {
-    throw new Error(`Unknown remote "${destination}". Add it to config.yaml remotes or use a full URL.`);
-  }
-  return remote.url.replace(/\/+$/, "");
-}
-
-/** Check if a destination URL is whitelisted in config remotes. */
-function isAllowedRemote(destUrl: string, config: { remotes?: Record<string, { url: string }> }): boolean {
-  if (!config.remotes) return false;
-  const normalized = destUrl.replace(/\/+$/, "");
-  return Object.values(config.remotes).some(r => r.url.replace(/\/+$/, "") === normalized);
-}
-
-/** POST /api/files/transfer — send files to a remote gateway. */
-async function handleTransfer(req: HttpRequest, res: ServerResponse, context: ApiContext): Promise<void> {
-  let body: Record<string, unknown>;
-  try {
-    body = JSON.parse(await readBody(req));
-  } catch {
-    return badRequest(res, "Invalid JSON body");
-  }
-
-  const destination = body.destination as string | undefined;
-  if (!destination) return badRequest(res, "destination is required");
-
-  // Normalize: accept single file spec or array
-  let fileSpecs: TransferSpec[];
-  if (body.files && Array.isArray(body.files)) {
-    fileSpecs = body.files as TransferSpec[];
-  } else if (body.file) {
-    fileSpecs = [{
-      file: body.file as string,
-      remotePath: body.remotePath as string | undefined,
-    }];
-  } else {
-    return badRequest(res, "file or files is required");
-  }
-
-  if (fileSpecs.length === 0) return badRequest(res, "files array is empty");
-
-  // Resolve and validate destination
-  const config = context.getConfig();
-  let destUrl: string;
-  try {
-    destUrl = resolveDestination(destination, config);
-  } catch (err) {
-    return badRequest(res, err instanceof Error ? err.message : String(err));
-  }
-
-  if (!isAllowedRemote(destUrl, config)) {
-    return json(res, { error: `Remote "${destUrl}" is not in config.yaml remotes whitelist` }, 403);
-  }
-
-  // Transfer each file
-  const results: TransferResult[] = [];
-  for (const spec of fileSpecs) {
-    try {
-      const { buffer, filename, relativePath } = resolveFileSpec(spec);
-      const targetPath = spec.remotePath || (relativePath ? `~/.jinn/${relativePath}` : null);
-
-      const uploadBody = {
-        filename,
-        content: buffer.toString("base64"),
-        path: targetPath,
-      };
-
-      const response = await fetch(`${destUrl}/api/files`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(uploadBody),
-      });
-
-      if (!response.ok) {
-        const errText = await response.text();
-        results.push({ file: spec.file, remotePath: targetPath, status: "error", error: `HTTP ${response.status}: ${errText}` });
-      } else {
-        const remoteMeta = await response.json() as { id: string };
-        results.push({ file: spec.file, remotePath: targetPath, status: "ok", remoteId: remoteMeta.id });
-      }
-    } catch (err) {
-      results.push({ file: spec.file, remotePath: spec.remotePath || null, status: "error", error: err instanceof Error ? err.message : String(err) });
-    }
-  }
-
-  const ok = results.filter(r => r.status === "ok").length;
-  const failed = results.filter(r => r.status === "error").length;
-  context.emit("file:transferred", { destination: destUrl, ok, failed });
-  logger.info(`File transfer to ${destUrl}: ${ok} ok, ${failed} failed`);
-
-  json(res, { destination: destUrl, results, summary: { ok, failed, total: results.length } });
 }
 
 /** Route handler for all /api/files endpoints. Returns true if handled. */
@@ -423,20 +281,15 @@ export async function handleFilesRequest(
   pathname: string,
   method: string,
   context: ApiContext,
+  maxUploadBytes: number = MAX_UPLOAD_BYTES,
 ): Promise<boolean> {
-  // POST /api/files/transfer — send files to remote gateway
-  if (method === "POST" && pathname === "/api/files/transfer") {
-    await handleTransfer(req, res, context);
-    return true;
-  }
-
   // POST /api/files — upload
   if (method === "POST" && pathname === "/api/files") {
     const contentType = (req.headers["content-type"] || "").toLowerCase();
     if (contentType.includes("multipart/form-data")) {
-      await handleMultipartUpload(req, res, context);
+      await handleMultipartUpload(req, res, context, maxUploadBytes);
     } else {
-      await handleJsonUpload(req, res, context);
+      await handleJsonUpload(req, res, context, maxUploadBytes);
     }
     return true;
   }
@@ -461,8 +314,11 @@ export async function handleFilesRequest(
   if (method === "GET" && dlMatch) {
     const meta = getFile(dlMatch[1]);
     if (!meta) { notFound(res); return true; }
-    const filePath = path.join(FILES_DIR, meta.id, meta.filename);
-    if (!fs.existsSync(filePath)) {
+    // A record written before file names were checked may point out of its
+    // directory; only what lies directly inside files/<id>/ is an upload.
+    const fileDir = path.join(FILES_DIR, meta.id);
+    const filePath = path.join(fileDir, meta.filename);
+    if (path.dirname(filePath) !== fileDir || !fs.existsSync(filePath)) {
       notFound(res);
       return true;
     }

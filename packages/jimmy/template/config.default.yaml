@@ -63,6 +63,12 @@ connectors:
     #   engine: codex
     #   model: gpt-5-nano
     #   timeoutMs: 30000
+    #
+    # Claude / Codex のログインが切れたとき、オペレータ本人が自分の DM から
+    # ログインし直せるようにする。デフォルトはオフ。portal.operatorSlackId が必須。
+    # 使い方と注意点は docs/connectors.md の「Provider Re-login」を参照。
+    # providerAuth:
+    #   enabled: true
 
 # MCPサーバーは従業員にブラウザ・検索・メッセージング機能を提供する。
 # Claude Codeセッションに --mcp-config 経由で自動注入される。
@@ -95,6 +101,8 @@ mcp:
 cron:
   # alertConnector: slack
   # alertChannel: "#alerts"
+  # 同じジョブで同じ失敗が続く間、アラートを再送しない時間（分）。0 で毎回送る。
+  # alertThrottleMinutes: 60
 
 # バックアップ（既定で有効。設定しなくても動く）
 # 1日1回、ホームの config.yaml・cron・人格と記憶・org・skills・docs・knowledge を
@@ -107,6 +115,14 @@ cron:
 #   retention: 14                 # アーカイブを残す日数（日ごとの最新。同じ日の分は直近3個まで。DBのコピーは7世代で固定）
 #   maxArchiveMb: 512             # 1回のアーカイブに入れるファイル合計の上限。超えたら書かずに失敗として報告する
 #   maxEntries: 50000             # 同じく、ファイル・ディレクトリ・symlink の数の上限（空のファイルも数える）
+
+# 同梱スキル（パッケージに入っているスキル）は gateway の起動時に同期される。
+# 新しく同梱されたものを追加し、手を入れていないものだけを新しい版に置き換える。編集したスキルと
+# symlink には触れず、自分で削除したスキルも戻さない（戻すときは ryoko migrate --restore-deleted-skills）。
+# 置き換える前の中身は .migration-backups/ に残る。docs/skills.md を参照。
+# 起動時の同期を止めるときだけ指定する（ryoko migrate は指定に関係なく同期する）:
+# skills:
+#   autoSync: false
 
 # portal.operatorSlackId / portal.operatorDiscordId = オペレータ本人の Slack ID と
 # Discord ユーザー ID（スノーフレーク。プロフィール右クリック → ユーザーIDをコピー）。
@@ -129,8 +145,8 @@ cron:
 # またいで再利用されるため、一度注入した記憶が履歴に残るのを防ぐ）。記入例:
 #   trustedSpeakers:
 #     - U0XXXXXXX   # 表示名（所属・関係のメモ）
-# 注意: portal ブロックの内側にはコメントを書かない（Web オンボーディングの
-# 部分書き換えがブロックを再生成するため、内側のコメントは保持されない）。
+# portal ブロックの内側に書いたコメント（上の行末メモなど）は、Web の設定画面や
+# オンボーディングで保存しても保たれる（書き換わるのは値が変わった行だけ）。
 portal:
   portalName: Ryoko
   language: Japanese

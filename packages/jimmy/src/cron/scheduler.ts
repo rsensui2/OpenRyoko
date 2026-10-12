@@ -33,17 +33,24 @@ let lastReloadAt: string | null = null;
 let lastJobsFingerprint: string | null = null;
 let configuredJobIds: string[] = [];
 let currentSessionManager: SessionManager;
-let currentConfig: JinnConfig;
+let resolveConfig: () => JinnConfig;
 let currentConnectors: Map<string, Connector>;
 
+/**
+ * Pass `config` as a thunk when it can be reloaded: a reload replaces the
+ * config object, so one captured here would keep firing with boot-time alert
+ * targets and engine defaults until restart. It is resolved each time a job
+ * fires and never at start. `connectors` needs no thunk — the gateway refills
+ * its one Map in place on a connector reload.
+ */
 export function startScheduler(
   jobs: CronJob[],
   sessionManager: SessionManager,
-  config: JinnConfig,
+  config: JinnConfig | (() => JinnConfig),
   connectors: Map<string, Connector>,
 ): void {
   currentSessionManager = sessionManager;
-  currentConfig = config;
+  resolveConfig = typeof config === "function" ? config : () => config;
   currentConnectors = connectors;
   running = true;
   reloadScheduler(jobs);
@@ -153,7 +160,7 @@ function scheduleJob(input: CronJob): void {
         const timer = setTimeout(() => {
           jitterTimers.delete(timer);
           if (!running || tasks.get(job.id) !== registration) return;
-          void runCronJob(job, currentSessionManager, currentConfig, currentConnectors)
+          void runCronJob(job, currentSessionManager, resolveConfig(), currentConnectors)
             .catch((error: unknown) => {
               logger.error(`Cron job "${job.name}" failed: ${String(error)}`);
             });
@@ -191,7 +198,7 @@ function jobFingerprint(job: CronJob): string {
 export async function triggerCronJob(idOrName: string): Promise<CronJob | undefined> {
   const job = findJob(idOrName);
   if (!job) return undefined;
-  await runCronJob(job, currentSessionManager, currentConfig, currentConnectors);
+  await runCronJob(job, currentSessionManager, resolveConfig(), currentConnectors);
   return job;
 }
 
