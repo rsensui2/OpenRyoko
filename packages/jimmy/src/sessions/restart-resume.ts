@@ -24,7 +24,7 @@
 import type { JinnConfig, JsonObject, Session } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
 import { postSessionNotification } from "./callbacks.js";
-import { hasUndeliveredReply } from "./origin-delivery.js";
+import { hasUndeliveredReply, silentOriginAnswer } from "./origin-delivery.js";
 import type { SessionQueue } from "./queue.js";
 import { getMessagePage, getSession, initDb, listSessions, updateSession, type SessionMessage } from "./registry.js";
 
@@ -84,10 +84,15 @@ export interface RestartNudgeSituation {
   /** A user message was recorded after the interruption and never answered:
    *  it was waiting in the queue and never reached the engine. */
   unseenUserMessage?: boolean;
-  /** The turn had finished and recorded its reply, so there is no work to pick
-   *  back up — but the reply is not known to have arrived: the process was gone
-   *  before the delivery came back, or the delivery failed and was recorded. */
-  reply?: "undelivered";
+  /**
+   * Set when the turn had finished and recorded its reply, so there is no work
+   * to pick back up.
+   * - "undelivered": the reply is not known to have arrived — the process was
+   *   gone before the delivery came back, or the delivery failed and was recorded.
+   * - "delivered": the reply went out. Such a session is nudged only for a
+   *   message that came in afterwards and was never answered.
+   */
+  reply?: "undelivered" | "delivered";
 }
 
 export interface RestartResumeDeps {
@@ -437,6 +442,86 @@ export function planRestartResumes(input: { candidates: Session[]; now: number }
   };
 }
 
+const OWN_RESTART = "If you restarted or updated the gateway yourself (for example `ryoko update --restart`), that restart is this one and it is done. Do NOT trigger it again";
+
+const transcriptOf = (session: Session): string => `GET /api/sessions/${session.id}?last=10`;
+
+/**
+ * Close a "nothing is left to post" step with how to end the turn that way.
+ * The answer to a nudge is posted to the conversation the session came from,
+ * so "it had arrived" would be one more post in it. Where an answer that posts
+ * nothing exists, the session is handed it — on a line of its own, because it
+ * has to be reproduced exactly.
+ */
+function withEndingWithoutAPost(step: string, session: Session): string[] {
+  const silent = silentOriginAnswer(session);
+  if (!silent) return [`${step} Whatever you answer is shown in this conversation, so keep it to one short line saying that nothing was left to send.`];
+  return [
+    `${step} Your answer to this message is posted to the conversation, and a line saying that it had arrived would be one more post there. To post nothing, end your answer with the line below — exactly as written, on a line of its own, outside any code block. Nothing of an answer that ends with it is posted (what you write above it stays in this session), so use it in that case only:`,
+    silent,
+  ];
+}
+
+/** The turn was cut off mid-flight: its work has to be picked back up. */
+function cutOffMessage(session: Session, interruptedAt: string, unseenUserMessage: boolean): string {
+  const transcript = transcriptOf(session);
+  const alreadyDelivered = "5. Only if you find that your answer to that request had already been delivered and nothing is left to do: do not post it a second time.";
+  return [
+    `${RESTART_NUDGE_PREFIX} Your previous turn in this conversation was cut off by a gateway restart at ${interruptedAt} — not by the user, and not by a mistake in your work.`,
+    "",
+    "Pick the request back up and finish it:",
+    "1. First re-check anything that was in flight (a command, a tool call, a delegated child, a detached job). Look at its actual state before you assume it finished or run it again.",
+    `2. ${OWN_RESTART} — confirm the result and report it.`,
+    unseenUserMessage
+      ? `3. The user wrote again while the gateway was restarting, and that message never reached you. Read this session's latest messages before acting — ${transcript} — and deal with it in the same answer.`
+      : `3. Read this session's latest messages before acting: ${transcript}. They show the request if you have no memory of the interrupted turn, and whether the user wrote again while the gateway was restarting — a user message with no reply after it is still waiting for an answer, whether or not it ever reached you.`,
+    "4. Then answer in the original conversation as usual; it is still waiting on you.",
+    // A message known to be waiting has to be answered: ending without a post is not on offer.
+    ...(unseenUserMessage ? [alreadyDelivered] : withEndingWithoutAPost(alreadyDelivered, session)),
+  ].join("\n");
+}
+
+/**
+ * The turn had finished and recorded its reply; the reply is not known to have
+ * arrived. This says what the note of a failed delivery says
+ * (recordFailedOriginDelivery): none of the reply arrived, or only the
+ * beginning — look first, send what is missing, repeat nothing. When that note
+ * is in the transcript, the two must not pull in different directions.
+ */
+function openDeliveryMessage(session: Session, interruptedAt: string, unseenUserMessage: boolean): string {
+  const allThere = "4. If all of it is there, do not post it a second time.";
+  return [
+    `${RESTART_NUDGE_PREFIX} The gateway restarted at ${interruptedAt}, just as your last reply in this conversation was being delivered — not something the user did, and not a mistake in your work. That reply is saved in this session, but the conversation may have seen none of it, or only the beginning.`,
+    "",
+    unseenUserMessage
+      ? "Your turn had finished, so there is no work to redo. What is open is the delivery, and a newer message:"
+      : "Your turn had finished, so there is no work to redo. Only the delivery is open:",
+    `1. Check the conversation itself (the thread or channel) for how much of that reply arrived. The reply as you wrote it is in this session: ${transcriptOf(session)}`,
+    "2. Send what is missing: your answer to this message is posted to the conversation. Do not repost a part that is already there.",
+    "3. If you cannot read the conversation, send the whole reply again, unchanged.",
+    ...(unseenUserMessage
+      ? [
+          allThere,
+          "5. The user also wrote again while the gateway was restarting, and that message never reached you. It is in the same transcript, with no reply after it — answer it in the same answer.",
+          `6. ${OWN_RESTART}.`,
+        ]
+      : [...withEndingWithoutAPost(allThere, session), `5. ${OWN_RESTART}.`]),
+  ].join("\n");
+}
+
+/** The turn had finished and its reply went out. All the restart left open is
+ *  a message that arrived afterwards and never reached the engine. */
+function newerMessageOnlyMessage(session: Session, interruptedAt: string): string {
+  return [
+    `${RESTART_NUDGE_PREFIX} The gateway restarted at ${interruptedAt} — not something the user did, and not a mistake in your work. Your last reply in this conversation had already been delivered: no turn of yours was cut off, and there is no work to redo.`,
+    "",
+    "What is still open is a newer message. The user wrote again while the gateway was restarting, and that message never reached you:",
+    `1. Read this session's latest messages: ${transcriptOf(session)}. The user message with no reply after it is the one that is waiting.`,
+    "2. Answer it in the original conversation as usual. Do not send your earlier reply again.",
+    `3. ${OWN_RESTART}.`,
+  ].join("\n");
+}
+
 /**
  * The wake-up itself. The session must know the break was the gateway's doing,
  * re-check whatever was mid-flight instead of assuming it ran or running it
@@ -450,45 +535,30 @@ export function planRestartResumes(input: { candidates: Session[]; now: number }
  * stamps the session afresh and the unseen message cannot be told apart any
  * more. The transcript shows it either way.
  *
- * A turn that had already recorded its reply gets a different message: there
- * is nothing to pick back up, only a reply that may not have arrived, and the
- * session has to be told to deliver it rather than redo the work or carry on
- * as if it had been cut off mid-flight. It says what the note of a failed
- * delivery says (recordFailedOriginDelivery): none of the reply arrived, or
- * only the beginning — look first, send what is missing, repeat nothing. When
- * that note is in the transcript, the two must not pull in different directions.
+ * A turn that had already recorded its reply gets a different message, because
+ * telling it that it was cut off mid-flight sends it after work that was never
+ * interrupted: there is nothing to pick back up — only a reply that may not
+ * have arrived, or, once that reply is known to have gone out, a newer message
+ * that nobody answered.
  */
 export function restartResumeMessage(session: Session, interruptedAt: string, situation: RestartNudgeSituation = {}): string {
-  const transcript = `GET /api/sessions/${session.id}?last=10`;
-  const ownRestart = "If you restarted or updated the gateway yourself (for example `ryoko update --restart`), that restart is this one and it is done. Do NOT trigger it again";
-  if (situation.reply === "undelivered") {
-    return [
-      `${RESTART_NUDGE_PREFIX} The gateway restarted at ${interruptedAt}, just as your last reply in this conversation was being delivered — not something the user did, and not a mistake in your work. That reply is saved in this session, but the conversation may have seen none of it, or only the beginning.`,
-      "",
-      "Your turn had finished, so there is no work to redo. Only the delivery is open:",
-      `1. Check the conversation itself (the thread or channel) for how much of that reply arrived. The reply as you wrote it is in this session: ${transcript}`,
-      "2. Send what is missing: your answer to this message is posted to the conversation. Do not repost a part that is already there.",
-      "3. If you cannot read the conversation, send the whole reply again, unchanged.",
-      "4. If all of it is there, do not post it a second time.",
-      `5. ${ownRestart}.`,
-    ].join("\n");
-  }
-  return [
-    `${RESTART_NUDGE_PREFIX} Your previous turn in this conversation was cut off by a gateway restart at ${interruptedAt} — not by the user, and not by a mistake in your work.`,
-    "",
-    "Pick the request back up and finish it:",
-    "1. First re-check anything that was in flight (a command, a tool call, a delegated child, a detached job). Look at its actual state before you assume it finished or run it again.",
-    `2. ${ownRestart} — confirm the result and report it.`,
-    situation.unseenUserMessage
-      ? `3. The user wrote again while the gateway was restarting, and that message never reached you. Read this session's latest messages before acting — ${transcript} — and deal with it in the same answer.`
-      : `3. Read this session's latest messages before acting: ${transcript}. They show the request if you have no memory of the interrupted turn, and whether the user wrote again while the gateway was restarting — a user message with no reply after it is still waiting for an answer, whether or not it ever reached you.`,
-    "4. Then answer in the original conversation as usual; it is still waiting on you. If your answer to that request had already been delivered and nothing is left to do, do not post it a second time.",
-  ].join("\n");
+  const unseenUserMessage = situation.unseenUserMessage === true;
+  if (situation.reply === "delivered") return newerMessageOnlyMessage(session, interruptedAt);
+  if (situation.reply === "undelivered") return openDeliveryMessage(session, interruptedAt, unseenUserMessage);
+  return cutOffMessage(session, interruptedAt, unseenUserMessage);
 }
 
 function busyProbe(deps: RestartResumeDeps): (session: Session) => boolean {
   const queue = deps.queue;
   return (session) => !!queue && (queue.isRunning(session.sessionKey) || queue.getPendingCount(session.sessionKey) > 0);
+}
+
+function nudgeSituation(session: Session, interruptedAt: string): RestartNudgeSituation {
+  const replyRecorded = readRestartResumeState(session.transportMeta).replyRecorded === true;
+  return {
+    unseenUserMessage: hasUserMessageSince(session.id, Date.parse(interruptedAt), false),
+    ...(replyRecorded ? { reply: replyDeliveryOpen(session) ? "undelivered" as const : "delivered" as const } : {}),
+  };
 }
 
 /** Wake one session, unless something else got to it first. `shuttingDown`
@@ -502,13 +572,9 @@ async function sendRestartNudge(sessionId: string, plannedAt: number, deps: Rest
     logger.info(`[restart-resume] Session ${sessionId} is active again — no nudge needed`);
     return;
   }
-  const replyRecorded = readRestartResumeState(session.transportMeta).replyRecorded === true;
   try {
     await (deps.post ?? postSessionNotification)(deps.port, sessionId, {
-      message: restartResumeMessage(session, interruptedAt, {
-        unseenUserMessage: hasUserMessageSince(sessionId, Date.parse(interruptedAt), false),
-        ...(replyRecorded && replyDeliveryOpen(session) ? { reply: "undelivered" as const } : {}),
-      }),
+      message: restartResumeMessage(session, interruptedAt, nudgeSituation(session, interruptedAt)),
       dedupeKey: `restart-resume:${sessionId}:${interruptedAt}`,
     });
   } catch (err) {

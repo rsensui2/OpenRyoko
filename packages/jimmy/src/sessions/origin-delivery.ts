@@ -1,5 +1,5 @@
 import type { Connector, Session } from "../shared/types.js";
-import { normalizeDelivery, deliverPublic, type DeliveryContext } from "./reply-disposition.js";
+import { normalizeDelivery, deliverPublic, SUPPRESS_PUBLIC_TRAILER, type DeliveryContext } from "./reply-disposition.js";
 import { insertMessage, updateSession } from "./registry.js";
 import { logger } from "../shared/logger.js";
 import { isPartialDelivery } from "../shared/partial-delivery.js";
@@ -48,7 +48,7 @@ export async function deliverToOriginConnector(
   if (!target.channel) return "no_target";
 
   const meta = (session.transportMeta ?? {}) as Record<string, unknown>;
-  const isDM = meta.channelType === "im";
+  const isDM = isOriginDM(session);
   const ctx: DeliveryContext = {
     // Unsolicited follow-up: never force a SAFE_ACK, just sanitize.
     addressed: false,
@@ -78,6 +78,11 @@ export async function deliverToOriginConnector(
   return "failed";
 }
 
+/** The origin conversation is a 1:1 DM with the operator. */
+function isOriginDM(session: Session): boolean {
+  return ((session.transportMeta ?? {}) as Record<string, unknown>).channelType === "im";
+}
+
 /** A reply_context that actually points at a conversation. Web/API sessions
  *  store a synthetic context ({source: "web"}) AND a pseudo connector name
  *  ("web" — createSession defaults connector to the source), so the connector
@@ -87,6 +92,19 @@ function hasAddressableTarget(session: Session): boolean {
   const rc = session.replyContext as Record<string, unknown> | null;
   if (!rc) return false;
   return [rc.channel, rc.chatId, rc.to].some((v) => typeof v === "string" && v.length > 0);
+}
+
+/**
+ * The answer with which a turn that deliverToOriginConnector() delivers posts
+ * nothing ("suppressed"). Such a turn was woken, not asked: when it finds it
+ * has nothing to say, a line saying so would still land in the conversation.
+ *
+ * Null where no such answer exists. A DM shows a turn's output as it stands,
+ * this line included; and a session with no conversation to deliver to has
+ * nothing to keep quiet in.
+ */
+export function silentOriginAnswer(session: Session): string | null {
+  return hasAddressableTarget(session) && !isOriginDM(session) ? SUPPRESS_PUBLIC_TRAILER : null;
 }
 
 /** True when this delivery outcome means a connector-origin conversation was

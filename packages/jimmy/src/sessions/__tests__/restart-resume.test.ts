@@ -29,6 +29,7 @@ import {
   type RestartResumeDeps,
 } from "../restart-resume.js";
 import { recordFailedOriginDelivery } from "../origin-delivery.js";
+import { SUPPRESS_PUBLIC_TRAILER } from "../reply-disposition.js";
 import type { JinnConfig, JsonObject, Session } from "../../shared/types.js";
 
 const NOW = Date.parse("2026-10-12T03:00:00.000Z");
@@ -593,6 +594,86 @@ describe("restartResumeMessage", () => {
     expect(message).not.toBe(restartResumeMessage(session, iso(MINUTE)));
   });
 
+  it("also points at a newer message when the reply's delivery is open", () => {
+    const session = interrupted(iso(MINUTE), { replyRecorded: true });
+
+    const both = restartResumeMessage(session, iso(MINUTE), { reply: "undelivered", unseenUserMessage: true });
+
+    expect(both).toContain("Send what is missing");
+    expect(both).toContain("never reached you");
+    expect(both).not.toContain("Only the delivery is open");
+    expect(restartResumeMessage(session, iso(MINUTE), { reply: "undelivered" })).not.toContain("never reached you");
+  });
+
+  it("says the reply went out and only a newer message is open, when that is all the restart left", () => {
+    // The turn was over and its reply delivered; a message that came in during
+    // the restart is what nobody answered. "Your previous turn was cut off —
+    // re-check what was in flight" would send the session after work that was
+    // never interrupted.
+    const session = interrupted(iso(MINUTE), { status: "idle", replyRecorded: true });
+
+    const message = restartResumeMessage(session, iso(MINUTE), { reply: "delivered", unseenUserMessage: true });
+
+    expect(message.startsWith(RESTART_NUDGE_PREFIX)).toBe(true);
+    expect(message).toContain(iso(MINUTE));
+    expect(message).toContain("had already been delivered");
+    expect(message).toContain("there is no work to redo");
+    expect(message).toContain("never reached you");
+    expect(message).toContain(`GET /api/sessions/${session.id}?last=10`);
+    expect(message).toContain("Do not send your earlier reply again");
+    expect(message).toContain("Do NOT trigger it again");
+    expect(message).not.toContain("cut off by a gateway restart");
+    expect(message).not.toContain("Pick the request back up");
+    expect(message).not.toContain("re-check");
+    // There is a message to answer, so ending without a post is not on offer.
+    expect(message).not.toContain(SUPPRESS_PUBLIC_TRAILER);
+  });
+
+  describe("when the session may find that nothing is left to post", () => {
+    // The nudge's answer is posted to the conversation. "Do not post it a
+    // second time" alone left the session to say "it had arrived" — in the
+    // customer's thread.
+    const variants = (session: Session) => [
+      restartResumeMessage(session, iso(MINUTE)),
+      restartResumeMessage(session, iso(MINUTE), { reply: "undelivered" }),
+    ];
+
+    it("hands a session in a channel or thread the answer that posts nothing, on a line of its own", () => {
+      const session = interrupted(iso(MINUTE));
+
+      for (const message of variants(session)) {
+        expect(message.split("\n")).toContain(SUPPRESS_PUBLIC_TRAILER);
+        expect(message).toContain("To post nothing");
+      }
+    });
+
+    it("tells a session in a DM to keep it to one line — a DM shows the turn's output as it stands", () => {
+      const session = interrupted(iso(MINUTE), { transportMeta: { channelType: "im" } });
+
+      for (const message of variants(session)) {
+        expect(message).not.toContain("RYOKO-DISPOSITION");
+        expect(message).toContain("one short line");
+      }
+    });
+
+    it("tells a session with no connector conversation the same", () => {
+      const created = createSession({ engine: "claude", source: "web", sourceRef: `web:nudge-${++sequence}`, connector: "web", sessionKey: `web:nudge-${sequence}`, replyContext: { source: "web" } });
+      updateSession(created.id, { status: "interrupted", transportMeta: withRestartInterruptedMark(created.transportMeta, iso(MINUTE)) });
+
+      for (const message of variants(getSession(created.id)!)) {
+        expect(message).not.toContain("RYOKO-DISPOSITION");
+        expect(message).toContain("one short line");
+      }
+    });
+
+    it("leaves it out when a newer message is known to be waiting for an answer", () => {
+      const session = interrupted(iso(MINUTE));
+
+      expect(restartResumeMessage(session, iso(MINUTE), { unseenUserMessage: true })).not.toContain("RYOKO-DISPOSITION");
+      expect(restartResumeMessage(session, iso(MINUTE), { reply: "undelivered", unseenUserMessage: true })).not.toContain("RYOKO-DISPOSITION");
+    });
+  });
+
   it("differs per interruption, so the route's duplicate check never swallows a later nudge", () => {
     const session = interrupted(iso(MINUTE));
     expect(restartResumeMessage(session, iso(MINUTE))).not.toBe(restartResumeMessage(session, iso(0)));
@@ -712,6 +793,33 @@ describe("resumeRestartInterruptedSessions", () => {
 
     expect(run.post).toHaveBeenCalledTimes(1);
     expect(run.post.mock.calls[0][2].message).toBe(restartResumeMessage(session, iso(MINUTE), { reply: "undelivered" }));
+  });
+
+  it("tells a session whose reply went out that only the newer message is open", async () => {
+    const session = interrupted(iso(MINUTE), { status: "idle", replyRecorded: true });
+    message(session.id, "user", 5 * MINUTE, "本番にデプロイして");
+    message(session.id, "assistant", MINUTE + 1_000, "デプロイが完了しました。");
+    message(session.id, "user", 30_000, "ついでにログも見ておいて");
+
+    const run = boot();
+    expect(run.summary).toMatchObject({ planned: 1, skipped: 0 });
+    await run.fire();
+
+    expect(run.post).toHaveBeenCalledTimes(1);
+    expect(run.post.mock.calls[0][2].message).toBe(restartResumeMessage(session, iso(MINUTE), { reply: "delivered", unseenUserMessage: true }));
+  });
+
+  it("tells a session whose reply did not go out about the newer message as well", async () => {
+    const session = interrupted(iso(MINUTE), { replyRecorded: true });
+    message(session.id, "user", 5 * MINUTE, "本番にデプロイして");
+    message(session.id, "assistant", MINUTE + 1_000, "デプロイが完了しました。");
+    message(session.id, "user", 30_000, "ついでにログも見ておいて");
+
+    const run = boot();
+    await run.fire();
+
+    expect(run.post).toHaveBeenCalledTimes(1);
+    expect(run.post.mock.calls[0][2].message).toBe(restartResumeMessage(session, iso(MINUTE), { reply: "undelivered", unseenUserMessage: true }));
   });
 
   it("tells the session about a message that was recorded after the interruption but never answered", async () => {
