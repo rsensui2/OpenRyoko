@@ -26,6 +26,7 @@ import {
 } from "../shared/templateReplacements.js";
 import { parseConfigPatch, applyPatchOps, type PatchOutcome } from "../shared/configPatch.js";
 import { auditGatewayReferences } from "./gateway-audit.js";
+import { migrationNeedsSession } from "./migration-declarations.js";
 import { syncInstanceBundledSkills } from "../skills-sync/instance.js";
 import { printable } from "../skills-sync/names.js";
 import type { BundledSkillSync, KeepReason, KeptSkill } from "../skills-sync/types.js";
@@ -487,6 +488,9 @@ export async function runMigrate(opts: {
  * Nothing is written into the directory of a bundled skill the sync has settled —
  * one it brought up to date, retired, or found deleted by the operator. Only skills
  * the user edited are still left to the AI merge.
+ *
+ * The version is recorded only when nothing was left for the AI merge and no pending
+ * migration declares that it needs an AI session or the owner.
  */
 async function applyAutoMigrations(
   pending: string[],
@@ -571,8 +575,15 @@ async function applyAutoMigrations(
   // Idempotent, so it is safe to run even when files are skipped below.
   const configChanges = applyConfigPatches(pending);
 
-  if (skippedExisting > 0) {
+  // What --auto did above is the mechanical part. A migration that declares it needs
+  // an AI session or the owner (`auto: false` in MIGRATION.md) is not done by that,
+  // whether or not any of its files happened to conflict.
+  const needSession = pending.filter((version) => migrationNeedsSession(version));
+  if (skippedExisting > 0 || needSession.length > 0) {
     console.log(`\n${YELLOW}Auto-migration partially applied.${RESET} ${applied} file(s) added, ${configChanges} config value(s) updated, ${skippedExisting} existing file(s) need AI merge.`);
+    if (needSession.length > 0) {
+      console.log(`${YELLOW}These migrations need an AI session or the owner, and --auto does not complete them:${RESET} ${needSession.join(", ")}`);
+    }
     console.log(`${YELLOW}Version was not updated.${RESET} Run ${RESET}ryoko migrate${YELLOW} (without --auto) to merge the skipped files and complete the migration.${RESET}`);
     console.log(`${DIM}Staged migration files remain in ${MIGRATIONS_DIR}.${RESET}\n`);
     return;

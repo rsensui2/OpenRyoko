@@ -75,6 +75,14 @@ describe("shipped instruction templates", () => {
     expect(read("migrations/2026.10.9/files/skills/migrate/SKILL.md")).toBe(read("skills/migrate/SKILL.md"));
   });
 
+  it("tells whoever writes a migration how to keep --auto from recording it as done", () => {
+    const migrate = read("skills/migrate/SKILL.md");
+    expect(migrate).toMatch(/^auto: false$/m);
+    expect(migrate).toMatch(/migration を書くとき/);
+    // The migration that showed why: its owner-facing section must not ride on a file conflict.
+    expect(read("migrations/2026.10.9/MIGRATION.md")).toMatch(/^---\n[\s\S]*?^auto: false$[\s\S]*?^---$/m);
+  });
+
   it("has the migrate skill rely on the list in its prompt, not on command output it never sees", () => {
     const migrate = read("skills/migrate/SKILL.md");
     // `ryoko migrate` prints "[skill kept]" lines to the terminal; the AI it then starts does not get them.

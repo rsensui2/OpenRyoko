@@ -188,6 +188,106 @@ describe("migrate: AI session launcher", () => {
   });
 });
 
+describe("migrate: migrations that need an AI session or the owner", () => {
+  const dirent = (name: string, directory: boolean) => ({ name, isDirectory: () => directory, isFile: () => !directory, isSymbolicLink: () => false });
+  const output = () => vi.mocked(console.log).mock.calls.map((call) => String(call[0])).join("\n");
+  const stampedVersions = () => mockWriteFileSync.mock.calls
+    .filter(([file]) => file === CONFIG_PATH)
+    .map(([, content]) => /version: (\S+)/.exec(String(content))?.[1]);
+
+  /** Migration 1.1.0, with this MIGRATION.md, shipping one new doc that conflicts with nothing. */
+  function ship(migrationMd: string): void {
+    const files = path.join(MIGRATIONS_DIR, "1.1.0", "files");
+    const tree: Record<string, ReturnType<typeof dirent>[]> = {
+      [files]: [dirent("docs", true)],
+      [path.join(files, "docs")]: [dirent("new.md", false)],
+    };
+    mockReaddirSync.mockImplementation(((dir: string) => tree[dir] ?? []) as never);
+    mockExistsSync.mockImplementation((file) => String(file) !== path.join(JINN_HOME, "docs", "new.md"));
+    vi.mocked(fs.readFileSync).mockImplementation(((file: fs.PathOrFileDescriptor) =>
+      (String(file).endsWith(path.join("1.1.0", "MIGRATION.md")) ? migrationMd : "jinn:\n  version: 1.0.0\n")) as typeof fs.readFileSync);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(true);
+    mockReaddirSync.mockReturnValue([]);
+    vi.mocked(fs.readFileSync).mockReset();
+    mockSync.mockReset();
+    mockSync.mockReturnValue(synced());
+    lstatLikeExists();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.mocked(console.log).mockRestore();
+  });
+
+  it("--auto does not record a migration that declares auto: false, though none of its files conflict", async () => {
+    ship("---\nauto: false\n---\n# 1.1.0\n\n## Confirm with the owner\n");
+    const { runMigrate } = await import("../migrate.js");
+
+    await runMigrate({ auto: true });
+
+    // Until now this was held back only when the migration happened to ship a file the
+    // home already had. The owner's part must not depend on that accident.
+    expect(stampedVersions()).toEqual([]);
+    expect(mockRmSync).not.toHaveBeenCalled();
+    expect(mockExecFileSync).not.toHaveBeenCalled();
+    expect(output()).toMatch(/1\.1\.0/);
+    expect(output()).toMatch(/Version was not updated/);
+    expect(output()).toMatch(/ryoko migrate.*\(without --auto\)/);
+  });
+
+  it("--auto still applies what it safely can from that migration", async () => {
+    ship("---\nauto: false\n---\n# 1.1.0\n");
+    const { runMigrate } = await import("../migrate.js");
+
+    await runMigrate({ auto: true });
+
+    expect(mockWriteFileSync.mock.calls.map((call) => String(call[0]))).toContain(path.join(JINN_HOME, "docs", "new.md"));
+    expect(stampedVersions()).toEqual([]);
+  });
+
+  it("--auto records the same migration when it makes no such declaration", async () => {
+    ship("# 1.1.0\n\nA new doc. Nothing to do by hand.\n");
+    const { runMigrate } = await import("../migrate.js");
+
+    await runMigrate({ auto: true });
+
+    expect(stampedVersions()).toEqual(["1.1.0"]);
+    expect(output()).not.toMatch(/need an AI session/);
+  });
+
+  it("--auto holds back when the declaration is unreadable rather than guess", async () => {
+    ship("---\nauto: [\n---\n# 1.1.0\n");
+    const { runMigrate } = await import("../migrate.js");
+
+    await runMigrate({ auto: true });
+
+    expect(stampedVersions()).toEqual([]);
+  });
+
+  it("takes the declaration from the package, which the home cannot edit", async () => {
+    ship("---\nauto: false\n---\n# 1.1.0\n");
+    const { runMigrate } = await import("../migrate.js");
+
+    await runMigrate({ auto: true });
+
+    const reads = vi.mocked(fs.readFileSync).mock.calls.map((call) => String(call[0])).filter((file) => file.endsWith("MIGRATION.md"));
+    expect(reads).toEqual([path.join(TEMPLATE_DIR, "migrations", "1.1.0", "MIGRATION.md")]);
+  });
+
+  it("the AI run is unaffected: applying such a migration is exactly its job", async () => {
+    ship("---\nauto: false\n---\n# 1.1.0\n");
+    const { runMigrate } = await import("../migrate.js");
+
+    await runMigrate({});
+
+    expect(mockExecFileSync).toHaveBeenCalledOnce();
+  });
+});
+
 describe("migrate: bundled skill sync", () => {
   const dirent = (name: string, directory: boolean) => ({
     name,
