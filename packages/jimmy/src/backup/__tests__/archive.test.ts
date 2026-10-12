@@ -263,21 +263,24 @@ describe("createHomeArchive", () => {
     // gateway would hold in memory to archive.
     const root = tempDir();
     const home = makeHome(root);
+    // Eighty of each, against a limit of sixty: three times the limit is as
+    // good as three hundred times for showing where the walk stops, and every
+    // file made here is one this test waits on when the disk is busy.
     const flood: Record<string, string> = {};
-    for (let index = 0; index < 400; index += 1) flood[`knowledge/flood/d${index}/empty-${index}`] = "";
+    for (let index = 0; index < 80; index += 1) flood[`knowledge/flood/d${index}/empty-${index}`] = "";
     writeTree(home, flood);
     const stats = vi.spyOn(fs.promises, "lstat");
 
-    const failure = await archiveInto(root, home, { limits: { maxEntries: 120, maxBytes: 1024 ** 3 } }).catch((error: unknown) => error);
+    const failure = await archiveInto(root, home, { limits: { maxEntries: 60, maxBytes: 1024 ** 3 } }).catch((error: unknown) => error);
     const looked = stats.mock.calls.length;
     stats.mockRestore();
 
     expect(failure).toBeInstanceOf(ArchiveTooLargeError);
-    expect((failure as Error).message).toMatch(/more than 120 files and directories/);
+    expect((failure as Error).message).toMatch(/more than 60 files and directories/);
     expect((failure as Error).message).toMatch(/backup\.maxEntries/);
     expect((failure as Error).message).toMatch(/knowledge/);
-    // It gave up at the limit instead of listing all eight hundred first.
-    expect(looked).toBeLessThan(300);
+    // It gave up at the limit instead of listing all hundred and sixty of the flood first.
+    expect(looked).toBeLessThan(120);
     expect(fs.existsSync(path.join(root, "backups")) ? fs.readdirSync(path.join(root, "backups")) : []).toEqual([]);
   });
 
@@ -287,10 +290,10 @@ describe("createHomeArchive", () => {
     // first of them is counted, and the entry limit is reached too late.
     const root = tempDir();
     const home = makeHome(root);
-    writeTree(home, Object.fromEntries(Array.from({ length: 400 }, (_, index) => [`knowledge/empty-${index}`, ""])));
+    writeTree(home, Object.fromEntries(Array.from({ length: 80 }, (_, index) => [`knowledge/empty-${index}`, ""])));
     const wholeListings = [vi.spyOn(fs.promises, "readdir"), vi.spyOn(fs, "readdirSync")];
 
-    const failure = await archiveInto(root, home, { limits: { maxEntries: 120, maxBytes: 1024 ** 3 } }).catch((error: unknown) => error);
+    const failure = await archiveInto(root, home, { limits: { maxEntries: 60, maxBytes: 1024 ** 3 } }).catch((error: unknown) => error);
     const ok = await createHomeArchive({
       home, destination: path.join(root, "backups", "home-20261012T040000Z.tar.gz"), id: "home-20261012T040000Z", createdAt: AT,
     });
@@ -298,7 +301,7 @@ describe("createHomeArchive", () => {
     for (const spy of wholeListings) spy.mockRestore();
 
     expect(failure).toBeInstanceOf(ArchiveTooLargeError);
-    expect(ok.files).toBe(Object.keys(HOME_CONTENT).length + 400);
+    expect(ok.files).toBe(Object.keys(HOME_CONTENT).length + 80);
     expect(calls).toEqual([0, 0]);
   });
 
@@ -323,7 +326,7 @@ describe("createHomeArchive", () => {
     const root = tempDir();
     const home = makeHome(root);
     const long: Record<string, string> = {};
-    for (let index = 0; index < 130; index += 1) long[`knowledge/${"deep-directory-name/".repeat(4)}note-${index}.md`] = "x";
+    for (let index = 0; index < 12; index += 1) long[`knowledge/${"deep-directory-name/".repeat(4)}note-${index}.md`] = "x";
     writeTree(home, long);
 
     const result = await archiveInto(root, home, { limits: { maxEntries: 50_000, maxBytes: 1024 ** 3, maxPathBytes: 60 } });
@@ -362,34 +365,41 @@ describe("createHomeArchive", () => {
   it("records only the first hundred things it skipped, and says how many there were", async () => {
     const root = tempDir();
     const home = makeHome(root);
+    // A dozen past the hundred that are kept: what is tested is the cut-off and the count beyond it.
     const long: Record<string, string> = {};
-    for (let index = 0; index < 150; index += 1) long[`knowledge/a-name-well-past-the-limit-${String(index).padStart(3, "0")}.md`] = "x";
+    for (let index = 0; index < 112; index += 1) long[`knowledge/a-name-well-past-the-limit-${String(index).padStart(3, "0")}.md`] = "x";
     writeTree(home, long);
 
     const result = await archiveInto(root, home, { limits: { maxEntries: 50_000, maxBytes: 1024 ** 3, maxPathBytes: 40 } });
 
     expect(result.skipped).toHaveLength(100);
-    expect(result.skippedCount).toBe(150);
+    expect(result.skippedCount).toBe(112);
     expect((await inspectHomeArchive(result.file)).manifest!.skipped).toHaveLength(100);
     expect(result.warnings.length).toBeLessThan(20);
-    expect(result.warnings.join("\n")).toMatch(/150/);
+    expect(result.warnings.join("\n")).toMatch(/112/);
   });
 
   it("refuses a home whose list of files alone is too large to record", async () => {
     // The manifest names every entry, so a few dozen entries with enormous
     // names cost what thousands of ordinary ones do.
     const root = tempDir();
-    const home = makeHome(root);
+    // A home of nothing but these: with no short names beside them to bring
+    // the average down, two dozen long ones are already too much to list.
+    const home = path.join(root, "home");
     const long: Record<string, string> = {};
     const directory = `knowledge/${"n".repeat(240)}/${"n".repeat(240)}/${"n".repeat(240)}`;
-    for (let index = 0; index < 110; index += 1) long[`${directory}/note-${index}.md`] = "x";
+    for (let index = 0; index < 24; index += 1) long[`${directory}/note-${index}.md`] = "x";
     writeTree(home, long);
+    const entries = 4 + 24;
 
-    // 150 entries are allowed, and this home has fewer: it is the names that do not fit.
-    const failure = await archiveInto(root, home, { limits: { maxEntries: 150, maxBytes: 1024 ** 3 } }).catch((error: unknown) => error);
+    // Thirty entries are allowed, and this home has fewer: it is the names that do not fit.
+    expect(entries).toBeLessThan(30);
+    const failure = await archiveInto(root, home, { limits: { maxEntries: 30, maxBytes: 1024 ** 3 } }).catch((error: unknown) => error);
 
     expect(failure).toBeInstanceOf(ArchiveTooLargeError);
     expect((failure as Error).message).toMatch(/list of what it holds/);
+    // Not the entry limit, which a home of twenty-eight entries is within.
+    expect((failure as Error).message).not.toMatch(/more than 30 files and directories/);
     expect(fs.readdirSync(path.join(root, "backups"))).toEqual([]);
   });
 
@@ -418,7 +428,7 @@ describe("createHomeArchive", () => {
     // replace, out of a home that as a whole may be far past the limits.
     const root = tempDir();
     const home = makeHome(root);
-    writeTree(home, Object.fromEntries(Array.from({ length: 300 }, (_, index) => [`knowledge/flood/empty-${index}`, ""])));
+    writeTree(home, Object.fromEntries(Array.from({ length: 30 }, (_, index) => [`knowledge/flood/empty-${index}`, ""])));
     fs.symlinkSync("../docs/overview.md", path.join(home, "knowledge", "overview-link.md"));
 
     const result = await archiveInto(root, home, {
@@ -724,10 +734,13 @@ describe("readHomeArchive, and how much of a file it will read", () => {
   const manifestBlocks = (): Buffer[] => fileBlocks(MANIFEST_ENTRY_PATH, "{}");
 
   it("stops at data that goes on after the end of the archive, even when it is only zeroes", async () => {
-    // Sixty-four megabytes of zeroes in sixty-four kilobytes of gzip.
+    // Zeroes cost nothing to store: a megabyte of them here is a kilobyte of
+    // gzip, and a hundred megabytes would be a hundred. One megabyte is past
+    // what may follow the marker sixteen times over, which is all this needs -
+    // the test does not have to build the large file to show the small one is refused.
     const padded = [...fileBlocks("config.yaml", "port: 1\n"), ...manifestBlocks(), TAR_TRAILER];
-    const endless = gzipInto([...padded, Buffer.alloc(64 * 1024 * 1024)]);
-    expect(fs.statSync(endless).size).toBeLessThan(128 * 1024);
+    const endless = gzipInto([...padded, Buffer.alloc(1024 * 1024)]);
+    expect(fs.statSync(endless).size).toBeLessThan(4 * 1024);
 
     await expect(readHomeArchive(endless, () => undefined)).rejects.toThrow(/after the end of the archive/);
     expect((await inspectHomeArchive(endless)).problems).toEqual([expect.stringMatching(/after the end of the archive/)]);
@@ -753,13 +766,13 @@ describe("readHomeArchive, and how much of a file it will read", () => {
   });
 
   it("stops unpacking once the stream is past anything its limits could account for", async () => {
-    // Pax records with no entry behind them: four megabytes that are neither an entry nor content.
+    // Pax records with no entry behind them: a megabyte that is neither an entry nor content.
     const record = Buffer.from("13 comment=x\n", "latin1");
     const announcesNothing = Buffer.concat([
       encodeTarHeaderBlock({ name: "pax", mode: 0o644, size: record.length, mtimeSeconds: 0, typeflag: "x" }), record, tarPadding(record.length),
     ]);
     const bloated = gzipInto([
-      ...Array.from({ length: 4000 }, () => announcesNothing), ...fileBlocks("config.yaml", "port: 1\n"), ...manifestBlocks(), TAR_TRAILER,
+      ...Array.from({ length: 1000 }, () => announcesNothing), ...fileBlocks("config.yaml", "port: 1\n"), ...manifestBlocks(), TAR_TRAILER,
     ]);
 
     await expect(readHomeArchive(bloated, () => undefined, TIGHT)).rejects.toThrow(/unpacks to more than/);

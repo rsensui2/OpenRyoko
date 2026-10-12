@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { damageDatabase } from "../../backup/__tests__/fixture.js";
+import { damageDatabase, hungDriver, openForWriting, until } from "../../backup/__tests__/fixture.js";
 import { findDatabaseProblems, integrityCheckTimeoutMs } from "../backup-integrity.js";
 
 /* The check a database copy has to pass before it is given its name.
@@ -26,7 +26,7 @@ function seeded(journal: "wal" | "delete" = "wal"): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ryoko-backup-integrity-"));
   roots.push(root);
   const file = path.join(root, "copy.db");
-  const database = new Database(file);
+  const database = openForWriting(file);
   database.pragma(`journal_mode = ${journal}`);
   database.exec("CREATE TABLE sessions (id INTEGER PRIMARY KEY, label TEXT NOT NULL)");
   const insert = database.prepare("INSERT INTO sessions (label) VALUES (?)");
@@ -110,47 +110,56 @@ describe("findDatabaseProblems", () => {
   });
 
   /**
-   * A stand-in for the SQLite driver whose check never comes back. It leaves
-   * the sidecars a real one would, and keeps stamping a file so that whether it
-   * is still running can be seen from outside.
+   * Runs a check on a driver that hangs until its time limit passes, and
+   * returns what it rejected with.
+   *
+   * The limit is an hour on a clock the test holds. Nothing here depends on
+   * how fast the machine is: the worker is waited for until it really is
+   * inside the check, however long that takes on a busy day, and only then is
+   * the hour let pass. A real limit of a few hundred milliseconds raced the
+   * worker's start-up, and on a loaded machine the limit won - leaving a test
+   * about a hung check with no check to have hung.
    */
-  function hungDriver(directory: string): { driver: string; beat: string } {
-    const driver = path.join(directory, "hung-driver.cjs");
-    const beat = path.join(directory, "still-running");
-    fs.writeFileSync(driver, `
-      const fs = require("node:fs");
-      module.exports = class Hung {
-        constructor(file) { for (const suffix of ["-wal", "-shm"]) if (!fs.existsSync(file + suffix)) fs.writeFileSync(file + suffix, ""); }
-        pragma() { for (let turn = 0; ; turn += 1) fs.writeFileSync(${JSON.stringify(beat)}, String(turn)); }
-        close() {}
-      };
-    `);
-    return { driver, beat };
+  async function timedOut(file: string, hung: ReturnType<typeof hungDriver>): Promise<Error> {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const outcome = findDatabaseProblems(file, { driver: hung.driver, timeoutMs: 60 * 60_000 })
+        .then(() => new Error("the check answered"), (error: Error) => error);
+      await until(() => fs.existsSync(hung.reached));
+      vi.advanceTimersByTime(60 * 60_000);
+      return await outcome;
+    } finally {
+      vi.useRealTimers();
+    }
   }
-
-  const pause = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms); });
 
   it("stops a check that does not answer in time, and reports it as one that could not be run", async () => {
     // With no limit, a check that hung held the backup that was waiting for it,
     // and the scheduler behind that, until the gateway was restarted.
     const file = seeded("delete");
-    const { driver, beat } = hungDriver(path.dirname(file));
+    const hung = hungDriver(path.dirname(file));
 
-    await expect(findDatabaseProblems(file, { driver, timeoutMs: 300 })).rejects.toThrow(/integrity check could not be run.*did not answer within/s);
+    const rejection = await timedOut(file, hung);
 
-    // Stopped, not abandoned: the thread is no longer running.
-    const afterwards = fs.readFileSync(beat, "utf8");
-    await pause(150);
-    expect(fs.readFileSync(beat, "utf8")).toBe(afterwards);
+    expect(rejection.message).toMatch(/integrity check could not be run.*did not answer within 3600 seconds/s);
+    // Stopped, not abandoned: the mark the thread kept stamping stays where it
+    // is. Waiting here cannot make this fail on a slow machine - a thread that
+    // has ended stamps nothing however long it is given - it only gives one
+    // that was left running the time to show itself.
+    const stamped = fs.readFileSync(hung.beat, "utf8");
+    await new Promise<void>((resolve) => { setTimeout(resolve, 50); });
+    expect(fs.readFileSync(hung.beat, "utf8")).toBe(stamped);
   });
 
   it("clears away what the stopped check had put beside the file, and nothing that was there before", async () => {
     const file = seeded("delete");
-    const { driver } = hungDriver(path.dirname(file));
+    const hung = hungDriver(path.dirname(file));
     fs.writeFileSync(`${file}-wal`, "was here before the check");
 
-    await expect(findDatabaseProblems(file, { driver, timeoutMs: 300 })).rejects.toThrow(/did not answer within/);
+    const rejection = await timedOut(file, hung);
 
+    expect(rejection.message).toMatch(/did not answer within/);
+    // The -shm was the stand-in driver's doing, as a real one's would be: it was there while the check hung.
     expect(fs.existsSync(`${file}-shm`)).toBe(false);
     expect(fs.readFileSync(`${file}-wal`, "utf8")).toBe("was here before the check");
   });

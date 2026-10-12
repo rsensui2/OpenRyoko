@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { damageDatabase, sha256 } from "../../backup/__tests__/fixture.js";
+import { damageDatabase, hungDriver, openForWriting, sha256, until } from "../../backup/__tests__/fixture.js";
 import { createDailyDatabaseBackup, DatabaseCopyDamagedError } from "../backup.js";
 import { findDatabaseProblems } from "../backup-integrity.js";
 
@@ -36,9 +36,9 @@ describe("daily database backup", () => {
     roots.push(root);
     const database = new Database(":memory:");
     database.exec("CREATE TABLE t (id INTEGER)");
-    for (const day of ["2026-08-15", "2026-08-16", "2026-08-17"]) {
-      await createDailyDatabaseBackup(database, { directory: root, now: new Date(`${day}T00:00:00Z`), retention: 2 });
-    }
+    // The two days before are there by name; the third day's copy is the one that is made, and that trims.
+    earlierCopies(root, "sessions", ["2026-08-15", "2026-08-16"]);
+    await createDailyDatabaseBackup(database, { directory: root, now: new Date("2026-08-17T00:00:00Z"), retention: 2 });
     expect(fs.readdirSync(root).sort()).toEqual(["sessions-2026-08-16.db", "sessions-2026-08-17.db"]);
     database.close();
   });
@@ -65,11 +65,11 @@ describe("daily database backup", () => {
     roots.push(root);
     const database = new Database(":memory:");
     database.exec("CREATE TABLE t (id INTEGER)");
-    for (const day of ["2026-08-14", "2026-08-15", "2026-08-16", "2026-08-17"]) {
-      const now = new Date(`${day}T00:00:00Z`);
-      await createDailyDatabaseBackup(database, { directory: root, now, retention: 3 });
-      await createDailyDatabaseBackup(database, { directory: root, now, retention: 2, name: "workflows" });
-    }
+    // Three earlier days of each, there by name; then the fourth day's copy of each, kept to a different number.
+    for (const name of ["sessions", "workflows"] as const) earlierCopies(root, name, ["2026-08-14", "2026-08-15", "2026-08-16"]);
+    const now = new Date("2026-08-17T00:00:00Z");
+    await createDailyDatabaseBackup(database, { directory: root, now, retention: 3 });
+    await createDailyDatabaseBackup(database, { directory: root, now, retention: 2, name: "workflows" });
     database.close();
 
     expect(fs.readdirSync(root).sort()).toEqual([
@@ -126,7 +126,7 @@ describe("daily database backup", () => {
   function registryOnDisk(root: string, options: { damaged?: boolean } = {}): Database.Database {
     const file = path.join(root, "home", "registry.db");
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    const writer = new Database(file);
+    const writer = openForWriting(file);
     writer.pragma("journal_mode = WAL");
     writer.exec("CREATE TABLE sessions (id INTEGER PRIMARY KEY, label TEXT NOT NULL)");
     const insert = writer.prepare("INSERT INTO sessions (label) VALUES (?)");
@@ -137,6 +137,17 @@ describe("daily database backup", () => {
   }
 
   const DAY = new Date("2026-08-17T12:00:00.000Z");
+
+  /**
+   * The copies of earlier days, as files that only carry their names. Which
+   * copies are kept is decided by the names alone, so a test about that does
+   * not have to make a real copy - written, synced and checked - for every day
+   * it speaks of: one, for the day in question, is the whole of what it tests.
+   */
+  function earlierCopies(directory: string, name: "sessions" | "workflows", days: string[]): void {
+    fs.mkdirSync(directory, { recursive: true });
+    for (const day of days) fs.writeFileSync(path.join(directory, `${name}-${day}.db`), `the copy of ${day}`);
+  }
 
   it("does not keep a copy that fails SQLite's integrity check, and leaves the day's place free for one that passes", async () => {
     // A copy is made once a day and never remade that day. One that is broken
@@ -166,12 +177,7 @@ describe("daily database backup", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ryoko-backup-damaged-"));
     roots.push(root);
     const backups = path.join(root, "backups");
-    const sound = new Database(":memory:");
-    sound.exec("CREATE TABLE sessions (id INTEGER PRIMARY KEY, label TEXT); INSERT INTO sessions (label) VALUES ('safe')");
-    for (const day of ["2026-08-14", "2026-08-15", "2026-08-16"]) {
-      await createDailyDatabaseBackup(sound, { directory: backups, now: new Date(`${day}T12:00:00.000Z`) });
-    }
-    sound.close();
+    earlierCopies(backups, "sessions", ["2026-08-14", "2026-08-15", "2026-08-16"]);
     const earlier = (): Record<string, string> =>
       Object.fromEntries(fs.readdirSync(backups).sort().map((name) => [name, sha256(fs.readFileSync(path.join(backups, name)))]));
     const before = earlier();
@@ -272,13 +278,24 @@ describe("daily database backup", () => {
     roots.push(root);
     const backups = path.join(root, "backups");
     const source = registryOnDisk(root);
-    const driver = path.join(root, "hung-driver.cjs");
-    fs.writeFileSync(driver, "module.exports = class Hung { constructor() {} pragma() { for (;;) {} } close() {} };\n");
+    const hung = hungDriver(root);
 
-    const result = await createDailyDatabaseBackup(source, {
-      directory: backups, now: DAY,
-      check: (file) => findDatabaseProblems(file, { driver, timeoutMs: 300 }),
-    });
+    // The time limit is an hour on a clock held here, and is let pass only once
+    // the worker really is hung in the check - not after so many milliseconds
+    // of the machine's own time, which on a busy day it has not got that far in.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let result: Awaited<ReturnType<typeof createDailyDatabaseBackup>>;
+    try {
+      const pending = createDailyDatabaseBackup(source, {
+        directory: backups, now: DAY,
+        check: (file) => findDatabaseProblems(file, { driver: hung.driver, timeoutMs: 60 * 60_000 }),
+      });
+      await until(() => fs.existsSync(hung.reached));
+      vi.advanceTimersByTime(60 * 60_000);
+      result = await pending;
+    } finally {
+      vi.useRealTimers();
+    }
     source.close();
 
     expect(result).toEqual({
@@ -309,7 +326,7 @@ describe("daily database backup", () => {
     roots.push(root);
     const database = new Database(":memory:");
     database.exec("CREATE TABLE t (id INTEGER)");
-    await createDailyDatabaseBackup(database, { directory: root, now: new Date("2026-08-16T00:00:00Z"), retention: 1 });
+    earlierCopies(root, "sessions", ["2026-08-16"]);
     // Opening a WAL-mode copy read-only leaves these beside it.
     for (const suffix of ["-wal", "-shm"]) fs.writeFileSync(path.join(root, `sessions-2026-08-16.db${suffix}`), "");
     fs.writeFileSync(path.join(root, "unrelated.txt"), "not ours to delete\n");

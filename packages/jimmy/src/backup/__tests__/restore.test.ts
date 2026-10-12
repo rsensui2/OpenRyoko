@@ -234,7 +234,8 @@ describe("restoreHomeArchive", () => {
     const limits = { maxEntries: 60, maxBytes: 200_000 };
     writeTree(target.home, {
       "knowledge/grown.bin": "x".repeat(600_000),
-      ...Object.fromEntries(Array.from({ length: 300 }, (_, index) => [`knowledge/flood/empty-${index}`, ""])),
+      // Forty more files is past a limit of sixty; it does not take hundreds to be over it.
+      ...Object.fromEntries(Array.from({ length: 40 }, (_, index) => [`knowledge/flood/empty-${index}`, ""])),
     });
     fs.writeFileSync(path.join(target.home, "config.yaml"), "broken\n");
 

@@ -1,4 +1,3 @@
-import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -7,6 +6,7 @@ import {
   HOME_CONTENT,
   leaveMidFlight,
   makeHome,
+  openForWriting,
   rawDirectory,
   removeTempDirs,
   rowCount,
@@ -362,13 +362,14 @@ describe("ryoko backup run", () => {
     await runBackupRun({ json: true }, state.deps);
     later(state, 24 * 60);
 
-    for (let round = 0; round < 8; round += 1) {
+    // Five in one day, where three of a day are kept: enough to show the day is capped and yesterday is not what pays for it.
+    for (let round = 0; round < 5; round += 1) {
       await runBackupRun({ json: true }, state.deps);
       later(state, 5);
     }
 
     expect(listBackups(path.join(home, "backups")).map((item) => item.id)).toEqual([
-      "home-20261013T033500Z", "home-20261013T033000Z", "home-20261013T032500Z", "home-20261012T030000Z",
+      "home-20261013T032000Z", "home-20261013T031500Z", "home-20261013T031000Z", "home-20261012T030000Z",
     ]);
   });
 
@@ -678,7 +679,7 @@ describe("ryoko backup restore", () => {
   async function grownRegistry(): Promise<{ state: Cli; live: string }> {
     const state = await backedUp({ sessionRows: 4 });
     const live = path.join(state.home, "sessions", "registry.db");
-    const grow = new Database(live);
+    const grow = openForWriting(live);
     grow.prepare("INSERT INTO sessions (label) VALUES (?)").run("after the backup");
     grow.close();
     idle(state, live);

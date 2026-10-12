@@ -7,7 +7,17 @@ import type { DiskSpaceStatus } from "../../shared/storage-health.js";
 import { createDailyDatabaseBackup } from "../../sessions/backup.js";
 import { listBackups } from "../catalog.js";
 import { inspectDatabaseBackup, restoreDatabase, type DatabaseRestoreOptions } from "../database-restore.js";
-import { databaseFingerprint, leaveMidFlight, makeHome, removeTempDirs, rowCount, setDatabaseModified, sha256, tempDir } from "./fixture.js";
+import {
+  databaseFingerprint,
+  leaveMidFlight,
+  makeHome,
+  openForWriting,
+  removeTempDirs,
+  rowCount,
+  setDatabaseModified,
+  sha256,
+  tempDir,
+} from "./fixture.js";
 
 const TAKEN = new Date("2026-10-11T03:00:00.000Z");
 const NOW = new Date("2026-10-12T09:30:00.000Z");
@@ -28,7 +38,7 @@ async function scene(name: "sessions" | "workflows" = "sessions"): Promise<Scene
   const home = makeHome(tempDir(), "home", name === "sessions" ? { sessionRows: 5 } : { workflowRows: 5 });
   const backups = path.join(home, "backups");
   const live = name === "sessions" ? path.join(home, "sessions", "registry.db") : path.join(home, "workflows", "workflows.db");
-  const source = new Database(live);
+  const source = openForWriting(live);
   try {
     const { file } = await createDailyDatabaseBackup(source, { directory: backups, now: TAKEN, name });
     const insert = source.prepare(`INSERT INTO ${name} (label) VALUES (?)`);
