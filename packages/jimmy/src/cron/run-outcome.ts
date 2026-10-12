@@ -1,4 +1,5 @@
 import type { Session } from "../shared/types.js";
+import { limitFailureOf, type LimitPeriod } from "../sessions/limit-failure-notice.js";
 import { getSession } from "../sessions/registry.js";
 import { logger } from "../shared/logger.js";
 import { redactText } from "../shared/redact.js";
@@ -32,6 +33,21 @@ export function sessionRunFailure(session: Session | undefined): string | null {
   if (session.status === "idle" || session.status === "running") return null;
   if (session.status === "error") return "Session ended in error without reporting a reason";
   return `Session did not settle (status: ${session.status})`;
+}
+
+/**
+ * The usage-limit period the fire's session failed on, when that — a limit that
+ * is not waited for — is what it failed on. Taken from what the session layer
+ * noted about the turn, not from the wording of the error. Reads as none when
+ * the registry cannot be read: the failure is then alerted like any other.
+ */
+export function settledLimitFailure(sessionId: string | null | undefined): LimitPeriod | undefined {
+  if (!sessionId) return undefined;
+  try {
+    return limitFailureOf(getSession(sessionId));
+  } catch {
+    return undefined;
+  }
 }
 
 /** Failure of the session route() reported for this fire. An unreadable
