@@ -17,6 +17,7 @@ import type { CronJob, Engine, EngineRunOpts, IncomingMessage, JinnConfig, Sessi
 import { isInterruptibleEngine } from "../shared/types.js";
 import { runWithSessionGoal, sessionGoalOptions } from "../sessions/goal-execution.js";
 import { buildEngineSyncPrompt, clearEngineSyncMarker, engineOverrideAfterReset, engineSyncSince, failLimitThatOutlastsTheWait, maybeRevertEngineOverride, runEngineWithResponseTimeout, runFallbackAttempts, waitForEngineRetry } from "../sessions/engine-fallback.js";
+import { startOnHealthyEngine } from "../sessions/new-session-engine.js";
 import { cleanupMcpConfigFile, resolveMcpServers, writeMcpConfigFile } from "../mcp/resolver.js";
 import type { SessionManager } from "../sessions/manager.js";
 import { buildContext } from "../sessions/context.js";
@@ -1256,7 +1257,7 @@ export async function handleApiRequest(
       const requestedModel = typeof body.model === "string" && body.model.trim() ? body.model.trim() : undefined;
       const model = requestedModel ?? (employeeDef && employeeDef.engine === engineName ? employeeDef.model || undefined : undefined);
       const sessionKey = `web:${Date.now()}`;
-      const session = createSession({
+      const created = createSession({
         engine: engineName,
         model,
         source: "web",
@@ -1270,11 +1271,20 @@ export async function handleApiRequest(
         prompt,
         portalName: config.portal?.portalName,
       });
+      // An engine already known to be out of allowance is not worth a failed
+      // turn to rediscover: start on its fallback, as a routed session does.
+      // An engine or model the request itself names is run as asked.
+      const { session, notice } = startOnHealthyEngine(config, (name) => context.sessionManager.getEngine(name), created,
+        { engine: body.engine || undefined, model: requestedModel, employee: employeeDef });
       logger.info(`Web session created: ${session.id}`);
       insertMessage(session.id, "user", prompt);
+      if (notice) {
+        insertMessage(session.id, "notification", notice);
+        context.emit("session:notification", { sessionId: session.id, message: notice });
+      }
 
       // Run engine asynchronously — respond immediately, push result via WebSocket
-      const engine = context.sessionManager.getEngine(engineName);
+      const engine = context.sessionManager.getEngine(session.engine);
       if (!engine) {
         updateSession(session.id, {
           status: "error",
