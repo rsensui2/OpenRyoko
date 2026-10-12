@@ -1,0 +1,63 @@
+// Shared by the migrate suites. Each suite declares its own vi.mock() calls (they are
+// hoisted per test file); what is imported here resolves to those mocks.
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import { vi } from "vitest";
+import { CONFIG_PATH } from "../../shared/paths.js";
+import { syncInstanceBundledSkills } from "../../skills-sync/instance.js";
+import type { BundledSkillSync } from "../../skills-sync/types.js";
+
+export const mockExecFileSync = vi.mocked(execFileSync);
+export const mockExistsSync = vi.mocked(fs.existsSync);
+export const mockReaddirSync = vi.mocked(fs.readdirSync);
+export const mockWriteFileSync = vi.mocked(fs.writeFileSync);
+export const mockRmSync = vi.mocked(fs.rmSync);
+export const mockSync = vi.mocked(syncInstanceBundledSkills);
+export const mockLstatSync = vi.mocked(fs.lstatSync);
+
+export const missing = (file: unknown) => Object.assign(new Error(`ENOENT: no such file or directory, lstat '${String(file)}'`), { code: "ENOENT" });
+export const stat = (kind: "file" | "symlink") => ({ isFile: () => kind === "file", isDirectory: () => false, isSymbolicLink: () => kind === "symlink" }) as fs.Stats;
+
+/** Whatever existsSync reports as present is an ordinary entry; the rest is absent. */
+export function lstatLikeExists(): void {
+  mockLstatSync.mockImplementation(((file: fs.PathLike) => {
+    if (fs.existsSync(file)) return stat("file");
+    throw missing(file);
+  }) as typeof fs.lstatSync);
+}
+
+/** What the bundled skill sync reports: nothing done, unless a test says otherwise. */
+export function synced(overrides: Partial<BundledSkillSync> = {}): BundledSkillSync {
+  return { added: [], updated: [], adopted: [], retired: [], kept: [], notices: [], inSync: [], failed: [], backupDir: null, ...overrides };
+}
+
+/** A directory entry, as fs.readdirSync({ withFileTypes: true }) returns it. */
+export const dirent = (name: string, directory: boolean) => ({
+  name,
+  isDirectory: () => directory,
+  isFile: () => !directory,
+  isSymbolicLink: () => false,
+});
+
+/** Everything the command printed to stdout, one line per call, exactly as printed. */
+export const rawOutput = () => vi.mocked(console.log).mock.calls.map((call) => String(call[0])).join("\n");
+
+/** The same without the colour codes, so a pattern can span a coloured tag and its text. */
+export const output = () => rawOutput().replace(/\u001b\[\d+m/g, "");
+
+/** The versions written to config.yaml, in order. */
+export const stampedVersions = () => mockWriteFileSync.mock.calls
+  .filter(([file]) => file === CONFIG_PATH)
+  .map(([, content]) => /version: (\S+)/.exec(String(content))?.[1]);
+
+/** Every path exists, every directory is empty, the sync did nothing, and stdout is captured. */
+export function resetMigrateMocks(): void {
+  vi.clearAllMocks();
+  mockExistsSync.mockReturnValue(true);
+  mockReaddirSync.mockReturnValue([]);
+  vi.mocked(fs.readFileSync).mockReset();
+  mockSync.mockReset();
+  mockSync.mockReturnValue(synced());
+  lstatLikeExists();
+  vi.spyOn(console, "log").mockImplementation(() => {});
+}
