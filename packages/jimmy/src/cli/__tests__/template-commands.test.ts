@@ -10,6 +10,12 @@ import { TEMPLATE_DIR } from "../../shared/paths.js";
 
 const read = (relative: string): string => fs.readFileSync(path.join(TEMPLATE_DIR, ...relative.split("/")), "utf-8");
 
+/** The documents an operator reads in the repository itself. Listed by name:
+ *  docs/ is ignored by git apart from these, and may hold anything locally. */
+const REPO = path.resolve(TEMPLATE_DIR, "..", "..", "..");
+const REPO_DOCS = ["README.md", "packages/jimmy/README.md", "docs/engine-fallback.md", "docs/model-management.md", "docs/cron-file-reconciliation.md", "docs/jev-slack-triage.md"];
+const readRepo = (relative: string): string => fs.readFileSync(path.join(REPO, ...relative.split("/")), "utf-8");
+
 /** Every Markdown and YAML file under the shipped docs and skills, plus the instruction files. */
 function shippedTexts(): { file: string; text: string }[] {
   const found: string[] = ["AGENTS.md", "CLAUDE.md", "BOOTSTRAP.md", "config.default.yaml"];
@@ -22,7 +28,10 @@ function shippedTexts(): { file: string; text: string }[] {
   };
   walk("docs");
   walk("skills");
-  return found.map((file) => ({ file, text: read(file) }));
+  return [
+    ...found.map((file) => ({ file, text: read(file) })),
+    ...REPO_DOCS.map((file) => ({ file: `(repository) ${file}`, text: readRepo(file) })),
+  ];
 }
 
 /** The top-level commands of the CLI, read from where they are declared. */
@@ -51,6 +60,23 @@ describe("commands named in the shipped skills and docs", () => {
       [...text.matchAll(/\b(?:jinn|jimmy) (?:start|stop|init|setup|migrate|status|update|skills|api)\b/g)].map((match) => `${file}: ${match[0]}`));
 
     expect(stale).toEqual([]);
+  });
+});
+
+describe("README.md — updating an instance", () => {
+  const readme = () => readRepo("README.md");
+
+  it("does not present `ryoko migrate --auto` as what completes an update", () => {
+    // --auto leaves a migration that needs an AI session or the owner unapplied.
+    expect(readme()).not.toMatch(/`ryoko migrate --auto` を実行します。/);
+    expect(readme()).toMatch(/`ryoko update` が自動で適用するのは、AIや所有者の作業が要らないマイグレーションだけ/);
+    expect(readme()).toMatch(/続けて `ryoko migrate` を実行してください/);
+  });
+
+  it("tells a container deployment to run the CLI inside the container, and why", () => {
+    expect(readme()).toMatch(/`ryoko` のコマンドは、gatewayが動いているコンテナの中で実行してください/);
+    expect(readme()).toMatch(/ホスト側の `ryoko` をそのホームに向けて実行しないでください/);
+    expect(readme()).toMatch(/DBの索引ファイルを作り直してしまい/);
   });
 });
 
