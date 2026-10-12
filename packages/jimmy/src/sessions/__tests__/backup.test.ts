@@ -2,11 +2,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, describe, expect, it } from "vitest";
-import { createDailyDatabaseBackup } from "../backup.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { damageDatabase } from "../../backup/__tests__/fixture.js";
+import { createDailyDatabaseBackup, DatabaseCopyDamagedError } from "../backup.js";
 
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
+afterEach(() => {
+  vi.restoreAllMocks();
+  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+});
 
 describe("daily database backup", () => {
   it("creates a consistent owner-only SQLite backup once per day", async () => {
@@ -115,6 +119,126 @@ describe("daily database backup", () => {
     const copy = new Database(result.file, { readonly: true });
     expect(copy.prepare("SELECT value FROM values_table").pluck().get()).toBe("safe");
     copy.close();
+  });
+
+  /** A registry of several pages on disk. Damaged, it still opens and still copies page for page - and is not sound. */
+  function registryOnDisk(root: string, options: { damaged?: boolean } = {}): Database.Database {
+    const file = path.join(root, "home", "registry.db");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const writer = new Database(file);
+    writer.pragma("journal_mode = WAL");
+    writer.exec("CREATE TABLE sessions (id INTEGER PRIMARY KEY, label TEXT NOT NULL)");
+    const insert = writer.prepare("INSERT INTO sessions (label) VALUES (?)");
+    writer.transaction(() => { for (let index = 0; index < 2000; index += 1) insert.run(`session-${index}`); })();
+    writer.close();
+    if (options.damaged) damageDatabase(file);
+    return new Database(file, { readonly: true });
+  }
+
+  const DAY = new Date("2026-08-17T12:00:00.000Z");
+
+  it("does not keep a copy that fails SQLite's integrity check, and leaves the day's place free for one that passes", async () => {
+    // A copy is made once a day and never remade that day. One that is broken
+    // must not be the one that holds the day's name.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ryoko-backup-damaged-"));
+    roots.push(root);
+    const backups = path.join(root, "backups");
+    const damaged = registryOnDisk(root, { damaged: true });
+
+    await expect(createDailyDatabaseBackup(damaged, { directory: backups, now: DAY })).rejects.toThrow(/integrity check/);
+    damaged.close();
+
+    // Nothing under the day's name, no temporary file, none of the sidecars reading it left.
+    expect(fs.readdirSync(backups)).toEqual([]);
+
+    const sound = new Database(":memory:");
+    sound.exec("CREATE TABLE sessions (id INTEGER PRIMARY KEY, label TEXT); INSERT INTO sessions (label) VALUES ('safe')");
+    const result = await createDailyDatabaseBackup(sound, { directory: backups, now: DAY });
+    sound.close();
+    expect(result.created).toBe(true);
+    expect(fs.readdirSync(backups)).toEqual(["sessions-2026-08-17.db"]);
+  });
+
+  it("says what SQLite found, and that the database itself may be the damaged one", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ryoko-backup-damaged-"));
+    roots.push(root);
+    const damaged = registryOnDisk(root, { damaged: true });
+
+    const failure = await createDailyDatabaseBackup(damaged, { directory: path.join(root, "backups"), now: DAY }).then(() => null, (error: Error) => error);
+    damaged.close();
+
+    expect(failure).toBeInstanceOf(DatabaseCopyDamagedError);
+    expect(failure!.message).toMatch(/discarded/);
+    expect(failure!.message).toMatch(/database itself may be damaged/);
+    expect((failure as DatabaseCopyDamagedError).problems.length).toBeGreaterThan(0);
+    expect(failure!.message).toContain((failure as DatabaseCopyDamagedError).problems[0]);
+  });
+
+  it("checks the copy before it has its name, and nowhere but in the backup directory", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ryoko-backup-checked-"));
+    roots.push(root);
+    const backups = path.join(root, "backups");
+    const source = registryOnDisk(root);
+    const final = path.join(backups, "sessions-2026-08-17.db");
+    const asked: { file: string; named: boolean }[] = [];
+
+    await createDailyDatabaseBackup(source, {
+      directory: backups, now: DAY,
+      check: async (file) => { asked.push({ file, named: fs.existsSync(final) }); return []; },
+    });
+    source.close();
+
+    expect(asked).toEqual([{ file: expect.stringContaining(`${final}.tmp-`), named: false }]);
+    expect(fs.readdirSync(backups)).toEqual(["sessions-2026-08-17.db"]);
+  });
+
+  it("leaves no trace of the check beside the copy it keeps", async () => {
+    // The copy of a WAL-mode registry is WAL-mode too, and reading one creates a -wal and a -shm beside it.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ryoko-backup-checked-"));
+    roots.push(root);
+    const backups = path.join(root, "backups");
+    const source = registryOnDisk(root);
+
+    const result = await createDailyDatabaseBackup(source, { directory: backups, now: DAY });
+    source.close();
+
+    expect(result).toEqual({ created: true, file: path.join(backups, "sessions-2026-08-17.db") });
+    expect(fs.readdirSync(backups)).toEqual(["sessions-2026-08-17.db"]);
+  });
+
+  it("does not run the check on the caller's thread", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ryoko-backup-damaged-"));
+    roots.push(root);
+    const damaged = registryOnDisk(root, { damaged: true });
+    const pragma = vi.spyOn(Database.prototype, "pragma");
+
+    await expect(createDailyDatabaseBackup(damaged, { directory: path.join(root, "backups"), now: DAY })).rejects.toThrow(/integrity check/);
+    damaged.close();
+
+    // It was checked - it was refused - and this thread's driver was never asked to do it.
+    expect(pragma.mock.calls.filter(([source]) => /integrity_check/.test(String(source)))).toEqual([]);
+  });
+
+  it("keeps the copy, and says it went unchecked, when the check itself cannot be run", async () => {
+    // No worker threads, a driver that will not load in one: the copy is no
+    // worse than every copy made before there was a check, and a day without
+    // one is worse than a day with one that nobody vouched for.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ryoko-backup-unchecked-"));
+    roots.push(root);
+    const backups = path.join(root, "backups");
+    const source = registryOnDisk(root);
+
+    const result = await createDailyDatabaseBackup(source, {
+      directory: backups, now: DAY,
+      check: () => Promise.reject(new Error("the integrity check could not be run: worker threads are not available")),
+    });
+    source.close();
+
+    expect(result).toEqual({
+      created: true, file: path.join(backups, "sessions-2026-08-17.db"),
+      unchecked: expect.stringContaining("worker threads are not available"),
+    });
+    expect(fs.readdirSync(backups)).toEqual(["sessions-2026-08-17.db"]);
   });
 
   it("removes an expired backup together with the sidecars reading it left behind", async () => {

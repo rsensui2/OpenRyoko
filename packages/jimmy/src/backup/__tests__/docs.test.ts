@@ -65,6 +65,15 @@ describe("docs/backup.md", () => {
     expect(doc()).toContain(`${DATABASE_BACKUP_RETENTION} 世代`);
   });
 
+  it("says a database copy is checked before it is kept, and what that check cannot see", () => {
+    expect(doc()).toMatch(/DB のコピーは[^。]*`integrity_check`/);
+    expect(doc()).toMatch(/通らなければ[^。]*捨て/);
+    // The limit, in so many words: a copy can pass and still hold pages from two different moments.
+    expect(doc()).toMatch(/時点[^。]*混ざった[^。]*検出できません/);
+    // And the one case in which a copy is kept unvouched for, so the warning in the log has somewhere to be looked up.
+    expect(doc()).toMatch(/検査そのものを実行できなかった[^。]*コピーは残し[^。]*警告/);
+  });
+
   it("does not promise that going back to the pre-restore snapshot undoes everything", () => {
     // A restore only ever writes; it never deletes. Restoring the snapshot it
     // took first puts back what was overwritten, and leaves in place the files

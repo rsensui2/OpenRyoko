@@ -78,14 +78,23 @@ function statusOf(settings: BackupSettings, state: BackupState): BackupStatus {
   return { level, directory: settings.directory, targets };
 }
 
+/**
+ * What follows a failure that will not be retried within the hour. Said in the
+ * log because it is otherwise invisible: after this line there is a day of
+ * silence. Only the archive can be retaken by hand - `ryoko backup run` does
+ * not copy a database, least of all under the gateway that is logging this.
+ */
+function retryNote(target: BackupRunReport["targets"][number]): string {
+  if (!target.persistent) return "";
+  return target.name === "home"
+    ? ' This will not be retried until the next daily backup; once the cause is fixed, "ryoko backup run" takes one straight away.'
+    : " This will not be retried until the next daily backup. Earlier copies, and how to restore one, are in docs/backup.md.";
+}
+
 function logReport(report: BackupRunReport): void {
   for (const target of report.targets) {
     if (target.status === "failed") {
-      // Said in the log because it is otherwise invisible: after this line there is a day of silence.
-      const next = target.persistent
-        ? ' This will not be retried until the next daily backup; once the cause is fixed, "ryoko backup run" takes one straight away.'
-        : "";
-      logger.error(`Backup failed (${target.name}): ${target.error ?? "unknown error"}${next}`);
+      logger.error(`Backup failed (${target.name}): ${target.error ?? "unknown error"}${retryNote(target)}`);
     }
     if (target.status === "ok") {
       const size = target.bytes === undefined ? "" : ` (${formatBytes(target.bytes)})`;

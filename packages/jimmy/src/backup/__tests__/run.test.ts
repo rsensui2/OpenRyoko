@@ -10,7 +10,7 @@ import { readOnlyDatabaseSource } from "../database-source.js";
 import { databasePath } from "../layout.js";
 import { runBackup, type BackupRunOptions } from "../run.js";
 import { resolveBackupSettings } from "../settings.js";
-import { databaseFingerprint, leaveMidFlight, makeHome, removeTempDirs, rowCount, tempDir, writeTree } from "./fixture.js";
+import { damageDatabase, databaseFingerprint, leaveMidFlight, makeHome, removeTempDirs, rowCount, tempDir, writeTree } from "./fixture.js";
 
 const NOW = new Date("2026-10-12T03:00:00.000Z");
 const DAY_MS = 86_400_000;
@@ -299,6 +299,35 @@ describe("runBackup", () => {
 
     expect(inspection.ok).toBe(true);
     expect(inspection.manifest!.entries.filter((entry) => entry.path.startsWith("knowledge/backups"))).toEqual([]);
+  });
+
+  it("throws away a database copy that fails SQLite's integrity check, and leaves the target for the next daily run", async () => {
+    const home = makeHome(tempDir(), "home", { sessionRows: 4, workflowRows: 2000 });
+    damageDatabase(path.join(home, "workflows", "workflows.db"));
+
+    const report = await runBackup(optionsFor(home));
+
+    expect(report.status).toBe("failed");
+    const targets = byName(report);
+    // The store is damaged now and will be in an hour: copying it again every hour changes nothing.
+    expect(targets.workflows).toMatchObject({ status: "failed", persistent: true, error: expect.stringMatching(/integrity check.*discarded/s) });
+    expect(targets.home!.status).toBe("ok");
+    expect(targets.sessions!.status).toBe("ok");
+    expect(fs.readdirSync(path.join(home, "backups")).filter((name) => name.includes("workflows"))).toEqual([]);
+  });
+
+  it("keeps a copy it could not check, and says so as a warning rather than a failure", async () => {
+    const home = makeHome(tempDir(), "home", { sessionRows: 4 });
+
+    const report = await runBackup(optionsFor(home, {}, {
+      checkDatabaseCopy: () => Promise.reject(new Error("the integrity check could not be run: no worker threads")),
+    }));
+
+    expect(report.status).toBe("ok");
+    expect(byName(report).sessions).toMatchObject({
+      status: "ok", warnings: [expect.stringMatching(/kept without being checked.*no worker threads/)],
+    });
+    expect(rowCount(byName(report).sessions!.file!, "sessions")).toBe(4);
   });
 
   it("opens no database it was handed no source for, and does not call that a copy", async () => {

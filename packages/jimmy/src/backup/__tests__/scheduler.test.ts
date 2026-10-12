@@ -186,6 +186,7 @@ describe("startBackupScheduler", () => {
     expect(errors).toHaveLength(1);
     expect(errors[0]).toContain("Backup failed (home): home is over the limit");
     expect(errors[0]).toMatch(/not be retried until the next daily backup/);
+    expect(errors[0]).toContain('"ryoko backup run"');
     expect(getBackupStatus()).toMatchObject({ level: "warning", targets: { home: { error: "home is over the limit" } } });
 
     // The next day it is tried again with everything else, and can succeed once the cause is gone.
@@ -194,6 +195,19 @@ describe("startBackupScheduler", () => {
 
     expect(targetsOf(harness)).toEqual([["home", "sessions", "workflows"], ["home", "sessions", "workflows"]]);
     expect(getBackupStatus().level).toBe("ok");
+  });
+
+  it("does not send anyone to `ryoko backup run` for a database that failed for good: that command does not copy databases", async () => {
+    const harness = start();
+    harness.outcomes = { sessions: "failed for good" };
+
+    await vi.advanceTimersByTimeAsync(MINUTE_MS);
+
+    const errors = vi.mocked(logger.error).mock.calls.map(([line]) => String(line));
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatch(/Backup failed \(sessions\).*not be retried until the next daily backup/);
+    expect(errors[0]).not.toContain("ryoko backup run");
+    expect(errors[0]).toContain("docs/backup.md");
   });
 
   it("logs a failed target as an error and a written one as info", async () => {

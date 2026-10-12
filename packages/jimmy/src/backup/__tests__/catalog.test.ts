@@ -282,6 +282,29 @@ describe("pruneBackups", () => {
     expect(fs.readdirSync(directory).sort()).toEqual([".home-20261012T030000Z.tar.gz.tmp-4243-cafef00d", "important.tmp-notes"].sort());
   });
 
+  it("sweeps what a killed integrity check left beside a temporary copy, too", () => {
+    // A database copy is read once before it gets its name, and reading a
+    // WAL-mode file puts a -wal and a -shm next to it. Killed mid-check, the
+    // run leaves all three.
+    const directory = tempDir();
+    const stale = "sessions-2026-10-10.db.tmp-4242-0123456789abcdef";
+    const fresh = "workflows-2026-10-12.db.tmp-4243-fedcba9876543210";
+    for (const suffix of ["", "-wal", "-shm"]) {
+      seed(directory, `${stale}${suffix}`, 8, 2);
+      seed(directory, `${fresh}${suffix}`, 8, 0);
+    }
+    // Sidecars of a copy that has its name are not temporary files, however old.
+    seed(directory, "sessions-2026-10-09.db", 8, 3);
+    seed(directory, "sessions-2026-10-09.db-wal", 8, 3);
+
+    const removed = pruneBackups(directory, { retention: 14, now: NOW });
+
+    expect(removed.map((file) => path.basename(file)).sort()).toEqual([stale, `${stale}-shm`, `${stale}-wal`]);
+    expect(fs.readdirSync(directory).sort()).toEqual([
+      "sessions-2026-10-09.db", "sessions-2026-10-09.db-wal", fresh, `${fresh}-shm`, `${fresh}-wal`,
+    ].sort());
+  });
+
   it("does nothing when the directory does not exist", () => {
     expect(pruneBackups(path.join(tempDir(), "never-created"), { retention: 14, now: NOW })).toEqual([]);
   });

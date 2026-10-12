@@ -1,6 +1,11 @@
 import type Database from "better-sqlite3";
 import fs from "node:fs";
-import { createDailyDatabaseBackup, dailyDatabaseBackupFile, type DatabaseBackupName } from "../sessions/backup.js";
+import {
+  createDailyDatabaseBackup,
+  dailyDatabaseBackupFile,
+  DatabaseCopyDamagedError,
+  type DatabaseBackupName,
+} from "../sessions/backup.js";
 import { ensureOwnerOnlyDirectory } from "../shared/owner-only.js";
 import { getDiskSpaceStatus, type DiskSpaceStatus } from "../shared/storage-health.js";
 import { ArchiveTooLargeError, createHomeArchive, NothingToArchiveError } from "./archive.js";
@@ -71,6 +76,8 @@ export interface BackupRunOptions {
   databases?: Partial<Record<DatabaseBackupName, DatabaseSource>>;
   /** The existing free-space judgement, replaceable in tests. */
   diskSpace?: (directory: string) => DiskSpaceStatus;
+  /** What is wrong with a database copy, replaceable in tests. Default: SQLite's integrity check, off this thread. */
+  checkDatabaseCopy?: (file: string) => Promise<string[]>;
 }
 
 /** Why nothing can be written this run, or null when the directory is ready. */
@@ -160,18 +167,25 @@ async function backupDatabase(name: DatabaseBackupName, options: BackupRunOption
       now: options.now,
       name,
       beforeWrite: () => requireRoom(options, databaseBytes(handle.database), written),
+      ...(options.checkDatabaseCopy ? { check: options.checkDatabaseCopy } : {}),
     });
     // Only if another run wrote today's copy in the moment since it was looked for.
     if (!result.created) return alreadyCopied(name, result.file);
-    return { name, status: "ok", file: result.file, bytes: fs.statSync(result.file).size, warnings: [] };
+    const warnings = result.unchecked === undefined ? [] : [`the copy was kept without being checked: ${result.unchecked}`];
+    return { name, status: "ok", file: result.file, bytes: fs.statSync(result.file).size, warnings };
   } finally {
     handle.release();
   }
 }
 
-/** True for a failure that follows from what the home holds, not from what happened to go wrong this time. */
+/**
+ * True for a failure that follows from what the home holds, not from what
+ * happened to go wrong this time. A copy that fails the integrity check is one
+ * of them: it is made page for page, so the damage is in the database, and an
+ * hour from now a copy of it will fail the same way.
+ */
 function failsTheSameWayAgain(error: unknown): boolean {
-  return error instanceof ArchiveTooLargeError || error instanceof NothingToArchiveError;
+  return error instanceof ArchiveTooLargeError || error instanceof NothingToArchiveError || error instanceof DatabaseCopyDamagedError;
 }
 
 /** One target, with whatever it throws turned into its own failed report. `written` is what the run has put on disk so far. */

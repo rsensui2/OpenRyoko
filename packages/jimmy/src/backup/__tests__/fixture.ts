@@ -157,6 +157,27 @@ export function databaseFingerprint(file: string): Record<string, string> {
   }));
 }
 
+/**
+ * Damages a database the way a bad sector or a torn copy does: the last page
+ * of its table turned to zeroes. It still opens, and a page-for-page copy of
+ * it still succeeds; nothing notices until the tree is walked. Needs a closed
+ * database whose table has grown past a couple of pages.
+ */
+export function damageDatabase(file: string): void {
+  const descriptor = fs.openSync(file, "r+");
+  try {
+    const header = Buffer.alloc(100);
+    fs.readSync(descriptor, header, 0, header.length, 0);
+    const declared = header.readUInt16BE(16);
+    const pageSize = declared === 1 ? 65_536 : declared;
+    const pages = fs.fstatSync(descriptor).size / pageSize;
+    if (pages < 4) throw new Error(`${file} has ${pages} page(s): too few to damage one and leave the rest readable`);
+    fs.writeSync(descriptor, Buffer.alloc(pageSize), 0, pageSize, (pages - 1) * pageSize);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
 export function rowCount(file: string, table: string): number {
   const db = new Database(file, { readonly: true, fileMustExist: true });
   try {
