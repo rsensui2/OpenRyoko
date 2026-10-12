@@ -1,5 +1,6 @@
 import jsYaml from "js-yaml";
 import { isMap, isScalar, isSeq, parseDocument, Scalar, type Pair, type YAMLMap, type YAMLSeq } from "yaml";
+import { alignItems } from "./list-alignment.js";
 
 /**
  * Rewrite only the lines of a YAML text whose value changed.
@@ -16,8 +17,9 @@ import { isMap, isScalar, isSeq, parseDocument, Scalar, type Pair, type YAMLMap,
  * the comment after it. Keys and list items are added and removed as whole
  * lines; a list item is never overwritten with a different one, because the
  * comment on its line was written about it. Anything else — a value changing
- * kind, a list with nothing left in common — rewrites that one `key: value`
- * entry, and the comments inside it go with it.
+ * kind, a list with nothing left in common, a long list changed too much to
+ * compare item by item — rewrites that one `key: value` entry, and the
+ * comments inside it go with it.
  *
  * The result is checked before it is returned: it must load, with js-yaml, to
  * exactly `after`. Anything this cannot promise — the two parsers disagreeing
@@ -261,42 +263,24 @@ function itemIdentity(item: unknown): string | null {
 }
 
 /**
- * Index pairs [before, after] of the items that are the same item in both
- * lists, in order (longest common subsequence). "The same" is: equal, or two
- * mappings with the same identifier. Never "at the same position" — a list
- * that was reordered has different values at every position, and the note
- * written next to a value belongs to that value.
- */
-function alignItems(before: unknown[], after: unknown[]): [number, number][] {
-  const identities = [before.map(itemIdentity), after.map(itemIdentity)];
-  const same = (i: number, j: number) =>
-    sameData(before[i], after[j]) || (identities[0][i] !== null && identities[0][i] === identities[1][j]);
-  const length = Array.from({ length: before.length + 1 }, () => new Array<number>(after.length + 1).fill(0));
-  for (let i = before.length - 1; i >= 0; i--) {
-    for (let j = after.length - 1; j >= 0; j--) {
-      length[i][j] = same(i, j) ? length[i + 1][j + 1] + 1 : Math.max(length[i + 1][j], length[i][j + 1]);
-    }
-  }
-  const pairs: [number, number][] = [];
-  for (let i = 0, j = 0; i < before.length && j < after.length;) {
-    if (same(i, j)) pairs.push([i++, j++]);
-    else if (length[i + 1][j] >= length[i][j + 1]) i++;
-    else j++;
-  }
-  return pairs;
-}
-
-/**
  * Edit a block sequence item by item. An item that is in both lists keeps its
  * lines, and with them the note next to it; a mapping that kept its identifier
  * is edited within its own lines. Every other item is removed as lines or
  * added as lines. A scalar is never swapped for another where it stands: the
  * comment on that line was written about the old value.
+ *
+ * "In both lists" is: equal, or two mappings with the same identifier. Never
+ * "at the same position" — a list that was reordered has a different value at
+ * every position, and the note written next to a value belongs to that value.
  */
 function editSequence(source: Source, seq: YAMLSeq, before: unknown[], after: unknown[]): Edit[] | null {
   if (seq.flow || seq.items.length !== before.length) return null;
+  const identities = [before.map(itemIdentity), after.map(itemIdentity)];
+  const aligned = alignItems(before.length, after.length, (i, j) =>
+    sameData(before[i], after[j]) || (identities[0][i] !== null && identities[0][i] === identities[1][j]));
+  if (aligned === null) return null; // too much of a long list changed to compare it: the caller rewrites the entry
   const edits: Edit[] = [];
-  const kept = alignItems(before, after).filter(([i, j]) => {
+  const kept = aligned.filter(([i, j]) => {
     if (sameData(before[i], after[j])) return true;
     const within = editValue(source, seq.items[i], before[i], after[j]);
     if (within) edits.push(...within);

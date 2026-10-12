@@ -319,6 +319,47 @@ describe("editYamlText: keys added and removed", () => {
   });
 });
 
+describe("editYamlText: very long lists", () => {
+  /* Telling which items of a list stayed means comparing item against item,
+   * and that grows with the square of the list. It is done only for the part
+   * of a list that changed, and not at all once that part is large: the list
+   * is then written out again as a whole, notes and all gone, like any entry
+   * that cannot be edited in place. (The counting is in list-alignment.test.ts.) */
+  const head = ["# who may talk to the bot", "allowFrom:", ""].join("\n");
+  const item = (n: number) => `U${String(n).padStart(6, "0")}`;
+  const long = (count: number) =>
+    `${head}${Array.from({ length: count }, (_, n) => `  - ${item(n)}${n === 3 || n === count - 3 ? "   # an operator" : ""}\n`).join("")}\n# end of the list\nlogging:\n  level: info   # quiet\n`;
+
+  it("adds one item to a list of thousands as one line, and keeps the note next to another", () => {
+    const raw = long(5_000);
+    const out = edited(raw, (doc) => { doc.allowFrom.push("U999999"); });
+    expect(out).toBe(raw.replace(`  - ${item(4_999)}\n`, `  - ${item(4_999)}\n  - U999999\n`));
+  });
+
+  it("removes one item from the middle of a list of thousands as one line", () => {
+    const raw = long(5_000);
+    const out = edited(raw, (doc) => { doc.allowFrom.splice(2_500, 1); });
+    expect(out).toBe(raw.replace(`  - ${item(2_500)}\n`, ""));
+  });
+
+  it("writes the list out again when thousands of its items changed places, and leaves the rest of the file alone", () => {
+    const raw = long(2_000);
+    // The two halves change places. Item by item, one half could stay where it
+    // is, the note in it included — but finding that out is four million comparisons.
+    const swapped = [...Array.from({ length: 1_000 }, (_, n) => item(1_000 + n)), ...Array.from({ length: 1_000 }, (_, n) => item(n))];
+    const out = edited(raw, (doc) => { doc.allowFrom = [...doc.allowFrom.slice(1_000), ...doc.allowFrom.slice(0, 1_000)]; });
+    expect(out).toBe(`${head}${swapped.map((value) => `  - ${value}\n`).join("")}\n# end of the list\nlogging:\n  level: info   # quiet\n`);
+  });
+
+  it("still keeps the notes of a reordered list of an ordinary size", () => {
+    const raw = long(200);
+    const out = edited(raw, (doc) => { doc.allowFrom.push(doc.allowFrom.shift()); }); // the first item goes last
+    expect(out).toContain(`  - ${item(3)}   # an operator\n`);
+    expect(out).toContain(`  - ${item(197)}   # an operator\n`);
+    expect(out).toBe(raw.replace(`  - ${item(0)}\n`, "").replace(`  - ${item(199)}\n`, `  - ${item(199)}\n  - ${item(0)}\n`));
+  });
+});
+
 describe("editYamlText: a key whose value is undefined", () => {
   /* Code that clears a setting writes `block.key = undefined` as readily as
    * `delete block.key`. js-yaml stores neither: a dump leaves such a key out,
