@@ -16,7 +16,7 @@ import cron from "node-cron";
 import type { CronJob, Engine, EngineRunOpts, IncomingMessage, JinnConfig, Session, Target } from "../shared/types.js";
 import { isInterruptibleEngine } from "../shared/types.js";
 import { runWithSessionGoal, sessionGoalOptions } from "../sessions/goal-execution.js";
-import { buildEngineSyncPrompt, clearEngineSyncMarker, engineOverrideAfterReset, engineSyncSince, failLimitThatOutlastsTheWait, maybeRevertEngineOverride, runEngineWithResponseTimeout, runFallbackAttempts, waitForEngineRetry } from "../sessions/engine-fallback.js";
+import { buildEngineSyncPrompt, clearEngineSyncMarker, engineOverrideAfterReset, engineSyncSince, failLimitThatOutlastsTheWait, maybeRevertEngineOverride, runEngineWithResponseTimeout, runFallbackAttempts, stoppedByShutdown, waitForEngineRetry } from "../sessions/engine-fallback.js";
 import { cleanupMcpConfigFile, resolveMcpServers, writeMcpConfigFile } from "../mcp/resolver.js";
 import type { SessionManager } from "../sessions/manager.js";
 import { buildContext } from "../sessions/context.js";
@@ -3076,6 +3076,7 @@ async function runWebSession(
           // wait ends the way a turn that starts on such a limit does: failed
           // now, with the reset time for its error — not slept through.
           const retryResult = failLimitThatOutlastsTheWait({ result: retried, engine, attempted: false, session: currentSession });
+          if (stoppedByShutdown(retryResult)) return; // not an outcome of the turn: the next start resumes it
           const gaveUp = retryResult !== retried;
           const retryInterrupted = retryResult.error?.startsWith("Interrupted");
           const retryRateLimit = !retryInterrupted ? detectRateLimit(retryResult) : { limited: false as const };

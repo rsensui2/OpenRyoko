@@ -199,6 +199,19 @@ function settleUnrequestedStop(engine: Engine, result: EngineResult, sessionId: 
   return engineFallbackFailure(result) === "timeout" ? failure : { ...failure, retryable: false };
 }
 
+/**
+ * A run that was stopped because the gateway is shutting down. That is no
+ * answer and no failure of the turn: nothing is to be posted or settled for it.
+ * The shutdown has marked the session, and the next start resumes it.
+ *
+ * For the retry that follows a usage-limit wait, which settles its result by
+ * itself: it took the engine's "Interrupted: gateway shutting down" for the
+ * turn's answer, posted it, and reported the session as failed.
+ */
+export function stoppedByShutdown(result: EngineResult): boolean {
+  return isGatewayShuttingDown() && /^Interrupted/i.test(result.error ?? "");
+}
+
 /** Watch actual engine activity, underneath goal supervision. A timed-out process
  * must settle AND stop before another provider can run the same work. */
 export async function runEngineWithResponseTimeout(

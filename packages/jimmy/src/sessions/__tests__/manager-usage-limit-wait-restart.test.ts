@@ -2,11 +2,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionManager } from "../manager.js";
+import { notifyDiscordChannel, notifyParentSession } from "../callbacks.js";
 import { _resetUsageLimitAnnouncements } from "../engine-health-gate.js";
 import { _resetEngineLoginKnowledge } from "../engine-login.js";
 import { getSession, getSessionBySessionKey, initDb, recoverStaleSessions } from "../registry.js";
 import {
   RESTART_LIMIT_RESET_BUFFER_MS,
+  beginGatewayShutdown,
   interruptRunningSessionsForShutdown,
   prepareRestartResume,
   readRestartResumeState,
@@ -184,5 +186,45 @@ describe("a connector turn parked on a usage limit, across a restart", () => {
     expect(f.replies().some((text) => text.includes("Still paused"))).toBe(false);
     expect(f.replies().at(-1)).toBe("レポートを作成しました。");
     expect(getSession(parked.sessionId)).toMatchObject({ status: "idle", lastError: null });
+  });
+});
+
+// When the wait is over the runner tries the turn again. A shutdown that lands
+// during that retry stops the engine — and the runner took the engine's
+// "Interrupted: gateway shutting down" for the turn's answer: it posted it into
+// the thread, set the session to "error", and told the parent the child had failed.
+describe("the retry after the wait, stopped by the gateway shutting down", () => {
+  it.each([
+    ["the gateway stopped the engine itself", { sessionId: "claude-thread", result: "", error: "Interrupted: gateway shutting down", interruptRequested: true as const }],
+    // A supervisor that signals the whole control group: Claude's process is gone before the gateway's own kill.
+    ["the engine's process was gone before the gateway's own stop", { sessionId: "claude-thread", result: "", error: "Interrupted: claude process exited" }],
+  ])("is not posted as the answer, and the session is resumed after the restart: %s", async (_case, stopped) => {
+    const f = setup();
+    const parked = await park(f, HOUR);
+    f.claudeRun.mockImplementationOnce(async () => {
+      beginGatewayShutdown();
+      interruptRunningSessionsForShutdown(); // server.ts cleanup: mark, then stop the engines
+      return stopped;
+    });
+
+    for (const carryOn of wait.held.splice(0)) carryOn(true); // the limit has reset: try again
+    await parked.turn;
+
+    expect(f.claudeRun).toHaveBeenCalledTimes(2);
+    expect(f.replies().filter((text) => text.includes("Interrupted"))).toEqual([]);
+    const session = getSession(parked.sessionId)!;
+    expect(session.status).toBe("interrupted"); // not "error": nothing failed
+    expect(notifyParentSession).not.toHaveBeenCalled();
+    expect(vi.mocked(notifyDiscordChannel).mock.calls.map(([text]) => text).filter((text) => /cleared|did not clear/.test(text))).toEqual([]);
+    expect(readRestartResumeState(session.transportMeta).interruptedAt).toEqual(expect.any(String));
+
+    prepareRestartResume();
+    recoverStaleSessions();
+    const next = nextStart();
+
+    expect(next.summary).toMatchObject({ planned: 1, skipped: 0 });
+    await next.timers[0].run();
+    expect(next.post).toHaveBeenCalledTimes(1);
+    expect(next.post.mock.calls[0][1]).toBe(parked.sessionId);
   });
 });

@@ -37,7 +37,7 @@ import { workflowAttemptInterruptionCause } from "./workflow-interruptions.js";
 import { recordTurnAccounting } from "./accounting.js";
 import { runWithSessionGoal, sessionGoalOptions } from "./goal-execution.js";
 import { conversationOutcome } from "./conversation-outcome.js";
-import { buildEngineSyncPrompt, clearEngineSyncMarker, engineFallbackFailure, engineSyncSince, failLimitThatOutlastsTheWait, isAwayFromEngine, maybeRevertEngineOverride, runEngineWithResponseTimeout, runFallbackAttempts, waitForEngineRetry } from "./engine-fallback.js";
+import { buildEngineSyncPrompt, clearEngineSyncMarker, engineFallbackFailure, engineSyncSince, failLimitThatOutlastsTheWait, isAwayFromEngine, maybeRevertEngineOverride, runEngineWithResponseTimeout, runFallbackAttempts, stoppedByShutdown, waitForEngineRetry } from "./engine-fallback.js";
 import { startOnHealthyEngine } from "./new-session-engine.js";
 import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "./callbacks.js";
 import { buildContext } from "./context.js";
@@ -1075,6 +1075,7 @@ export class SessionManager {
             // wait ends the way a turn that starts on such a limit does: failed
             // now, with the reset time for its answer — not slept through.
             const retryResult = failLimitThatOutlastsTheWait({ result: retried, engine, attempted: false, session });
+            if (stoppedByShutdown(retryResult)) return; // not an answer: the next start resumes it
             const gaveUp = retryResult !== retried;
 
             const retryInterrupted = retryResult.error?.startsWith("Interrupted");
