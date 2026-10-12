@@ -269,3 +269,81 @@ describe("cron run log reflects how the session actually ended", () => {
     });
   });
 });
+
+// A job that fails on every fire alerted on every fire: four alerts an hour for
+// a 15-minute job, for as long as the outage lasts. The run log still records
+// every failure; only the repeat of an alert already sent is held back.
+describe("cron alerts for a job that keeps failing", () => {
+  const start = Date.parse("2026-10-12T07:00:00.000Z");
+  const loggedOut = failed("Not logged in · Please run /login");
+  const ok: EngineResult = { sessionId: "claude-1", result: "Briefing is ready.", cost: 0.01, numTurns: 1 };
+
+  beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); });
+
+  /** Fires the job at each minute offset with the engine result given for it. */
+  async function fireAt(f: ReturnType<typeof setup>, schedule: Array<[number, EngineResult]>) {
+    for (const [minutes, result] of schedule) {
+      vi.setSystemTime(start + minutes * 60_000);
+      f.claudeRun.mockResolvedValue(result);
+      await f.run();
+    }
+  }
+
+  it("sends one alert while the same failure repeats, and logs every run as an error", async () => {
+    const f = setup();
+    await fireAt(f, [[0, loggedOut], [15, loggedOut], [30, loggedOut], [45, loggedOut]]);
+
+    expect(runs(f.job.id).map((entry) => [entry.status, entry.error])).toEqual(
+      Array(4).fill(["error", "Not logged in · Please run /login"]),
+    );
+    expect(f.alert).toHaveBeenCalledTimes(1);
+  });
+
+  it("repeats the alert once an hour has passed since it was last sent", async () => {
+    const f = setup();
+    await fireAt(f, [[0, loggedOut], [15, loggedOut], [30, loggedOut], [45, loggedOut], [60, loggedOut], [75, loggedOut]]);
+
+    expect(runs(f.job.id)).toHaveLength(6);
+    expect(f.alert).toHaveBeenCalledTimes(2);
+  });
+
+  it("alerts at once when the reason changes", async () => {
+    const f = setup();
+    await fireAt(f, [[0, loggedOut], [15, loggedOut], [30, failed("Engine crashed")]]);
+
+    expect(f.alert).toHaveBeenCalledTimes(2);
+    expect(f.alert.mock.calls[1]![1]).toContain("Engine crashed");
+  });
+
+  it("alerts at once for a failure that comes after a success", async () => {
+    const f = setup();
+    await fireAt(f, [[0, loggedOut], [15, ok], [30, loggedOut]]);
+
+    expect(runs(f.job.id).map((entry) => entry.status)).toEqual(["error", "success", "error"]);
+    expect(f.alert).toHaveBeenCalledTimes(2);
+  });
+
+  it("alerts on every failure when cron.alertThrottleMinutes is 0", async () => {
+    const f = setup();
+    f.config.cron = { ...f.config.cron, alertThrottleMinutes: 0 };
+    await fireAt(f, [[0, loggedOut], [15, loggedOut], [30, loggedOut]]);
+
+    expect(f.alert).toHaveBeenCalledTimes(3);
+  });
+
+  it("honours a shorter window from the config", async () => {
+    const f = setup();
+    f.config.cron = { ...f.config.cron, alertThrottleMinutes: 20 };
+    await fireAt(f, [[0, loggedOut], [15, loggedOut], [30, loggedOut]]);
+
+    expect(f.alert).toHaveBeenCalledTimes(2);
+  });
+
+  it("tries again on the next failure when the alert could not be sent", async () => {
+    const f = setup();
+    f.alert.mockRejectedValueOnce(new Error("slack is down"));
+    await fireAt(f, [[0, loggedOut], [15, loggedOut], [30, loggedOut]]);
+
+    expect(f.alert).toHaveBeenCalledTimes(2);
+  });
+});

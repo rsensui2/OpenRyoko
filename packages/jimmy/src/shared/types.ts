@@ -852,6 +852,9 @@ export interface JinnConfig {
     defaultDelivery?: CronDelivery;
     alertChannel?: string;
     alertConnector?: string;
+    /** Minutes a job's repeated failure (same reason) is not alerted again
+     *  after its alert went out. Default 60; 0 alerts on every failure. */
+    alertThrottleMinutes?: number;
   };
   notifications?: {
     connector?: string;  // defaults to "discord"
