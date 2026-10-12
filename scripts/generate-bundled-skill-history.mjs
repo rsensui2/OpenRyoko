@@ -1,6 +1,12 @@
 #!/usr/bin/env node
 // Regenerates packages/jimmy/template/bundled-skill-history.json: a fingerprint of
-// every version of every bundled skill that a release tag in this repository shipped.
+// every version of every bundled skill that a release of this package shipped.
+//
+// A release is a tag the commit being built descends from. A tag that merely exists
+// in the clone is not one: a clone can hold tags fetched from elsewhere (the project
+// this one was forked from numbers its releases the same way), and what goes into the
+// file must not depend on which of those a clone happens to have. The same commit
+// gives the same file in every clone that has this repository's own tags.
 //
 // The bundled skill sync uses it for homes installed before it kept a receipt. A skill
 // there has no record of what was placed, so the only proof that it is an untouched
@@ -28,9 +34,9 @@ const HOUSEKEEPING = new Set([".DS_Store", ".gitkeep"]);
 
 const git = (...args) => execFileSync("git", args, { cwd: ROOT, maxBuffer: 256 * 1024 * 1024 });
 
-/** Release tags, oldest first, that carry bundled skills. */
+/** Release tags, oldest first: the version tags HEAD descends from, and no others. */
 function releaseTags() {
-  return git("tag", "-l", "--sort=version:refname", "v[0-9]*").toString().split("\n").filter(Boolean);
+  return git("tag", "-l", "--merged", "HEAD", "--sort=version:refname", "v[0-9]*").toString().split("\n").filter(Boolean);
 }
 
 /** skill name → { path inside the skill → blob id } for one tag. Symlinks and

@@ -1,8 +1,10 @@
 import fs from "node:fs";
 import { JINN_HOME } from "../shared/paths.js";
 import { loadConfig } from "../shared/config.js";
+import { configureLogger } from "../shared/logger.js";
 import { startForeground, startDaemon } from "../gateway/lifecycle.js";
 import { installProcessSafetyNet } from "../shared/process-safety-net.js";
+import type { JinnConfig } from "../shared/types.js";
 import { compareSemver, getPackageVersion, getInstanceVersion } from "../shared/version.js";
 import { syncBundledSkillsOnBoot } from "../skills-sync/instance.js";
 
@@ -34,6 +36,15 @@ export async function runStart(opts: { daemon?: boolean; port?: number }): Promi
   // daemon を fork するだけの CLI プロセスには入れない。
   if (!opts.daemon) installProcessSafetyNet();
 
+  // 同期の報告（置き換えたスキル、編集済みで更新しなかったスキルの警告、退避先、
+  // 受領証の異常）は logger を通る。logger が logs/gateway.log に書くのは設定された
+  // あとだけなので、同期より前に gateway と同じ設定で用意する。あとからでは、報告は
+  // 標準出力にしか残らず、Logs 画面から見えない。
+  // - foreground: このあと gateway が起動時に同じ設定を適用し直す。
+  // - daemon: gateway.log を書くのは fork された側だが、同期が走るのは fork する側の
+  //   このプロセスなので、その報告はここから追記する。
+  prepareLog(config);
+
   // 同梱スキルを同期（foreground / daemon 共通。失敗しても起動は続ける）
   syncBundledSkillsOnBoot(config);
 
@@ -57,5 +68,18 @@ export async function runStart(opts: { daemon?: boolean; port?: number }): Promi
       console.error("ゲートウェイの起動に失敗しました:", err);
       process.exit(1);
     }
+  }
+}
+
+/**
+ * logger を、gateway が起動時に行うのと同じ設定にする。用意できなくても起動は止めない:
+ * 同期の報告が標準出力だけになるだけで、ログを開けない原因は gateway 自身が起動時に報告する。
+ */
+function prepareLog(config: JinnConfig): void {
+  try {
+    const { level, stdout, file } = config.logging;
+    configureLogger({ level, stdout, file });
+  } catch {
+    // 上のとおり。
   }
 }
