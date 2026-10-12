@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { createBackupRun, type BackupRun } from "./gateway-url-backup.js";
 
 const MAX_TEXT_FILE_BYTES = 2 * 1024 * 1024;
 const SKIP_DIRECTORIES = new Set([
@@ -24,6 +25,9 @@ export interface GatewayAuditReport {
   fixedFiles: string[];
   unauthenticatedCurlCandidates: string[];
   backupDir?: string;
+  /** Why no file was fixed although fixing was asked for and there was something to
+   *  fix: the backup location could not be used, and nothing is rewritten unbacked. */
+  fixRefused?: string;
 }
 
 export interface GatewayAuditOptions {
@@ -84,14 +88,19 @@ function timestampForPath(date: Date): string {
  * Replace `file` in one step, keeping its mode. The temporary file has a random name
  * and is created exclusively: a name built from the PID could be guessed, and a link
  * planted there was written through — overwriting whatever it pointed at, anywhere,
- * with text taken from a file in the home. The mode is set on the temporary file,
- * which only this call can name, never on a path after the rename.
+ * with text taken from a file in the home. The mode is set on the open temporary
+ * file: set by path, it would land on whatever a link swapped in there points at.
  */
 function atomicWritePreservingMode(file: string, content: string, mode: number): void {
   const temporary = `${file}.${crypto.randomBytes(8).toString("hex")}.tmp`;
-  fs.writeFileSync(temporary, content, { encoding: "utf8", mode, flag: "wx" });
+  const fd = fs.openSync(temporary, "wx", mode);
   try {
-    fs.chmodSync(temporary, mode);
+    try {
+      fs.writeFileSync(fd, content, "utf8");
+      fs.fchmodSync(fd, mode);
+    } finally {
+      fs.closeSync(fd);
+    }
     fs.renameSync(temporary, file);
   } catch (error) {
     fs.rmSync(temporary, { force: true });
@@ -117,7 +126,19 @@ export function auditGatewayReferences(home: string, options: GatewayAuditOption
     fixedFiles: [],
     unauthenticatedCurlCandidates: [],
   };
-  let backupDir: string | undefined;
+  // Made when the first file needs it. Null once it turned out it cannot be made:
+  // a file is not rewritten without a copy of what it held, so nothing is fixed then.
+  let run: BackupRun | null | undefined;
+  const backupRun = (): BackupRun | null => {
+    if (run !== undefined) return run;
+    try {
+      run = createBackupRun(home, timestampForPath(options.now ?? new Date()));
+    } catch (error) {
+      report.fixRefused = error instanceof Error ? error.message : String(error);
+      run = null;
+    }
+    return run;
+  };
 
   for (const file of collectTextFiles(home)) {
     let content: string;
@@ -136,12 +157,10 @@ export function auditGatewayReferences(home: string, options: GatewayAuditOption
       // Checked again here, without following: backing up and rewriting a link would
       // copy and chmod whatever it points at.
       const mode = options.fix ? regularFileMode(file) : null;
-      if (mode !== null) {
-        backupDir ??= path.join(home, "backups", `gateway-url-${timestampForPath(options.now ?? new Date())}`);
-        const backupFile = path.join(backupDir, relative);
-        fs.mkdirSync(path.dirname(backupFile), { recursive: true, mode: 0o700 });
-        fs.copyFileSync(file, backupFile);
-        fs.chmodSync(backupFile, mode);
+      const backup = mode === null ? null : backupRun();
+      if (mode !== null && backup !== null) {
+        // The copy comes first, and a file that could not be copied is not rewritten.
+        backup.keep(file, relative, mode);
         content = replaceLegacyGatewayUrls(content);
         atomicWritePreservingMode(file, content, mode);
         report.fixedFiles.push(relative);
@@ -150,6 +169,6 @@ export function auditGatewayReferences(home: string, options: GatewayAuditOption
     if (looksLikeUnauthenticatedGatewayCurl(content)) report.unauthenticatedCurlCandidates.push(relative);
   }
 
-  if (backupDir) report.backupDir = backupDir;
+  if (run) report.backupDir = run.directory;
   return report;
 }

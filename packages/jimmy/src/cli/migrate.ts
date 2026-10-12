@@ -403,7 +403,10 @@ export async function runMigrate(opts: {
   const shouldFixGatewayUrls = opts.fix === true || opts.auto === true;
   const gatewayAudit = auditGatewayReferences(JINN_HOME, { fix: shouldFixGatewayUrls });
   if (gatewayAudit.legacyOccurrences > 0) {
-    if (shouldFixGatewayUrls) {
+    if (gatewayAudit.fixRefused) {
+      console.log(`${YELLOW}[gateway URL warning]${RESET} ${gatewayAudit.legacyOccurrences}箇所 / ${gatewayAudit.legacyFiles.length}ファイルに http://0.0.0.0 または http://[::] が残っています。`);
+      console.log(`${YELLOW}バックアップを作成できないため、修正していません:${RESET} ${printable(gatewayAudit.fixRefused)}`);
+    } else if (shouldFixGatewayUrls) {
       console.log(`${GREEN}[gateway URL]${RESET} ${gatewayAudit.legacyOccurrences}箇所 / ${gatewayAudit.fixedFiles.length}ファイルをloopback URLへ修正しました。`);
       if (gatewayAudit.backupDir) console.log(`${DIM}バックアップ: ${gatewayAudit.backupDir}${RESET}`);
     } else {
