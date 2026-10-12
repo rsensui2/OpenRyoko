@@ -201,6 +201,41 @@ describe("POST /api/onboarding", () => {
     expect(homeFiles().filter((name) => name.includes("config.yaml"))).toEqual(["config.yaml"]);
   });
 
+  /* The portal block used to be swapped in as text by a routine that knows
+   * one spelling of it. Any other spelling got a second `portal:` appended —
+   * a duplicate key, which js-yaml refuses: from then on every save was
+   * rejected and the gateway could not restart. */
+  it.each([
+    ["a quoted key", '"portal":\n  portalName: Ryoko\n  operatorSlackId: U0OPERATOR\n'],
+    ["a single-quoted key", "'portal':\n  portalName: Ryoko\n  operatorSlackId: U0OPERATOR\n"],
+    ["a flow mapping over several lines", "portal: {\n  portalName: Ryoko,\n  operatorSlackId: U0OPERATOR\n}\n"],
+    ["an anchor on the block", "portal: &p\n  portalName: Ryoko\n  operatorSlackId: U0OPERATOR\n"],
+    ["a tag on the block", "portal: !!map\n  portalName: Ryoko\n  operatorSlackId: U0OPERATOR\n"],
+    ["a comment after the key that is not a plain one", "portal:   #   who we are: Ryoko\n  portalName: Ryoko\n  operatorSlackId: U0OPERATOR\n"],
+    ["an indented document", "  portal:\n    portalName: Ryoko\n    operatorSlackId: U0OPERATOR\n  engines:\n    default: claude\n"],
+    ["CRLF line endings", "engines:\r\n  default: claude\r\nportal:\r\n  portalName: Ryoko\r\n  operatorSlackId: U0OPERATOR\r\n"],
+  ])("leaves a readable config.yaml with one portal block when it is written with %s", async (_form, portalBlock) => {
+    const config = portalBlock.includes("engines:") ? portalBlock : `engines:\n  default: claude\n${portalBlock}logging:\n  level: info\n`;
+    fs.writeFileSync(CONFIG_PATH, config);
+
+    const answer = await call("POST", "/api/onboarding", { portalName: "Momo" });
+
+    expect(answer.status).toBe(200);
+    expect(() => yaml.load(onDisk())).not.toThrow();
+    expect(parsed().portal).toEqual({ portalName: "Momo", operatorSlackId: "U0OPERATOR", onboarded: true });
+    expect(parsed().engines).toEqual({ default: "claude" });
+    // And the next save still works: the file was not left in a state every writer refuses.
+    expect((await call("POST", "/api/onboarding", { operatorName: "Aiko" })).status).toBe(200);
+    expect(parsed().portal.operatorName).toBe("Aiko");
+  });
+
+  it("writes what was asked even when a value needs quoting or spans lines", async () => {
+    const name = 'Ry"oko: the #1\nassistant';
+    expect((await call("POST", "/api/onboarding", { portalName: name })).status).toBe(200);
+    expect(parsed().portal.portalName).toBe(name);
+    expect(parsed().stt).toEqual({ enabled: true, language: "en", languages: ["en"] });
+  });
+
   it("still creates config.yaml with the portal block when there is none, private to its owner", async () => {
     fs.rmSync(CONFIG_PATH);
     const answer = await call("POST", "/api/onboarding", { portalName: "Momo" });

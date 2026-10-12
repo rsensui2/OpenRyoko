@@ -127,6 +127,38 @@ describe("voice settings", () => {
   });
 });
 
+describe("onboarding and the branding fields", () => {
+  /** A portal block the way an operator keeps it: IDs quoted as the template insists, with notes. */
+  const PORTAL = CONFIG.replace("logging:\n", [
+    "# Who is who",
+    "portal:",
+    "  portalName: Ryoko",
+    "  # the operator, by immutable ID (display names can be faked)",
+    '  operatorDiscordId: "1543864208750542941"   # 亮介',
+    "  trustedSpeakers:",
+    "    - U0XXXXXXX   # 亮介 (Slack)",
+    '    - "1543864208750542941"',
+    "",
+    "logging:",
+    "",
+  ].join("\n"));
+
+  it("renames the portal on its line and keeps the notes and the quoting inside the block", async () => {
+    fs.writeFileSync(CONFIG_PATH, PORTAL);
+    expect(await call("POST", "/api/onboarding", { portalName: "Momo" })).toBe(200);
+    expect(changedLines(PORTAL, onDisk())).toEqual({ removed: ["  portalName: Ryoko"], added: ["  portalName: Momo", "  onboarded: true"] });
+    expect(parsed().portal.operatorDiscordId).toBe("1543864208750542941"); // still a string, still double-quoted above
+  });
+
+  it("changes nothing but the one value on the next branding save", async () => {
+    fs.writeFileSync(CONFIG_PATH, PORTAL);
+    await call("POST", "/api/onboarding", { portalName: "Momo" });
+    const afterFirst = onDisk();
+    expect(await call("POST", "/api/onboarding", { operatorName: "Aiko" })).toBe(200);
+    expect(changedLines(afterFirst, onDisk())).toEqual({ removed: [], added: ["  operatorName: Aiko"] });
+  });
+});
+
 describe("model management", () => {
   const sol = (id: string): DiscoveredModel => ({ id, label: id, supportsEffort: true, effortLevels: ["low", "medium", "high"], defaultEffort: "medium" });
 

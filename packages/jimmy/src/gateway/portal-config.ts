@@ -1,6 +1,7 @@
 import fs from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import yaml from "js-yaml";
-import { readConfigSnapshot, writeConfigText } from "../shared/config-file.js";
+import { readConfigSnapshot, writeConfigDocument, writeConfigText } from "../shared/config-file.js";
 
 /**
  * Replace ONLY the top-level `portal:` block in raw config.yaml text, leaving
@@ -8,9 +9,11 @@ import { readConfigSnapshot, writeConfigText } from "../shared/config-file.js";
  * all comments — and the shipped config template is mostly guidance comments,
  * so onboarding must never rewrite the file wholesale.
  *
- * Known limitation: comments INSIDE the portal block itself are regenerated
- * away. The shipped template keeps that block comment-free, so nothing is
- * lost in practice; keep it that way when editing the template.
+ * This is text surgery that knows one spelling of the block — `portal:` in
+ * column 0, its entries indented under it — and regenerates the block whole.
+ * Any other spelling (a quoted key, a flow mapping over several lines, an
+ * anchor) is not found, and a second `portal:` is appended. Never write the
+ * result unchecked: see {@link savePortalBlock}.
  */
 export function patchPortalSection(raw: string, portal: Record<string, unknown>): string {
   const defined = Object.fromEntries(
@@ -63,10 +66,38 @@ export function savePortalBlock(
 ): Record<string, unknown> {
   const snapshot = readConfigSnapshot();
   const onDisk = snapshot.document.portal;
-  const current = onDisk && typeof onDisk === "object" && !Array.isArray(onDisk) ? onDisk : running;
-  const portal: Record<string, unknown> = { ...current, ...patch };
-  writeConfigText(snapshot, patchPortalSection(snapshot.raw ?? "", portal));
+  const block = onDisk && typeof onDisk === "object" && !Array.isArray(onDisk) ? (onDisk as Record<string, unknown>) : undefined;
+  const portal: Record<string, unknown> = { ...(block ?? running), ...patch };
+  const document = { ...snapshot.document, portal };
+  const asText = portalBlockAsText(snapshot.raw ?? "", block, portal, document);
+  if (asText !== null) writeConfigText(snapshot, asText);
+  else writeConfigDocument(snapshot, document);
   return portal;
+}
+
+/**
+ * config.yaml with its portal block swapped in as text — but only when that
+ * is known to be safe, and null otherwise (the caller then saves the document
+ * through the config writer, which changes just the lines that changed).
+ *
+ * Two checks. Regenerating the block that is there now must give back the
+ * file byte for byte: that is the one spelling {@link patchPortalSection}
+ * understands, with no comment inside the block and no quoting of its own to
+ * lose. And the result must load to exactly the document that was meant.
+ */
+function portalBlockAsText(
+  raw: string,
+  block: Record<string, unknown> | undefined,
+  portal: Record<string, unknown>,
+  document: Record<string, unknown>,
+): string | null {
+  if (block !== undefined && patchPortalSection(raw, block) !== raw) return null;
+  const text = patchPortalSection(raw, portal);
+  try {
+    return isDeepStrictEqual(yaml.load(text), document) ? text : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Crash-safe replacement for a config/instruction file the gateway watches. */
