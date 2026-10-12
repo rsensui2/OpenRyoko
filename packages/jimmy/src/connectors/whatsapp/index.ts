@@ -20,6 +20,7 @@ import type {
 import { logger } from "../../shared/logger.js";
 import { JINN_HOME } from "../../shared/paths.js";
 import { newAttachmentDir } from "../../shared/attachments.js";
+import { AttachmentTooLargeError, MAX_ATTACHMENT_BYTES, saveWithin } from "../../shared/attachment-download.js";
 import { formatResponse } from "./format.js";
 import path from "node:path";
 import fs from "node:fs";
@@ -278,7 +279,10 @@ export class WhatsAppConnector implements Connector {
     const hasMedia = message.message?.imageMessage || message.message?.documentMessage || message.message?.audioMessage;
     if (hasMedia && this.sock) {
       try {
-        const buffer = await downloadMediaMessage(message, "buffer", {}, {
+        // The size is the sender's choice. Media announced as larger than the
+        // limit is not fetched; the rest is read as a stream that stops there.
+        if (Number(String(hasMedia.fileLength ?? "")) > MAX_ATTACHMENT_BYTES) throw new AttachmentTooLargeError(MAX_ATTACHMENT_BYTES);
+        const stream = await downloadMediaMessage(message, "stream", {}, {
           logger: silentLogger as never,
           reuploadRequest: this.sock.updateMediaMessage,
         });
@@ -290,8 +294,7 @@ export class WhatsAppConnector implements Connector {
         // message id is the sender's: it names the attachment, not the file.
         const tmpDir = newAttachmentDir();
         const localPath = path.join(tmpDir, `attachment.${ext}`);
-        fs.mkdirSync(tmpDir, { recursive: true });
-        fs.writeFileSync(localPath, buffer as Buffer);
+        await saveWithin(stream, localPath, MAX_ATTACHMENT_BYTES);
         const mimeType = ext === "jpg" ? "image/jpeg"
           : ext === "ogg" ? "audio/ogg"
           : "application/octet-stream";

@@ -1,11 +1,14 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@whiskeysockets/baileys", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@whiskeysockets/baileys")>()),
-  downloadMediaMessage: vi.fn(async () => Buffer.from("image-bytes")),
+  // Baileys hands the media back in the form it is asked for.
+  downloadMediaMessage: vi.fn(async (_message: unknown, type: string) =>
+    type === "stream" ? Readable.from([Buffer.from("image-"), Buffer.from("bytes")]) : Buffer.from("image-bytes")),
 }));
 
 import { WhatsAppConnector } from "../index.js";

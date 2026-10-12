@@ -134,3 +134,27 @@ describe("downloadAttachment with a host allowlist", () => {
     expect(fs.statSync(saved).size).toBe(1024);
   });
 });
+
+describe("downloadAttachment size limit", () => {
+  /* The connector's own messages come from Discord, whose files can be far
+   * larger than anything a turn can use. A caller that names no limit gets
+   * the gateway's. */
+  it("applies the 50 MB limit when the caller names none", async () => {
+    const body = { cancel: vi.fn(async () => {}) };
+    outbound.mockResolvedValue({
+      ok: true, status: 200, headers: new Headers({ "content-length": String(50 * 1024 * 1024 + 1) }), body,
+    } as unknown as Response);
+
+    await expect(downloadAttachment(CDN, dest, "photo.png")).rejects.toThrow(/too large/i);
+
+    expect(body.cancel).toHaveBeenCalledTimes(1);
+    expect(everyFileUnder(root)).toEqual([]);
+  });
+
+  it("removes the directory it made for a file that turned out too large", async () => {
+    const slot = path.join(dest, "message", "0");
+    outbound.mockResolvedValue(new Response("x".repeat(4096)));
+    await expect(downloadAttachment(CDN, slot, "photo.png", { maxBytes: 1024 })).rejects.toThrow(/too large/i);
+    expect(fs.existsSync(path.join(dest, "message"))).toBe(false);
+  });
+});

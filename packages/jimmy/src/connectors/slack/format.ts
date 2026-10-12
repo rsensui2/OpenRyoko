@@ -1,6 +1,6 @@
-import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { MAX_ATTACHMENT_BYTES, saveResponseWithin } from "../../shared/attachment-download.js";
 
 const SLACK_MAX_LENGTH = 3000;
 
@@ -151,11 +151,16 @@ export function formatResponse(text: string): string[] {
 /**
  * Download a Slack file attachment to a local directory.
  * Returns the local file path.
+ *
+ * The file is written as it arrives and refused past `maxBytes` (50 MB unless
+ * said otherwise); `destDir` is created once there is something to save, and
+ * a download that fails leaves nothing behind.
  */
 export async function downloadAttachment(
   url: string,
   token: string,
   destDir: string,
+  maxBytes: number = MAX_ATTACHMENT_BYTES,
 ): Promise<string> {
   const response = await fetch(url, {
     headers: { Authorization: `Bearer ${token}` },
@@ -165,17 +170,13 @@ export async function downloadAttachment(
     throw new Error(`Failed to download attachment: ${response.status} ${response.statusText}`);
   }
 
-  // Created only now: a download that fails leaves no empty directory behind.
-  fs.mkdirSync(destDir, { recursive: true });
-
   // Generate unique filename preserving extension from URL if possible
   const urlPath = new URL(url).pathname;
   const ext = path.extname(urlPath) || "";
   const filename = `${randomUUID()}${ext}`;
   const localPath = path.join(destDir, filename);
 
-  const buffer = Buffer.from(await response.arrayBuffer());
-  fs.writeFileSync(localPath, buffer);
+  await saveResponseWithin(response, localPath, maxBytes);
 
   return localPath;
 }

@@ -22,7 +22,7 @@ export interface DownloadAttachmentOptions {
   /** When set, only an https URL on exactly one of these hosts is fetched, and
    *  a redirect is an error (it could lead anywhere). */
   allowedHosts?: readonly string[];
-  /** When set, a larger file is refused and nothing is written. */
+  /** A larger file is refused and nothing is left on disk. Default: 50 MB. */
   maxBytes?: number;
 }
 
@@ -53,37 +53,11 @@ function assertAllowedUrl(url: string, allowedHosts: readonly string[]): void {
   }
 }
 
-/** The response body, refusing one larger than `maxBytes` — by its announced
- *  size where there is one, and by count while reading either way. */
-async function readAttachmentBody(res: Response, maxBytes: number | undefined): Promise<Buffer> {
-  if (maxBytes === undefined) return Buffer.from(await res.arrayBuffer());
-  const tooLarge = new Error(`Attachment is too large (limit ${maxBytes} bytes)`);
-  const announced = Number(res.headers.get("content-length"));
-  if (Number.isFinite(announced) && announced > maxBytes) {
-    await res.body?.cancel().catch(() => {});
-    throw tooLarge;
-  }
-  if (!res.body) return Buffer.alloc(0);
-  const reader = res.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let received = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    received += value.byteLength;
-    if (received > maxBytes) {
-      await reader.cancel().catch(() => {});
-      throw tooLarge;
-    }
-    chunks.push(value);
-  }
-  return Buffer.concat(chunks);
-}
-
 /**
  * Download an attachment into `destDir` and return where it was saved. The
  * file always lands directly inside `destDir`, whatever `filename` says.
- * `destDir` is created once there is something to save in it.
+ * `destDir` is created once there is something to save in it, and the file is
+ * written as it arrives, up to a size limit (see shared/attachment-download.ts).
  */
 export async function downloadAttachment(
   url: string,
@@ -91,8 +65,8 @@ export async function downloadAttachment(
   filename: string,
   options: DownloadAttachmentOptions = {},
 ): Promise<string> {
-  const { default: fs } = await import("node:fs");
   const { default: path } = await import("node:path");
+  const { MAX_ATTACHMENT_BYTES, saveResponseWithin } = await import("../../shared/attachment-download.js");
   const name = safeAttachmentName(filename);
   const directory = path.resolve(destDir);
   const destPath = name === null ? null : path.join(directory, name);
@@ -102,8 +76,6 @@ export async function downloadAttachment(
   if (options.allowedHosts) assertAllowedUrl(url, options.allowedHosts);
   const res = options.allowedHosts ? await fetch(url, { redirect: "error" }) : await fetch(url);
   if (!res.ok) throw new Error(`Failed to download attachment: ${res.status}`);
-  const body = await readAttachmentBody(res, options.maxBytes);
-  fs.mkdirSync(directory, { recursive: true });
-  fs.writeFileSync(destPath, body);
+  await saveResponseWithin(res, destPath, options.maxBytes ?? MAX_ATTACHMENT_BYTES);
   return destPath;
 }
