@@ -413,8 +413,7 @@ describe("GET /api/config served from disk", () => {
     const before = fs.readFileSync(CONFIG_PATH, "utf-8");
     const served = (await call("GET", "/api/config")).body;
     expect((await call("PUT", "/api/config", served)).status).toBe(200);
-    // `cron: null` is the one difference: a null in the body removes the key, as it always has.
-    const { cron: _removed, ...kept } = yaml.load(before) as typeof CONFIG;
-    expect(onDisk()).toEqual(kept);
+    // Not one byte — `cron: null` included: null where the file already says null is no change.
+    expect(fs.readFileSync(CONFIG_PATH, "utf-8")).toBe(before);
   });
 });

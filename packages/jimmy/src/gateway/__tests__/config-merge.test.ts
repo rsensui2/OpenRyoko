@@ -65,6 +65,35 @@ describe("deepMerge (PUT /api/config)", () => {
   });
 });
 
+describe("deepMerge and null", () => {
+  /* null in a PUT means "take this setting out". But a section written in
+   * config.yaml as a bare heading is null on disk already, and GET serves it
+   * as null: sending that back is not a request to remove anything. */
+  const stored = { gateway: { port: 7777 }, cron: null, connectors: { slack: null, discord: { guildId: "1", channelId: null } } };
+
+  it("leaves a key that is null on disk as it is when null comes back for it", () => {
+    const merged = deepMerge(stored as Record<string, unknown>, { cron: null, connectors: { slack: null, discord: { channelId: null } } });
+    expect(merged).toEqual(stored);
+    expect(Object.keys(merged)).toEqual(["gateway", "cron", "connectors"]);
+    expect(Object.keys(merged.connectors as object)).toEqual(["slack", "discord"]);
+  });
+
+  it("removes a key that holds a value", () => {
+    const merged = deepMerge(stored as Record<string, unknown>, { gateway: null, connectors: { discord: { guildId: null } } });
+    expect(merged).toEqual({ cron: null, connectors: { slack: null, discord: { channelId: null } } });
+  });
+
+  it("adds nothing for a key that is not there", () => {
+    expect(deepMerge(stored as Record<string, unknown>, { sessions: null, connectors: { telegram: null } })).toEqual(stored);
+  });
+
+  it("does not take a built-in for a stored null or a stored value", () => {
+    const merged = deepMerge({ a: 1 }, JSON.parse('{"constructor": null, "toString": null, "__proto__": null}'));
+    expect(merged).toEqual({ a: 1 });
+    expect(Object.keys(merged)).toEqual(["a"]);
+  });
+});
+
 describe("cross-instance token redaction", () => {
   it("masks channelRouting tokens and proxyViaToken for GET /api/config", () => {
     expect(
