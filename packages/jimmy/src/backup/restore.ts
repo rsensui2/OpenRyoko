@@ -140,14 +140,21 @@ function selectEntries(manifest: BackupManifest, only: readonly BackupKind[] | u
     : "the archive holds nothing this command restores");
 }
 
-function refuseExternalSymlinks(homes: readonly string[], selected: ManifestEntry[]): void {
-  const external = selected
-    .filter((entry) => entry.type === "symlink" && leadsOutsideEvery(homes, entry))
-    .map((entry) => `${entry.path} -> ${entry.target}`);
+/**
+ * Refuses a plan that would put a symlink leading out of the home in place.
+ * Only links the restore would actually write count: one that is already in
+ * the home with the same target is left as it is, and leaving it introduces
+ * nothing - which matters, because an operator's own links into `skills/` are
+ * in every archive of their home.
+ */
+function refuseExternalSymlinks(homes: readonly string[], plan: PlanItem[]): void {
+  const external = plan
+    .filter(({ entry, action }) => action !== "unchanged" && entry.type === "symlink" && leadsOutsideEvery(homes, entry))
+    .map(({ entry }) => `${entry.path} -> ${entry.target}`);
   if (external.length === 0) return;
   throw new Error(
-    `the archive holds ${external.length} symlink(s) that point outside the home (${listed(external)}). `
-    + "They are not recreated by default; nothing was restored. Pass --allow-external-symlinks to restore them as they were.",
+    `restoring this would create ${external.length} symlink(s) that point outside the home (${listed(external)}). `
+    + "That is not done by default; nothing was restored. Pass --allow-external-symlinks to restore them as they were.",
   );
 }
 
@@ -362,9 +369,8 @@ export async function restoreHomeArchive(options: RestoreOptions): Promise<Resto
   const manifest = inspection.manifest;
   const home = fs.existsSync(options.home) ? fs.realpathSync(options.home) : path.resolve(options.home);
   const selected = selectEntries(manifest, options.only);
-  if (!options.allowExternalSymlinks) refuseExternalSymlinks([home, path.resolve(options.home)], selected);
-
   const plan = buildPlan(home, manifest, selected);
+  if (!options.allowExternalSymlinks) refuseExternalSymlinks([home, path.resolve(options.home)], plan);
   const kinds = BACKUP_KINDS.filter((kind) => selected.some((entry) => kindOfPath(entry.path) === kind));
   const changes = plan
     .filter((item): item is PlanItem & { action: "create" | "replace" } => item.action !== "unchanged")

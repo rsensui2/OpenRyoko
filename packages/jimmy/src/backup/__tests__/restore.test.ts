@@ -388,6 +388,34 @@ describe("restoreHomeArchive, refusing what it must not trust", () => {
     expect(snapshotTree(outside)).toEqual({ "SKILL.md": "kept outside the home\n" });
   });
 
+  it("does not ask permission for an outside symlink that is still in the home, unchanged", async () => {
+    // The operator's own links into skills/ are in every archive of this home.
+    // A restore that leaves them exactly as they are introduces nothing.
+    const root = tempDir();
+    const home = makeHome(root);
+    const outside = path.join(root, "shared-skill");
+    writeTree(outside, { "SKILL.md": "kept outside the home\n" });
+    fs.symlinkSync(outside, path.join(home, "skills", "shared"));
+    const backups = path.join(home, "backups");
+    const taken = await createHomeArchive({
+      home, destination: path.join(backups, "home-20261012T030000Z.tar.gz"), id: "home-20261012T030000Z", createdAt: TAKEN,
+    });
+    fs.writeFileSync(path.join(home, "config.yaml"), "broken\n");
+    const options: RestoreOptions = { archive: taken.file, home, backupDirectory: backups, now: NOW, diskSpace: () => ROOMY };
+
+    const result = await restoreHomeArchive(options);
+
+    expect(read(home, "config.yaml")).toBe(HOME_CONTENT["config.yaml"]);
+    expect(fs.readlinkSync(path.join(home, "skills", "shared"))).toBe(outside);
+    expect(result.changes.map((change) => change.path)).toEqual(["config.yaml"]);
+
+    // Pointed somewhere else since the backup, putting it back is a write, and that does need the flag.
+    fs.rmSync(path.join(home, "skills", "shared"));
+    fs.symlinkSync(path.join(root, "somewhere-else"), path.join(home, "skills", "shared"));
+    await expect(restoreHomeArchive({ ...options, now: new Date(NOW.getTime() + 60_000) })).rejects.toThrow(/--allow-external-symlinks/);
+    expect(fs.readlinkSync(path.join(home, "skills", "shared"))).toBe(path.join(root, "somewhere-else"));
+  });
+
   it("refuses to clear a directory out of the way of a file, and restores nothing at all", async () => {
     const target = await scene();
     fs.rmSync(path.join(target.home, "MEMORY.md"));
