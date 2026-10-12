@@ -176,6 +176,17 @@ describe("Slack connector — providerAuth wiring", () => {
     expect(world.core.ptys[0].write).not.toHaveBeenCalled();
   });
 
+  it("during a Claude login, still routes a message that only looks like a short code", async () => {
+    const { app, routed, receive, click } = await connect({ providerAuth: { enabled: true } });
+    await click("ryoko_auth_start_claude");
+    app.client.chat.postMessage.mockClear();
+
+    await receive("1300-1500 に会議を入れて");
+
+    expect(routed.mock.calls.map(([message]) => message.text)).toEqual(["1300-1500 に会議を入れて"]);
+    expect(app.client.chat.postMessage).not.toHaveBeenCalled();
+  });
+
   it("applies allowFrom before the operator's command", async () => {
     const { app, routed, receive } = await connect({ providerAuth: { enabled: true }, allowFrom: ["USOMEONE"] });
 

@@ -1,4 +1,6 @@
-import { containsAuthCode, getProviderAuthService, isOAuthInput, PROVIDERS, SYSTEM_CLOCK } from "../../provider-auth/index.js";
+import {
+  AUTH_PROVIDERS, containsAuthCode, getProviderAuthService, isOAuthInput, PROVIDERS, SYSTEM_CLOCK,
+} from "../../provider-auth/index.js";
 import type { AuthClock, AuthProvider, FlowOutcome, FlowPrompt, ProviderAuthPort } from "../../provider-auth/index.js";
 import { logger as sharedLogger } from "../../shared/logger.js";
 import type { SlackConnectorConfig } from "../../shared/types.js";
@@ -170,14 +172,17 @@ export class SlackProviderAuth {
    * none, only a message that is nothing but an OAuth value: a request that
    * mentions a callback URL stays an ordinary request. With one — ten minutes
    * at most — a code anywhere in the text, in any kind of message (a file
-   * upload's caption, a thread reply also sent to the DM).
+   * upload's caption, a thread reply also sent to the DM). A device code is
+   * looked for only while a login that shows one is running.
    */
   async handleMessage(event: SlackAuthMessageEvent): Promise<boolean> {
     if (this.stopped || event.bot_id || !event.channel || event.channel_type !== "im") return false;
     const text = typedText(event.text ?? "");
     const command = !event.subtype && LOGIN_COMMANDS.has(text.toLowerCase());
     const loginInProgress = this.service.hasActiveFlow();
-    const pastedCode = !command && (loginInProgress ? containsAuthCode(text) : isOAuthInput(text));
+    const pastedCode = !command && (loginInProgress
+      ? containsAuthCode(text, { deviceCodes: this.deviceCodeLoginInProgress() })
+      : isOAuthInput(text));
     if ((!command && !pastedCode) || !this.isOperator(event.user)) return false;
     // A replayed command takes the connector's normal old-message drop. A
     // replayed code is swallowed here instead, so that drop never logs it.
@@ -216,6 +221,10 @@ export class SlackProviderAuth {
         resolve();
       });
     });
+  }
+
+  private deviceCodeLoginInProgress(): boolean {
+    return AUTH_PROVIDERS.some((provider) => PROVIDERS[provider].showsDeviceCode && this.service.activeFlow(provider) !== undefined);
   }
 
   private isOperator(userId: string | undefined): boolean {

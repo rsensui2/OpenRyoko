@@ -87,10 +87,27 @@ describe("containsAuthCode — during a login, a code anywhere in the message", 
     ["a callback URL in a sentence", `これです http://localhost:58741/callback?code=${CODE}&state=${STATE} お願いします`],
     ["a callback URL without a scheme", `localhost:58741/callback?state=${STATE}&code=${CODE}`],
     ["a malformed callback URL", "http://localhost:58741/callback?code=bad&state=short"],
-    ["a device code in a sentence", "コードはFHI3-TCJKFです"],
-    ["a device code in backticks", "`AB12-CD34`"],
-  ])("finds %s", (_name, value) => {
+  ])("finds an OAuth value, whichever login is running: %s", (_name, value) => {
     expect(containsAuthCode(value)).toBe(true);
+    expect(containsAuthCode(value, { deviceCodes: true })).toBe(true);
+  });
+
+  it.each([
+    ["in a sentence", "コードはFHI3-TCJKFです"],
+    ["in backticks", "`AB12-CD34`"],
+    ["on its own", "FHI3-TCJKF"],
+  ])("finds a device code %s while a device-code login is running", (_name, value) => {
+    expect(containsAuthCode(value, { deviceCodes: true })).toBe(true);
+  });
+
+  // A login that shows no device code has none to leak, and the shape is
+  // common: time ranges, year ranges, ticket numbers, line anchors.
+  it.each([
+    "コードはFHI3-TCJKFです", "`AB12-CD34`", "1300-1500 に会議", "2025-2026 年度の計画", "VIBE-1234 を見て",
+    "https://github.com/owner/repo/blob/main/src/a.ts#L100-L120",
+  ])("does not take a short code for a secret when no device-code login is running: %s", (value) => {
+    expect(containsAuthCode(value)).toBe(false);
+    expect(containsAuthCode(value, { deviceCodes: false })).toBe(false);
   });
 
   it("does not see a code in ordinary text", () => {
@@ -99,7 +116,7 @@ describe("containsAuthCode — during a login, a code anywhere in the message", 
       "2026-10-12 の件", "docs の setup-guide#troubleshooting を直して", "PR-1234 を見て",
       "XABCD-EFGHIJ", "abcd-efgh",
     ]) {
-      expect(containsAuthCode(value), value).toBe(false);
+      expect(containsAuthCode(value, { deviceCodes: true }), value).toBe(false);
     }
   });
 });

@@ -79,8 +79,14 @@ const SHORT_CODE_ANYWHERE = /(?<![A-Za-z0-9-])[A-Z0-9]{4}-[A-Z0-9]{4,5}(?![A-Za-
  * backticks or asterisks, or in the middle of a sentence. For those few
  * minutes a false alarm costs the operator a rephrased message; a miss puts a
  * live code into the log and the session history.
+ *
+ * The short-code shape is looked for only when `deviceCodes` says a login that
+ * shows one is running. Otherwise there is no such code to leak, and the shape
+ * is everywhere: `1300-1500`, `2025-2026`, a ticket number, a `#L100-L120`
+ * line anchor.
  */
-export function containsAuthCode(raw: string): boolean {
+export function containsAuthCode(raw: string, options: { deviceCodes?: boolean } = {}): boolean {
   const text = raw.slice(0, MAX_SCANNED_LENGTH);
-  return CODE_STATE_ANYWHERE.test(text) || CALLBACK_ANYWHERE.test(text) || SHORT_CODE_ANYWHERE.test(text);
+  if (CODE_STATE_ANYWHERE.test(text) || CALLBACK_ANYWHERE.test(text)) return true;
+  return options.deviceCodes === true && SHORT_CODE_ANYWHERE.test(text);
 }

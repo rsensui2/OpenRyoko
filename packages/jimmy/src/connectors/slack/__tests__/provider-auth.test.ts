@@ -300,12 +300,12 @@ describe("Slack provider login — Claude", () => {
     f.postMessage.mockClear();
 
     const callback = `<http://localhost:58741/callback?code=${OAUTH_CODE}&amp;state=${OAUTH_STATE}>`;
-    for (const pasted of [`${OAUTH_CODE}#${OAUTH_STATE}`, callback, "AB12-CD34"]) {
+    for (const pasted of [`${OAUTH_CODE}#${OAUTH_STATE}`, callback]) {
       expect(await f.message(pasted), pasted).toBe(true);
     }
 
     expect(pty.write).not.toHaveBeenCalled();
-    expect(f.postMessage).toHaveBeenCalledTimes(3);
+    expect(f.postMessage).toHaveBeenCalledTimes(2);
     for (const [reply] of f.postMessage.mock.calls) expect(reply.text).toContain("コードを入力");
     expect(f.shown()).not.toContain(OAUTH_CODE);
   });
@@ -348,7 +348,6 @@ describe("Slack provider login — Claude", () => {
     ["in bold", `*${OAUTH_CODE}#${OAUTH_STATE}*`, {}],
     ["inside a sentence", `コードは${OAUTH_CODE}#${OAUTH_STATE}です`, {}],
     ["as a callback URL inside a sentence", `これです <http://localhost:58741/callback?code=${OAUTH_CODE}&amp;state=${OAUTH_STATE}> お願いします`, {}],
-    ["as a device code inside a sentence", `コードは ${CODEX_DEVICE_CODE} でした`, {}],
   ] as const)("while a login is running, swallows a code pasted %s", async (_name, text, extra) => {
     const f = fixture();
     const pty = await startLogin(f, "claude");
@@ -364,6 +363,37 @@ describe("Slack provider login — Claude", () => {
     // The match is deliberately broad for these ten minutes; say how to get an ordinary message through.
     expect(f.postMessage.mock.calls[0][0].text).toContain("ログインが終わってから");
     expect(f.shown()).not.toContain(OAUTH_CODE);
+  });
+
+  it.each([
+    ["inside a sentence", `コードは ${CODEX_DEVICE_CODE} でした`],
+    ["in backticks", `\`${CODEX_DEVICE_CODE}\``],
+    ["on its own", CODEX_DEVICE_CODE],
+  ])("while a Codex login is running, swallows its device code pasted %s", async (_name, text) => {
+    const f = fixture();
+    const pty = await startLogin(f, "codex");
+    pty.emitData(CODEX_LOGIN_OUTPUT);
+    await settle();
+    f.postMessage.mockClear();
+
+    expect(await f.message(text)).toBe(true);
+
+    expect(f.postMessage).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(f.postMessage.mock.calls)).not.toContain(CODEX_DEVICE_CODE);
+  });
+
+  // A Claude login shows no device code, so there is none to leak — and the
+  // shape is that of a time range, a year range, a ticket number, a line anchor.
+  it.each([
+    "1300-1500 に会議を入れて", "2025-2026 年度の計画を見せて", "VIBE-1234 を見て",
+    "https://github.com/owner/repo/blob/main/src/a.ts#L100-L120 を読んで", "AB12-CD34",
+  ])("while a Claude login is running, leaves a message that only looks like a short code to the session: %s", async (text) => {
+    const f = fixture();
+    await startLogin(f, "claude");
+    f.postMessage.mockClear();
+
+    expect(await f.message(text)).toBe(false);
+    expect(f.postMessage).not.toHaveBeenCalled();
   });
 
   it("while a login is running, still routes messages that carry no code, and ignores everyone but the operator", async () => {
