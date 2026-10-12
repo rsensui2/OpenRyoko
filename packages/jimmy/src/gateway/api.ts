@@ -58,6 +58,7 @@ import {
 } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 import { getSttStatus, downloadModel, transcribe as sttTranscribe, resolveLanguages, WHISPER_LANGUAGES } from "../stt/stt.js";
+import { markSttModelInstalled, saveSttLanguages } from "../stt/config.js";
 import { JINN_HOME } from "../shared/paths.js";
 import { handleHookPost, LOOPBACK as HOOK_LOOPBACK } from "./hook-endpoint.js";
 import { resolveEffort } from "../shared/effort.js";
@@ -100,7 +101,7 @@ import { ptySnapshotStore } from "../engines/pty-snapshot.js";
 import { collectClaudeUsage } from "../shared/claude-usage.js";
 import { PairingAttemptLimiter, pairingAttemptKey } from "./pairing-rate-limit.js";
 import { applyLanguageSection, personalizeInstructionMd, personalizeIdentityMd, resolveEffectiveName } from "./onboarding-personalize.js";
-import { patchPortalSection, writeFileAtomic } from "./portal-config.js";
+import { savePortalBlock, writeFileAtomic } from "./portal-config.js";
 
 /** Max bytes accepted on /api/internal/hook (loopback-only relay payloads are tiny). */
 const HOOK_BODY_MAX_BYTES = 64 * 1024;
@@ -2342,19 +2343,16 @@ Handle this as a priority request from a colleague.`;
       // the portal to its defaults.
       const config = context.getConfig();
       const provided = (v: unknown): v is string => typeof v === "string" && v.trim() !== "";
-      const portalPatch: Record<string, unknown> = {
-        ...config.portal,
+      // Patch only the portal block — a whole-file yaml.dump would strip
+      // every comment the shipped config template carries. The block on disk
+      // is what gets patched, not the in-memory one: see savePortalBlock.
+      const portalPatch = savePortalBlock({
         onboarded: true,
         ...(provided(portalName) && { portalName }),
         ...(provided(operatorName) && { operatorName }),
         ...(provided(language) && { language }),
-      };
+      }, config.portal);
       const updated = { ...config, portal: portalPatch };
-
-      // Patch only the portal block — a whole-file yaml.dump would strip
-      // every comment the shipped config template carries.
-      const rawConfig = fs.existsSync(CONFIG_PATH) ? fs.readFileSync(CONFIG_PATH, "utf-8") : "";
-      writeFileAtomic(CONFIG_PATH, patchPortalSection(rawConfig, portalPatch));
       logger.info(`Onboarding: portal name="${portalName}", operator="${operatorName}", language="${language}"`);
 
       const effectiveName = resolveEffectiveName(portalName, config.portal?.portalName);
@@ -2402,14 +2400,7 @@ Handle this as a priority request from a colleague.`;
       }).then(() => {
         // Update config to mark STT as enabled
         try {
-          const raw = fs.readFileSync(CONFIG_PATH, "utf-8");
-          const cfg = yaml.load(raw) as Record<string, unknown>;
-          if (!cfg.stt || typeof cfg.stt !== "object") cfg.stt = {};
-          const sttCfg = cfg.stt as Record<string, unknown>;
-          sttCfg.enabled = true;
-          sttCfg.model = model;
-          if (!sttCfg.languages) sttCfg.languages = ["en"];
-          fs.writeFileSync(CONFIG_PATH, yaml.dump(cfg, { lineWidth: -1 }));
+          markSttModelInstalled(model);
         } catch (err) {
           logger.error(`Failed to update config after STT download: ${err}`);
         }
@@ -2474,14 +2465,7 @@ Handle this as a priority request from a colleague.`;
       }
 
       try {
-        const raw = fs.readFileSync(CONFIG_PATH, "utf-8");
-        const cfg = yaml.load(raw) as Record<string, unknown>;
-        if (!cfg.stt || typeof cfg.stt !== "object") cfg.stt = {};
-        const sttCfg = cfg.stt as Record<string, unknown>;
-        sttCfg.languages = langs;
-        // Remove deprecated language field if present
-        delete sttCfg.language;
-        fs.writeFileSync(CONFIG_PATH, yaml.dump(cfg, { lineWidth: -1 }));
+        saveSttLanguages(langs);
         return json(res, { status: "ok", languages: langs });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

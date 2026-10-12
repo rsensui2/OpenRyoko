@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import yaml from "js-yaml";
+import { readConfigSnapshot, writeConfigText } from "../shared/config-file.js";
 
 /**
  * Replace ONLY the top-level `portal:` block in raw config.yaml text, leaving
@@ -43,6 +44,29 @@ export function patchPortalSection(raw: string, portal: Record<string, unknown>)
   const tail = lines.slice(end);
   const spacer = tail.length > 0 && tail[0] !== "" ? [""] : [];
   return [...lines.slice(0, start), ...rendered, ...spacer, ...tail].join("\n");
+}
+
+/**
+ * Apply `patch` to the portal block of config.yaml and return the block as
+ * written. The base is the block on disk: the in-memory config (`running`)
+ * trails the file by about a second, so two saves in a row — portal name, then
+ * operator name — would otherwise have the second put the first one's value
+ * back. `running` only stands in while the file has no portal block.
+ *
+ * Goes through the shared config writer: a config.yaml that cannot be read is
+ * refused, the write is staged and renamed into place, and the file keeps its
+ * permission bits.
+ */
+export function savePortalBlock(
+  patch: Record<string, unknown>,
+  running: object | undefined,
+): Record<string, unknown> {
+  const snapshot = readConfigSnapshot();
+  const onDisk = snapshot.document.portal;
+  const current = onDisk && typeof onDisk === "object" && !Array.isArray(onDisk) ? onDisk : running;
+  const portal: Record<string, unknown> = { ...current, ...patch };
+  writeConfigText(snapshot, patchPortalSection(snapshot.raw ?? "", portal));
+  return portal;
 }
 
 /** Crash-safe replacement for a config/instruction file the gateway watches. */

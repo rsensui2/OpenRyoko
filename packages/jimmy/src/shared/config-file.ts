@@ -82,6 +82,33 @@ export function readConfigSnapshot(configPath: string = CONFIG_PATH): ConfigSnap
   return { raw, mode, document: parseConfigMapping(raw), revision: revisionOf(bytes) };
 }
 
+/**
+ * Replace config.yaml with `text` exactly as given — for a writer that edits
+ * the text itself (the onboarding portal block) or puts an earlier version of
+ * the file back. Staged and renamed into place like writeConfigDocument, with
+ * the permission bits and owner of the file `snapshot` was read from. Returns
+ * the revision of what was written.
+ */
+export function writeConfigText(snapshot: ConfigSnapshot, text: string, configPath: string = CONFIG_PATH): string {
+  replaceFile(configPath, text, snapshot.mode ?? 0o600);
+  return revisionOf(text);
+}
+
+/**
+ * Read config.yaml, let `change` derive the next document, and write it: one
+ * call for a writer that sets a few keys. `change` receives a copy it is free
+ * to modify. Throws when config.yaml does not exist — a setting on its own is
+ * not a config the gateway could start from — or cannot be read.
+ */
+export function updateConfigDocument(
+  change: (document: Record<string, unknown>) => Record<string, unknown>,
+  configPath: string = CONFIG_PATH,
+): string {
+  const snapshot = readConfigSnapshot(configPath);
+  if (snapshot.raw === null) throw new Error("config.yaml not found");
+  return writeConfigDocument(snapshot, change(structuredClone(snapshot.document)), configPath);
+}
+
 /** Follow a symlinked config.yaml (dotfiles setups) so the link survives the
  *  rename. A missing file is created where it was asked for; a dangling link
  *  creates what it points at, as a plain write would. */
