@@ -66,7 +66,8 @@ bundled skill it placed.
 
 | The skill in `~/.ryoko/skills/` | What the sync does |
 |---|---|
-| Missing | Installs it |
+| Missing, and the sync has no record of placing it | Installs it |
+| Missing, but the sync placed it earlier (you deleted it) | Gateway start leaves it out and says so once per release. `ryoko migrate` puts it back |
 | Unedited since the sync placed it, and a newer version ships | Replaces it and keeps the previous copy |
 | Edited, or holding files you added | Leaves it alone; tells you once per release when a newer version ships |
 | A symlink, or holding a symlink | Leaves it alone |
@@ -77,18 +78,22 @@ bundled skill it placed.
 
 - **Your changes are never overwritten.** To customize a bundled skill, edit it in place;
   it stops following releases. To return to the shipped version, move the skill's
-  directory aside and restart the gateway (or run `ryoko migrate`).
+  directory aside and run `ryoko migrate`.
+- **A bundled skill you delete stays deleted.** Restarting the gateway does not bring it
+  back; the receipt keeps a `"deleted": true` mark for it. `ryoko migrate` (and so
+  `ryoko update`, which runs it) reinstalls it. To keep a skill out even then, leave an
+  empty directory with its name.
 - **Nothing is deleted.** A replaced or retired skill is moved to
   `~/.ryoko/.migration-backups/<version>-<time>/skills/<name>/`. Remove old backups by
   hand when you no longer need them.
 - On the first start after upgrading to a release with this sync there is no receipt
-  yet, so nothing is replaced: missing skills are added and skills identical to the
-  shipped version are recorded. Updates start with the release after that.
-- A bundled skill you delete comes back on the next start. To keep one out, leave an
-  empty directory with its name.
+  yet, so nothing is replaced: missing skills are added (including any you had deleted
+  before, once) and skills identical to the shipped version are recorded. Updates start
+  with the release after that.
 - If `~/.ryoko/skills` is itself a symlink, nothing is synced into it.
-- Do not edit `.shipped-skills.json`. Deleting it is safe: skills identical to the shipped
-  version are tracked again and everything else is left alone.
+- Do not edit `.shipped-skills.json`. Deleting it is safe, though it also forgets which
+  skills you deleted: missing bundled skills are installed again, skills identical to the
+  shipped version are tracked again, and everything else is left alone.
 - `skills.autoSync: false` in `config.yaml` stops the sync at gateway start.
   `ryoko migrate` syncs either way.
 
