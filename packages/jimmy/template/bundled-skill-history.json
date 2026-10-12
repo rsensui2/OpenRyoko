@@ -1,0 +1,377 @@
+{
+  "schemaVersion": 1,
+  "source": "71 release tags, v0.1.0 to v2026.10.9",
+  "names": [
+    "cron-manager",
+    "find-and-install",
+    "management",
+    "migrate",
+    "new",
+    "onboarding",
+    "openryoko-config",
+    "self-heal",
+    "skill-creator",
+    "status",
+    "sync"
+  ],
+  "skills": {
+    "cron-manager": [
+      {
+        "since": "v0.1.0",
+        "files": {
+          "SKILL.md": {
+            "lines": 128,
+            "masked": "0470620eb3b8491899eb342c193b32de996d4fd4a7e77fe24fe19f038c9a0c80",
+            "slots": {
+              "58": "6. **Delegation check**: If the job has delivery configured AND targets a non-{{portalSlug}} employee, warn the user. The correct pattern for reporting/analytical jobs is: target `{{portalSlug}}`, and include delegation instructions in the prompt (e.g. \"Delegate to @employee-name: ...\"). {{portalName}} reviews and filters the output before it reaches the delivery channel. Only simple, no-review tasks (e.g. health checks) should target employees directly with delivery."
+            }
+          }
+        }
+      },
+      {
+        "since": "v2026.8.27",
+        "files": {
+          "SKILL.md": {
+            "lines": 128,
+            "masked": "867dde03d7dd4520e89e9698faaf965b55b70e48919122a36295fee9511b647a",
+            "slots": {
+              "13": "All cron jobs are stored in `cron/jobs.json` (relative to the {{portalName}} home directory, which is always your working directory) as a JSON array of job objects. If the file does not exist, create it with an empty array `[]`.",
+              "58": "6. **Delegation check**: If the job has delivery configured AND targets a non-{{portalSlug}} employee, warn the user. The correct pattern for reporting/analytical jobs is: target `{{portalSlug}}`, and include delegation instructions in the prompt (e.g. \"Delegate to @employee-name: ...\"). {{portalName}} reviews and filters the output before it reaches the delivery channel. Only simple, no-review tasks (e.g. health checks) should target employees directly with delivery."
+            }
+          }
+        }
+      },
+      {
+        "since": "v2026.9.16",
+        "files": {
+          "SKILL.md": {
+            "sha256": "f22c8369b2c90415fea3d65c4d7e1ad6e057a46e134574c767d903fe7b5b129f"
+          }
+        }
+      }
+    ],
+    "find-and-install": [
+      {
+        "since": "v0.1.0",
+        "files": {
+          "SKILL.md": {
+            "lines": 93,
+            "masked": "7b3edb0ff7f00f7bf1fbea5ca916ef3f2a1c89edc205e193d173b3cf23f87070",
+            "slots": {
+              "37": "### Step 2: Copy into {{portalSlug}} skills directory",
+              "40": "cp -r ~/.claude/skills/<name>/ ~/.{{portalSlug}}/skills/<name>/",
+              "43": "The {{portalName}} file watcher will detect the new directory and create the appropriate symlinks automatically.",
+              "47": "Read `~/.{{portalSlug}}/skills.json`, add the new skill entry, and write it back.",
+              "64": "Read the newly installed `~/.{{portalSlug}}/skills/<name>/SKILL.md` and follow its instructions to complete the current task.",
+              "81": "cp -r ~/.claude/skills/vercel-deploy/ ~/.{{portalSlug}}/skills/vercel-deploy/"
+            }
+          }
+        }
+      }
+    ],
+    "management": [
+      {
+        "since": "v0.1.0",
+        "files": {
+          "SKILL.md": {
+            "lines": 204,
+            "masked": "ceee7f032ef02bec67def3163fdbf0686b850189f4bbbcd28558f75425f1f096",
+            "slots": {
+              "13": "The organization lives under the `org/` directory in the {{portalName}} home folder (`~/.jinn/org/`). Each department is a subdirectory containing employee persona YAML files and a task board.",
+              "120": "  - Report summaries back to the COO ({{portalName}}), not raw employee output"
+            }
+          }
+        }
+      },
+      {
+        "since": "v0.9.0",
+        "files": {
+          "SKILL.md": {
+            "lines": 227,
+            "masked": "ab26ab6849b5935038a1e65de9f5a81b45c506c4f608b1d080549f16f753be94",
+            "slots": {
+              "13": "The organization lives under the `org/` directory in the {{portalName}} home folder (`~/.jinn/org/`). Each department is a subdirectory containing employee persona YAML files and a task board.",
+              "141": "  - Report summaries back to the COO ({{portalName}}), not raw employee output"
+            }
+          }
+        }
+      },
+      {
+        "since": "v2026.8.27",
+        "files": {
+          "SKILL.md": {
+            "lines": 227,
+            "masked": "ab26ab6849b5935038a1e65de9f5a81b45c506c4f608b1d080549f16f753be94",
+            "slots": {
+              "13": "The organization lives under `org/` in the {{portalName}} home directory — which is always your working directory, so relative paths in this skill resolve correctly on any instance. Each department is a subdirectory containing employee persona YAML files and a task board.",
+              "141": "  - Report summaries back to the COO ({{portalName}}), not raw employee output"
+            }
+          }
+        }
+      }
+    ],
+    "migrate": [
+      {
+        "since": "v0.1.0",
+        "files": {
+          "SKILL.md": {
+            "lines": 155,
+            "masked": "04d7542b153b6b0271550b3ef66367128d7ded81d050264ebc0e1cd3e624bc28",
+            "slots": {
+              "2": "description: Apply pending version migrations to update this {{portalName}} instance"
+            }
+          }
+        }
+      },
+      {
+        "since": "v2026.5.7",
+        "files": {
+          "SKILL.md": {
+            "lines": 162,
+            "masked": "b2aaf1f945c9b203380265d10230e7f62926187476dcbcf90b0b1d41f7760fc5",
+            "slots": {
+              "2": "description: Apply pending version migrations to update this {{portalName}} instance"
+            }
+          }
+        }
+      },
+      {
+        "since": "v2026.5.22",
+        "files": {
+          "SKILL.md": {
+            "lines": 162,
+            "masked": "0f53308622072043d506c6bd0c806dba69b37376f541c5cdd47f370c1ce1f19b",
+            "slots": {
+              "2": "description: Apply pending version migrations to update this {{portalName}} instance"
+            }
+          }
+        }
+      },
+      {
+        "since": "v2026.10.9",
+        "files": {
+          "SKILL.md": {
+            "lines": 161,
+            "masked": "518e2f76a7f3a9ca2ce25ba7dacdf724e2fafc0088c12bd586fce980f19714f5",
+            "slots": {
+              "2": "description: Apply pending version migrations to update this {{portalName}} instance"
+            }
+          }
+        }
+      }
+    ],
+    "new": [
+      {
+        "since": "v0.1.0",
+        "files": {
+          "SKILL.md": {
+            "sha256": "f125297f359e98df799acfab0ce69dc80c37a3f71ca71a30df04c88aa373660f"
+          }
+        }
+      }
+    ],
+    "onboarding": [
+      {
+        "since": "v0.1.0",
+        "files": {
+          "SKILL.md": {
+            "lines": 107,
+            "masked": "aa40ec1c5e663c1a6028f7eb9f9f6e2dcb69ebfdbc59e7fb356cc6107620f301",
+            "slots": {
+              "2": "description: Walk a new user through initial {{portalName}} setup and customization",
+              "9": "This skill activates on {{portalName}}'s first run, or when the user explicitly asks to go through the onboarding/setup process.",
+              "15": "Greet the user warmly. Introduce {{portalName}} as their AI-powered assistant and gateway. Keep it brief and friendly.",
+              "17": "Example: \"Hey! I'm {{portalName}}, your AI assistant. Let me learn about you so I can be more useful.\"",
+              "23": "2. **What should {{portalName}} help with?** — Code reviews, deployments, monitoring, content, research, etc.",
+              "38": "- **Goals**: [what they want {{portalName}} to help with]"
+            }
+          }
+        }
+      },
+      {
+        "since": "v2026.5.7",
+        "files": {
+          "SKILL.md": {
+            "lines": 154,
+            "masked": "b1bd6da15ebe7fb75dcc7d77fbb174f8ac7c72552ef29e831009aa849808bc5d",
+            "slots": {
+              "2": "description: Walk a new user through initial {{portalName}} setup, fill IDENTITY / SOUL / MEMORY, and finalize the workspace",
+              "33": "例（新規）: 「はじめまして。{{portalName}} としてセットアップを始めさせてください。いくつか質問させてもらいます。」",
+              "34": "例（アップグレード）: 「{{portalName}} の persona/memory レイヤが追加されたので、いくつかだけ確認させてください。」",
+              "41": "2. **{{portalName}} に手伝ってほしいこと** — コードレビュー、デプロイ、監視、リサーチ等",
+              "43": "4. **{{portalName}} の人格** — どんな雰囲気で振る舞ってほしいか（落ち着いた / 軽快 / 茶目っ気 など）、絵文字を使うなら何を使いたいか、ユーモアは OK か",
+              "143": "最後に「{{portalName}} として動きます」と一言宣言する。"
+            }
+          }
+        }
+      },
+      {
+        "since": "v2026.10.9",
+        "files": {
+          "SKILL.md": {
+            "lines": 154,
+            "masked": "1c0dc3764e36d00f32d88ef2866241d771584d10bc3debaaf9c5d4c40cb67daf",
+            "slots": {
+              "2": "description: Walk a new user through initial {{portalName}} setup, fill IDENTITY / SOUL / MEMORY, and finalize the workspace",
+              "33": "例（新規）: 「はじめまして。{{portalName}} としてセットアップを始めさせてください。いくつか質問させてもらいます。」",
+              "34": "例（アップグレード）: 「{{portalName}} の persona/memory レイヤが追加されたので、いくつかだけ確認させてください。」",
+              "41": "2. **{{portalName}} に手伝ってほしいこと** — コードレビュー、デプロイ、監視、リサーチ等",
+              "43": "4. **{{portalName}} の人格** — どんな雰囲気で振る舞ってほしいか（落ち着いた / 軽快 / 茶目っ気 など）、絵文字を使うなら何を使いたいか、ユーモアは OK か",
+              "143": "最後に「{{portalName}} として動きます」と一言宣言する。"
+            }
+          }
+        }
+      }
+    ],
+    "openryoko-config": [
+      {
+        "since": "v2026.9.22",
+        "files": {
+          "SKILL.md": {
+            "sha256": "07341a6f0227d5ebb06e5d22b1057eca982c2eced456961bb179c0d4c707d70f"
+          },
+          "references/engine-fallback.md": {
+            "sha256": "c2b238b0110768bd502f2244bf1033dfaf4419a96c21a26a2bca9854708aaf23"
+          },
+          "references/jev.md": {
+            "sha256": "8bdcd4ef65660e248481b0c242afad5cf14f442edd792eb47ce27cfff0b03db3"
+          },
+          "references/maintenance.md": {
+            "sha256": "033faaaab919d606f1b9c9a2c5bb1a7d28f7ce8897b97f85c3fdca2520d19c72"
+          },
+          "references/platform.md": {
+            "sha256": "2b745d9eb9a089987977d577043f69a3a465c8363f021c22c72360deb0bdf865"
+          }
+        }
+      },
+      {
+        "since": "v2026.9.23",
+        "files": {
+          "SKILL.md": {
+            "sha256": "07341a6f0227d5ebb06e5d22b1057eca982c2eced456961bb179c0d4c707d70f"
+          },
+          "references/engine-fallback.md": {
+            "sha256": "c208f20f4fb8315dafe8580f3865b7e7d30f58c8a89c3e80114b95cd87a84000"
+          },
+          "references/jev.md": {
+            "sha256": "8bdcd4ef65660e248481b0c242afad5cf14f442edd792eb47ce27cfff0b03db3"
+          },
+          "references/maintenance.md": {
+            "sha256": "033faaaab919d606f1b9c9a2c5bb1a7d28f7ce8897b97f85c3fdca2520d19c72"
+          },
+          "references/platform.md": {
+            "sha256": "2b745d9eb9a089987977d577043f69a3a465c8363f021c22c72360deb0bdf865"
+          }
+        }
+      },
+      {
+        "since": "v2026.10.2",
+        "files": {
+          "SKILL.md": {
+            "sha256": "07341a6f0227d5ebb06e5d22b1057eca982c2eced456961bb179c0d4c707d70f"
+          },
+          "references/engine-fallback.md": {
+            "sha256": "c208f20f4fb8315dafe8580f3865b7e7d30f58c8a89c3e80114b95cd87a84000"
+          },
+          "references/jev.md": {
+            "sha256": "d5df94d65274625835b91cd31064d430abbc9f1078681cda0b72224438b699fe"
+          },
+          "references/maintenance.md": {
+            "sha256": "033faaaab919d606f1b9c9a2c5bb1a7d28f7ce8897b97f85c3fdca2520d19c72"
+          },
+          "references/platform.md": {
+            "sha256": "2b745d9eb9a089987977d577043f69a3a465c8363f021c22c72360deb0bdf865"
+          }
+        }
+      }
+    ],
+    "self-heal": [
+      {
+        "since": "v0.1.0",
+        "files": {
+          "SKILL.md": {
+            "lines": 115,
+            "masked": "24b8edd36204df21718f8f8d1a5fd074fe0dae2e9142e044993f5c6581a35024",
+            "slots": {
+              "2": "description: Diagnose and fix problems in {{portalName}}'s configuration and runtime",
+              "9": "This skill activates when {{portalName}} is experiencing issues, errors, or unexpected behavior. It also activates when the user asks to diagnose problems, check system health, or fix something that is not working.",
+              "101": "2. If another {{portalName}} instance is running, tell the user to stop it first.",
+              "106": "For understanding {{portalName}}'s architecture and component relationships, refer to the documentation in `~/.jinn/docs/` if available."
+            }
+          }
+        }
+      },
+      {
+        "since": "v2026.8.27",
+        "files": {
+          "SKILL.md": {
+            "lines": 115,
+            "masked": "96a9b13bb2fb147d84932d6fa86d0d06f64046b41c8d9da91d6f36bd72d5ec34",
+            "slots": {
+              "2": "description: Diagnose and fix problems in {{portalName}}'s configuration and runtime",
+              "9": "This skill activates when {{portalName}} is experiencing issues, errors, or unexpected behavior. It also activates when the user asks to diagnose problems, check system health, or fix something that is not working.",
+              "13": "Work through these checks in order. Stop and fix issues as you find them. All relative paths below are relative to the {{portalName}} home directory, which is always your working directory.",
+              "101": "2. If another {{portalName}} instance is running, tell the user to stop it first.",
+              "106": "For understanding {{portalName}}'s architecture and component relationships, refer to the documentation in `docs/` if available."
+            }
+          }
+        }
+      }
+    ],
+    "skill-creator": [
+      {
+        "since": "v0.1.0",
+        "files": {
+          "SKILL.md": {
+            "lines": 113,
+            "masked": "74403b9bf52e7be23b09ed733c16b53920f41184eed3e8dd445ed84ced417025",
+            "slots": {
+              "9": "This skill activates when the user wants to create a new custom skill for {{portalName}}."
+            }
+          }
+        }
+      },
+      {
+        "since": "v2026.8.27",
+        "files": {
+          "SKILL.md": {
+            "lines": 113,
+            "masked": "fea5a4d326d325b7c47756f68732512befea661f819666d69f282a694fc86dde",
+            "slots": {
+              "9": "This skill activates when the user wants to create a new custom skill for {{portalName}}.",
+              "54": "Specify exact file paths for any data the skill reads or writes, relative to the {{portalName}} home directory (always the working directory). Define the expected schema for any JSON or YAML files."
+            }
+          }
+        }
+      }
+    ],
+    "status": [
+      {
+        "since": "v0.1.0",
+        "files": {
+          "SKILL.md": {
+            "sha256": "28475ed8f140de52914f0d10562dcae0722e4d6aeaf7e576f7f03212be859ae6"
+          }
+        }
+      }
+    ],
+    "sync": [
+      {
+        "since": "v0.1.0",
+        "files": {
+          "SKILL.md": {
+            "sha256": "5f905a8cb944289a598a36e489945103df195e6cd65ade87cd561283b6a9dd8b"
+          }
+        }
+      },
+      {
+        "since": "v2026.8.20",
+        "files": {
+          "SKILL.md": {
+            "sha256": "c13b61f845e232900409e7b06e823fe898409aafd0b6df5106b64b6738d1c339"
+          }
+        }
+      }
+    ]
+  }
+}

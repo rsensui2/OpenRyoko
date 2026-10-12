@@ -1,3 +1,9 @@
+---
+# ryoko migrate --auto（ryoko update）は、この migration を適用済みにしません。
+# AI セッションか所有者の作業が要る手順を含むためです。ryoko migrate で適用します。
+auto: false
+---
+
 # 2026.10.9: 運用指示書の一本化と、記憶の置き場の整理
 
 この更新だけで、既存の `AGENTS.md`・`CLAUDE.md`・記憶の中身を書き換えないでください。以下は確認と、所有者の了承を得てから行う整理です。

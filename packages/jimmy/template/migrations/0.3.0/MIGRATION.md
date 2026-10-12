@@ -1,3 +1,9 @@
+---
+# `ryoko migrate --auto` (`ryoko update`) does not record this migration as applied:
+# it has steps that need an AI session or the owner. `ryoko migrate` applies it.
+auto: false
+---
+
 # Migration: 0.3.0 (MCP Integration, Session Limits, Cron Alerting)
 
 ## Summary
