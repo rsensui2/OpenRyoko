@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fingerprintFile, type FileFingerprint } from "../fingerprint.js";
+import { HISTORY_FILE } from "../history.js";
 import { RECEIPT_FILE } from "../receipt.js";
 import { syncBundledSkills } from "../sync.js";
 
@@ -60,6 +62,9 @@ export function fixture() {
     ship: (name: string, files: Files) => writeTree(path.join(template, "skills", name), files),
     /** Drop a skill from the package, as a release that retires it would. */
     unship: (name: string) => fs.rmSync(path.join(template, "skills", name), { recursive: true, force: true }),
+    /** Cut a release: record every skill the package ships right now in its history of
+     *  past versions, as the generator does for a release tag. */
+    release: (tag = "v-test") => recordRelease(template, tag),
     /** Put a skill directly in the home, bypassing the sync. */
     place: (name: string, files: Files) => writeTree(path.join(skills, name), files),
     read: (...relative: string[]) => fs.readFileSync(path.join(skills, ...relative), "utf8"),
@@ -78,8 +83,30 @@ export function fixture() {
       restoreDeleted,
       now: NOW,
       replacements: { "{{portalName}}": portalName, "{{portalSlug}}": portalName.toLowerCase() },
+      // The names `ryoko setup` falls back to when nobody chooses one.
+      legacyPortalNames: ["Ryoko"],
     });
   }
+}
+
+function listFiles(dir: string, prefix = ""): string[] {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+    return entry.isDirectory() ? listFiles(path.join(dir, entry.name), relative) : [relative];
+  });
+}
+
+function recordRelease(template: string, since: string): void {
+  const file = path.join(template, HISTORY_FILE);
+  const history: { schemaVersion: 1; source: string; names: string[]; skills: Record<string, { since: string; files: Record<string, FileFingerprint> }[]> } =
+    fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : { schemaVersion: 1, source: "test fixture", names: [], skills: {} };
+  for (const name of fs.readdirSync(path.join(template, "skills")).sort()) {
+    const root = path.join(template, "skills", name);
+    const files = Object.fromEntries(listFiles(root).sort().map((relative) => [relative, fingerprintFile(relative, fs.readFileSync(path.join(root, relative)))]));
+    history.skills[name] = [...(history.skills[name] ?? []), { since, files }];
+    if (!history.names.includes(name)) history.names.push(name);
+  }
+  fs.writeFileSync(file, `${JSON.stringify(history, null, 2)}\n`);
 }
 
 export function removeFixtures(): void {

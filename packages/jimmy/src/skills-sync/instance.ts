@@ -18,9 +18,22 @@ export function syncInstanceBundledSkills(options: { restoreDeleted?: boolean } 
     templateDir: TEMPLATE_DIR,
     home: JINN_HOME,
     replacements: buildTemplateReplacements(readPortalName()),
+    legacyPortalNames: installerDefaultNames(),
     packageVersion: getPackageVersion(),
     restoreDeleted: options.restoreDeleted === true,
   });
+}
+
+/**
+ * The names `ryoko setup` gives the assistant when nobody picks one: "Ryoko", "Jinn"
+ * in homes migrated from upstream, or the capitalised instance name (`-i <name>`).
+ * Skills are written with the name current at install time and never rewritten, so a
+ * home renamed since still holds one of these in its older skills.
+ */
+export function installerDefaultNames(env: NodeJS.ProcessEnv = process.env): string[] {
+  const instance = env.RYOKO_INSTANCE || env.JINN_INSTANCE;
+  const named = instance ? [instance.charAt(0).toUpperCase() + instance.slice(1)] : [];
+  return [...new Set(["Ryoko", "Jinn", ...named])];
 }
 
 /**

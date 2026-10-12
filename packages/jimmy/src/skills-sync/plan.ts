@@ -1,5 +1,6 @@
 import path from "node:path";
 import type { BundledFile, BundledSkill } from "./bundled.js";
+import { matchShippedVersion, type ShippedHistory } from "./history.js";
 import { hashFiles, inspectHomeSkill } from "./home-skill.js";
 import { assertSkillName, own, sameList } from "./names.js";
 import type { Receipt, ReceiptSkill } from "./receipt.js";
@@ -30,30 +31,36 @@ export function skillDirectory(skillsRoot: string, name: string): string {
  * what the sync may do. Reads only: nothing is written while planning, so a name or
  * a package that fails validation refuses the run before it has changed anything.
  */
-export function planSkillSync(input: {
+export interface PlanInput {
   skillsRoot: string;
   bundled: readonly BundledSkill[];
   receipt: Receipt | null;
   /** Put back shipped skills the operator deleted. Only `ryoko migrate --restore-deleted-skills` asks for this. */
   restoreDeleted: boolean;
-}): SkillPlan[] {
+  /** What earlier releases shipped, for homes that predate the receipt. */
+  history: ShippedHistory;
+  /** Placeholder values the installer could have used when it placed a skill. */
+  renderings: readonly Record<string, string>[];
+}
+
+export function planSkillSync(input: PlanInput): SkillPlan[] {
   const recorded = input.receipt?.skills ?? {};
   const shipped = new Set(input.bundled.map((skill) => skill.name));
   const retired = Object.keys(recorded).filter((name) => !shipped.has(name)).sort();
   return [
-    ...input.bundled.map((skill) => planShipped(input.skillsRoot, skill, own(recorded, skill.name), input.restoreDeleted)),
+    ...input.bundled.map((skill) => planShipped(input, skill, own(recorded, skill.name))),
     ...retired.map((name) => planRetired(input.skillsRoot, name, recorded[name])),
   ];
 }
 
-function planShipped(skillsRoot: string, skill: BundledSkill, entry: ReceiptSkill | undefined, restoreDeleted: boolean): SkillPlan {
+function planShipped(input: PlanInput, skill: BundledSkill, entry: ReceiptSkill | undefined): SkillPlan {
   const name = skill.name;
-  const directory = skillDirectory(skillsRoot, name);
+  const directory = skillDirectory(input.skillsRoot, name);
   const home = inspectHomeSkill(directory);
   if (home.kind === "missing") {
     // No record of placing it: a skill this home never had (or a first run), so it is
     // installed. A record means the operator removed what we placed, and that stands.
-    return entry && !restoreDeleted ? { action: "keep", name, reason: "deleted" } : { action: "install", name, skill };
+    return entry && !input.restoreDeleted ? { action: "keep", name, reason: "deleted" } : { action: "install", name, skill };
   }
   if (home.kind !== "directory") return { action: "keep", name, reason: home.kind };
 
@@ -69,8 +76,12 @@ function planShipped(skillsRoot: string, skill: BundledSkill, entry: ReceiptSkil
   const pristine = observed !== null && entry !== undefined && likeRecorded && home.paths.every((file) => observed[file] === entry.files[file]);
   if (current) return pristine ? { action: "current", name } : { action: "adopt", name, observed };
   if (pristine) return { action: "update", name, skill, observed };
-  if (!entry) return { action: "keep", name, reason: "unmanaged" };
-  return { action: "keep", name, reason: hasShippedChanged(skill, entry) ? "modified" : "customized" };
+  if (entry) return { action: "keep", name, reason: hasShippedChanged(skill, entry) ? "modified" : "customized" };
+  // No receipt entry. The one thing that still proves the copy untouched is that it
+  // is, file for file, a version an earlier release installed.
+  const earlier = matchEarlierRelease(directory, home.paths, own(input.history.versions, name) ?? [], input.renderings);
+  if (earlier === "unreadable") return { action: "keep", name, reason: "unreadable" };
+  return earlier ? { action: "update", name, skill, observed: earlier } : { action: "keep", name, reason: "unmanaged" };
 }
 
 function planRetired(skillsRoot: string, name: string, entry: ReceiptSkill): SkillPlan {
@@ -100,5 +111,10 @@ function hasShippedChanged(skill: BundledSkill, entry: ReceiptSkill): boolean {
 
 function readHashes(directory: string, paths: readonly string[]): Hashes | "unreadable" {
   try { return hashFiles(directory, paths); }
+  catch { return "unreadable"; }
+}
+
+function matchEarlierRelease(...args: Parameters<typeof matchShippedVersion>): Hashes | null | "unreadable" {
+  try { return matchShippedVersion(...args); }
   catch { return "unreadable"; }
 }

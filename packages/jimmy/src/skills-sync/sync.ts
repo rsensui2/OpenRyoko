@@ -1,8 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
+import { buildTemplateReplacements } from "../shared/templateReplacements.js";
 import { compareSemver } from "../shared/version.js";
 import { applyPlans } from "./apply.js";
 import { loadBundledSkills, type BundledSkill } from "./bundled.js";
+import { loadShippedHistory } from "./history.js";
 import { own } from "./names.js";
 import { planSkillSync, type SkillPlan } from "./plan.js";
 import { markDeleted, RECEIPT_FILE, readReceipt, receiptSkill, serializeReceipt, writeReceipt, type Receipt, type ReceiptSkill } from "./receipt.js";
@@ -15,6 +17,13 @@ export interface SyncBundledSkillsOptions {
   home: string;
   /** Placeholder values, as `ryoko setup` fills them into .md and .yaml files. */
   replacements: Record<string, string>;
+  /**
+   * Portal names `ryoko setup` may have used before the current one: its defaults.
+   * A skill installed under one of them, in a home that predates the receipt, is still
+   * recognised as an untouched copy. Deliberately a short list of names the installer
+   * itself would have chosen, never "whatever name the file happens to contain".
+   */
+  legacyPortalNames?: readonly string[];
   packageVersion: string;
   /**
    * Put back shipped skills the operator deleted. Off by default: a skill the sync
@@ -59,7 +68,15 @@ export function syncBundledSkills(options: SyncBundledSkillsOptions): BundledSki
   // An older CLI sharing this home must not undo what a newer one synced.
   if (receipt && compareSemver(options.packageVersion, receipt.packageVersion) < 0) return { ...nothing(), skipped: "newer-receipt" };
 
-  const plans = planSkillSync({ skillsRoot, bundled, receipt, restoreDeleted: options.restoreDeleted === true });
+  const plans = planSkillSync({
+    skillsRoot,
+    bundled,
+    receipt,
+    restoreDeleted: options.restoreDeleted === true,
+    history: loadShippedHistory(options.templateDir),
+    // As configured now, as packaged (never filled in), or under an installer default.
+    renderings: [options.replacements, {}, ...(options.legacyPortalNames ?? []).map(buildTemplateReplacements)],
+  });
   const applied = applyPlans(plans, { home, skillsRoot, packageVersion: options.packageVersion, now: options.now ?? new Date() });
   const failed = new Set(applied.failed.map((failure) => failure.name));
   const done = plans.filter((plan) => !failed.has(plan.name));
