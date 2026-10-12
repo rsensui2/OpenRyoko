@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { alertThrottleMinutes, clearAlertThrottle, isAlertThrottled, recordAlertSent } from "../alert-throttle.js";
+import { alertThrottleMinutes, clearAlertThrottle, isAlertThrottled, isLimitAlertThrottled, recordAlertSent, recordLimitAlertSent } from "../alert-throttle.js";
 
 const MINUTE = 60_000;
 const ops = "slack:C-alerts";
@@ -171,5 +171,69 @@ describe("cron failure alert throttle", () => {
 
   it.each([0, 5, 60, 1440, 0.5])("accepts a window of %j minutes", (configured) => {
     expect(alertThrottleMinutes(configured)).toBe(configured);
+  });
+});
+
+// A usage limit that is not waited for fails every fire until it resets, and
+// that can be days. An hour's silence between alerts is then twenty-four of
+// them a day for one job; this alert is held for the limit period instead.
+describe("the alert for a usage limit that is not waited for", () => {
+  const period = { engine: "claude", resetsAt: "2026-10-17T03:00:00.000Z" };
+  const DAY = 24 * 60 * MINUTE;
+
+  it("is let through once for a job and limit period, and held back for as long as the period lasts", () => {
+    const job = jobId();
+    expect(isLimitAlertThrottled(job, period, ops, undefined)).toBe(false);
+    recordLimitAlertSent(job, period, ops, 0);
+
+    expect(isLimitAlertThrottled(job, period, ops, undefined)).toBe(true);
+    recordLimitAlertSent(job, period, ops, 4 * DAY); // nothing here counts hours
+    expect(isLimitAlertThrottled(job, period, ops, 5)).toBe(true);
+  });
+
+  it.each([
+    ["the reset moves", { engine: "claude", resetsAt: "2026-10-24T03:00:00.000Z" }],
+    ["it is another engine's limit", { engine: "codex", resetsAt: "2026-10-17T03:00:00.000Z" }],
+  ])("is let through again when %s", (_label, next) => {
+    const job = jobId();
+    recordLimitAlertSent(job, period, ops, 0);
+
+    expect(isLimitAlertThrottled(job, next, ops, undefined)).toBe(false);
+  });
+
+  it("is each job's own, and each alert destination's own", () => {
+    const [job, other] = [jobId(), jobId()];
+    recordLimitAlertSent(job, period, ops, 0);
+
+    expect(isLimitAlertThrottled(other, period, ops, undefined)).toBe(false);
+    expect(isLimitAlertThrottled(job, period, "slack:C-new-alerts", undefined)).toBe(false);
+  });
+
+  it("is lifted by a success, like any other", () => {
+    const job = jobId();
+    recordLimitAlertSent(job, period, ops, 0);
+    clearAlertThrottle(job);
+
+    expect(isLimitAlertThrottled(job, period, ops, undefined)).toBe(false);
+  });
+
+  it("is not held back at all when the throttle is turned off", () => {
+    const job = jobId();
+    recordLimitAlertSent(job, period, ops, 0);
+
+    expect(isLimitAlertThrottled(job, period, ops, 0)).toBe(false);
+  });
+
+  it("leaves the window of every other failure as it was, and is not mistaken for one that reads the same", () => {
+    const job = jobId();
+    const sameWords = "claude usage limit reached. It resets Sat, 17 Oct, 12:00 (2026-10-17T03:00:00.000Z), which is too far off to wait for.";
+    recordLimitAlertSent(job, period, ops, 0);
+
+    expect(isAlertThrottled(job, "Not logged in", ops, undefined, MINUTE)).toBe(false);
+    expect(isAlertThrottled(job, sameWords, ops, undefined, MINUTE)).toBe(false);
+    recordAlertSent(job, "Not logged in", ops, MINUTE);
+    expect(isAlertThrottled(job, "Not logged in", ops, undefined, 30 * MINUTE)).toBe(true);
+    expect(isAlertThrottled(job, "Not logged in", ops, undefined, 61 * MINUTE)).toBe(false);
+    expect(isLimitAlertThrottled(job, period, ops, undefined)).toBe(true);
   });
 });

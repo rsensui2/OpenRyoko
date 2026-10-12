@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { _resetUsageLimitAnnouncements, claimUsageLimitAnnouncement, usageLimitAnnounced } from "../engine-health-gate.js";
-import { deliverUnlessAlreadyTold, noteLimitFailure } from "../limit-failure-notice.js";
+import { deliverUnlessAlreadyTold, limitFailureOf, noteLimitFailure } from "../limit-failure-notice.js";
 import type { TurnDelivery } from "../turn-delivery.js";
 import type { EngineResult, Session } from "../../shared/types.js";
 
@@ -103,5 +103,47 @@ describe("what has been announced about a limit period", () => {
     expect(usageLimitAnnounced("claude", RESET, "cron-delivery:slack:C-briefing")).toBe(true);
     expect(usageLimitAnnounced("claude", NEXT_RESET, "cron-delivery:slack:C-briefing")).toBe(false);
     expect(usageLimitAnnounced("codex", RESET, "cron-delivery:slack:C-briefing")).toBe(false);
+  });
+});
+
+// Whoever reports a failed turn onward — the cron runner, for its alert — asks
+// here whether it was a usage limit, and which, instead of reading the wording.
+describe("limitFailureOf", () => {
+  const period = { engine: "claude", resetsAt: RESET };
+  const failedOn = (sessionId: string, resetsAt = RESET): EngineResult =>
+    noteLimitFailure({ sessionId: "s", result: "", error: `claude usage limit reached. It resets (${resetsAt})`, retryable: false }, { engine: "claude", resetsAt }, sessionId);
+
+  it("names the limit period a session's turn failed on, while that failure is what the session records", () => {
+    const failed = failedOn("limit-session-1");
+
+    expect(limitFailureOf({ id: "limit-session-1", lastError: failed.error! })).toEqual(period);
+  });
+
+  it("names none once the session records something else: a later turn, or a reply that was not delivered", () => {
+    failedOn("limit-session-2");
+
+    expect(limitFailureOf({ id: "limit-session-2", lastError: null })).toBeUndefined();
+    expect(limitFailureOf({ id: "limit-session-2", lastError: "Reply was not delivered: channel_not_found" })).toBeUndefined();
+  });
+
+  it("names none for a session that did not fail on such a limit, or for no session at all", () => {
+    expect(limitFailureOf({ id: "limit-session-3", lastError: "claude usage limit reached. It resets (elsewhere)" })).toBeUndefined();
+    expect(limitFailureOf(undefined)).toBeUndefined();
+  });
+
+  it("names the latest period for a session that has failed on a limit more than once", () => {
+    failedOn("limit-session-4", RESET);
+    const again = failedOn("limit-session-4", NEXT_RESET);
+
+    expect(limitFailureOf({ id: "limit-session-4", lastError: again.error! })).toEqual({ engine: "claude", resetsAt: NEXT_RESET });
+  });
+
+  it("remembers a bounded number of sessions, the most recent ones", () => {
+    const first = failedOn("limit-session-first");
+    let last = first;
+    for (let index = 0; index < 400; index++) last = failedOn(`limit-session-filler-${index}`);
+
+    expect(limitFailureOf({ id: "limit-session-first", lastError: first.error! })).toBeUndefined();
+    expect(limitFailureOf({ id: "limit-session-filler-399", lastError: last.error! })).toEqual(period);
   });
 });

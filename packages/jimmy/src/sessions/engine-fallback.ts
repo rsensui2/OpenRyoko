@@ -161,7 +161,7 @@ export function failLimitThatOutlastsTheWait(
   // same limit period on every fire (see limit-failure-notice.ts).
   return noteLimitFailure({ ...result, result: "", retryable: false,
     error: `${engine.name} usage limit reached. It resets ${resetsAt.toLocaleString("en-GB", RESET_DAY_AND_TIME)} (${resetsAt.toISOString()}), ` +
-      "which is too far off to wait for. Please try again after that." }, { engine: engine.name, resetsAt: resetsAt.toISOString() });
+      "which is too far off to wait for. Please try again after that." }, { engine: engine.name, resetsAt: resetsAt.toISOString() }, outcome.session?.id);
 }
 
 /**

@@ -60,6 +60,11 @@ describe("shipped cron documentation", () => {
     expect(text).toMatch(/delivery channel[^.]*once per limit period/);
   });
 
+  // The alert for it is held for the limit period too, not for the hourly window.
+  it.each(["docs/cron.md", "skills/cron-manager/SKILL.md"])("says in %s that a usage limit is alerted once per limit period", (file) => {
+    expect(read(file)).toMatch(/alert(?:ed|s)?[^.]*once per limit period/);
+  });
+
   // A job naming an unknown engine is failed before any session is started, so
   // that error line has no `sessionId` to follow.
   it("does not promise a sessionId for a run that failed before a session existed", () => {
