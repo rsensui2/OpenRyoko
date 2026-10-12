@@ -93,6 +93,87 @@ Reactions provide visual feedback during processing:
 - `@mention`: messages mentioning a specific employee name route to that employee
 - Thread continuity: replies in a thread continue with the same employee
 
+### Provider Re-login from the Operator's DM (`providerAuth`)
+
+When Claude's or Codex's login expires, every turn fails until someone logs in
+again on the host. On a host with no shell to log in from (a read-only
+container, a headless server) the operator can do it from Slack instead. It is
+off by default.
+
+```yaml
+portal:
+  operatorSlackId: U0123ABCDE   # required — the only person who can use it
+
+connectors:
+  slack:
+    providerAuth:
+      enabled: true
+```
+
+A named Slack instance under `connectors.instances[]` takes the same
+`providerAuth` block. Saving the config reloads the connector; the gateway log
+then shows `[slack] provider-auth: enabled`. If it shows a warning about
+`portal.operatorSlackId` instead, the feature is inert until that is set.
+
+**Using it** — in your own 1:1 DM with the bot:
+
+1. Send `ログイン` (also `再ログイン`, `login`, or `/login`). The bot answers
+   with two buttons, *Claude にログイン* and *Codex にログイン*.
+2. **Claude**: open the login page from the button, approve, copy the
+   authentication code the page shows (it contains a `#`), press *コードを入力*
+   and paste it into the dialog. If your browser lands on a
+   `http://localhost:…/callback?...` address instead, paste that whole address.
+3. **Codex**: open the login page from the button and type in the device code
+   the bot shows. Nothing is sent back; the bot notices when you are done.
+4. The bot confirms the result with the CLI's own status command and rewrites
+   its message — the link and the code are gone from the DM either way.
+
+A login that is not finished within 10 minutes is stopped; press *キャンセル*
+to stop it sooner. Only one login per provider runs at a time. Saving the
+config (which reloads the connectors) or restarting the gateway also stops a
+login in progress — start it again afterwards.
+
+If the bot reports that it cannot read a sign-in link from the CLI, the CLI's
+output has changed in a way this version does not understand. Cancel, and log
+in on the host instead.
+
+When a turn fails because a login is gone, the bot DMs the operator a button
+to log in again — at most once per provider every 30 minutes. This covers
+Slack messages, cron jobs, workflows and web chat alike.
+
+**Slack app settings.** Buttons and the code dialog need *Interactivity*
+turned on (Socket Mode delivers it; no Request URL is needed), the `chat:write`
+and `im:history` bot scopes, and the `message.im` bot event. The manifest
+offered in Settings already contains all of these. An app set up by hand needs
+Interactivity enabled and a reinstall to the workspace. Slack gives the bot no
+way to detect that Interactivity is off — a button that does nothing when
+pressed means exactly that.
+
+**What to know before enabling it:**
+
+- It reacts only to `portal.operatorSlackId`, compared exactly, and only in
+  that person's 1:1 DM. In channels, group DMs, and for everyone else, the
+  bot behaves as if the feature did not exist. If `allowFrom` is set, the
+  operator must be on it.
+- Whoever controls the operator's Slack account can sign the instance in to a
+  provider account of their choosing. Protect that account accordingly.
+- Never paste the code into the chat. A bot cannot delete your message, so the
+  bot refuses a pasted code, keeps it out of the session and the log, and asks
+  you to delete it yourself.
+- The link and the device code stay in the DM until the login ends, and are
+  never written to the gateway log or the session database. Slack itself may
+  retain edited messages under your workspace's retention and export settings.
+- The CLI runs with the same binary (`engines.<name>.bin`) and environment as
+  the engine, so the credentials land where the engine reads them
+  (`~/.claude` or `CLAUDE_CONFIG_DIR`; `~/.codex`). In a container that
+  location must be writable and must survive a restart.
+- Employees with `sshHost` run on another machine; their login is not touched.
+- Codex's device-code login is governed by a setting in ChatGPT's security
+  settings, per account or workspace. If the Codex login ends at once, check
+  that it is allowed there.
+- In the operator's DM, `/login` opens this menu rather than being passed to
+  Claude Code.
+
 ## Discord Connector
 
 Uses `discord.js` over the Discord gateway (no public URL required).
