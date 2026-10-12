@@ -12,10 +12,12 @@ import { isMap, isScalar, isSeq, parseDocument, Scalar, type Pair, type YAMLMap,
  * comes from js-yaml (the parser the gateway reads its config with), and
  * everything outside the spliced ranges is copied through byte for byte.
  *
- * A changed scalar is replaced where it stands, keeping its quotes and the
- * comment after it. Keys and list items are added and removed as whole lines.
- * Anything else — a value changing kind, a list with nothing left in common —
- * rewrites that one `key: value` entry, and the comments inside it go with it.
+ * A changed value of a key is replaced where it stands, keeping its quotes and
+ * the comment after it. Keys and list items are added and removed as whole
+ * lines; a list item is never overwritten with a different one, because the
+ * comment on its line was written about it. Anything else — a value changing
+ * kind, a list with nothing left in common — rewrites that one `key: value`
+ * entry, and the comments inside it go with it.
  *
  * The result is checked before it is returned: it must load, with js-yaml, to
  * exactly `after`. Anything this cannot promise — the two parsers disagreeing
@@ -218,18 +220,6 @@ function editMap(source: Source, map: YAMLMap, before: Data, after: Data): Edit[
   return edits;
 }
 
-/** Change the items of a sequence where they stand; null unless every item has a counterpart. */
-function editItemsInPlace(source: Source, seq: YAMLSeq, before: unknown[], after: unknown[]): Edit[] | null {
-  if (before.length !== after.length || seq.items.length !== after.length) return null;
-  const edits: Edit[] = [];
-  for (let i = 0; i < after.length; i++) {
-    const inPlace = editValue(source, seq.items[i], before[i], after[i]);
-    if (!inPlace) return null;
-    edits.push(...inPlace);
-  }
-  return edits;
-}
-
 /** The lines one item of a block sequence occupies, and the column of its dash. */
 function itemLines(raw: string, item: unknown): { lineStart: number; end: number; dash: number } | null {
   const node = item as { range?: [number, number, number] | null; anchor?: string; tag?: string } | null;
@@ -241,34 +231,68 @@ function itemLines(raw: string, item: unknown): { lineStart: number; end: number
   return /^ *- +$/.test(lead) ? { lineStart, end: endOfLine(raw, end), dash: lead.indexOf("-") } : null;
 }
 
-/** Index pairs [before, after] of the items both lists hold, in order (longest common subsequence). */
-function unchangedItems(before: unknown[], after: unknown[]): [number, number][] {
+/** What tells one mapping in a list from the others: its `id`, or failing that
+ *  its `name`. Null for anything that has neither — and for every scalar. */
+function itemIdentity(item: unknown): string | null {
+  if (!isMapping(item)) return null;
+  for (const key of ["id", "name"]) {
+    const value = item[key];
+    if (typeof value === "string" || typeof value === "number") return `${key}\u0000${typeof value}\u0000${value}`;
+  }
+  return null;
+}
+
+/**
+ * Index pairs [before, after] of the items that are the same item in both
+ * lists, in order (longest common subsequence). "The same" is: equal, or two
+ * mappings with the same identifier. Never "at the same position" — a list
+ * that was reordered has different values at every position, and the note
+ * written next to a value belongs to that value.
+ */
+function alignItems(before: unknown[], after: unknown[]): [number, number][] {
+  const identities = [before.map(itemIdentity), after.map(itemIdentity)];
+  const same = (i: number, j: number) =>
+    sameData(before[i], after[j]) || (identities[0][i] !== null && identities[0][i] === identities[1][j]);
   const length = Array.from({ length: before.length + 1 }, () => new Array<number>(after.length + 1).fill(0));
   for (let i = before.length - 1; i >= 0; i--) {
     for (let j = after.length - 1; j >= 0; j--) {
-      length[i][j] = sameData(before[i], after[j]) ? length[i + 1][j + 1] + 1 : Math.max(length[i + 1][j], length[i][j + 1]);
+      length[i][j] = same(i, j) ? length[i + 1][j + 1] + 1 : Math.max(length[i + 1][j], length[i][j + 1]);
     }
   }
   const pairs: [number, number][] = [];
   for (let i = 0, j = 0; i < before.length && j < after.length;) {
-    if (sameData(before[i], after[j])) pairs.push([i++, j++]);
+    if (same(i, j)) pairs.push([i++, j++]);
     else if (length[i + 1][j] >= length[i][j + 1]) i++;
     else j++;
   }
   return pairs;
 }
 
-/** Add and remove items of a block sequence, leaving the lines of the items
- *  that stay (and the notes written next to them) alone. */
-function editItemLines(source: Source, seq: YAMLSeq, before: unknown[], after: unknown[]): Edit[] | null {
+/**
+ * Edit a block sequence item by item. An item that is in both lists keeps its
+ * lines, and with them the note next to it; a mapping that kept its identifier
+ * is edited within its own lines. Every other item is removed as lines or
+ * added as lines. A scalar is never swapped for another where it stands: the
+ * comment on that line was written about the old value.
+ */
+function editSequence(source: Source, seq: YAMLSeq, before: unknown[], after: unknown[]): Edit[] | null {
   if (seq.flow || seq.items.length !== before.length) return null;
-  const lines = seq.items.map((item) => itemLines(source.raw, item));
-  const kept = unchangedItems(before, after);
-  if (kept.length === 0 || lines.some((span) => span === null)) return null;
-  const spans = lines as NonNullable<(typeof lines)[number]>[];
+  const edits: Edit[] = [];
+  const kept = alignItems(before, after).filter(([i, j]) => {
+    if (sameData(before[i], after[j])) return true;
+    const within = editValue(source, seq.items[i], before[i], after[j]);
+    if (within) edits.push(...within);
+    return within !== null;
+  });
+  if (kept.length === 0) return null; // nothing stays: the caller rewrites the entry
+  const spans = seq.items.map((item) => itemLines(source.raw, item));
   const stays = new Set(kept.map(([i]) => i));
-  const edits: Edit[] = spans.flatMap((span, i) => (stays.has(i) ? [] : [{ start: span.lineStart, end: span.end, text: "" }]));
-  const indent = " ".repeat(spans[kept[0][0]].dash);
+  for (let i = 0; i < before.length; i++) {
+    if (stays.has(i)) continue;
+    const span = spans[i];
+    if (!span) return null;
+    edits.push({ start: span.lineStart, end: span.end, text: "" });
+  }
   let passed = 0; // kept items already behind position j
   for (let j = 0; j < after.length; j++) {
     if (passed < kept.length && kept[passed][1] === j) {
@@ -276,7 +300,10 @@ function editItemLines(source: Source, seq: YAMLSeq, before: unknown[], after: u
       continue;
     }
     // A new item goes right after the kept item before it, or ahead of the first kept one.
-    const at = passed === 0 ? spans[kept[0][0]].lineStart : spans[kept[passed - 1][0]].end;
+    const anchor = spans[kept[Math.max(passed - 1, 0)][0]];
+    if (!anchor) return null;
+    const at = passed === 0 ? anchor.lineStart : anchor.end;
+    const indent = " ".repeat(anchor.dash);
     const rendered = jsYaml.dump([after[j]], { lineWidth: -1 }).replace(/\n$/, "").split("\n");
     edits.push({ start: at, end: at, text: rendered.map((line) => indent + line).join(source.eol) + source.eol, ownLine: true });
   }
@@ -301,7 +328,7 @@ function editValue(source: Source, node: unknown, before: unknown, after: unknow
   if (isMap(node) && isMapping(before) && isMapping(after)) {
     edits = editMap(source, node, before, after);
   } else if (isSeq(node) && Array.isArray(before) && Array.isArray(after)) {
-    edits = editItemsInPlace(source, node, before, after) ?? editItemLines(source, node, before, after);
+    edits = editSequence(source, node, before, after);
   }
   return edits ?? (isMap(node) || isSeq(node) ? replaceFlowCollection(node, after) : null);
 }

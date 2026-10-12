@@ -87,11 +87,15 @@ describe("editYamlText: values changed in place", () => {
     expect(out).toContain("  level: null\n");
   });
 
-  it("changes one item of a flow sequence and one of a block sequence without reflowing either", () => {
-    const out = edited(CONFIG, (doc) => { doc.connectors.slack.allowFrom[1] = "U3"; doc.portal.trustedSpeakers[0] = "U9"; });
-    expect(out).toContain("    allowFrom: [U1, U3]   # operators\n");
-    expect(out).toContain("    - U9   # Slack\n");
-    expect(out).toContain('    - "1543864208750542941"\n');
+  it("changes one item of a flow sequence on its line, keeping the comment about the list", () => {
+    expect(edited(CONFIG, (doc) => { doc.connectors.slack.allowFrom[1] = "U3"; }))
+      .toBe(CONFIG.replace("    allowFrom: [U1, U2]   # operators\n", "    allowFrom: [U1, U3]   # operators\n"));
+  });
+
+  it("replaces one item of a block sequence as a line: the note written next to the old value does not pass to the new one", () => {
+    // "# Slack" said what U0XXXXXXX is. It says nothing about U9.
+    expect(edited(CONFIG, (doc) => { doc.portal.trustedSpeakers[0] = "U9"; }))
+      .toBe(CONFIG.replace("    - U0XXXXXXX   # Slack\n", "    - U9\n"));
   });
 
   it("reaches into a sequence of mappings", () => {
@@ -117,6 +121,87 @@ describe("editYamlText: values changed in place", () => {
     });
     expect(out).not.toBeNull();
     expect(yaml.load(out as string)).toEqual(after);
+  });
+});
+
+describe("editYamlText: lists whose items carry notes", () => {
+  const ALLOW = [
+    "allowFrom:",
+    "  - U01AAAAAAA   # alice",
+    "  - U02BBBBBBB   # bob",
+    "  - U03CCCCCCC   # ryosuke",
+    "other: 1",
+    "",
+  ].join("\n");
+
+  /** value → the note on its line, for every list line that has one. */
+  const notes = (text: string) => Object.fromEntries(
+    [...text.matchAll(/^\s*- (\S+)\s+# (.+)$/gm)].map((match) => [match[1], match[2]]),
+  );
+
+  it.each([
+    [["U03CCCCCCC", "U01AAAAAAA", "U02BBBBBBB"]],
+    [["U02BBBBBBB", "U01AAAAAAA", "U03CCCCCCC"]],
+    [["U03CCCCCCC", "U02BBBBBBB", "U01AAAAAAA"]],
+    [["U02BBBBBBB", "U03CCCCCCC", "U01AAAAAAA"]],
+  ])("reordering to %j never leaves a note next to a value it was not written for", (order) => {
+    const out = edited(ALLOW, (doc) => { doc.allowFrom = order; });
+    const original = notes(ALLOW);
+    for (const [value, note] of Object.entries(notes(out))) expect(note).toBe(original[value]);
+    expect(out.endsWith("other: 1\n")).toBe(true);
+  });
+
+  it("moves one item by removing its line and adding it elsewhere; the items that stay keep their lines", () => {
+    expect(edited(ALLOW, (doc) => { doc.allowFrom = ["U03CCCCCCC", "U01AAAAAAA", "U02BBBBBBB"]; }))
+      .toBe("allowFrom:\n  - U03CCCCCCC\n  - U01AAAAAAA   # alice\n  - U02BBBBBBB   # bob\nother: 1\n");
+  });
+
+  it("swapping two values in place of each other swaps nothing but the notes' absence", () => {
+    const out = edited(ALLOW, (doc) => { doc.allowFrom = ["U01AAAAAAA", "U03CCCCCCC", "U02BBBBBBB"]; });
+    expect(out).not.toContain("U03CCCCCCC   # bob");
+    expect(out).not.toContain("U02BBBBBBB   # ryosuke");
+    expect(out).toContain("  - U01AAAAAAA   # alice\n");
+  });
+
+  const INSTANCES = [
+    "instances:",
+    "  - id: sales        # 営業チーム",
+    "    type: slack",
+    "    botToken: tok-sales   # rotated 2026-09",
+    "  - id: dev          # 開発チーム",
+    "    type: discord",
+    "    botToken: tok-dev",
+    "",
+  ].join("\n");
+
+  it("edits a mapping in place while its id stays the same", () => {
+    expect(edited(INSTANCES, (doc) => { doc.instances[0].botToken = "tok-new"; }))
+      .toBe(INSTANCES.replace("    botToken: tok-sales   # rotated 2026-09", "    botToken: tok-new   # rotated 2026-09"));
+  });
+
+  it("keeps each mapping's notes with its id when two mappings change places", () => {
+    const out = edited(INSTANCES, (doc) => { doc.instances.reverse(); });
+    expect(out).not.toMatch(/id: dev\s+# 営業チーム/);
+    expect(out).not.toMatch(/id: sales\s+# 開発チーム/);
+    expect(out).not.toContain("tok-dev   # rotated 2026-09");
+    // One of the two stays where it was, lines untouched; the other is written anew.
+    const keptSales = out.includes("  - id: sales        # 営業チーム\n    type: slack\n    botToken: tok-sales   # rotated 2026-09\n");
+    const keptDev = out.includes("  - id: dev          # 開発チーム\n    type: discord\n    botToken: tok-dev\n");
+    expect(keptSales || keptDev).toBe(true);
+  });
+
+  it("does not edit one mapping into another when the id at that position changed", () => {
+    const out = edited(INSTANCES, (doc) => { doc.instances[0] = { id: "ops", type: "slack", botToken: "tok-ops" }; });
+    expect(out).not.toMatch(/id: ops\s+# 営業チーム/);
+    expect(out).not.toContain("tok-ops   # rotated 2026-09");
+    expect(out).toContain("  - id: dev          # 開発チーム\n    type: discord\n    botToken: tok-dev\n");
+  });
+
+  it("treats mappings without an identifier as different once any field differs", () => {
+    const raw = "routes:\n  - url: http://a   # primary\n    weight: 1\n  - url: http://b\n    weight: 2\n";
+    const out = edited(raw, (doc) => { doc.routes[0].url = "http://c"; });
+    expect(out).not.toContain("http://c   # primary");
+    expect(out).toContain("  - url: http://b\n    weight: 2\n");
   });
 });
 
