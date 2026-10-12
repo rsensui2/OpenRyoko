@@ -559,6 +559,35 @@ describe("restoreHomeArchive, refusing what it must not trust", () => {
     expect(result.changes.find((change) => change.path === "skills/demo")).toMatchObject({ type: "directory", action: "replace" });
   });
 
+  it("does not write through a directory that became a symlink after the plan was made", async () => {
+    // The plan is worked out, then the current state is saved - seconds, in a
+    // large home - and only then is anything written. A directory two levels
+    // above a file can be swapped for a symlink in that time. Looking only at
+    // the file's own parent does not see it: through the link, the parent is a
+    // perfectly real directory, somewhere else.
+    const target = await scene();
+    const outside = path.join(target.root, "outside");
+    writeTree(outside, { "demo/keep.txt": "not the instance's to touch\n" });
+    fs.rmSync(path.join(target.home, "skills", "demo", "run.sh"));
+    let swapped = false;
+    const swapOnce = (): DiskSpaceStatus => {
+      if (!swapped) {
+        swapped = true;
+        fs.renameSync(path.join(target.home, "skills"), path.join(target.root, "skills-moved-aside"));
+        fs.symlinkSync(outside, path.join(target.home, "skills"));
+      }
+      return ROOMY;
+    };
+
+    const outcome = await restoreHomeArchive(optionsFor(target, { diskSpace: swapOnce }))
+      .then(() => "restored", (error: Error) => error.message);
+
+    expect(swapped).toBe(true);
+    // The thing that matters first: nothing landed on the far side of the link.
+    expect(snapshotTree(outside)).toEqual({ "demo/keep.txt": "not the instance's to touch\n" });
+    expect(outcome).toMatch(/skills is no longer a directory/);
+  });
+
   it("replaces a symlink standing where a file belongs, rather than writing to what it points at", async () => {
     const target = await scene();
     const outside = path.join(target.root, "outside");

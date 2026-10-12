@@ -390,10 +390,23 @@ async function stageFiles(
   return staged;
 }
 
-function assertParentIsDirectory(home: string, entryPath: string): void {
-  const parent = parentOf(entryPath);
-  const stat = lstatOrNull(parent === null ? home : absolutePathOf(home, parent));
-  if (!stat?.isDirectory()) throw new Error(`${parent ?? home} is no longer a directory`);
+/**
+ * Asks again, at the moment of writing, that every directory from the home
+ * down to `entryPath` is a real directory. The plan established this once, but
+ * the plan was made before the current state was saved, which takes seconds in
+ * a large home, and a directory swapped for a symlink in that time would be
+ * written through. Every level is looked at, not only the last: through a link
+ * higher up, the immediate parent is a perfectly real directory - elsewhere.
+ *
+ * What remains is the instant between this check and the write that follows
+ * it. Closing that takes resolving each component against an open directory
+ * (openat, renameat), which Node does not offer.
+ */
+function assertParentsAreDirectories(home: string, entryPath: string): void {
+  if (!lstatOrNull(home)?.isDirectory()) throw new Error(`${home} is no longer a directory`);
+  for (const ancestor of ancestorsOf(entryPath)) {
+    if (!lstatOrNull(absolutePathOf(home, ancestor))?.isDirectory()) throw new Error(`${ancestor} is no longer a directory`);
+  }
 }
 
 function makeDirectory(destination: string, mode: number): void {
@@ -437,7 +450,7 @@ function placeSymlink(destination: string, target: string): void {
 function applyPlan(home: string, plan: PlanItem[], staged: Map<string, string>): void {
   for (const { entry, action } of plan) {
     if (action === "unchanged") continue;
-    assertParentIsDirectory(home, entry.path);
+    assertParentsAreDirectories(home, entry.path);
     const destination = absolutePathOf(home, entry.path);
     if (action === "mode") restoreMode(destination, entry.mode);
     else if (entry.type === "directory") makeDirectory(destination, entry.mode);
