@@ -56,7 +56,8 @@ describe("GET /api/status — engines", () => {
   it("keeps every field it already served, value and shape", async () => {
     const body = await status(contextFor(TWO_ENGINES));
 
-    expect(Object.keys(body)).toEqual(["status", "uptime", "port", "engines", "sessions", "connectors", "storage"]);
+    // Sections may be added after these; the ones callers already read stay, in this order.
+    expect(Object.keys(body).slice(0, 7)).toEqual(["status", "uptime", "port", "engines", "sessions", "connectors", "storage"]);
     expect(withoutHealth(body.engines as Record<string, unknown>)).toEqual({
       default: "claude",
       claude: { model: "claude-opus-5", available: true, interactive: true },

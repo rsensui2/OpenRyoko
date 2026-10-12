@@ -95,6 +95,7 @@ import type { WorkflowService } from "../workflows/service.js";
 import { shouldRequireGatewayAuth as workflowAuthRequired, verifyGatewayAuth as workflowVerifyAuth } from "./auth.js";
 import { getDiskSpaceStatus } from "../shared/storage-health.js";
 import { getBackupStatus } from "../backup/scheduler.js";
+import { getProcessSafetyNetStats } from "../shared/process-safety-net.js";
 import { ptySnapshotStore } from "../engines/pty-snapshot.js";
 import { collectClaudeUsage } from "../shared/claude-usage.js";
 import { PairingAttemptLimiter, pairingAttemptKey } from "./pairing-rate-limit.js";
@@ -733,6 +734,9 @@ export async function handleApiRequest(
         connectors,
         storage: getDiskSpaceStatus(),
         backup: getBackupStatus(),
+        // Faults the process safety net caught instead of dying on. Anything
+        // above zero means the gateway is running on after an error nothing handled.
+        process: getProcessSafetyNetStats(),
       });
     }
 
