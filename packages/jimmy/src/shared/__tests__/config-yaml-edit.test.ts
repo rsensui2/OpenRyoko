@@ -319,6 +319,56 @@ describe("editYamlText: keys added and removed", () => {
   });
 });
 
+describe("editYamlText: a key whose value is undefined", () => {
+  /* Code that clears a setting writes `block.key = undefined` as readily as
+   * `delete block.key`. js-yaml stores neither: a dump leaves such a key out,
+   * and writes null for an undefined item of a list. The in-place edit has to
+   * mean the same — otherwise one undefined anywhere in the document makes the
+   * save fall back to rewriting the whole file, and every comment goes. */
+
+  it("changes nothing for a key that is undefined and was never in the file", () => {
+    expect(edited(CONFIG, (doc) => { doc.modelManagement = undefined; doc.gateway.tls = undefined; })).toBe(CONFIG);
+  });
+
+  it("takes the line of a key that is set to undefined, exactly as deleting the key does", () => {
+    expect(edited(CONFIG, (doc) => { doc.portal.portalName = undefined; })).toBe(CONFIG.replace("  portalName: Ryoko\n", ""));
+    expect(edited(CONFIG, (doc) => { doc.cron = undefined; })).toBe(edited(CONFIG, (doc) => { delete doc.cron; }));
+  });
+
+  it("edits the rest of the document in place around it", () => {
+    const out = edited(CONFIG, (doc) => { doc.logging.file = undefined; doc.gateway.port = 7800; doc.connectors.slack.appToken = undefined; });
+    expect(out).toBe(CONFIG.replace("  port: 7777          # where it listens", "  port: 7800          # where it listens"));
+  });
+
+  it("leaves an undefined key out of a block it adds", () => {
+    const out = edited(CONFIG, (doc) => {
+      doc.modelManagement = { notification: undefined, policies: { codex: { mode: "auto", effort: undefined } } };
+    });
+    expect(out).toBe(`${CONFIG}\nmodelManagement:\n  policies:\n    codex:\n      mode: auto\n`);
+  });
+
+  it("writes {} for a mapping whose only keys are undefined", () => {
+    const out = edited(CONFIG, (doc) => { doc.logging = { level: undefined }; });
+    expect(out).toBe(CONFIG.replace("logging:\n  level: info\n", "logging: {}\n"));
+  });
+
+  it("writes null for an undefined item of a list, as a dump does, and keeps the notes of the others", () => {
+    const raw = "list:\n  - a   # first\n  - b   # second\n";
+    const before = yaml.load(raw) as Doc;
+    const out = editYamlText(raw, before, { list: ["a", undefined, "b"] });
+    expect(out).toBe("list:\n  - a   # first\n  - null\n  - b   # second\n");
+  });
+
+  it("does not hand the caller's document back changed", () => {
+    const before = yaml.load(CONFIG) as Doc;
+    const after = { ...structuredClone(before), extra: undefined, gateway: { ...before.gateway, port: 7800, tls: undefined } };
+    const keys = Object.keys(after.gateway);
+    editYamlText(CONFIG, before, after);
+    expect(Object.keys(after)).toContain("extra");
+    expect(Object.keys(after.gateway)).toEqual(keys);
+  });
+});
+
 describe("editYamlText: the file's own conventions", () => {
   it("keeps CRLF line endings, on the lines it writes too", () => {
     const raw = "a: 1\r\nb:\r\n  c: \"x\"   # c\r\n  d: 2\r\n";

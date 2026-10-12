@@ -161,8 +161,10 @@ describe("onboarding and the branding fields", () => {
 
 describe("model management", () => {
   const sol = (id: string): DiscoveredModel => ({ id, label: id, supportsEffort: true, effortLevels: ["low", "medium", "high"], defaultEffort: "medium" });
+  const plain = (id: string): DiscoveredModel => ({ id, label: id, supportsEffort: false, effortLevels: [] });
 
-  it("switches the model on its own line and keeps every note in the file", async () => {
+  /** Model management over the config.yaml on disk, offering `models` for codex. */
+  function managing(models: DiscoveredModel[]): ModelManagement {
     fs.rmSync(path.join(JINN_HOME, "models"), { force: true, recursive: true });
     fs.rmSync(ORG_DIR, { force: true, recursive: true });
     fs.mkdirSync(ORG_DIR, { recursive: true });
@@ -172,10 +174,14 @@ describe("model management", () => {
     setDiscoveredModels("codex", []);
     setDiscoveredModels("claude", []);
     let running = yaml.load(CONFIG) as JinnConfig;
-    const service = new ModelManagement({
+    return new ModelManagement({
       getConfig: () => running, onConfig: (next) => { running = next; },
-      discover: async (engine: ManagedEngine) => (engine === "codex" ? [sol("gpt-6-sol")] : []), notify: async () => true,
+      discover: async (engine: ManagedEngine) => (engine === "codex" ? models : []), notify: async () => true,
     });
+  }
+
+  it("switches the model on its own line and keeps every note in the file", async () => {
+    const service = managing([sol("gpt-6-sol")]);
 
     await service.act({ action: "policy", engine: "codex", policy: { mode: "auto", profile: "balanced" } });
 
@@ -185,6 +191,34 @@ describe("model management", () => {
     const { removed } = changedLines(CONFIG, onDisk());
     expect(removed).toEqual(["    model: gpt-5.6-sol", "    effortLevel: high      # was medium until the batch jobs"]);
     expect(onDisk()).toContain("    effortLevel: medium      # was medium until the batch jobs\n");
+  });
+
+  /* Two ordinary actions clear a setting by assigning undefined to it. Each
+   * used to cost the whole file its comments. */
+  it("turning the notification off takes its lines and nothing else", async () => {
+    const service = managing([sol("gpt-5.6-sol")]);
+    await service.act({ action: "notification", connector: "slack", channel: "C0ALERTS" });
+    const notifying = onDisk();
+    expect(comments(notifying)).toEqual(comments(CONFIG));
+
+    await service.act({ action: "notification", connector: "slack", channel: "" });
+
+    expect(comments(onDisk())).toEqual(comments(CONFIG));
+    // The block is left empty rather than removed: that is the document the service asked to store.
+    expect(changedLines(notifying, onDisk())).toEqual({
+      removed: ["modelManagement:", "  notification:", "    connector: slack", "    channel: C0ALERTS"],
+      added: ["modelManagement: {}"],
+    });
+  });
+
+  it("switching to a model that takes no effort removes the effort line and keeps the other notes", async () => {
+    const service = managing([plain("gpt-6-sol")]);
+
+    await service.act({ action: "policy", engine: "codex", policy: { mode: "auto", profile: "balanced" } });
+
+    expect(parsed().engines.codex).toEqual({ bin: "codex", model: "gpt-6-sol" });
+    expect(changedLines(CONFIG, onDisk()).removed).toEqual(["    model: gpt-5.6-sol", "    effortLevel: high      # was medium until the batch jobs"]);
+    expect(comments(onDisk())).toEqual(comments(CONFIG).filter((comment) => !comment.includes("was medium until")));
   });
 });
 

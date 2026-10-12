@@ -62,6 +62,24 @@ function sameData(a: unknown, b: unknown): boolean {
   return keys.length === Object.keys(b).length && keys.every((key) => Object.hasOwn(b, key) && sameData(a[key], b[key]));
 }
 
+/**
+ * `value` as a js-yaml dump stores it: a key whose value is undefined is left
+ * out, and an undefined item of a list is null. Code that clears a setting
+ * assigns undefined to it as readily as it deletes the key, and a dump writes
+ * the same file for both — so must the in-place edit, or one undefined
+ * anywhere in the document would make every save rewrite the whole file.
+ * Returns a copy; the caller's document is not changed.
+ */
+function asStored(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => (item === undefined ? null : asStored(item)));
+  if (!isMapping(value)) return value;
+  const stored: Data = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (item !== undefined) stored[key] = asStored(item);
+  }
+  return stored;
+}
+
 /** `key: value` as js-yaml writes it, one array entry per line. */
 function dumpEntryLines(key: string, value: unknown): string[] {
   return jsYaml.dump({ [key]: value }, { lineWidth: -1 }).replace(/\n$/, "").split("\n");
@@ -370,10 +388,12 @@ function planEdits(source: Source, before: Data, after: Data): Edit[] | null {
 /**
  * `raw` with the changes from `before` to `after` applied in place, or null
  * when that cannot be done safely. `before` must be what js-yaml loads from
- * `raw` (an empty mapping for a file that holds no data).
+ * `raw` (an empty mapping for a file that holds no data). `after` is taken the
+ * way a dump would store it: see {@link asStored}.
  */
-export function editYamlText(raw: string, before: Data, after: Data): string | null {
+export function editYamlText(raw: string, before: Data, document: Data): string | null {
   try {
+    const after = asStored(document) as Data;
     if (sameData(before, after)) return raw;
     const source: Source = { raw, eol: raw.includes("\r\n") ? "\r\n" : "\n" };
     const edits = planEdits(source, before, after);
