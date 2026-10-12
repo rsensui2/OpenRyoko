@@ -168,18 +168,38 @@ describe("ProviderAuthService — Codex", () => {
     expect(flow.outcomes).toEqual([{ status: "succeeded", cliStatus: "Logged in using ChatGPT" }]);
   });
 
+  const JWT = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEyMzQ1Njc4OTAifQ.c2lnbmF0dXJlLXNpZ25hdHVyZQ";
+
   it.each([
     ["written to stderr", { stdout: "", stderr: "Logged in using ChatGPT\n", exitCode: 0 }, "Logged in using ChatGPT"],
     ["colored and padded", { stdout: "\r\n  \u001b[32mLogged in using ChatGPT\u001b[0m  \r\nsecond line\r\n", exitCode: 0 }, "Logged in using ChatGPT"],
+    ["that follows a warning", { stdout: "", stderr: "WARNING: proceeding, even though we could not update PATH\nLogged in using ChatGPT\n", exitCode: 0 }, "Logged in using ChatGPT"],
     ["carrying a full key", { stdout: "Logged in using an API key - sk-proj-abcdefghijklmnopqrstuvwxyz0123456789\n", exitCode: 0 }, "Logged in using an API key - [REDACTED]"],
-    ["longer than a line should be", { stdout: `Logged in as ${"x".repeat(500)}\n`, exitCode: 0 }, `Logged in as ${"x".repeat(107)}`],
-  ])("passes on the status line %s in a form that is safe to show", async (_name, answer, expected) => {
+    ["carrying a token with no prefix or label", { stdout: `Logged in using an access token ${JWT}\n`, exitCode: 0 }, "Logged in using an access token [REDACTED]"],
+    ["longer than a line should be", { stdout: `Logged in ${"as someone ".repeat(40)}\n`, exitCode: 0 }, `Logged in ${"as someone ".repeat(40)}`.slice(0, 120)],
+  ])("passes on the 'Logged in' line %s in a form that is safe to show", async (_name, answer, expected) => {
     const harness = makeHarness({ status: { codex: answer } });
     const flow = await startFlow(harness, "codex");
     flow.pty.emitExit(0);
     await settle();
 
     expect(flow.outcomes).toEqual([{ status: "succeeded", cliStatus: expected }]);
+  });
+
+  // Only the CLI's own "Logged in …" line is shown. Whatever else it prints —
+  // a warning, a token on a line of its own — is not the operator's to read here.
+  it.each([
+    ["only a warning", { stdout: "", stderr: "WARNING: proceeding, even though we could not update PATH\n", exitCode: 0 }],
+    ["a bare token", { stdout: `${JWT}\n`, exitCode: 0 }],
+    ["a labelled secret", { stdout: `access_token: ${JWT}\n`, exitCode: 0 }],
+    ["a line that merely mentions being logged in", { stdout: "You are now Logged in using ChatGPT\n", exitCode: 0 }],
+  ])("shows nothing of a status output that is %s", async (_name, answer) => {
+    const harness = makeHarness({ status: { codex: answer } });
+    const flow = await startFlow(harness, "codex");
+    flow.pty.emitExit(0);
+    await settle();
+
+    expect(flow.outcomes).toEqual([{ status: "succeeded" }]);
   });
 
   it("reports success without a status line when the CLI prints nothing", async () => {

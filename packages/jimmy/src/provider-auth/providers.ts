@@ -25,15 +25,23 @@ export interface ProviderSpec {
 }
 
 const MAX_STATUS_LINE = 120;
+const LOGGED_IN_LINE = /^logged in\b/i;
+/** A long unbroken run of key-like characters is a credential until proven otherwise. */
+const OPAQUE_RUN = /[A-Za-z0-9_.+/=-]{32,}/g;
 
-/** The first line a status command printed — on either stream — made safe to
- *  show: no terminal control, nothing that looks like a key, bounded length. */
-function statusLine(result: CommandResult): string | undefined {
+/**
+ * The status command's own "Logged in …" line, from either stream, and nothing
+ * else it printed. An allowlist, because the alternative — showing the first
+ * line, whatever it is — shows a warning when one comes first, and a token
+ * when a CLI prints one on a line of its own. Within the line, anything shaped
+ * like a key is masked, with or without a recognizable prefix.
+ */
+function loggedInLine(result: CommandResult): string | undefined {
   const line = terminalText(`${result.stdout}\n${result.stderr ?? ""}`)
     .split("\n")
     .map((text) => text.replace(/\s+/g, " ").trim())
-    .find(Boolean);
-  return line ? redactText(line).slice(0, MAX_STATUS_LINE) : undefined;
+    .find((text) => LOGGED_IN_LINE.test(text));
+  return line ? redactText(line).replace(OPAQUE_RUN, "[REDACTED]").slice(0, MAX_STATUS_LINE) : undefined;
 }
 
 /** What the status JSON says, when it can be read at all. */
@@ -93,7 +101,7 @@ export const PROVIDERS: Record<AuthProvider, ProviderSpec> = {
     showsDeviceCode: true,
     signInHosts: ["openai.com", "chatgpt.com"],
     isAuthenticated: (result) => result.exitCode === 0,
-    describeLogin: statusLine,
+    describeLogin: loggedInLine,
   },
 };
 
