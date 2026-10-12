@@ -68,6 +68,13 @@ export interface EngineResult {
   error?: string;
   /** False for an application-level stop that must not enter engine retry heuristics. */
   retryable?: false;
+  /**
+   * The run ended because the gateway asked the engine to stop it (`kill()`):
+   * a newer message, a stop, an engine switch, a shutdown. An "Interrupted…"
+   * error WITHOUT this means the engine stopped on its own — its process died —
+   * which is a failed run, not an interruption anyone asked for.
+   */
+  interruptRequested?: true;
   /** Native local commands can complete intentionally without assistant text. */
   responseExpected?: false;
   /** Bounded failed-attempt context for another engine; never a public reply or log. */

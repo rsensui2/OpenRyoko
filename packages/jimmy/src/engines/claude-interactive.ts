@@ -406,7 +406,9 @@ export class TurnResolver {
     this.settle({ sessionId: sid, result: text, error: undefined, numTurns: 1 });
   }
 
-  interrupt(reason: string): void {
+  /** `requested`: the gateway asked for this stop (kill()), as opposed to the
+   *  engine noticing that its own process died or went silent. */
+  interrupt(reason: string, requested = false): void {
     // PTY died while a StopFailure was held in grace — the API error is the
     // real cause; report it instead of the generic "process exited". Other
     // interrupt reasons (user abort, engine switch, shutdown) keep their
@@ -415,7 +417,7 @@ export class TurnResolver {
       this.settleWithFailure();
       return;
     }
-    this.settle({ sessionId: this.claudeSessionId ?? this.opts.fallbackSessionId ?? "", result: "", error: reason });
+    this.settle({ sessionId: this.claudeSessionId ?? this.opts.fallbackSessionId ?? "", result: "", error: reason, ...(requested ? { interruptRequested: true as const } : {}) });
   }
 
   /** Settle a native local command (no Stop hook fires for context mutators). */
@@ -1326,7 +1328,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
 
   kill(sessionId: string, reason = "Interrupted"): void {
     const e = this.active.get(sessionId);
-    e?.resolver.interrupt(reason.startsWith("Interrupted") ? reason : `Interrupted: ${reason}`);
+    e?.resolver.interrupt(reason.startsWith("Interrupted") ? reason : `Interrupted: ${reason}`, true);
     this.lifecycle.releaseSession(sessionId);
     // A remote (sshHost) turn ran on the headless fallback — kill it there too.
     this.remoteFallback?.kill(sessionId, reason);

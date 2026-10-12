@@ -166,6 +166,7 @@ export class GeminiEngine implements InterruptibleEngine {
             sessionId: geminiSessionId || opts.resumeSessionId || "",
             result: resultText,
             error: terminationReason,
+            interruptRequested: true, // only kill() sets a termination reason
             numTurns: numTurns || undefined,
           });
           return;

@@ -2,11 +2,13 @@
  * Terminal receipt for a turn nobody is left to finish.
  *
  * A session can stay at status:"running" after its runner has gone — the web
- * runner returns without a receipt when the engine reports "Interrupted: …"
- * for anything other than a newer message (the PTY process died, a turn timed
- * out with no fallback engine), and a queue row cancelled before it ran never
- * reaches a runner at all. Nothing in the process will ever settle such a
- * session, so the status reconciler does it through this function.
+ * runner writes no receipt for a turn the gateway interrupted, on the
+ * understanding that a newer message's turn follows, and sometimes none does;
+ * and a queue row cancelled before it ran never reaches a runner at all.
+ * (An engine process that dies mid-turn is no longer one of these: the runner
+ * settles it as a failed turn itself — see settleUnrequestedStop.) Nothing in
+ * the process will ever settle such a session, so the status reconciler does
+ * it through this function.
  *
  * It honours the same contract as the runners' own completion
  * (SessionManager.runSession / runWebSession): persist the outcome with its

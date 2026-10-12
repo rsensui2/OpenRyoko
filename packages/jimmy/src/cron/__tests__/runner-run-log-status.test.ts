@@ -118,6 +118,33 @@ describe("cron run log reflects how the session actually ended", () => {
     expect(f.alert.mock.calls[0]![1]).toContain(`Cron job "${f.job.name}" failed`);
   });
 
+  // The interactive engine reports a Claude process that dies mid-turn as
+  // "Interrupted: claude process exited". The runner used to settle that like a
+  // turn a newer message had interrupted — idle, no error — so a fire that
+  // produced nothing was logged as a success and nobody was alerted.
+  it("records a turn whose engine process died as an error, and alerts", async () => {
+    const f = setup();
+    f.claudeRun.mockResolvedValue({ sessionId: "claude-1", result: "", error: "Interrupted: claude process exited" });
+    await f.run();
+
+    const [entry, ...rest] = runs(f.job.id);
+    expect(rest).toEqual([]);
+    expect(entry).toMatchObject({ status: "error", error: "claude stopped unexpectedly: claude process exited", sessionId: expect.any(String) });
+    expect(getSession(entry!.sessionId!)).toMatchObject({ status: "error", lastError: "claude stopped unexpectedly: claude process exited" });
+    expect(f.alert).toHaveBeenCalledExactlyOnceWith({ channel: "C-alerts" }, expect.stringContaining("claude stopped unexpectedly"));
+    expect(f.claudeRun).toHaveBeenCalledTimes(1); // and the prompt is not run again from the top
+  });
+
+  it("keeps a turn the gateway itself stopped out of the failures", async () => {
+    const f = setup();
+    f.claudeRun.mockResolvedValue({ sessionId: "claude-1", result: "", error: "Interrupted: new message received", interruptRequested: true });
+    await f.run();
+
+    const [entry] = runs(f.job.id);
+    expect(entry).toMatchObject({ status: "success", error: null });
+    expect(f.alert).not.toHaveBeenCalled();
+  });
+
   // A reply the chat connector refuses. Today that throws inside the turn and
   // the session ends in error. Once the gateway keeps the engine result instead,
   // the session stays idle and only lastError records it. Both are failed runs.

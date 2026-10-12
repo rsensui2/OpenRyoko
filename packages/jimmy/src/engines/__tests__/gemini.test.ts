@@ -368,6 +368,17 @@ describe("GeminiEngine", () => {
       expect(result.error).toBe("User cancelled");
     });
 
+    it("marks a run that kill() ended as a stop the gateway asked for", async () => {
+      const proc = createMockProcess();
+      mockSpawn.mockReturnValue(proc as any);
+      const resultPromise = engine.run({ prompt: "long task", cwd: "/tmp", sessionId: "asked-to-stop" });
+
+      engine.kill("asked-to-stop", "Interrupted: new message received");
+      proc.emit("close", null);
+
+      expect(await resultPromise).toMatchObject({ error: "Interrupted: new message received", interruptRequested: true });
+    });
+
     it("should track live processes and report isAlive correctly", async () => {
       const proc = createMockProcess();
       mockSpawn.mockReturnValue(proc as any);

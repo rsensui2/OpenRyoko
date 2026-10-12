@@ -171,6 +171,34 @@ function clearRestartInterruptedMark(sessionId: string, nudgedAt?: string): void
   updateSession(sessionId, { transportMeta: withRestartResumeState(session.transportMeta, { nudgedAt: history }) });
 }
 
+let shuttingDown = false;
+
+/**
+ * First thing at shutdown, before anything is awaited. From here until the
+ * process is gone, an engine that stops was stopped by the shutdown — through
+ * kill(), or because a process supervisor signalled the whole control group
+ * and Claude's process got the SIGTERM before the gateway reached its own kill.
+ */
+export function beginGatewayShutdown(): void {
+  shuttingDown = true;
+}
+
+export function isGatewayShuttingDown(): boolean {
+  return shuttingDown;
+}
+
+/**
+ * A turn the shutdown cut off without going through kill() (see above). It may
+ * be over before interruptRunningSessionsForShutdown() looks, and a session
+ * that is no longer "running" then is not marked there — so the turn's own
+ * runner marks it, and the next boot resumes it like any other.
+ */
+export function markTurnCutOffByShutdown(sessionId: string, now = Date.now()): void {
+  const session = getSession(sessionId);
+  if (!session || session.workflowProvenance || session.source === "cron") return;
+  updateSession(sessionId, { transportMeta: withRestartInterruptedMark(session.transportMeta, new Date(now).toISOString()) });
+}
+
 const newestMessage = (sessionId: string): SessionMessage | undefined => getMessagePage(sessionId, { limit: 1 }).messages.at(-1);
 
 /**
@@ -185,9 +213,15 @@ const newestMessage = (sessionId: string): SessionMessage | undefined => getMess
  * accepted, so when it waited behind a running turn, that turn's reply is the
  * newer entry while the queued turn runs. A queue row that started running
  * after the reply says so: the reply belongs to the turn before it.
+ *
+ * Nor is the record of an interrupted turn a reply (see below): a shutdown
+ * can land while the runner that wrote it is still winding down.
  */
 function replyAlreadyRecorded(session: Session, newest = newestMessage(session.id)): boolean {
   if (newest?.role !== "assistant") return false;
+  // Not a reply: the connector runner records the engine's "Interrupted: …"
+  // text for a turn it settles as interrupted, and never delivers it.
+  if (/^Interrupted/i.test(newest.content)) return false;
   const running = initDb().prepare(
     "SELECT started_at AS startedAt FROM queue_items WHERE session_key = ? AND status = 'running' AND session_id = ? ORDER BY started_at DESC LIMIT 1",
   ).get(session.sessionKey, session.id) as { startedAt: string | null } | undefined;
@@ -205,6 +239,7 @@ function replyAlreadyRecorded(session: Session, newest = newestMessage(session.i
  * interrupt here would read as an operator stop on the next boot.
  */
 export function interruptRunningSessionsForShutdown(now = Date.now()): number {
+  shuttingDown = true;
   const interruptedAt = new Date(now).toISOString();
   let interrupted = 0;
   for (const session of listSessions({ status: "running" })) {
@@ -235,6 +270,7 @@ export function interruptRunningSessionsForShutdown(now = Date.now()): number {
  *   loop. The session is interrupted again and falls under the cooldown.
  */
 export function prepareRestartResume(now = Date.now()): { marked: number; cancelledNudges: number } {
+  shuttingDown = false; // a process that is booting is not the one that was shutting down
   const database = initDb();
   return database.transaction(() => {
     const cancelledNudges = database.prepare(

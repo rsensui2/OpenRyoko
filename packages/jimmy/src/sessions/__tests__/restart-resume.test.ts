@@ -235,6 +235,20 @@ describe("interruptRunningSessionsForShutdown — the graceful-shutdown half", (
     expect(markOf(delivering.id)).toEqual({ interruptedAt: iso(0), replyRecorded: true, nudgedAt: [] });
   });
 
+  it("does not take the record of an interrupted turn for a reply", () => {
+    // The connector runner writes the engine's "Interrupted: …" text into the
+    // transcript for a turn it settles as interrupted, and never delivers it.
+    // A shutdown that lands while that runner is still clearing its reactions
+    // must see a turn that was cut off, not one whose reply is on its way out.
+    const cutOff = slackSession({ status: "running" });
+    message(cutOff.id, "user", 10 * MINUTE);
+    message(cutOff.id, "assistant", 2_000, "Interrupted: claude process exited");
+
+    interruptRunningSessionsForShutdown(NOW);
+
+    expect(markOf(cutOff.id)).toEqual({ interruptedAt: iso(0), nudgedAt: [] });
+  });
+
   it("still stamps a queued turn whose input was recorded before the previous turn's reply", () => {
     // A notification (or a web message) is persisted when it is ACCEPTED. If it
     // waited behind a running turn, that turn's reply is the newer entry — but
