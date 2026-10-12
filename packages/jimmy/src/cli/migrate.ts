@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import yaml from "js-yaml";
 import {
   JINN_HOME,
   CONFIG_PATH,
@@ -12,6 +11,7 @@ import {
   AGENTS_SKILLS_DIR,
 } from "../shared/paths.js";
 import { loadConfig } from "../shared/config.js";
+import { readConfigSnapshot, updateConfigDocument, writeConfigDocument, type ConfigSnapshot } from "../shared/config-file.js";
 import {
   compareSemver,
   getPackageVersion,
@@ -71,16 +71,15 @@ function ensureSkillSymlinks(skillName: string): void {
 }
 
 /**
- * Stamp the jinn.version field in config.yaml.
+ * Stamp the jinn.version field in config.yaml. Runs on every update, so it
+ * goes through the shared config writer: only the version line changes, and
+ * the file is replaced in one step.
  */
-function stampVersion(version: string): void {
-  const raw = fs.readFileSync(CONFIG_PATH, "utf-8");
-  const config = yaml.load(raw) as any;
-
-  if (!config.jinn) config.jinn = {};
-  config.jinn.version = version;
-
-  fs.writeFileSync(CONFIG_PATH, yaml.dump(config, { lineWidth: -1 }), "utf-8");
+export function stampVersion(version: string): void {
+  updateConfigDocument((config) => {
+    const jinn = config.jinn && typeof config.jinn === "object" ? config.jinn : {};
+    return { ...config, jinn: { ...jinn, version } };
+  });
 }
 
 /**
@@ -89,20 +88,22 @@ function stampVersion(version: string): void {
  * values without clobbering values the user has customized (see configPatch.ts).
  * Returns the number of keys actually changed. Logs each outcome.
  */
-function applyConfigPatches(pending: string[]): number {
+export function applyConfigPatches(pending: string[]): number {
   const patchFiles = pending
     .map((version) => ({ version, file: path.join(MIGRATIONS_DIR, version, "config-patch.json") }))
     .filter(({ file }) => fs.existsSync(file));
 
   if (patchFiles.length === 0 || !fs.existsSync(CONFIG_PATH)) return 0;
 
-  let working: unknown;
+  let snapshot: ConfigSnapshot;
   try {
-    working = yaml.load(fs.readFileSync(CONFIG_PATH, "utf-8"));
+    snapshot = readConfigSnapshot();
   } catch (err: any) {
     console.log(`  ${RED}[config-patch: could not read config.yaml: ${err?.message ?? err}]${RESET}`);
     return 0;
   }
+  if (snapshot.raw === null) return 0;
+  let working: unknown = snapshot.document;
 
   const allOutcomes: PatchOutcome[] = [];
   for (const { version, file } of patchFiles) {
@@ -120,7 +121,7 @@ function applyConfigPatches(pending: string[]): number {
 
   const changed = allOutcomes.filter((o) => o.action === "set" || o.action === "insert").length;
   if (changed > 0) {
-    fs.writeFileSync(CONFIG_PATH, yaml.dump(working, { lineWidth: -1 }), "utf-8");
+    writeConfigDocument(snapshot, working as Record<string, unknown>);
   }
 
   for (const o of allOutcomes) {
