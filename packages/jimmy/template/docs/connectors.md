@@ -163,7 +163,12 @@ pressed means exactly that.
   provider account of their choosing. Protect that account accordingly.
 - Never paste the code into the chat. A bot cannot delete your message, so the
   bot refuses a pasted code, keeps it out of the session and the log, and asks
-  you to delete it yourself.
+  you to delete it yourself. While a login is open — ten minutes at most —
+  this is applied broadly: any message of yours in the DM that contains
+  something shaped like a code, even inside a sentence or with a file
+  attached, gets that answer instead of reaching the assistant. Send it again
+  once the login has ended. Outside a login, only a message that is nothing
+  but an OAuth code is held back.
 - The link and the device code stay in the DM until the login ends, and are
   never written to the gateway log or the session database. Slack itself may
   retain edited messages under your workspace's retention and export settings.
