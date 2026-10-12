@@ -31,7 +31,9 @@ export const PROVIDERS: Record<AuthProvider, ProviderSpec> = {
     label: "Claude",
     loginArgs: ["auth", "login", "--claudeai"],
     statusArgs: ["auth", "status", "--json"],
-    acceptedInput: ["short-code", "code-state", "callback-url"],
+    // No short code: the CLI's prompt answers a line without '#' with
+    // "Invalid code" and keeps waiting, so the login would hang until it timed out.
+    acceptedInput: ["code-state", "callback-url"],
     showsDeviceCode: false,
     signInHosts: ["claude.ai", "claude.com", "anthropic.com"],
     isAuthenticated: claudeLoggedIn,

@@ -229,7 +229,7 @@ describe("Slack provider login — Claude", () => {
     await f.click("ryoko_auth_input_claude", { value: flowId });
     const metadata = f.open.mock.calls[0][0].view.private_metadata;
 
-    for (const value of ["hello", OAUTH_CODE, "sk-ant-oat01-" + "a".repeat(60), `${OAUTH_CODE}#${OAUTH_STATE}; exit`]) {
+    for (const value of ["hello", OAUTH_CODE, "sk-ant-oat01-" + "a".repeat(60), `${OAUTH_CODE}#${OAUTH_STATE}; exit`, "AB12-CD34"]) {
       const viewAck = await f.submit(value, metadata);
       expect(viewAck).toHaveBeenCalledExactlyOnceWith({
         response_action: "errors",

@@ -1,13 +1,16 @@
 /**
- * The only three things an operator may hand to a login CLI:
+ * The three shapes of login input this module knows:
  *   - a short device code (`ABCD-EFGH`),
  *   - Claude's browser value `code#state`,
  *   - the loopback `/callback` URL a browser was redirected to, from which the
  *     same `code#state` is rebuilt.
  *
  * Anything else — a provider token, a shell fragment, a control character —
- * is refused here and never reaches the PTY. The state is kept with the code:
- * the CLI rejects a code that arrives without it.
+ * is refused here and never reaches the PTY. Which of the shapes a provider
+ * actually takes is its own business (providers.ts); today none takes the
+ * short code, which is recognized so that it can be refused, and kept out of
+ * the chat, by name. The state is kept with the code: the CLI rejects a code
+ * that arrives without it.
  */
 
 export type AuthInputKind = "short-code" | "code-state" | "callback-url";

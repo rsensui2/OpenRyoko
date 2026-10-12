@@ -116,9 +116,10 @@ export class ProviderAuthService implements ProviderAuthPort {
     if (!flow || flow.id !== flowId || flow.settled || flow.phase !== "awaiting") return { ok: false, reason: "no-flow" };
     const spec = PROVIDERS[provider];
     if (spec.acceptedInput.length === 0) return this.refuse(provider, "unsupported");
+    // A shape this provider does not take is malformed input for it, the same
+    // as one no provider takes — the operator needs to hear "wrong format".
     const input = parseAuthInput(raw);
-    if (!input) return this.refuse(provider, "invalid");
-    if (!spec.acceptedInput.includes(input.kind)) return this.refuse(provider, "unsupported");
+    if (!input || !spec.acceptedInput.includes(input.kind)) return this.refuse(provider, "invalid");
     if (flow.timers.submit !== undefined) {
       // An earlier code is still waiting for its Enter: finish it first.
       this.disarm(flow, "submit");

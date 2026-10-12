@@ -95,7 +95,7 @@ describe("ProviderAuthService — Claude", () => {
     expect(flow.pty.write).toHaveBeenCalledTimes(2);
   });
 
-  it("never passes input to the CLI unless it is a code, code#state or a loopback callback", async () => {
+  it("never passes input to the CLI unless it is code#state or a loopback callback", async () => {
     const harness = makeHarness();
     const flow = await startFlow(harness, "claude");
 
@@ -106,6 +106,17 @@ describe("ProviderAuthService — Claude", () => {
     ]) {
       expect(harness.service.submitInput("claude", flow.flowId, input), JSON.stringify(input)).toEqual({ ok: false, reason: "invalid" });
     }
+    expect(flow.pty.write).not.toHaveBeenCalled();
+  });
+
+  it("refuses a short code as malformed: Claude's prompt discards a line without '#' and keeps waiting", async () => {
+    const harness = makeHarness();
+    const flow = await startFlow(harness, "claude");
+
+    for (const input of ["AB12-CD34", "FHI3-TCJKF"]) {
+      expect(harness.service.submitInput("claude", flow.flowId, input)).toEqual({ ok: false, reason: "invalid" });
+    }
+    harness.clock.advance(150);
     expect(flow.pty.write).not.toHaveBeenCalled();
   });
 
