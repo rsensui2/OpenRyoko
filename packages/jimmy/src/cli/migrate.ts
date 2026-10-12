@@ -72,12 +72,22 @@ function isTaken(file: string): boolean {
 }
 
 /**
+ * The instance home as a normalised absolute path. The home is whatever the
+ * environment says, and RYOKO_HOME=/path/ or ./path is never a prefix of the paths
+ * joined from it: a comparison against the raw value silently matches nothing.
+ */
+function instanceHome(): string {
+  return path.resolve(JINN_HOME);
+}
+
+/**
  * Does a link that leads nowhere sit on the way to this path, inside the home? A
  * directory the user links elsewhere is their arrangement and is used as it always
  * was; a link whose target is missing is one nothing can be placed under.
  */
 function isBehindDanglingLink(file: string): boolean {
-  for (let current = path.dirname(file); current.startsWith(JINN_HOME + path.sep); current = path.dirname(current)) {
+  const inside = instanceHome() + path.sep;
+  for (let current = path.dirname(path.resolve(file)); current.startsWith(inside); current = path.dirname(current)) {
     if (isTaken(current) && !fs.existsSync(current)) return true;
   }
   return false;
@@ -585,7 +595,7 @@ async function applyAutoMigrations(
     // .gitkeep are also propagated to the instance home.
     const entries = collectEntries(filesDir, filesDir);
     for (const entry of entries) {
-      const destPath = path.join(JINN_HOME, entry.relPath);
+      const destPath = path.join(instanceHome(), entry.relPath);
 
       const settled = settledSkillNote(entry.relPath, skills);
       if (settled) {
