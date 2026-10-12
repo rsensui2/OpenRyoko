@@ -229,6 +229,34 @@ describe("POST /api/onboarding", () => {
     expect(parsed().portal.operatorName).toBe("Aiko");
   });
 
+  /* The spellings above all hold a block, and are caught by comparing the
+   * block as the routine would write it with what is there. These hold none —
+   * a null, a list, a number — so there is nothing to compare: the routine
+   * does not find the key either, appends a second `portal:`, and only reading
+   * the result back shows that the file would no longer load. */
+  it.each([
+    ["a null written as ~", "portal: ~\n"],
+    ["a null written out", "portal: null\n"],
+    ["a quoted key with nothing under it", '"portal":\n'],
+    ["a single-quoted key holding a null", "'portal': ~\n"],
+    ["an empty list", "portal: []\n"],
+    ["a number", "portal: 7\n"],
+  ])("leaves a readable config.yaml with one portal block when the key holds %s", async (_form, portalLine) => {
+    fs.writeFileSync(CONFIG_PATH, `engines:\n  default: claude\n${portalLine}logging:\n  level: info\n`);
+
+    const answer = await call("POST", "/api/onboarding", { portalName: "Momo" });
+
+    expect(answer.status).toBe(200);
+    expect(() => yaml.load(onDisk())).not.toThrow();
+    expect(parsed()).toEqual({
+      engines: { default: "claude" },
+      portal: { portalName: "Momo", operatorSlackId: "U0OPERATOR", onboarded: true },
+      logging: { level: "info" },
+    });
+    expect((await call("POST", "/api/onboarding", { operatorName: "Aiko" })).status).toBe(200);
+    expect(parsed().portal.operatorName).toBe("Aiko");
+  });
+
   it("writes what was asked even when a value needs quoting or spans lines", async () => {
     const name = 'Ry"oko: the #1\nassistant';
     expect((await call("POST", "/api/onboarding", { portalName: name })).status).toBe(200);
