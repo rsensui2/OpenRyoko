@@ -3,6 +3,7 @@ import type { Employee, Engine, EngineResult, EngineRunOpts, JinnConfig, Session
 import { isInterruptibleEngine } from "../shared/types.js";
 import { resolveFallbackEngine, resolveSubstituteModel } from "../shared/engine-fallback.js";
 import { effortLevelsForModel, getModelRegistry } from "../shared/models.js";
+import { logger } from "../shared/logger.js";
 import { detectRateLimit } from "../shared/rateLimit.js";
 import { recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { redactText } from "../shared/redact.js";
@@ -183,6 +184,17 @@ export async function runEngineWithResponseTimeout(
   }
 }
 
+/** Stop what `engine` still runs for one session that has just been moved off
+ *  it. Failing to stop it is logged and never undoes the move. */
+function stopLeftEngine(engine: Engine, sessionId: string): void {
+  if (!isInterruptibleEngine(engine)) return;
+  try {
+    engine.kill(sessionId, "Interrupted: engine switched");
+  } catch (error) {
+    logger.warn(`Could not stop ${engine.name} for session ${sessionId} after an engine switch: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 export interface EngineFallbackOptions {
   config: JinnConfig;
   session: Session;
@@ -243,6 +255,11 @@ export async function runFallbackAttempts(options: EngineFallbackOptions): Promi
     // Claude's native goal handoff clears the gateway goal. If that attempt
     // failed, a Codex substitute still needs the original tracked condition.
     if (targetName === "codex" && options.session.goal && !getSession(session.id)?.goal) updateSession(session.id, { goal: options.session.goal });
+    // The session belongs to `target` from here on. Whatever the engine it
+    // leaves still holds for it — a warm PTY, in Claude's case — could answer
+    // later, as a second reply after the substitute's. Stop it: this session's
+    // only. A timed-out engine was already stopped, and waited for, above.
+    if (reason !== "timeout") stopLeftEngine(engine, session.id);
     // A limit period — the engine and the reset it stated — is announced once.
     // A conversation whose own turn just failed is still told every time; a
     // cron firing has nobody waiting on it, so it only ever carries the first

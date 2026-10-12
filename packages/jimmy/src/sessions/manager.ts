@@ -481,6 +481,14 @@ export class SessionManager {
       if (this.config.sessions?.backgroundDelivery === false) return;
       const session = getSession(sessionId);
       if (!session) return;
+      // Hooks come from the interactive Claude PTY alone. A session that has
+      // since been moved to another engine left that PTY behind: the other
+      // engine owns the conversation now, and whatever the PTY still reports
+      // would be a second answer, or the failure of a turn nobody waits on.
+      if (session.engine !== "claude") {
+        logger.info(`Ignoring a late ${hook.hook_event_name} hook for session ${sessionId}: it is on ${session.engine} now`);
+        return;
+      }
 
       if (hook.hook_event_name === "StopFailure") {
         // Background continuation failed — record it for operators, but don't

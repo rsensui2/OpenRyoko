@@ -15,8 +15,10 @@ vi.mock("../goal-review.js", () => ({ reviewGoal: vi.fn(async () => ({ status: "
  * When a session is moved to its fallback engine, the engine it left can still
  * hold a live process for it: the interactive Claude PTY stays warm for minutes
  * after a turn. A Stop hook that process sends later has no turn to settle, so
- * it is delivered as a late completion — a second answer, from the engine the
- * conversation has just left, after the fallback engine already replied.
+ * it used to be delivered as a late completion — a second answer, from the
+ * engine the conversation had just left, after the fallback engine had replied.
+ * The switch now stops that process, and a hook that was already on its way is
+ * ignored for as long as the session is on another engine.
  */
 
 const HEALTH_PATH = path.join(JINN_HOME, "tmp", "engine-health.json");
@@ -70,10 +72,7 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("the engine a session leaves when it switches on a usage limit", () => {
-  // Known defect, reproduced: nothing stops the limited engine's process, and
-  // its late Stop is delivered. `it.fails` records that these expectations do
-  // not hold yet; the fix turns them into ordinary tests.
-  it.fails("has that session's process stopped before the fallback engine runs, and no other session's", async () => {
+  it("has that session's process stopped before the fallback engine runs, and no other session's", async () => {
     const f = setup();
     const bystander = await f.route(f.message("別件です")); // a second conversation, served by Claude
     f.claudeRun.mockResolvedValueOnce(limited(inMinutes(60)));
@@ -85,7 +84,7 @@ describe("the engine a session leaves when it switches on a usage limit", () => 
     expect(f.kill).not.toHaveBeenCalledWith(bystander.id, expect.anything());
   });
 
-  it.fails("cannot answer a second time: a Stop it sends after the switch is not delivered", async () => {
+  it("cannot answer a second time: a Stop it sends after the switch is not delivered", async () => {
     const f = setup();
     f.claudeRun.mockResolvedValueOnce(limited(inMinutes(60)));
     const switched = await f.route(f.message());
@@ -96,7 +95,7 @@ describe("the engine a session leaves when it switches on a usage limit", () => 
     expect(f.answers(switched.id)).toEqual(["Answered by codex."]);
   });
 
-  it.fails("does not have a late failure of its own recorded against the session either", async () => {
+  it("does not have a late failure of its own recorded against the session either", async () => {
     const f = setup();
     f.claudeRun.mockResolvedValueOnce(limited(inMinutes(60)));
     const switched = await f.route(f.message());
