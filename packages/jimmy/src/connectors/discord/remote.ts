@@ -7,6 +7,7 @@ import type {
   IncomingMessage,
   Target,
 } from "../../shared/types.js";
+import { attachmentSlot } from "../../shared/attachments.js";
 import { logger } from "../../shared/logger.js";
 import { downloadAttachment } from "./format.js";
 import {
@@ -80,7 +81,8 @@ function incomingAttachmentMeta(att: Record<string, unknown>): Attachment {
 }
 
 /**
- * Fetch a routed message's attachments to `destDir`. Their names and URLs come
+ * Fetch a routed message's attachments to `destDir` (the message's own
+ * directory; each attachment gets a slot in it). Their names and URLs come
  * straight from the request body, so only what a Discord primary really sends
  * is fetched: an https URL on Discord's CDN, up to a size limit. Anything else
  * stays as metadata without a local file — what a failed download has always
@@ -90,11 +92,11 @@ export async function downloadIncomingAttachments(attachments: unknown, destDir:
   if (!Array.isArray(attachments)) return [];
   const listed = attachments.filter((att): att is Record<string, unknown> => Boolean(att) && typeof att === "object");
   return Promise.all(
-    listed.map(async (att) => {
+    listed.map(async (att, slot) => {
       const meta = incomingAttachmentMeta(att);
       if (!meta.url) return meta;
       try {
-        const localPath = await downloadAttachment(meta.url, destDir, meta.name, {
+        const localPath = await downloadAttachment(meta.url, attachmentSlot(destDir, slot), meta.name, {
           allowedHosts: DISCORD_CDN_HOSTS,
           maxBytes: MAX_INCOMING_ATTACHMENT_BYTES,
         });

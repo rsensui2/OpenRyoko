@@ -83,6 +83,7 @@ async function readAttachmentBody(res: Response, maxBytes: number | undefined): 
 /**
  * Download an attachment into `destDir` and return where it was saved. The
  * file always lands directly inside `destDir`, whatever `filename` says.
+ * `destDir` is created once there is something to save in it.
  */
 export async function downloadAttachment(
   url: string,
@@ -101,6 +102,8 @@ export async function downloadAttachment(
   if (options.allowedHosts) assertAllowedUrl(url, options.allowedHosts);
   const res = options.allowedHosts ? await fetch(url, { redirect: "error" }) : await fetch(url);
   if (!res.ok) throw new Error(`Failed to download attachment: ${res.status}`);
-  fs.writeFileSync(destPath, await readAttachmentBody(res, options.maxBytes));
+  const body = await readAttachmentBody(res, options.maxBytes);
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(destPath, body);
   return destPath;
 }

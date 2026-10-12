@@ -42,6 +42,15 @@ describe("downloadAttachment file names", () => {
     expect(fs.readFileSync(saved, "utf-8")).toBe("file-bytes");
   });
 
+  it("creates the download directory once there is something to save, and not for a download that fails", async () => {
+    const slot = path.join(dest, "message", "0");
+    outbound.mockResolvedValueOnce(new Response("gone", { status: 404 }));
+    await expect(downloadAttachment(CDN, slot, "photo.png")).rejects.toThrow(/404/);
+    expect(fs.existsSync(path.join(dest, "message"))).toBe(false);
+
+    expect(await downloadAttachment(CDN, slot, "photo.png")).toBe(path.join(slot, "photo.png"));
+  });
+
   it.each([
     ["../escaped.txt"],
     ["../../escaped.txt"],

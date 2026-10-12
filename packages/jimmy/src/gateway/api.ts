@@ -103,6 +103,7 @@ import { PairingAttemptLimiter, pairingAttemptKey } from "./pairing-rate-limit.j
 import { applyLanguageSection, personalizeInstructionMd, personalizeIdentityMd, resolveEffectiveName } from "./onboarding-personalize.js";
 import { savePortalBlock, writeFileAtomic } from "./portal-config.js";
 import { restoreBeforeSlackConnect, slackBlockOf, snapshotStillHoldingSlackTokens } from "./slack-connect-rollback.js";
+import { newAttachmentDir } from "../shared/attachments.js";
 
 /** Max bytes accepted on /api/internal/hook (loopback-only relay payloads are tiny). */
 const HOOK_BODY_MAX_BYTES = 64 * 1024;
@@ -2149,7 +2150,7 @@ Handle this as a priority request from a colleague.`;
       // Download attachments from Discord CDN URLs to local temp. The names
       // and URLs are the caller's: only https Discord CDN URLs are fetched.
       const { downloadIncomingAttachments, sanitizeIncomingDiscordMeta } = await import("../connectors/discord/remote.js");
-      const attachments = await downloadIncomingAttachments(body.attachments, TMP_DIR);
+      const attachments = await downloadIncomingAttachments(body.attachments, newAttachmentDir());
 
       const incomingMsg: IncomingMessage = {
         connector: params.id,

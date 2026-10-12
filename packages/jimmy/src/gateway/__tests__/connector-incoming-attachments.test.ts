@@ -4,6 +4,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import type { IncomingMessage as HttpRequest, ServerResponse } from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ATTACHMENTS_DIR } from "../../shared/attachments.js";
 import { JINN_HOME, TMP_DIR } from "../../shared/paths.js";
 import type { Connector, IncomingMessage } from "../../shared/types.js";
 import { handleApiRequest, type ApiContext } from "../api.js";
@@ -51,6 +52,11 @@ const message = (attachments: unknown) => ({
 
 let created: string[];
 const filesIn = (dir: string) => fs.readdirSync(dir, { withFileTypes: true }).filter((e) => e.isFile()).map((e) => e.name).sort();
+/** Every file saved for attachments, wherever under tmp/attachments/ it is. */
+const savedAttachments = () => (fs.existsSync(ATTACHMENTS_DIR)
+  ? fs.readdirSync(ATTACHMENTS_DIR, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => path.join(e.parentPath, e.name))
+  : []);
+const insideAttachments = (file: string) => file.startsWith(ATTACHMENTS_DIR + path.sep);
 
 beforeEach(() => {
   fs.mkdirSync(TMP_DIR, { recursive: true });
@@ -63,20 +69,37 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   for (const file of created) fs.rmSync(file, { force: true });
+  fs.rmSync(ATTACHMENTS_DIR, { recursive: true, force: true });
 });
 
 describe("POST /api/connectors/:id/incoming attachments", () => {
   it("does not write outside the temp directory for a name with ../ in it", async () => {
     const name = `escaped-${randomUUID()}.txt`;
-    const outside = path.join(JINN_HOME, name); // TMP_DIR/../<name>
+    const outside = path.join(JINN_HOME, name);
     created.push(outside, path.join(TMP_DIR, name));
 
-    const answer = await postIncoming(message([{ name: `../${name}`, url: CDN, mimeType: "text/plain" }]));
+    const answer = await postIncoming(message([{ name: `../../../../${name}`, url: CDN, mimeType: "text/plain" }]));
 
     expect(fs.existsSync(outside)).toBe(false);
+    expect(fs.existsSync(path.join(TMP_DIR, name))).toBe(false);
     expect(answer).toEqual({ status: 200, body: { status: "delivered" } });
     const [attachment] = delivered[0].attachments;
-    if (attachment.localPath) expect(path.dirname(attachment.localPath)).toBe(TMP_DIR);
+    if (attachment.localPath) expect(insideAttachments(attachment.localPath)).toBe(true);
+    expect(savedAttachments().every(insideAttachments)).toBe(true);
+  });
+
+  it("does not let an attachment named like a state file replace that file", async () => {
+    // tmp/ holds the gateway's own state next to what used to be saved there.
+    const stateFile = path.join(TMP_DIR, "engine-health.json");
+    created.push(stateFile);
+    fs.writeFileSync(stateFile, '{"engines":{}}');
+
+    await postIncoming(message([{ name: "engine-health.json", url: CDN, mimeType: "application/json" }]));
+
+    expect(fs.readFileSync(stateFile, "utf-8")).toBe('{"engines":{}}');
+    const saved = delivered[0].attachments[0].localPath!;
+    expect(insideAttachments(saved)).toBe(true);
+    expect(path.basename(saved)).toBe("engine-health.json");
   });
 
   it.each([
@@ -99,26 +122,40 @@ describe("POST /api/connectors/:id/incoming attachments", () => {
 
   it("still downloads what a primary instance really forwards: a Discord CDN URL", async () => {
     const name = `photo-${randomUUID()}.png`;
-    created.push(path.join(TMP_DIR, name));
 
     await postIncoming(message([{ name, url: CDN, mimeType: "image/png" }]));
 
     expect(outbound).toHaveBeenCalledTimes(1);
     expect(String(outbound.mock.calls[0][0])).toBe(CDN);
-    expect(delivered[0].attachments).toEqual([{ name, url: CDN, mimeType: "image/png", localPath: path.join(TMP_DIR, name) }]);
-    expect(fs.readFileSync(path.join(TMP_DIR, name), "utf-8")).toBe("file-bytes");
+    const saved = delivered[0].attachments[0].localPath!;
+    expect(delivered[0].attachments).toEqual([{ name, url: CDN, mimeType: "image/png", localPath: saved }]);
+    expect(insideAttachments(saved)).toBe(true);
+    expect(path.basename(saved)).toBe(name);
+    expect(fs.readFileSync(saved, "utf-8")).toBe("file-bytes");
   });
 
   it("accepts the media proxy host as well", async () => {
     const name = `photo-${randomUUID()}.png`;
-    created.push(path.join(TMP_DIR, name));
     await postIncoming(message([{ name, url: "https://media.discordapp.net/attachments/1/2/photo.png", mimeType: "image/png" }]));
-    expect(delivered[0].attachments[0].localPath).toBe(path.join(TMP_DIR, name));
+    expect(path.basename(delivered[0].attachments[0].localPath!)).toBe(name);
+  });
+
+  it("keeps the attachments of one routed message together, and two with the same name apart", async () => {
+    outbound.mockImplementation(async (url) => new Response(`contents of ${String(url)}`));
+    await postIncoming(message([
+      { name: "image.png", url: "https://cdn.discordapp.com/a/1/first.png", mimeType: "image/png" },
+      { name: "image.png", url: "https://cdn.discordapp.com/a/2/second.png", mimeType: "image/png" },
+    ]));
+    const [first, second] = delivered[0].attachments.map((attachment) => attachment.localPath!);
+    expect(first).not.toBe(second);
+    expect(fs.readFileSync(first, "utf-8")).toContain("first.png");
+    expect(fs.readFileSync(second, "utf-8")).toContain("second.png");
+    const messageDir = (file: string) => path.relative(ATTACHMENTS_DIR, file).split(path.sep)[0];
+    expect(messageDir(first)).toBe(messageDir(second));
   });
 
   it("does not keep a file larger than the limit", async () => {
     const name = `huge-${randomUUID()}.bin`;
-    created.push(path.join(TMP_DIR, name));
     const cancel = vi.fn(async () => {});
     outbound.mockResolvedValue({
       ok: true, status: 200, headers: new Headers({ "content-length": String(1024 * 1024 * 1024) }), body: { cancel },
@@ -126,7 +163,7 @@ describe("POST /api/connectors/:id/incoming attachments", () => {
 
     await postIncoming(message([{ name, url: CDN, mimeType: "application/octet-stream" }]));
 
-    expect(fs.existsSync(path.join(TMP_DIR, name))).toBe(false);
+    expect(savedAttachments()).toEqual([]);
     expect(delivered[0].attachments).toEqual([{ name, url: CDN, mimeType: "application/octet-stream" }]);
   });
 

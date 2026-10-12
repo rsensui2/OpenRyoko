@@ -20,7 +20,7 @@ import type {
   Target,
 } from "../../shared/types.js";
 import { logger } from "../../shared/logger.js";
-import { TMP_DIR } from "../../shared/paths.js";
+import { attachmentSlot, newAttachmentDir } from "../../shared/attachments.js";
 import { formatResponse, downloadAttachment } from "./format.js";
 import {
   deriveSessionKey,
@@ -562,11 +562,13 @@ export class DiscordConnector implements Connector {
     });
     const replyContext = buildReplyContext(message);
 
-    // Download attachments
+    // Download attachments — into a directory of this message's own, each in
+    // its own slot: the names are the sender's (see shared/attachments.ts).
+    const attachmentDir = newAttachmentDir();
     const attachments = await Promise.all(
-      Array.from(message.attachments.values()).map(async (att) => {
+      Array.from(message.attachments.values()).map(async (att, slot) => {
         try {
-          const localPath = await downloadAttachment(att.url, TMP_DIR, att.name);
+          const localPath = await downloadAttachment(att.url, attachmentSlot(attachmentDir, slot), att.name);
           return { name: att.name, localPath, mimeType: att.contentType ?? "application/octet-stream" };
         } catch {
           return null;

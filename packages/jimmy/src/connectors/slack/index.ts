@@ -43,7 +43,8 @@ import { ConversationTracker } from "./conversation-tracker.js";
 import { AgentsCanvasUpdater } from "./agents-canvas.js";
 import { startsWithSlashCommand } from "../../sessions/manager.js";
 import type { SlackTriageConfig } from "../../shared/types.js";
-import { JINN_HOME, TMP_DIR } from "../../shared/paths.js";
+import { JINN_HOME } from "../../shared/paths.js";
+import { newAttachmentDir } from "../../shared/attachments.js";
 import { logger } from "../../shared/logger.js";
 
 export interface SlackConnectorContext {
@@ -531,6 +532,7 @@ export class SlackConnector implements Connector {
       // Download attachments if present
       const attachments = [];
       const failedAttachments: string[] = [];
+      const attachmentDir = newAttachmentDir(); // this message's own (see shared/attachments.ts)
       if ((event as any).files) {
         for (const file of (event as any).files) {
           try {
@@ -541,7 +543,7 @@ export class SlackConnector implements Connector {
             const localPath = await downloadAttachment(
               resolved.url,
               this.app.client.token!,
-              TMP_DIR,
+              attachmentDir,
             );
             attachments.push({
               name: resolved.name,

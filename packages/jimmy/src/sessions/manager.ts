@@ -53,6 +53,7 @@ import { buildSpeakerPrefix, type SpeakerPrefixMeta } from "./speaker-prefix.js"
 import { loadJobs } from "../cron/jobs.js";
 import { setCronJobEnabled, triggerCronJob } from "../cron/scheduler.js";
 import { checkBudget } from "../gateway/budgets.js";
+import { removeAttachmentDirs } from "../shared/attachments.js";
 import { resolveMcpServers, writeMcpConfigFile, cleanupMcpConfigFile } from "../mcp/resolver.js";
 
 const WORKFLOW_CAPABILITIES = { threading: false, messageEdits: false, reactions: false, attachments: false };
@@ -425,6 +426,7 @@ export class SessionManager {
       // A cancelled queue item never enters runSession's cleanup. Clear only
       // that item's pending indicators; a started session may have deliberately
       // delivered :eyes: as its final response and must retain that reaction.
+      if (!executionStarted) removeAttachmentDirs(attachmentPaths);
       if (!executionStarted) await this.clearPendingReactions(connector, target);
     }
 
@@ -1223,14 +1225,9 @@ export class SessionManager {
         await connector.removeReaction(target, "hourglass_flowing_sand").catch(() => {});
       }
     } finally {
-      // Clean up temp attachment files downloaded from Slack
-      for (const filePath of attachments) {
-        try {
-          fs.rmSync(filePath, { force: true });
-        } catch {
-          // Ignore cleanup errors — best effort
-        }
-      }
+      // Clean up the attachments downloaded for this message: its own
+      // directory under tmp/attachments/, and never any other path.
+      removeAttachmentDirs(attachments);
 
       if (mcpConfigPath) cleanupMcpConfigFile(session.id);
     }

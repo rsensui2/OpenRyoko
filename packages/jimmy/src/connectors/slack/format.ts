@@ -157,8 +157,6 @@ export async function downloadAttachment(
   token: string,
   destDir: string,
 ): Promise<string> {
-  fs.mkdirSync(destDir, { recursive: true });
-
   const response = await fetch(url, {
     headers: { Authorization: `Bearer ${token}` },
   });
@@ -166,6 +164,9 @@ export async function downloadAttachment(
   if (!response.ok) {
     throw new Error(`Failed to download attachment: ${response.status} ${response.statusText}`);
   }
+
+  // Created only now: a download that fails leaves no empty directory behind.
+  fs.mkdirSync(destDir, { recursive: true });
 
   // Generate unique filename preserving extension from URL if possible
   const urlPath = new URL(url).pathname;

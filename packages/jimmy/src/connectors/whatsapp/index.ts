@@ -19,6 +19,7 @@ import type {
 } from "../../shared/types.js";
 import { logger } from "../../shared/logger.js";
 import { JINN_HOME } from "../../shared/paths.js";
+import { newAttachmentDir } from "../../shared/attachments.js";
 import { formatResponse } from "./format.js";
 import path from "node:path";
 import fs from "node:fs";
@@ -285,8 +286,10 @@ export class WhatsAppConnector implements Connector {
           : message.message?.audioMessage ? "ogg"
           : "bin";
         const filename = `wa-attachment-${message.key.id}.${ext}`;
-        const tmpDir = path.join(JINN_HOME, "tmp");
-        const localPath = path.join(tmpDir, filename);
+        // A directory of this message's own (see shared/attachments.ts). The
+        // message id is the sender's: it names the attachment, not the file.
+        const tmpDir = newAttachmentDir();
+        const localPath = path.join(tmpDir, `attachment.${ext}`);
         fs.mkdirSync(tmpDir, { recursive: true });
         fs.writeFileSync(localPath, buffer as Buffer);
         const mimeType = ext === "jpg" ? "image/jpeg"
