@@ -39,6 +39,7 @@ Engines have full file access within `~/.ryoko/`. To avoid breaking the gateway:
 - Use atomic writes (write to temp file, then rename) for critical files
 - Back up files before making destructive changes
 - Test cron expressions before adding them to `jobs.json`
+- If an edit breaks one of these files, restore yesterday's copy instead of rebuilding it by hand: `ryoko backup list`, then `ryoko backup restore <id> --only <kind> --dry-run`. See `docs/backup.md`
 
 ### Do Not
 

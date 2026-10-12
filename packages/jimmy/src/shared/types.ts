@@ -883,6 +883,18 @@ export interface JinnConfig {
      *  after its alert went out. Default 60; 0 alerts on every failure. */
     alertThrottleMinutes?: number;
   };
+  /** Daily backups of the instance home and its databases. On unless `enabled` is false. */
+  backup?: {
+    enabled?: boolean;
+    /** Where backups are written. Default: `<home>/backups`. May point outside the home. */
+    directory?: string;
+    /** Days of home archives to keep: the latest of each day, and up to two more taken the same day. Default: 14. */
+    retention?: number;
+    /** Largest home, in MB of file content, one archive may hold; a larger one is refused. Default: 512. */
+    maxArchiveMb?: number;
+    /** Most files, directories and symlinks one archive may hold; a home with more is refused. Default: 50000. */
+    maxEntries?: number;
+  };
   notifications?: {
     connector?: string;  // defaults to "discord"
     channel?: string;    // Discord channel ID for admin notifications

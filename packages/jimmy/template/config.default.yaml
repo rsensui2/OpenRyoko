@@ -104,6 +104,18 @@ cron:
   # 同じジョブで同じ失敗が続く間、アラートを再送しない時間（分）。0 で毎回送る。
   # alertThrottleMinutes: 60
 
+# バックアップ（既定で有効。設定しなくても動く）
+# 1日1回、ホームの config.yaml・cron・人格と記憶・org・skills・docs・knowledge を
+# tar.gz にまとめ、セッションDB と workflow DB のコピーと一緒に保存する。
+# 一覧は `ryoko backup list`、復元は `ryoko backup restore <id> [--only config,cron] [--dry-run]`。
+# 失敗は gateway のログと /api/status の backup に出る。対象・戻し方・DB の復元手順は docs/backup.md。
+# backup:
+#   enabled: true
+#   directory: /path/to/backups   # 省略時は <ホーム>/backups。ホームの外（別ディスクなど）も指定できる
+#   retention: 14                 # アーカイブを残す日数（日ごとの最新。同じ日の分は直近3個まで。DBのコピーは7世代で固定）
+#   maxArchiveMb: 512             # 1回のアーカイブに入れるファイル合計の上限。超えたら書かずに失敗として報告する
+#   maxEntries: 50000             # 同じく、ファイル・ディレクトリ・symlink の数の上限（空のファイルも数える）
+
 # portal.operatorSlackId / portal.operatorDiscordId = オペレータ本人の Slack ID と
 # Discord ユーザー ID（スノーフレーク。プロフィール右クリック → ユーザーIDをコピー）。
 # どちらか一つでも設定すると本人確認が「発話元プラットフォームの ID の厳密一致」に
