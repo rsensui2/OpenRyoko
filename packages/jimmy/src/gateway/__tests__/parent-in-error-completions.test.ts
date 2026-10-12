@@ -44,6 +44,7 @@ describe("child completions for a parent that is in error", () => {
   let replyMessage: ReturnType<typeof vi.fn>;
   let registry: typeof import("../../sessions/registry.js");
   let callbacks: typeof import("../../sessions/callbacks.js");
+  let originDelivery: typeof import("../../sessions/origin-delivery.js");
   let thread = 0;
   /** Sessions whose next engine run ends the way a dead Claude process does. */
   const diesOnNextRun = new Set<string>();
@@ -78,6 +79,7 @@ describe("child completions for a parent that is in error", () => {
     const api = await import("../api.js");
     registry = await import("../../sessions/registry.js");
     callbacks = await import("../../sessions/callbacks.js");
+    originDelivery = await import("../../sessions/origin-delivery.js");
     const { SessionManager } = await import("../../sessions/manager.js");
 
     engineRun = vi.fn(async (opts: { prompt: string; sessionId?: string }): Promise<EngineResult> => {
@@ -193,4 +195,44 @@ describe("child completions for a parent that is in error", () => {
     const transcript = await (await fetch(`${baseUrl}/api/sessions/${parent.id}?last=10`)).json() as { messages: Array<{ role: string; content: string }> };
     expect(transcript.messages.filter((m) => m.role === "notification").map((m) => m.content)).toEqual(notes);
   }, 30_000);
+
+  // When the message saying that a turn failed cannot be delivered either, the
+  // record of the lost message takes lastError. What the turn had failed with
+  // must still decide whether the parent is woken.
+  describe("when the parent's error message could not be delivered either", () => {
+    /** A parent as its failed turn leaves it, once its error message was lost as well. */
+    function parentWhoseErrorWasLost(turnError: string): Session {
+      const parent = slackParent();
+      registry.updateSession(parent.id, { status: "error", lastError: turnError });
+      originDelivery.recordFailedOriginDelivery(registry.getSession(parent.id)!, undefined, "connector offline");
+      const settled = registry.getSession(parent.id)!;
+      expect(originDelivery.hasUndeliveredReply(settled)).toBe(true);
+      expect(settled.lastError).not.toBe(turnError); // lastError is the record now
+      return settled;
+    }
+
+    it("still wakes a parent whose engine had only died", async () => {
+      const parent = parentWhoseErrorWasLost("claude stopped unexpectedly: claude process exited");
+
+      const finished = complete(parent, "researcher", { result: "調査が終わりました" });
+
+      await vi.waitFor(() => expect(replyMessage).toHaveBeenCalledTimes(1), { timeout: 5_000 });
+      expect(engineRun).toHaveBeenCalledTimes(1);
+      expect(prompts()[0]).toContain(`replied in session ${finished.id}`);
+      await vi.waitFor(() => expect(registry.getSession(parent.id)).toMatchObject({ status: "idle", lastError: null }), { timeout: 5_000 });
+    }, 30_000);
+
+    it("still does not wake a parent stopped by a lost login", async () => {
+      const parent = parentWhoseErrorWasLost("Not logged in · Please run /login");
+      const before = notifications(parent.id).length;
+
+      complete(parent, "researcher", { result: "調査が終わりました" });
+
+      await vi.waitFor(() => expect(notifications(parent.id)).toHaveLength(before + 1), { timeout: 5_000 });
+      await new Promise((r) => setTimeout(r, 300));
+      expect(engineRun).not.toHaveBeenCalled();
+      expect(replyMessage).not.toHaveBeenCalled();
+      expect(notifications(parent.id).at(-1)!.content).toContain("no turn was started");
+    }, 30_000);
+  });
 });

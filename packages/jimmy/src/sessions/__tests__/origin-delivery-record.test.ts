@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { hasUndeliveredReply, recordFailedOriginDelivery } from "../origin-delivery.js";
+import { hasUndeliveredReply, recordFailedOriginDelivery, turnFailureOf } from "../origin-delivery.js";
 import { createSession, getMessages, getSession, updateSession } from "../registry.js";
+import { failedByUnrequestedStop, unrequestedStopError } from "../unrequested-stop.js";
 
 // A cron job whose reply could not be delivered ends with this record, and the
 // cron run log and the operator's alert quote its lastError. With a fixed text
@@ -139,5 +140,112 @@ describe("hasUndeliveredReply", () => {
     recordFailedOriginDelivery(created, undefined, "channel_not_found");
     updateSession(created.id, { status: "idle", lastError: null });
     expect(hasUndeliveredReply(getSession(created.id)!)).toBe(false);
+  });
+});
+
+// lastError carries this record, and the record used to replace whatever was
+// there. When the reply that could not be delivered was the error message of a
+// turn that had failed, the reason for that failure was gone: a session whose
+// engine had merely died read as one stopped by a delivery problem, and a cron
+// alert named the delivery, not the cause.
+describe("recordFailedOriginDelivery — a reply that was the turn's own error message", () => {
+  const ENGINE_DIED = unrequestedStopError("claude", "claude process exited");
+
+  function settled(lastError: string | null) {
+    const key = `slack:origin-delivery-record-${++nextKey}`;
+    const created = createSession({ engine: "claude", source: "slack", sourceRef: key, connector: "slack", sessionKey: key, replyContext: { channel: "C1", thread: "1.000" }, transportMeta: { channelExternal: false } });
+    return updateSession(created.id, { status: lastError ? "error" : "idle", lastError })!;
+  }
+
+  it("keeps the reason the turn failed, in lastError and for whoever asks", () => {
+    const failed = settled(ENGINE_DIED);
+
+    recordFailedOriginDelivery(failed, undefined, "connector offline");
+
+    const after = getSession(failed.id)!;
+    // Still the record of an undelivered reply, worded as before …
+    expect(after.lastError!.startsWith(`${LEGACY}: connector offline`)).toBe(true);
+    expect(hasUndeliveredReply(after)).toBe(true);
+    // … and it now says what the turn had failed with as well.
+    expect(after.lastError).toContain(ENGINE_DIED);
+    expect(turnFailureOf(after)).toBe(ENGINE_DIED);
+    // So the session is still recognised as one a child's completion may wake.
+    expect(failedByUnrequestedStop({ status: after.status, lastError: turnFailureOf(after) })).toBe(true);
+    expect(after.transportMeta).toMatchObject({ channelExternal: false }); // the rest of the row's meta is kept
+  });
+
+  it("keeps it when the transport gave no reason for the lost delivery", () => {
+    const failed = settled(ENGINE_DIED);
+
+    recordFailedOriginDelivery(failed);
+
+    const after = getSession(failed.id)!;
+    expect(after.lastError!.startsWith(LEGACY)).toBe(true);
+    expect(after.lastError).toContain(ENGINE_DIED);
+    expect(turnFailureOf(after)).toBe(ENGINE_DIED);
+  });
+
+  it("has nothing to keep for a turn that did not fail", () => {
+    const finished = settled(null);
+
+    recordFailedOriginDelivery(finished, undefined, "connector offline");
+
+    const after = getSession(finished.id)!;
+    expect(after.lastError).toBe(`${LEGACY}: connector offline`); // exactly as before
+    expect(turnFailureOf(after)).toBeNull();
+  });
+
+  it("does not take an earlier lost delivery for the reason a turn failed", () => {
+    // A background reply that could not be delivered, then another: there was never a failed turn.
+    const finished = settled(null);
+    recordFailedOriginDelivery(finished, undefined, "channel_not_found");
+
+    recordFailedOriginDelivery(getSession(finished.id)!, undefined, "connector offline");
+
+    const after = getSession(finished.id)!;
+    expect(after.lastError).toBe(`${LEGACY}: connector offline`);
+    expect(turnFailureOf(after)).toBeNull();
+  });
+
+  it("lets go of it with the record: the next turn's completion resets lastError", () => {
+    const failed = settled(ENGINE_DIED);
+    recordFailedOriginDelivery(failed, undefined, "connector offline");
+
+    updateSession(failed.id, { status: "idle", lastError: null }); // a later turn settles
+
+    const after = getSession(failed.id)!;
+    expect(hasUndeliveredReply(after)).toBe(false);
+    expect(turnFailureOf(after)).toBeNull();
+  });
+
+  it("does not hand a later turn the failure an earlier one was kept for", () => {
+    const failed = settled(ENGINE_DIED);
+    recordFailedOriginDelivery(failed, undefined, "connector offline");
+    updateSession(failed.id, { status: "idle", lastError: null }); // the next turn answers …
+
+    recordFailedOriginDelivery(getSession(failed.id)!, undefined, "channel_not_found"); // … and that answer is lost too
+
+    const after = getSession(failed.id)!;
+    expect(after.lastError).toBe(`${LEGACY}: channel_not_found`);
+    expect(turnFailureOf(after)).toBeNull();
+  });
+
+  it("is simply lastError for a session with no lost reply", () => {
+    expect(turnFailureOf(settled("Not logged in · Please run /login"))).toBe("Not logged in · Please run /login");
+    expect(turnFailureOf(settled(null))).toBeNull();
+  });
+
+  it("masks and bounds the kept reason like the delivery's own", () => {
+    const slackToken = "xoxb-" + "1234567890-abcdefghijklmnop";
+    const failed = settled(`API Error: 401 for ${slackToken}\n${"x".repeat(2_000)}`);
+
+    recordFailedOriginDelivery(failed, undefined, "connector offline");
+
+    const after = getSession(failed.id)!;
+    expect(JSON.stringify([after.lastError, after.transportMeta])).not.toContain(slackToken);
+    expect(after.lastError).toContain("[REDACTED]");
+    expect(after.lastError!.length).toBeLessThan(800);
+    expect(after.lastError).not.toContain("\n");
+    expect(turnFailureOf(after)!.startsWith("API Error: 401 for [REDACTED]")).toBe(true);
   });
 });
