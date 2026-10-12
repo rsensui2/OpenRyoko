@@ -62,6 +62,12 @@ const RESTORE_BY_NAME = '"ryoko migrate --restore-deleted-skills <name>"';
 /** A run that changed nothing logs nothing, and a skill left untouched is mentioned
  *  once per package version (the sync keeps that tally), so restarts stay quiet. */
 function report(result: BundledSkillSync): void {
+  reportChanges(result);
+  reportUntouched(result);
+  reportTrouble(result);
+}
+
+function reportChanges(result: BundledSkillSync): void {
   const changes = [
     ...listed("added", result.added),
     ...listed("updated", result.updated),
@@ -71,14 +77,22 @@ function report(result: BundledSkillSync): void {
   if (changes.length > 0) {
     logger.info(`Bundled skills synced: ${changes.join("; ")}.${result.backupDir ? ` Previous copies are in ${printable(result.backupDir)}.` : ""}`);
   }
-  // Only a receipt proves an edit. Without one, a skill that differs may simply be the
-  // copy an earlier release installed, so it is not described as the user's change.
+  if (result.clearedStaging && result.clearedStaging.length > 0) {
+    logger.info(`Removed staging directories that a bundled skill sync which did not finish left in the home: ${result.clearedStaging.join(", ")}.`);
+  }
+}
+
+/** Each case gets the steps that work for it. A recorded skill that goes missing
+ *  counts as deleted, so it needs the option; an unrecorded one is simply installed. */
+function reportUntouched(result: BundledSkillSync): void {
   const announced = (reason: KeepReason) => result.notices.filter((skill) => skill.reason === reason).map((skill) => skill.name);
   const edited = announced("modified");
+  // Only a receipt proves an edit. Without one, a skill that differs may simply be the
+  // copy an earlier release installed, so it is not described as the user's change.
   const unrecorded = announced("unmanaged");
   const removed = announced("deleted");
-  // Each case gets the steps that work for it. A recorded skill that goes missing
-  // counts as deleted, so it needs the option; an unrecorded one is simply installed.
+  const unreadable = announced("unreadable");
+  const tooLarge = announced("too-large");
   if (edited.length > 0) {
     logger.warn(
       `Bundled skills not updated to the newer shipped version because they were edited locally: ${edited.join(", ")}. `
@@ -95,6 +109,21 @@ function report(result: BundledSkillSync): void {
   if (removed.length > 0) {
     logger.info(`Bundled skills not reinstalled because they were removed from this home: ${removed.join(", ")}. Run ${RESTORE_BY_NAME} to put one back.`);
   }
+  if (unreadable.length > 0) {
+    logger.warn(
+      `Bundled skills left untouched because they could not be read: ${unreadable.join(", ")}. `
+      + "Check the permissions of each skill's directory and files; the next start tries again.",
+    );
+  }
+  if (tooLarge.length > 0) {
+    logger.warn(
+      "Bundled skills left untouched, and unread, because they are larger than any bundled skill is "
+      + `(in one file, or in their number of files): ${tooLarge.join(", ")}. See docs/skills.md.`,
+    );
+  }
+}
+
+function reportTrouble(result: BundledSkillSync): void {
   for (const failure of result.failed) logger.warn(`Bundled skill "${failure.name}" was not synced: ${printable(failure.error)}`);
   if (result.receiptError) {
     logger.warn(`The bundled skill receipt could not be saved (${printable(result.receiptError)}). The skills themselves are in place; the next start records them.`);

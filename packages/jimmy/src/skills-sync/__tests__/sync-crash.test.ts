@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { RECEIPT_FILE } from "../receipt.js";
-import { fixture, removeFixtures, sha } from "./fixture.js";
+import { fixture, NOW, removeFixtures, sha, snapshot, writeTree, type Files } from "./fixture.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -209,5 +209,163 @@ describe("bundled skill sync: text taken from the home never reaches a log line 
     expect(message).toContain("gateway compromised");
     // One line, no escape sequences: it cannot pass for a log line of its own.
     expect(message).not.toMatch(/[\n\r\u001b]/);
+  });
+});
+
+describe("bundled skill sync: staging directories a sync that died left in the home", () => {
+  const HOUR = 60 * 60 * 1000;
+  const STALE = ".bundled-skill-Ab3xYz";
+
+  /** A directory in the home, last touched `age` milliseconds before the sync runs. */
+  function leftover(home: string, name: string, files: Files, age: number): string {
+    const directory = path.join(home, name);
+    writeTree(directory, files);
+    fs.mkdirSync(directory, { recursive: true });
+    const touched = new Date(NOW.getTime() - age);
+    fs.utimesSync(directory, touched, touched);
+    return directory;
+  }
+
+  /** A package shipping "example", which once also shipped "retired". */
+  function home() {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1", "references/a.md": "a1" });
+    f.ship("retired", { "SKILL.md": "v1" });
+    f.release("v2026.7.1");
+    f.unship("retired");
+    return f;
+  }
+
+  it("removes one that was abandoned and holds nothing but bundled skills", () => {
+    const f = home();
+    // A skill no release has shipped yet: this package is the first to stage it.
+    f.ship("brand-new", { "SKILL.md": "v1" });
+    // Died while writing "example"; "retired" was staged by an earlier release.
+    const stale = leftover(f.home, STALE, { "example/SKILL.md": "v", "retired/SKILL.md": "v1" }, 2 * HOUR);
+    const newer = leftover(f.home, ".bundled-skill-zzzzzz", { "brand-new/SKILL.md": "v" }, 2 * HOUR);
+    const empty = leftover(f.home, ".bundled-skill-000000", {}, 2 * HOUR);
+
+    const result = f.sync();
+
+    for (const gone of [stale, newer, empty]) expect(fs.existsSync(gone)).toBe(false);
+    expect(result.clearedStaging).toEqual([".bundled-skill-000000", STALE, ".bundled-skill-zzzzzz"]);
+    // And the run itself is unaffected.
+    expect(result.added).toEqual(["brand-new", "example"]);
+    expect(fs.readdirSync(f.home).sort()).toEqual(["skills"]);
+  });
+
+  it("leaves a recent one: another sync may be staging into it right now", () => {
+    const f = home();
+    const fresh = leftover(f.home, STALE, { "example/SKILL.md": "v1" }, HOUR / 2);
+
+    const result = f.sync();
+
+    expect(fs.readFileSync(path.join(fresh, "example", "SKILL.md"), "utf8")).toBe("v1");
+    expect(result.clearedStaging).toBeUndefined();
+  });
+
+  it.each<[string, Files]>([
+    ["a file of its own at the top", { "notes.md": "mine" }],
+    ["a directory that is no bundled skill", { "my-own-skill/SKILL.md": "mine" }],
+    ["a bundled skill beside something else", { "example/SKILL.md": "v1", "my-own-skill/SKILL.md": "mine" }],
+  ])("leaves one that holds %s: no sync made that", (_label, files) => {
+    const f = home();
+    const kept = leftover(f.home, STALE, files, 2 * HOUR);
+    const before = snapshot(kept);
+
+    expect(f.sync().clearedStaging).toBeUndefined();
+
+    expect(snapshot(kept)).toEqual(before);
+  });
+
+  it("leaves one whose skill holds a link, and what the link points at", () => {
+    const f = home();
+    const outside = path.join(f.root, "outside.md");
+    fs.writeFileSync(outside, "not the sync's");
+    const kept = leftover(f.home, STALE, { "example/SKILL.md": "v1" }, 0);
+    fs.symlinkSync(outside, path.join(kept, "example", "linked.md"));
+    const old = new Date(NOW.getTime() - 2 * HOUR);
+    fs.utimesSync(kept, old, old);
+
+    f.sync();
+
+    expect(fs.readlinkSync(path.join(kept, "example", "linked.md"))).toBe(outside);
+    expect(fs.readFileSync(outside, "utf8")).toBe("not the sync's");
+  });
+
+  it("leaves a link that merely has such a name, and the directory behind it", () => {
+    const f = home();
+    const elsewhere = leftover(f.root, "elsewhere", { "example/SKILL.md": "v1" }, 2 * HOUR);
+    const link = path.join(f.home, STALE);
+    fs.symlinkSync(elsewhere, link);
+    // The link itself is old too: only being a link saves it.
+    const old = new Date(NOW.getTime() - 2 * HOUR);
+    fs.lutimesSync(link, old, old);
+
+    f.sync();
+
+    expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(path.join(elsewhere, "example", "SKILL.md"), "utf8")).toBe("v1");
+  });
+
+  it.each([".bundled-skill-notes", ".bundled-skill-Ab3xYz1", ".bundled-skill-", "bundled-skill-Ab3xYz", ".bundled-skill-Ab3-Yz"])(
+    "leaves %s: a staging directory is never named that",
+    (name) => {
+      const f = home();
+      const kept = leftover(f.home, name, { "example/SKILL.md": "v1" }, 2 * HOUR);
+
+      f.sync();
+
+      expect(fs.existsSync(path.join(kept, "example", "SKILL.md"))).toBe(true);
+    },
+  );
+
+  it("clears a bounded number in one run, and the rest in the next", () => {
+    const f = home();
+    for (let index = 0; index < 40; index++) leftover(f.home, `.bundled-skill-${String(index).padStart(6, "0")}`, {}, 2 * HOUR);
+    const remaining = () => fs.readdirSync(f.home).filter((name) => name.startsWith(".bundled-skill-")).length;
+
+    expect(f.sync().clearedStaging).toHaveLength(32);
+    expect(remaining()).toBe(8);
+    expect(f.sync().clearedStaging).toHaveLength(8);
+    expect(remaining()).toBe(0);
+  });
+
+  it("carries on with the sync when one cannot be removed", () => {
+    const f = home();
+    const stale = leftover(f.home, STALE, { "example/SKILL.md": "v" }, 2 * HOUR);
+    const rm = fs.rmSync;
+    vi.spyOn(fs, "rmSync").mockImplementation((target, options) => {
+      if (String(target) === stale) throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+      return rm(target, options);
+    });
+
+    const result = f.sync();
+
+    expect(result).toMatchObject({ added: ["example"], failed: [] });
+    expect(result.clearedStaging).toBeUndefined();
+    expect(fs.existsSync(stale)).toBe(true);
+  });
+
+  it("looks for none in a home it does not sync", () => {
+    const f = home();
+    const store = path.join(f.root, "my-skills");
+    fs.mkdirSync(store);
+    fs.symlinkSync(store, f.skills);
+    const stale = leftover(f.home, STALE, { "example/SKILL.md": "v" }, 2 * HOUR);
+
+    expect(f.sync()).toMatchObject({ skipped: "skills-root-symlink" });
+
+    expect(fs.existsSync(stale)).toBe(true);
+  });
+
+  it("looks for none in a home a newer OpenRyoko synced last", () => {
+    const f = home();
+    f.sync("2026.10.11");
+    const stale = leftover(f.home, STALE, { "example/SKILL.md": "v" }, 2 * HOUR);
+
+    expect(f.sync("2026.10.10")).toMatchObject({ skipped: "newer-receipt" });
+
+    expect(fs.existsSync(stale)).toBe(true);
   });
 });

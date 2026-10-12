@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { hashBounded, readBounded, TooLargeError } from "../bounded-read.js";
+import { hashBounded, listBounded, readBounded, TooLargeError } from "../bounded-read.js";
 
 const dirs: string[] = [];
 function file(name: string, content: Buffer | string): string {
@@ -83,5 +83,55 @@ describe("bounded reads of files in the home", () => {
   it.skipIf(process.platform === "win32")("refuses a device, which would otherwise read as an empty or endless file", () => {
     expect(() => readBounded("/dev/null", 1024)).toThrow("it is not a regular file");
     expect(() => hashBounded("/dev/zero", 1024)).toThrow("it is not a regular file");
+  });
+});
+
+describe("bounded listing of directories in the home", () => {
+  function directory(entries: number): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "openryoko-bounded-list-"));
+    dirs.push(dir);
+    for (let index = 0; index < entries; index++) fs.writeFileSync(path.join(dir, `entry-${index}`), "");
+    return dir;
+  }
+
+  it("lists a directory that holds no more than the limit", () => {
+    expect(listBounded(directory(0), 3)).toEqual([]);
+    expect(listBounded(directory(3), 3)?.sort()).toEqual(["entry-0", "entry-1", "entry-2"]);
+  });
+
+  it("answers null for one that holds more, having read one entry past the limit and no further", () => {
+    const dir = directory(50);
+    const open = fs.opendirSync;
+    let read = 0;
+    let closed = 0;
+    vi.spyOn(fs, "opendirSync").mockImplementation(((...args: Parameters<typeof fs.opendirSync>) => {
+      const handle = open(...args);
+      const readSync = handle.readSync.bind(handle);
+      const closeSync = handle.closeSync.bind(handle);
+      handle.readSync = () => { read += 1; return readSync(); };
+      handle.closeSync = () => { closed += 1; closeSync(); };
+      return handle;
+    }) as typeof fs.opendirSync);
+
+    expect(listBounded(dir, 3)).toBeNull();
+
+    expect(read).toBe(4);
+    expect(closed).toBe(1);
+  });
+
+  it("closes the directory when reading it fails", () => {
+    const dir = directory(2);
+    const open = fs.opendirSync;
+    let closed = 0;
+    vi.spyOn(fs, "opendirSync").mockImplementation(((...args: Parameters<typeof fs.opendirSync>) => {
+      const handle = open(...args);
+      const closeSync = handle.closeSync.bind(handle);
+      handle.readSync = () => { throw Object.assign(new Error("EIO: i/o error"), { code: "EIO" }); };
+      handle.closeSync = () => { closed += 1; closeSync(); };
+      return handle;
+    }) as typeof fs.opendirSync);
+
+    expect(() => listBounded(dir, 3)).toThrow(/EIO/);
+    expect(closed).toBe(1);
   });
 });

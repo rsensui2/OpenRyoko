@@ -71,6 +71,7 @@ bundled skill it placed.
 | Unedited since the sync placed it, and a newer version ships | Replaces it and keeps the previous copy |
 | Edited, or holding files you added | Leaves it alone; tells you once per release when a newer version ships |
 | A symlink, or holding a symlink | Leaves it alone |
+| Unreadable, or larger than any bundled skill is | Leaves it alone, unread, and tells you once per release |
 | Identical to the shipped version, not yet in the receipt | Leaves it alone and starts tracking it |
 | An untouched copy of a version an earlier release shipped, not in the receipt | Replaces it and keeps the previous copy |
 | Different from every version ever shipped, not in the receipt | Leaves it alone and tells you once per release |
@@ -90,6 +91,9 @@ bundled skill it placed.
 - **Nothing is deleted.** A replaced or retired skill is moved to
   `~/.ryoko/.migration-backups/<version>-<time>/skills/<name>/`. Remove old backups by
   hand when you no longer need them.
+- A sync that is cut short (the machine goes down, the process is killed) can leave a
+  `.bundled-skill-XXXXXX` directory in `~/.ryoko`. A later sync removes it once it is an
+  hour old, provided it holds nothing but bundled skills, and says that it did.
 - On the first start after upgrading to a release with this sync there is no receipt
   yet. Missing skills are added (including any you had deleted before, once). For the
   rest, the package carries fingerprints of every version of every bundled skill that

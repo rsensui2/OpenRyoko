@@ -42,6 +42,25 @@ function readInChunks(file: string, maxBytes: number, consume: (chunk: Buffer) =
   }
 }
 
+/**
+ * The names in a directory, or null when it holds more than `max`. Entries are read
+ * one at a time and never more than `max` + 1 of them: a directory in the home can
+ * hold any number, and listing it whole is what a start-up must not do.
+ */
+export function listBounded(directory: string, max: number): string[] | null {
+  const names: string[] = [];
+  const handle = fs.opendirSync(directory);
+  try {
+    for (let entry = handle.readSync(); entry !== null; entry = handle.readSync()) {
+      if (names.length >= max) return null;
+      names.push(entry.name);
+    }
+    return names;
+  } finally {
+    handle.closeSync();
+  }
+}
+
 /** The whole file, when it is small enough to hold. */
 export function readBounded(file: string, maxBytes: number): Buffer {
   const chunks: Buffer[] = [];

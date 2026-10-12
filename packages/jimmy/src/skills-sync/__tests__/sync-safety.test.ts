@@ -638,8 +638,10 @@ describe("bundled skill sync: failures and odd states", () => {
 
     const result = f.sync("2026.10.11");
 
-    expect(result).toMatchObject({ updated: [], retired: [], notices: [], failed: [], backupDir: null });
+    expect(result).toMatchObject({ updated: [], retired: [], failed: [], backupDir: null });
     expect(result.kept).toEqual([{ name: "locked", reason: "unreadable" }, { name: "locked-retired", reason: "unreadable" }]);
+    // Passed over, but not in silence: the operator is the only one who can fix that.
+    expect(result.notices).toEqual(result.kept);
     vi.restoreAllMocks();
     expect(f.read("locked", "SKILL.md")).toBe("v1");
     expect(f.read("locked-retired", "SKILL.md")).toBe("v1");

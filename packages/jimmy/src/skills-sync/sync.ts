@@ -8,6 +8,7 @@ import { loadShippedHistory } from "./history.js";
 import { own } from "./names.js";
 import { planSkillSync, type SkillPlan } from "./plan.js";
 import { markDeleted, markReplacing, NewerReceiptFormat, RECEIPT_FILE, readReceipt, receiptSkill, serializeReceipt, writeReceipt, type Receipt, type ReceiptSkill } from "./receipt.js";
+import { removeAbandonedStaging } from "./staging.js";
 import { forgetStandBack, shouldAnnounceStandBack } from "./stand-back.js";
 import type { BundledSkillSync, KeepReason, KeptSkill } from "./types.js";
 
@@ -37,8 +38,9 @@ export interface SyncBundledSkillsOptions {
 }
 
 /** Kept skills worth telling the user about, once per package version: a shipped
- *  update they are not getting, or a shipped skill they removed and can have back. */
-const ANNOUNCED: ReadonlySet<KeepReason> = new Set<KeepReason>(["modified", "unmanaged", "deleted"]);
+ *  update they are not getting, a shipped skill they removed and can have back, or a
+ *  skill the sync could not so much as look at. */
+const ANNOUNCED: ReadonlySet<KeepReason> = new Set<KeepReason>(["modified", "unmanaged", "deleted", "unreadable", "too-large"]);
 
 const nothing = (): BundledSkillSync => ({
   added: [], updated: [], adopted: [], retired: [], kept: [], notices: [], inSync: [], failed: [], backupDir: null,
@@ -70,17 +72,21 @@ export function syncBundledSkills(options: SyncBundledSkillsOptions): BundledSki
   const receipt = read.receipt;
   forgetStandBack(skillsRoot);
 
+  const history = loadShippedHistory(options.templateDir);
+  const run: Run = { home, skillsRoot, receiptPath, packageVersion: options.packageVersion, now: options.now ?? new Date() };
+  // What an earlier run left behind when it died, before this one stages anything.
+  const clearedStaging = removeAbandonedStaging(home, new Set([...bundled.map((skill) => skill.name), ...history.names]), run.now);
   const plans = planSkillSync({
     skillsRoot,
     bundled,
     receipt,
     restoreDeleted: options.restoreDeleted ?? false,
-    history: loadShippedHistory(options.templateDir),
+    history,
     // As configured now, as packaged (never filled in), or under an installer default.
     renderings: [options.replacements, {}, ...(options.legacyPortalNames ?? []).map(buildTemplateReplacements)],
   });
-  const run: Run = { home, skillsRoot, receiptPath, packageVersion: options.packageVersion, now: options.now ?? new Date() };
-  return summarise(plans, receipt, carryOut(plans, receipt, run), run);
+  const result = summarise(plans, receipt, carryOut(plans, receipt, run), run);
+  return clearedStaging.length > 0 ? { ...result, clearedStaging } : result;
 }
 
 interface Run extends ApplyContext {

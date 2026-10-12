@@ -112,6 +112,8 @@ const KEPT_SKILL_NOTES: Partial<Record<KeepReason, (name: string) => string>> = 
   "retired-modified": () => "同梱から外れましたが、編集済みのため残しました",
   // Named, so the other skills the operator deleted are not brought back with it.
   deleted: (name) => `削除済みのため配置しません。戻すには ${RESTORE_DELETED_SKILLS} ${name}`,
+  unreadable: () => "読めないため、変更していません。ディレクトリとファイルの権限を確認してください",
+  "too-large": () => "同梱スキルの上限を超える大きさのファイル、またはファイル数があるため、読まずに残しました",
 };
 
 /**
@@ -253,6 +255,9 @@ function syncBundledSkillsStep(restoreDeleted: boolean | readonly string[]): Syn
   for (const name of result.updated) console.log(`  ${GREEN}[updated skill]${RESET} ${name}`);
   for (const name of result.retired) console.log(`  ${YELLOW}[retired skill]${RESET} ${name}`);
   if (result.backupDir) console.log(`  ${DIM}置き換え・退役の前の内容: ${printable(result.backupDir)}${RESET}`);
+  if (result.clearedStaging && result.clearedStaging.length > 0) {
+    console.log(`  ${DIM}[skills] 中断した同期が残した作業ディレクトリを片付けました: ${result.clearedStaging.join(", ")}${RESET}`);
+  }
   for (const { name, reason } of result.kept) {
     const note = KEPT_SKILL_NOTES[reason];
     if (note) console.log(`  ${YELLOW}[skill kept]${RESET} ${name} (${note(name)})`);

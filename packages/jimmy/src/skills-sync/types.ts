@@ -50,6 +50,9 @@ export interface BundledSkillSync {
   failed: FailedSkill[];
   /** Where replaced and retired copies went, when there were any. */
   backupDir: string | null;
+  /** Staging directories that a sync which died left in the home, removed by this
+   *  run: their names, sorted. Absent when there were none. */
+  clearedStaging?: string[];
   /** Why the receipt could not be saved, when it could not. Everything above was
    *  still done and is reported as done; the next run records it. */
   receiptError?: string;

@@ -119,3 +119,45 @@ describe("bundled skill sync: nothing in the home can make it read without bound
     expect(fs.readdirSync(f.home)).toEqual([]);
   });
 });
+
+describe("bundled skill sync: a skill it could not look at is not passed over in silence", () => {
+  it("tells the user once per release about a skill too large to be a bundled one", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    sparse(path.join(f.skills, "example", "SKILL.md"), MAX_SKILL_FILE_BYTES + 1);
+
+    expect(f.sync("2026.10.10").notices).toEqual([{ name: "example", reason: "too-large" }]);
+    expect(f.sync("2026.10.10").notices).toEqual([]);
+    expect(f.sync("2026.10.11").notices).toEqual([{ name: "example", reason: "too-large" }]);
+    expect(f.sync("2026.10.11").notices).toEqual([]);
+  });
+
+  it("tells the user once per release about a skill it could not read", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    const open = fs.openSync;
+    vi.spyOn(fs, "openSync").mockImplementation(((file: fs.PathLike, ...rest: unknown[]) => {
+      if (String(file).startsWith(path.join(f.skills, "example"))) throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+      return (open as (...args: unknown[]) => number)(file, ...rest);
+    }) as typeof fs.openSync);
+
+    expect(f.sync("2026.10.10").notices).toEqual([{ name: "example", reason: "unreadable" }]);
+    expect(f.sync("2026.10.10").notices).toEqual([]);
+    expect(f.sync("2026.10.11").notices).toEqual([{ name: "example", reason: "unreadable" }]);
+  });
+
+  it("stops saying so once the skill can be read again", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    const file = path.join(f.skills, "example", "SKILL.md");
+    sparse(file, MAX_SKILL_FILE_BYTES + 1);
+    f.sync("2026.10.10");
+    fs.writeFileSync(file, "v1");
+
+    expect(f.sync("2026.10.10")).toMatchObject({ kept: [], notices: [], inSync: ["example"] });
+    expect(f.receipt().notices).toEqual({});
+  });
+});

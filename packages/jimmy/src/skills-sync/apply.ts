@@ -4,12 +4,11 @@ import type { BundledSkill } from "./bundled.js";
 import { hashFiles, inspectHomeSkill } from "./home-skill.js";
 import { sameList } from "./names.js";
 import { skillDirectory, type SkillPlan } from "./plan.js";
+import { STAGING_PREFIX } from "./staging.js";
 import type { FailedSkill } from "./types.js";
 
 /** Where replaced and retired skills go: <home>/.migration-backups/<version>-<time>/skills/<name>/ */
 export const BACKUP_ROOT = ".migration-backups";
-/** Staged outside skills/, so a running gateway never discovers a half-written skill. */
-const STAGING_PREFIX = ".bundled-skill-";
 
 type Change = Extract<SkillPlan, { action: "install" | "update" | "retire" }>;
 type BackupRun = ReturnType<typeof backupRun>;

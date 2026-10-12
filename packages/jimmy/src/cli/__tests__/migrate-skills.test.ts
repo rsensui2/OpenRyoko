@@ -106,6 +106,21 @@ describe("migrate: bundled skill sync", () => {
     expect(fs.symlinkSync).not.toHaveBeenCalled();
   });
 
+  it("names a skill the sync could not read or found too large, and what it cleared away", async () => {
+    vi.mocked(compareSemver).mockReturnValueOnce(0);
+    mockSync.mockReturnValueOnce(synced({
+      kept: [{ name: "locked", reason: "unreadable" }, { name: "huge", reason: "too-large" }],
+      clearedStaging: [".bundled-skill-Ab3xYz"],
+    }));
+    const { runMigrate } = await import("../migrate.js");
+
+    await runMigrate({ auto: true });
+
+    expect(output()).toMatch(/\[skill kept\] locked \(.*読めない/);
+    expect(output()).toMatch(/\[skill kept\] huge \(.*上限を超え/);
+    expect(output()).toMatch(/\[skills\] .*中断.*\.bundled-skill-Ab3xYz/);
+  });
+
   it.each([{}, { auto: true }, { fix: true }])("leaves skills the operator deleted out, like a gateway start (%j)", async (opts) => {
     // --auto finishes by stamping the version, so there has to be a config to stamp.
     vi.mocked(fs.readFileSync).mockReturnValue("jinn:\n  version: 1.0.0\n");

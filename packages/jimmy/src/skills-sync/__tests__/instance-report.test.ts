@@ -124,6 +124,36 @@ describe("what gateway start logs about the bundled skill sync", () => {
     expect(said("info")).toEqual([expect.stringMatching(/removed from this home: new\./)]);
   });
 
+  it("names the skills it could not read or found too large, and says which is which", () => {
+    ran({
+      kept: [{ name: "huge", reason: "too-large" }, { name: "locked", reason: "unreadable" }, { name: "sealed", reason: "unreadable" }],
+      notices: [{ name: "huge", reason: "too-large" }, { name: "locked", reason: "unreadable" }, { name: "sealed", reason: "unreadable" }],
+    });
+
+    syncBundledSkillsOnBoot({});
+
+    expect(said("warn")).toEqual([
+      expect.stringMatching(/could not be read: locked, sealed\./),
+      expect.stringMatching(/larger than any bundled skill.*: huge\./),
+    ]);
+  });
+
+  it("says nothing more about them until the sync lists them again", () => {
+    ran({ kept: [{ name: "huge", reason: "too-large" }, { name: "locked", reason: "unreadable" }] });
+
+    syncBundledSkillsOnBoot({});
+
+    expect(said("warn")).toEqual([]);
+  });
+
+  it("says which abandoned staging directories it removed from the home", () => {
+    ran({ clearedStaging: [".bundled-skill-Ab3xYz", ".bundled-skill-000000"] });
+
+    syncBundledSkillsOnBoot({});
+
+    expect(said("info")).toEqual([expect.stringMatching(/did not finish.*\.bundled-skill-Ab3xYz, \.bundled-skill-000000/)]);
+  });
+
   it("warns once for each skill that could not be synced", () => {
     ran({ added: ["sync"], failed: [{ name: "migrate", error: "disk full" }, { name: "status", error: "EACCES" }] });
 
