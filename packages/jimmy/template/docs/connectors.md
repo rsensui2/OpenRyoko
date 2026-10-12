@@ -9,21 +9,32 @@ interface Connector {
   name: string;
   start(): Promise<void>;
   stop(): Promise<void>;
-  sendMessage(sourceRef: string, text: string): Promise<void>;
-  addReaction(sourceRef: string, emoji: string): Promise<void>;
-  removeReaction(sourceRef: string, emoji: string): Promise<void>;
-  editMessage(sourceRef: string, text: string): Promise<void>;
+  getCapabilities(): ConnectorCapabilities;   // threading, messageEdits, reactions, attachments
+  getHealth(): ConnectorHealth;               // running | stopped | error | qr_pending
+  reconstructTarget(replyContext: ReplyContext): Target;
+  sendMessage(target: Target, text: string): Promise<string | void>;
+  replyMessage(target: Target, text: string): Promise<string | void>;
+  addReaction(target: Target, emoji: string): Promise<void>;
+  removeReaction(target: Target, emoji: string): Promise<void>;
+  editMessage(target: Target, text: string): Promise<void>;
   onMessage(handler: (msg: IncomingMessage) => void): void;
 }
 
 interface IncomingMessage {
-  sourceRef: string;     // Unique identifier for routing
-  text: string;          // Message content
-  userId: string;        // Platform user ID
-  userName: string;      // Display name
-  connector: string;     // Connector name
+  connector: string;           // Connector name
+  source: string;              // Platform the message arrived on
+  sessionKey: string;          // The session the message belongs to
+  channel: string;
+  thread?: string;
+  user: string;                // Display name
+  userId: string;              // Platform user ID
+  text: string;                // Message content
+  attachments: Attachment[];   // Files the connector downloaded
+  replyContext: ReplyContext;  // What a reply needs to find its way back
 }
 ```
+
+`sendMessage` and `replyMessage` report delivery. The promise resolves when the whole message reached the platform, and rejects when it did not. A long reply is sent in chunks; one that stops part-way rejects as a partial delivery and is not sent again from the top, because that would post the first chunks twice. `POST /api/connectors/<name>/send` answers `{"status":"sent"}` only when all of the message arrived. Otherwise it answers 500 with the reason — `only N of M chunks were delivered` for a partial delivery.
 
 ## Slack Connector
 
@@ -40,6 +51,8 @@ connectors:
 ```
 
 An attachment over `maxAttachmentMb` is not downloaded; the session is told which one and why, so it can say so in its reply. The same key works under `discord` and `whatsapp`.
+
+Files are fetched only for a message the bot is going to answer, and only from Slack's own file host (`files.slack.com`), the one place the bot token is sent. A file that Slack only links to — a Google Drive document or another remote file shared in the channel — is not downloaded. The session is told that it could not be retrieved, as for any attachment that fails.
 
 ### Response Gating (`respondTo`)
 
@@ -212,6 +225,8 @@ connectors:
     channelId: ...        # optional: only handle messages from this channel
     maxAttachmentMb: 200  # optional: largest attachment downloaded, in MB (default 200)
 ```
+
+`maxAttachmentMb` applies to messages this instance receives from Discord itself. An instance that receives messages forwarded by a primary (`proxyVia`, see `channelRouting` below) fetches a forwarded attachment only from Discord's CDN over https, at most ten per message and up to 50 MB each, whatever `maxAttachmentMb` says.
 
 ### Response Gating (`respondTo`)
 

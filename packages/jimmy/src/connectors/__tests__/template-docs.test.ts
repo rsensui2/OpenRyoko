@@ -1,8 +1,12 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_MAX_ATTACHMENT_MB } from "../../shared/attachment-download.js";
+import { PartialDeliveryError } from "../../shared/partial-delivery.js";
 import { TEMPLATE_DIR } from "../../shared/paths.js";
+import { downloadIncomingAttachments } from "../discord/remote.js";
+import { downloadAttachment as downloadSlackFile } from "../slack/format.js";
 
 const read = (rel: string) => fs.readFileSync(path.join(TEMPLATE_DIR, rel), "utf-8");
 
@@ -31,5 +35,61 @@ describe("shipped documentation of the attachment limit", () => {
       expect(Number(stated)).toBe(DEFAULT_MAX_ATTACHMENT_MB);
     }
     expect(docs).toMatch(/same key works under `discord` and `whatsapp`/);
+  });
+});
+
+// docs/connectors.md also says which files a connector will not fetch at all,
+// and what a send that did not arrive answers with. Both are what an operator
+// reads when a file "went missing" or a script was told "sent".
+describe("shipped documentation of what a connector fetches and reports", () => {
+  const docs = () => read("docs/connectors.md");
+  const scratch: string[] = [];
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    for (const dir of scratch.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+  const tempDir = () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "openryoko-connector-docs-"));
+    scratch.push(dir);
+    return dir;
+  };
+
+  it("says Slack files are fetched from Slack's own file host only — and a file hosted elsewhere is not requested", async () => {
+    const fetched = vi.fn();
+    vi.stubGlobal("fetch", fetched);
+
+    await expect(downloadSlackFile("https://docs.google.com/document/d/abc", "xoxb-test-token", tempDir(), 1024)).rejects.toThrow();
+
+    expect(fetched).not.toHaveBeenCalled();
+    expect(docs()).toMatch(/only from Slack's own file host \(`files\.slack\.com`\), the one place the bot token is sent/);
+    expect(docs()).toMatch(/Google Drive document or another remote file[^.]*is not downloaded/);
+  });
+
+  it("says a forwarded Discord message is held to its own limits, whatever maxAttachmentMb says", async () => {
+    const fetched = vi.fn();
+    vi.stubGlobal("fetch", fetched);
+    const listed = Array.from({ length: 12 }, (_, index) => ({ name: `file-${index}.txt`, url: `https://example.test/file-${index}.txt`, mimeType: "text/plain" }));
+
+    const result = await downloadIncomingAttachments(listed, tempDir());
+
+    // Ten are looked at, and none of these is on Discord's CDN, so nothing is requested.
+    expect(result.attachments).toHaveLength(10);
+    expect(fetched).not.toHaveBeenCalled();
+    const source = fs.readFileSync(path.join(import.meta.dirname, "..", "discord", "remote.ts"), "utf-8");
+    expect(source).toContain("const MAX_INCOMING_ATTACHMENT_BYTES = 50 * 1024 * 1024;");
+    expect(docs()).toMatch(/forwarded attachment only from Discord's CDN over https, at most ten per message and up to 50 MB each, whatever `maxAttachmentMb` says/);
+  });
+
+  it("gives the answer of a send that arrived only in part in the words the gateway uses", () => {
+    const partial = new PartialDeliveryError("[discord] sendMessage", 1, 3, undefined, new Error("boom"));
+
+    expect(partial.message).toContain("only 1 of 3 chunks were delivered");
+    expect(docs()).toContain("`only N of M chunks were delivered`");
+    expect(docs()).toMatch(/answers `\{"status":"sent"\}` only when all of the message arrived/);
+  });
+
+  it("shows the connector interface as it is: sends take a target and report delivery", () => {
+    expect(docs()).toContain("sendMessage(target: Target, text: string): Promise<string | void>;");
+    expect(docs()).not.toContain("sendMessage(sourceRef: string");
   });
 });
