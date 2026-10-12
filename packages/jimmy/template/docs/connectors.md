@@ -321,6 +321,12 @@ The same holds for a message that starts with `-` or `!`, or that is only
 option, a shell command or a quit. Control characters are removed from chat
 messages.
 
+`/logout` is turned off in the Claude CLI the gateway runs: it signs the
+shared account out from under every session, so it is disabled at the source
+rather than left to chance. To log out, use a terminal on the machine. (The
+sign-in command is left on, so the operator can recover from the web live
+terminal.)
+
 The gateway does not answer "that command is not allowed" — the sender gets
 the assistant's reply to the message. Prompts from the web UI, the API and
 cron jobs are yours and are not affected.
