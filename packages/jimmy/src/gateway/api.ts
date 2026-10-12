@@ -1,6 +1,7 @@
 import type { ModelManagement } from "../models/service.js";
 import { withConfigLock } from "../shared/config-lock.js";
 import { readConfigSnapshot, writeConfigDocument } from "../shared/config-file.js";
+import { CONFIG_CONFLICT_BODY, CONFIG_REVISION_HEADER, configForApi, isStaleConfigRevision } from "./config-revision.js";
 import { validateCommandJob } from "../cron/command.js";
 import { validateCronSchedule } from "../cron/validation.js";
 import type { IncomingMessage as HttpRequest, ServerResponse } from "node:http";
@@ -1904,7 +1905,9 @@ Handle this as a priority request from a colleague.`;
 
     // GET /api/config
     if (method === "GET" && pathname === "/api/config") {
-      const config = context.getConfig();
+      // The document on disk plus the revision of those bytes — see configForApi.
+      const { config, revision } = configForApi(context.getConfig());
+      res.setHeader(CONFIG_REVISION_HEADER, revision);
       // Sanitize: remove any secrets/tokens from connectors
       const rawConnectors = config.connectors || {};
       const sanitizedConnectors: Record<string, unknown> = {};
@@ -1998,6 +2001,12 @@ Handle this as a priority request from a colleague.`;
       // that exists but cannot be read throws here: merging into an empty
       // object would replace the whole config with this request body.
       const snapshot = readConfigSnapshot();
+      // A caller that sends the revision it loaded (the Settings page saves
+      // the whole document) must not write over a file it has not seen.
+      // Checked here, under the lock, against the bytes the merge starts from.
+      if (isStaleConfigRevision(req.headers, snapshot.revision)) {
+        return json(res, CONFIG_CONFLICT_BODY, 409);
+      }
       const existing = snapshot.document;
       const merged = deepMerge(existing, body);
 
@@ -2029,7 +2038,9 @@ Handle this as a priority request from a colleague.`;
         context.suppressNextConnectorReload?.();
       }
 
-      writeConfigDocument(snapshot, merged);
+      // The new revision travels back so the page that just saved is not stale
+      // against its own write.
+      res.setHeader(CONFIG_REVISION_HEADER, writeConfigDocument(snapshot, merged));
       invalidateModelRegistry(); // models/engines may have changed — rebuild on next read
       _resetEngineProbeCache(); // engine bins may have changed — the onboarding probe must re-run
       logger.info("Config updated via API");

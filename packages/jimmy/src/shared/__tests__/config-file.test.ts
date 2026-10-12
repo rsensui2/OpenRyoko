@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -36,6 +37,13 @@ describe("readConfigSnapshot", () => {
     const snapshot = readConfigSnapshot(configPath);
     expect(snapshot.raw).toBe(raw);
     expect(snapshot.document).toEqual({ engines: { default: "claude" } });
+  });
+
+  it("identifies the bytes it read with their sha256, and a missing file with the empty revision", () => {
+    expect(readConfigSnapshot(configPath).revision).toBe("");
+    const raw = "engines:\n  default: claude\n";
+    fs.writeFileSync(configPath, raw);
+    expect(readConfigSnapshot(configPath).revision).toBe(createHash("sha256").update(raw).digest("hex"));
   });
 
   it("reads an empty or comment-only file as an empty document", () => {
@@ -99,6 +107,13 @@ describe("writeConfigDocument", () => {
     writeConfigDocument(readConfigSnapshot(configPath), { engines: { default: "codex" } }, configPath);
     expectPosixMode(configPath, 0o640);
     expect(yaml.load(fs.readFileSync(configPath, "utf-8"))).toEqual({ engines: { default: "codex" } });
+  });
+
+  it("returns the revision of the file it wrote", () => {
+    fs.writeFileSync(configPath, "engines:\n  default: claude\n");
+    const written = writeConfigDocument(readConfigSnapshot(configPath), { engines: { default: "codex" } }, configPath);
+    expect(written).toBe(readConfigSnapshot(configPath).revision);
+    expect(written).toBe(createHash("sha256").update(fs.readFileSync(configPath)).digest("hex"));
   });
 
   it("leaves no temporary file behind", () => {

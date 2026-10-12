@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import yaml from "js-yaml";
@@ -27,6 +27,14 @@ export interface ConfigSnapshot {
   /** Permission bits of the file that was read; null when it does not exist yet. */
   mode: number | null;
   document: Record<string, unknown>;
+  /** Identifies these exact bytes (sha256); empty while the file does not exist. */
+  revision: string;
+}
+
+/** Hashed from the bytes rather than read off an mtime: a rename-based write
+ *  moves the mtime even when it changed nothing. */
+function revisionOf(bytes: Buffer | string): string {
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 function parseConfigMapping(raw: string): Record<string, unknown> {
@@ -54,22 +62,23 @@ function parseConfigMapping(raw: string): Record<string, unknown> {
  * cannot be read or parsed throws {@link ConfigFileUnreadableError}.
  */
 export function readConfigSnapshot(configPath: string = CONFIG_PATH): ConfigSnapshot {
-  let raw: string;
+  let bytes: Buffer;
   let mode: number;
   try {
     const fd = fs.openSync(configPath, "r");
     try {
       mode = fs.fstatSync(fd).mode & 0o7777;
-      raw = fs.readFileSync(fd).toString("utf-8");
+      bytes = fs.readFileSync(fd);
     } finally {
       fs.closeSync(fd);
     }
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") return { raw: null, mode: null, document: {} };
+    if (code === "ENOENT") return { raw: null, mode: null, document: {}, revision: "" };
     throw new ConfigFileUnreadableError(`exists but could not be read (${code ?? "unknown error"})`);
   }
-  return { raw, mode, document: parseConfigMapping(raw) };
+  const raw = bytes.toString("utf-8");
+  return { raw, mode, document: parseConfigMapping(raw), revision: revisionOf(bytes) };
 }
 
 /** Follow a symlinked config.yaml (dotfiles setups) so the link survives the
@@ -145,12 +154,15 @@ function replaceFile(filePath: string, data: string, mode: number): void {
  * mid-write leaves the previous file whole — neither the gateway's watcher nor
  * the next boot ever reads a half-written config. `snapshot` is the read the
  * document was merged from: it tells whether the file is being created
- * (owner-only, it holds tokens) or replaced (permission bits kept).
+ * (owner-only, it holds tokens) or replaced (permission bits kept). Returns
+ * the revision of what was written.
  */
 export function writeConfigDocument(
   snapshot: ConfigSnapshot,
   document: Record<string, unknown>,
   configPath: string = CONFIG_PATH,
-): void {
-  replaceFile(configPath, yaml.dump(document), snapshot.mode ?? 0o600);
+): string {
+  const data = yaml.dump(document);
+  replaceFile(configPath, data, snapshot.mode ?? 0o600);
+  return revisionOf(data);
 }

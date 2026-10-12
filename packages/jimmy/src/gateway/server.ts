@@ -60,7 +60,7 @@ import { stopCommandJobs } from "../cron/command.js";
 import { scanOrg } from "./org.js";
 import { createDailyDatabaseBackup } from "../sessions/backup.js";
 import { getDiskSpaceStatus } from "../shared/storage-health.js";
-import { requestOriginAllowed } from "./request-origin.js";
+import { CORS_ALLOWED_REQUEST_HEADERS, CORS_EXPOSED_RESPONSE_HEADERS, requestOriginAllowed } from "./request-origin.js";
 import { hostHeaderAllowed, localInterfaceHosts } from "./host-guard.js";
 import { isWildcardBindHost, localGatewayUrl } from "../shared/gateway-url.js";
 import { staticPathWithinRoot } from "./static-path.js";
@@ -1103,7 +1103,8 @@ export async function startGateway(
       res.setHeader("Vary", "Origin");
     }
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.setHeader("Access-Control-Allow-Headers", CORS_ALLOWED_REQUEST_HEADERS);
+    res.setHeader("Access-Control-Expose-Headers", CORS_EXPOSED_RESPONSE_HEADERS);
 
     if (req.method === "OPTIONS") {
       res.writeHead(204);
