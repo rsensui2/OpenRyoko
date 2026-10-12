@@ -127,6 +127,29 @@ describe("ryoko start: where the bundled skill sync's report goes", () => {
     expect(count(await written(), /Bundled skills synced/)).toBe(1);
   });
 
+  it.each<[string, { daemon?: boolean }]>([
+    ["in the foreground", {}],
+    ["in the process that launches the daemon", { daemon: true }],
+  ])("neither stops the start nor brings the process down when the log file cannot be opened (%s)", async (_label, opts) => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mocks.loadConfig.mockReturnValue(config({ level: "info", stdout: true, file: true }));
+    mocks.startForeground.mockReset().mockResolvedValue(undefined);
+    // Something that is not a file sits where the log goes.
+    fs.mkdirSync(LOG, { recursive: true });
+    try {
+      await expect(runStart(opts)).resolves.toBeUndefined();
+      await vi.waitFor(() => expect(warned).toHaveBeenCalled());
+
+      expect(mocks.syncBundledSkills).toHaveBeenCalledTimes(1);
+      expect(opts.daemon ? mocks.startDaemon : mocks.startForeground).toHaveBeenCalledTimes(1);
+      // The report is not lost with the file: it is on the standard output.
+      expect(vi.mocked(console.log).mock.calls.map((call) => String(call[0])).filter((line) => /Bundled skills synced/.test(line))).toHaveLength(1);
+    } finally {
+      configureLogger({ file: false });
+      fs.rmSync(LOG, { recursive: true, force: true });
+    }
+  });
+
   it("stays out of the file when the config turns the log file off", async () => {
     mocks.loadConfig.mockReturnValue(config({ level: "info", stdout: true, file: false }));
 
