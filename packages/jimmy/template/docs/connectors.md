@@ -297,9 +297,16 @@ connectors:
 A message that starts with `/` is one of three things. This applies to every
 connector (Slack, Discord, Telegram, WhatsApp).
 
-- **A gateway command** — `/new`, `/status`, `/model <name>`, `/doctor`,
-  `/cron …`, `/goal …`. Answered by the gateway, for anyone the connector
-  lets in.
+- **A gateway command** — answered by the gateway, never sent to the CLI.
+  `/new`, `/status`, `/doctor`, `/cron list` and `/goal …` work for anyone
+  the connector lets in (they read, or touch only the one conversation). The
+  state-changing ones — `/model <name>`, and `/cron run|enable|disable` —
+  work only for the operator **when an operator ID is set**
+  (`portal.operatorSlackId` / `portal.operatorDiscordId`); from anyone else
+  they reach the assistant as an ordinary message instead. With no operator
+  ID configured, and on Telegram and WhatsApp (which have none), they stay
+  open to everyone, as before. (On Slack the model-settings panel has always
+  been operator-only; the text command now matches it.)
 - **A Claude Code command the operator may run from chat** —
   `/compact [instructions]`, `/clear`. Passed to the CLI only when the
   sender's platform ID equals `portal.operatorSlackId` (Slack) or

@@ -30,11 +30,12 @@ const HEALTH_PATH = path.join(JINN_HOME, "tmp", "engine-health.json");
 const NOTE = /^\[Chat message, delivered as plain text: [^\n]+\]\n/;
 
 let sequence = 0;
-function setup(engineName: "claude" | "codex" = "claude", sessions: JinnConfig["sessions"] = {}) {
+const OPERATOR_PORTAL = { operatorName: "Ryosuke", operatorSlackId: OPERATOR_SLACK_ID, operatorDiscordId: OPERATOR_DISCORD_ID };
+function setup(engineName: "claude" | "codex" = "claude", sessions: JinnConfig["sessions"] = {}, portal: unknown = OPERATOR_PORTAL) {
   const config = {
     engines: { default: engineName, claude: { bin: "claude-bin", model: "claude-model", interactive: true, fallback: [] },
       codex: { bin: "codex-bin", model: "codex-model", fallback: [] } },
-    portal: { operatorName: "Ryosuke", operatorSlackId: OPERATOR_SLACK_ID, operatorDiscordId: OPERATOR_DISCORD_ID },
+    portal,
     sessions, connectors: { slack: { goalExtraction: { enabled: false } } }, logging: { level: "error", stdout: false },
   } as unknown as JinnConfig;
   const run = vi.fn<Engine["run"]>().mockResolvedValue({ sessionId: "engine-session", result: "了解しました。" });
@@ -225,12 +226,12 @@ describe("a message that waits its turn", () => {
   });
 });
 
-describe("the gateway's own commands", () => {
+describe("the gateway's read-only / session-local commands", () => {
   it.each([
     ["/status", "No active session for this conversation."],
     ["/new", "Session reset. Starting fresh."],
-    ["/model", "Usage: /model <model-name>"],
-  ])("are answered by the gateway as before, and never reach an engine: %s", async (text, answer) => {
+    ["/cron list", "No cron jobs configured."],
+  ])("are answered for anyone the connector lets in, and never reach an engine: %s", async (text, answer) => {
     const f = setup();
 
     await f.manager.route(f.message("slack", text, STRANGER_ON_SLACK), f.connector);
@@ -239,10 +240,93 @@ describe("the gateway's own commands", () => {
     expect(f.run).not.toHaveBeenCalled();
   });
 
+  it("answer /doctor for a non-operator too", async () => {
+    const f = setup();
+
+    await f.manager.route(f.message("slack", "/doctor", STRANGER_ON_SLACK), f.connector);
+
+    expect(f.replies()[0]).toContain("Default engine:");
+    expect(f.run).not.toHaveBeenCalled();
+  });
+
   it("include /goal, which goes to the engine from anybody, unchanged", async () => {
     const f = setup();
 
     expect(await f.handed(f.message("slack", "/goal レポートを仕上げる", STRANGER_ON_SLACK))).toBe("/goal レポートを仕上げる");
     expect(await f.handed(f.message("telegram", "/goal clear", { isDM: true }))).toBe("/goal clear");
+  });
+});
+
+describe("the gateway's state-changing commands, where an operator ID is set", () => {
+  it("lets the operator switch the model", async () => {
+    const f = setup();
+    const open = f.message("slack", "こんにちは", OPERATOR_ON_SLACK); // /model needs an existing session
+    await f.manager.route(open, f.connector);
+
+    await f.manager.route({ ...open, text: "/model opus" }, f.connector);
+
+    expect(f.replies()).toEqual(["了解しました。", "Model updated to `opus` for this session."]);
+    expect(f.run).toHaveBeenCalledTimes(1); // only the opening turn; /model never reaches the engine
+  });
+
+  it.each<[string, IncomingMessage["transportMeta"]]>([
+    ["slack", STRANGER_ON_SLACK],
+    ["discord", STRANGER_ON_DISCORD],
+    ["telegram", CLAIMS_TO_BE_THE_OPERATOR],
+  ])("does not let a non-operator switch the model on %s — it reaches the assistant as text instead", async (source, sender) => {
+    const f = setup();
+
+    const prompt = await f.handed(f.message(source, "/model opus", sender));
+
+    expect(f.replies()).toEqual(["了解しました。"]); // the model's reply, not "Model updated"
+    expect(prompt).toMatch(NOTE);
+    expect(claudeReads(prompt)).toBe("text");
+  });
+
+  it("lets the operator run a cron job, and keeps listing open to everyone", async () => {
+    const f = setup();
+
+    await f.manager.route(f.message("slack", "/cron run nightly", OPERATOR_ON_SLACK), f.connector);
+    await f.manager.route(f.message("slack", "/cron list", STRANGER_ON_SLACK), f.connector);
+
+    expect(f.replies()).toEqual([`Cron job "nightly" not found.`, "No cron jobs configured."]);
+    expect(f.run).not.toHaveBeenCalled();
+  });
+
+  it.each(["/cron run nightly", "/cron enable nightly", "/cron disable nightly"])(
+    "does not let a non-operator change the schedule with %j — it reaches the assistant as text", async (text) => {
+      const f = setup();
+
+      const prompt = await f.handed(f.message("slack", text, STRANGER_ON_SLACK));
+
+      expect(f.replies()).toEqual(["了解しました。"]);
+      expect(prompt).toMatch(NOTE);
+    });
+
+  it("still answers them for a cron turn — cron is the gateway's own, not a chat sender", async () => {
+    const f = setup();
+    const open = f.message("cron", "朝の点検", undefined);
+    await f.manager.route(open, f.connector);
+
+    await f.manager.route({ ...open, text: "/model opus" }, f.connector);
+
+    expect(f.replies()).toEqual(["了解しました。", "Model updated to `opus` for this session."]);
+    expect(f.run).toHaveBeenCalledTimes(1); // the /model turn was answered by the gateway, not run
+  });
+});
+
+describe("the gateway's state-changing commands, where no operator ID is set", () => {
+  const noOperator = () => setup("claude", {}, { operatorName: "Ryosuke" });
+
+  it("stay open to everyone — the instance's existing behaviour is not taken away", async () => {
+    const f = noOperator();
+    const open = f.message("slack", "こんにちは", STRANGER_ON_SLACK); // /model needs an existing session
+    await f.manager.route(open, f.connector);
+
+    await f.manager.route({ ...open, text: "/model opus" }, f.connector);
+    await f.manager.route(f.message("slack", "/cron run nightly", STRANGER_ON_SLACK), f.connector);
+
+    expect(f.replies()).toEqual(["了解しました。", "Model updated to `opus` for this session.", `Cron job "nightly" not found.`]);
+    expect(f.run).toHaveBeenCalledTimes(1); // only the opening turn
   });
 });

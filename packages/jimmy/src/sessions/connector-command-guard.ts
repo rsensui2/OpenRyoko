@@ -103,7 +103,7 @@ function isOperatorCommand(typed: string): boolean {
  * counts. A display name never does, and where no operator ID is configured
  * (or the platform has none: Telegram, WhatsApp) nobody is the operator.
  */
-function sentByOperator(msg: IncomingMessage, config: JinnConfig): boolean {
+export function isVerifiedOperator(msg: IncomingMessage, config: JinnConfig): boolean {
   const meta: Record<string, unknown> = msg.transportMeta ?? {};
   const id = (value: unknown) => (typeof value === "string" && value ? value : undefined);
   return resolveOperatorIdentity({
@@ -113,6 +113,25 @@ function sentByOperator(msg: IncomingMessage, config: JinnConfig): boolean {
     source: msg.source,
     config,
   }).operatorIdVerified;
+}
+
+/** True when the instance has a strict operator ID set (so verification is possible at all). */
+function strictOperatorConfigured(config: JinnConfig): boolean {
+  const portal = config?.portal;
+  return !!portal && (Object.hasOwn(portal, "operatorSlackId") || Object.hasOwn(portal, "operatorDiscordId"));
+}
+
+/**
+ * May this sender run a gateway command that changes the session's engine or
+ * fires a cron job? Yes for the gateway's own sources (a cron turn), yes for
+ * everyone when no operator ID is configured (nothing can verify anyone — the
+ * instance's existing behaviour is not taken away), and otherwise only the
+ * verified operator. Read-only commands do not ask this.
+ */
+export function senderMayManageSession(msg: IncomingMessage, config: JinnConfig): boolean {
+  if (GATEWAY_SOURCES.has(msg.source)) return true;
+  if (!strictOperatorConfigured(config)) return true;
+  return isVerifiedOperator(msg, config);
 }
 
 /** The message as the turn may see it. Returns `msg` itself when nothing had to change. */
@@ -127,6 +146,6 @@ export function guardConnectorMessage(msg: IncomingMessage, config: JinnConfig):
   if (!readsAsCliInput(seen)) return passedOn;
   const typed = text.trim();
   if (GOAL_COMMAND.test(typed)) return passedOn;
-  if (isOperatorCommand(typed) && sentByOperator(msg, config)) return passedOn;
+  if (isOperatorCommand(typed) && isVerifiedOperator(msg, config)) return passedOn;
   return { ...msg, text: `${seen.startsWith("/") ? AS_TEXT_SLASH : AS_TEXT}\n${text}` };
 }
