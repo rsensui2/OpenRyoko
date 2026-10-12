@@ -299,14 +299,21 @@ connector (Slack, Discord, Telegram, WhatsApp).
 
 - **A gateway command** — answered by the gateway, never sent to the CLI.
   `/new`, `/status`, `/doctor`, `/cron list` and `/goal …` work for anyone
-  the connector lets in (they read, or touch only the one conversation). The
-  state-changing ones — `/model <name>`, and `/cron run|enable|disable` —
-  work only for the operator **when an operator ID is set**
-  (`portal.operatorSlackId` / `portal.operatorDiscordId`); from anyone else
-  they reach the assistant as an ordinary message instead. With no operator
-  ID configured, and on Telegram and WhatsApp (which have none), they stay
-  open to everyone, as before. (On Slack the model-settings panel has always
-  been operator-only; the text command now matches it.)
+  the connector lets in (they read, or touch only the one conversation). Who
+  may use the state-changing ones — `/model <name>`, and
+  `/cron run|enable|disable` — depends on whether an operator ID is set
+  (`portal.operatorSlackId` / `portal.operatorDiscordId`):
+  - **No operator ID set**: they stay open to everyone, on every connector,
+    as before.
+  - **An operator ID set**: only the operator runs them, and only on a
+    platform whose operator ID is configured. From anyone else they reach the
+    assistant as an ordinary message instead. A platform with no operator ID
+    has no operator: Telegram and WhatsApp always, and Discord while only
+    the Slack ID is set (or the reverse). On such an instance nobody can run
+    these commands from there — use Slack, Discord or the dashboard for them.
+
+  (On Slack the model-settings panel has always been operator-only; the text
+  command now matches it.)
 - **A Claude Code command the operator may run from chat** —
   `/compact [instructions]`, `/clear`. Passed to the CLI only when the
   sender's platform ID equals `portal.operatorSlackId` (Slack) or
@@ -332,7 +339,8 @@ messages.
 shared account out from under every session, so it is disabled at the source
 rather than left to chance. To log out, use a terminal on the machine. (The
 sign-in command is left on, so the operator can recover from the web live
-terminal.)
+terminal.) A turn that runs over SSH on an employee's own machine (`sshHost`)
+uses that machine's CLI, which the gateway does not change.
 
 The gateway does not answer "that command is not allowed" — the sender gets
 the assistant's reply to the message. Prompts from the web UI, the API and
