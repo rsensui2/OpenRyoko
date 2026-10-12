@@ -1,7 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionManager } from "../manager.js";
-import { getMessages, getSession, getSessionBySessionKey } from "../registry.js";
-import { interruptRunningSessionsForShutdown, readRestartResumeState, selectRestartResumeCandidates } from "../restart-resume.js";
+import { getMessages, getSession, getSessionBySessionKey, recoverStaleSessions } from "../registry.js";
+import {
+  interruptRunningSessionsForShutdown,
+  prepareRestartResume,
+  readRestartResumeState,
+  restartResumeMessage,
+  resumeRestartInterruptedSessions,
+  selectRestartResumeCandidates,
+  type RestartResumeDeps,
+} from "../restart-resume.js";
 import type { Connector, Engine, EngineRunOpts, IncomingMessage, JinnConfig } from "../../shared/types.js";
 
 vi.mock("../context.js", () => ({ buildContext: () => "Test context" }));
@@ -223,5 +231,68 @@ describe("restart interruption mark — survives the killed turn's completion", 
     expect(skipped.filter((entry) => entry.sessionId === sessionId)).toEqual([]);
     expect(candidates.map((session) => session.id)).toContain(sessionId);
     expect(readRestartResumeState(getSession(sessionId)!.transportMeta).interruptedAt).toBe(interruptedAt);
+  });
+
+  // The same queued message, a moment later: its turn got through the opening
+  // Slack calls and wrote "running" before the process exited. To the next boot
+  // that is a session that crashed mid-turn, so it is stamped afresh — and the
+  // newer mark no longer tells the two user messages apart. The engine remembers
+  // only the first turn being cut off. What saves the second message is that
+  // the nudge sends the session to its transcript before anything else.
+  it("still gets the queued message handled when its turn had started running before the exit", async () => {
+    const config = {
+      engines: { default: "codex", codex: { bin: "codex" } },
+      connectors: { slack: {} }, sessions: {}, logging: { level: "error", stdout: false },
+    } as unknown as JinnConfig;
+    const sessionKey = "slack:restart-mark-queued-running";
+    let killEngine!: (result: { sessionId: string; result: string; error: string }) => void;
+    const run = vi.fn<Engine["run"]>()
+      .mockImplementationOnce(() => new Promise((resolve) => { killEngine = resolve; }))
+      .mockImplementationOnce(() => new Promise(() => {})); // the second turn's engine: the process is gone before it answers
+    const manager = new SessionManager(config, new Map<string, Engine>([["codex", { name: "codex", run } as Engine]]));
+    const replyMessage = vi.fn(async () => undefined);
+    const connector = {
+      name: "slack", replyMessage, sendMessage: replyMessage,
+      addReaction: vi.fn(async () => {}), removeReaction: vi.fn(async () => {}),
+      getCapabilities: () => ({ threading: true, messageEdits: false, reactions: true, attachments: false }),
+      reconstructTarget: () => ({ channel: "C-mark", thread: "5.1" }),
+    } as unknown as Connector;
+    const message = (text: string, messageId: string) => ({
+      connector: "slack", source: "slack", sessionKey, channel: "C-mark", thread: "5.1",
+      messageId, user: "Test", userId: "U-test", text, attachments: [], raw: {},
+      replyContext: { channel: "C-mark", thread: "5.1" },
+      transportMeta: { channelExternal: false },
+    }) as IncomingMessage;
+
+    const first = manager.route(message("本番にデプロイして", "5.2"), connector);
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+    void manager.route(message("ついでにログも見ておいて", "5.3"), connector);
+    await vi.waitFor(() => expect(manager.getQueue().getPendingCount(sessionKey)).toBe(1));
+
+    interruptRunningSessionsForShutdown();
+    killEngine({ sessionId: "native-5", result: "", error: "Interrupted: gateway shutting down" });
+    await first;
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(2)); // the queued turn reached its engine; then: exit
+    const sessionId = getSessionBySessionKey(sessionKey)!.id;
+    expect(getSession(sessionId)?.status).toBe("running");
+
+    // The next boot, in startGateway's order.
+    prepareRestartResume();
+    recoverStaleSessions();
+    const post = vi.fn<NonNullable<RestartResumeDeps["post"]>>(async () => {});
+    resumeRestartInterruptedSessions({ config, port: 0, post, schedule: (send) => { void send(); } });
+    await vi.waitFor(() => expect(post.mock.calls.some((call) => call[1] === sessionId)).toBe(true));
+
+    const nudge = post.mock.calls.find((call) => call[1] === sessionId)![2].message;
+    const session = getSession(sessionId)!;
+    expect(nudge.startsWith("[Gateway] Restart complete. Your previous turn in this conversation was cut off")).toBe(true);
+    expect(nudge).toContain(`Read this session's latest messages before acting: GET /api/sessions/${session.id}?last=10`);
+    expect(nudge).toContain("with no reply after it");
+    // Both requests are there for it to find, and neither has an answer.
+    const transcript = getMessages(sessionId);
+    expect(transcript.filter((m) => m.role === "user").map((m) => m.content)).toEqual(["本番にデプロイして", "ついでにログも見ておいて"]);
+    expect(transcript.at(-1)).toMatchObject({ role: "user", content: "ついでにログも見ておいて" });
+    expect(replyMessage).not.toHaveBeenCalled();
+    expect(nudge).toBe(restartResumeMessage(session, nudge.match(/restart at (\S+) —/)![1]));
   });
 });

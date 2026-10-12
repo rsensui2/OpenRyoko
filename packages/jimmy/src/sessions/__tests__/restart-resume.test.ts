@@ -514,6 +514,20 @@ describe("restartResumeMessage", () => {
     expect(message).toContain(`GET /api/sessions/${session.id}?last=10`);
   });
 
+  it("always starts from the session's latest messages", () => {
+    // A message that waited in the queue can be recorded without ever reaching
+    // the engine, and not every such case is detectable (see the boot test
+    // below). The transcript shows it either way, so the nudge sends the
+    // session there first instead of leaving that to its memory of the turn.
+    const session = interrupted(iso(MINUTE));
+
+    const message = restartResumeMessage(session, iso(MINUTE));
+
+    expect(message).toContain(`Read this session's latest messages before acting: GET /api/sessions/${session.id}?last=10`);
+    expect(message).toContain("with no reply after it");
+    expect(message).not.toContain("If you have no memory of the interrupted turn, read");
+  });
+
   it("points at a message the user sent that never reached the session", () => {
     const session = interrupted(iso(MINUTE));
 

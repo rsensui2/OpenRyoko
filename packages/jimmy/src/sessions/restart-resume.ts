@@ -394,6 +394,12 @@ export function planRestartResumes(input: { candidates: Session[]; now: number }
  * time makes the text unique per interruption: the notification route treats
  * an identical persisted notification as a duplicate.
  *
+ * It always sends the session to its transcript first. A message that waited
+ * in the queue is recorded when the dying process starts its turn, and may
+ * never reach the engine; when that turn got as far as "running", the boot
+ * stamps the session afresh and the unseen message cannot be told apart any
+ * more. The transcript shows it either way.
+ *
  * A turn that had already recorded its reply gets a different message: there
  * is nothing to pick back up, only a reply that may not have been delivered,
  * and the session has to be told to send that same reply again rather than
@@ -421,7 +427,7 @@ export function restartResumeMessage(session: Session, interruptedAt: string, si
     `2. ${ownRestart} — confirm the result and report it.`,
     situation.unseenUserMessage
       ? `3. The user wrote again while the gateway was restarting, and that message never reached you. Read this session's latest messages before acting — ${transcript} — and deal with it in the same answer.`
-      : `3. If you have no memory of the interrupted turn, read this session's latest messages before acting: ${transcript}`,
+      : `3. Read this session's latest messages before acting: ${transcript}. They show the request if you have no memory of the interrupted turn, and whether the user wrote again while the gateway was restarting — a user message with no reply after it is still waiting for an answer, whether or not it ever reached you.`,
     "4. Then answer in the original conversation as usual; it is still waiting on you. If your answer to that request had already been delivered and nothing is left to do, do not post it a second time.",
   ].join("\n");
 }
