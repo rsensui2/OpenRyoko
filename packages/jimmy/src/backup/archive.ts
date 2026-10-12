@@ -202,7 +202,7 @@ function summarizeProblems(problems: string[]): string {
  * and a run that fails or dies halfway leaves nothing that looks like a backup.
  */
 export async function createHomeArchive(options: CreateHomeArchiveOptions): Promise<HomeArchiveResult> {
-  const walk = collectHomeEntries(options.home, { excludePaths: options.excludePaths });
+  const walk = await collectHomeEntries(options.home, { excludePaths: options.excludePaths });
   if (!walk.entries.some((entry) => entry.type !== "directory")) throw new NothingToArchiveError(options.home);
   const expected = walk.entries.reduce((total, entry) => total + entry.size, 0);
   if (options.maxBytes !== undefined && expected > options.maxBytes) throw tooLarge(expected, options.maxBytes, walk.entries);

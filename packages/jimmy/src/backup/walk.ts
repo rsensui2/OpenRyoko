@@ -24,6 +24,7 @@ export interface HomeWalk {
 
 interface WalkState {
   home: string;
+  /** Home-relative paths of directories the walk must not enter. */
   excluded: Set<string>;
   entries: Map<string, HomeEntry>;
   skipped: SkippedEntry[];
@@ -38,10 +39,35 @@ function errorCode(error: unknown): string {
   return (error as NodeJS.ErrnoException)?.code ?? (error instanceof Error ? error.message : String(error));
 }
 
-/** lstat that reports a vanished path as absent and anything else as skipped. */
-function inspect(state: WalkState, relativePath: string): fs.Stats | null {
+async function realPathOrSelf(target: string): Promise<string> {
   try {
-    return fs.lstatSync(absolutePathOf(state.home, relativePath));
+    return await fs.promises.realpath(target);
+  } catch {
+    return path.resolve(target);
+  }
+}
+
+/**
+ * Where each excluded directory sits inside the home, as a home-relative path.
+ * Compared by real path: the home may be reached through a symlink while the
+ * backup directory is named by its real location, or the reverse, and a
+ * mismatch here means every archive swallows the archives before it.
+ */
+async function excludedInside(home: string, excludePaths: string[]): Promise<Set<string>> {
+  const realHome = await realPathOrSelf(home);
+  const inside = new Set<string>();
+  for (const excluded of excludePaths) {
+    const relative = path.relative(realHome, await realPathOrSelf(excluded));
+    if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) continue;
+    inside.add(relative.split(path.sep).join("/"));
+  }
+  return inside;
+}
+
+/** lstat that reports a vanished path as absent and anything else as skipped. */
+async function inspect(state: WalkState, relativePath: string): Promise<fs.Stats | null> {
+  try {
+    return await fs.promises.lstat(absolutePathOf(state.home, relativePath));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
       state.skipped.push({ path: relativePath, reason: `could not be read (${errorCode(error)})` });
@@ -68,9 +94,9 @@ function record(state: WalkState, relativePath: string, stat: fs.Stats, type: Ho
  * following one would pull an unbounded tree into the archive - or, on restore,
  * write through it.
  */
-function recordSymlink(state: WalkState, relativePath: string, stat: fs.Stats): string | null {
+async function recordSymlink(state: WalkState, relativePath: string, stat: fs.Stats): Promise<string | null> {
   try {
-    const linkTarget = fs.readlinkSync(absolutePathOf(state.home, relativePath));
+    const linkTarget = await fs.promises.readlink(absolutePathOf(state.home, relativePath));
     record(state, relativePath, stat, "symlink", linkTarget);
     return linkTarget;
   } catch (error) {
@@ -79,16 +105,16 @@ function recordSymlink(state: WalkState, relativePath: string, stat: fs.Stats): 
   }
 }
 
-/** Classifies one path. Returns true when it is a directory the walk should descend into. */
-function visit(state: WalkState, relativePath: string): boolean {
-  const stat = inspect(state, relativePath);
+/** Classifies one path. Resolves true when it is a directory the walk should descend into. */
+async function visit(state: WalkState, relativePath: string): Promise<boolean> {
+  const stat = await inspect(state, relativePath);
   if (!stat) return false;
   if (stat.isSymbolicLink()) {
-    recordSymlink(state, relativePath, stat);
+    await recordSymlink(state, relativePath, stat);
     return false;
   }
   if (stat.isDirectory()) {
-    if (isExcludedPath(relativePath, true) || state.excluded.has(absolutePathOf(state.home, relativePath))) return false;
+    if (isExcludedPath(relativePath, true) || state.excluded.has(relativePath)) return false;
     record(state, relativePath, stat, "directory");
     return true;
   }
@@ -100,20 +126,20 @@ function visit(state: WalkState, relativePath: string): boolean {
   return false;
 }
 
-function walkDirectory(state: WalkState, start: string): void {
+async function walkDirectory(state: WalkState, start: string): Promise<void> {
   const pending = [start];
   while (pending.length > 0) {
     const directory = pending.pop()!;
     let names: string[];
     try {
-      names = fs.readdirSync(absolutePathOf(state.home, directory)).sort();
+      names = (await fs.promises.readdir(absolutePathOf(state.home, directory))).sort();
     } catch (error) {
       state.skipped.push({ path: directory, reason: `could not be listed (${errorCode(error)})` });
       continue;
     }
     for (const name of names) {
       const child = `${directory}/${name}`;
-      if (visit(state, child)) pending.push(child);
+      if (await visit(state, child)) pending.push(child);
     }
   }
 }
@@ -123,11 +149,11 @@ function walkDirectory(state: WalkState, start: string): void {
  * real directories, and records them. A symlink there is not followed either -
  * the target is reported as left out instead.
  */
-function enterParents(state: WalkState, target: string): boolean {
+async function enterParents(state: WalkState, target: string): Promise<boolean> {
   const segments = target.split("/");
   for (let depth = 1; depth < segments.length; depth += 1) {
     const parent = segments.slice(0, depth).join("/");
-    const stat = inspect(state, parent);
+    const stat = await inspect(state, parent);
     if (!stat) return false;
     if (stat.isSymbolicLink()) {
       state.warnings.push(`${parent} is a symlink, so ${target} was not followed and is not in this backup`);
@@ -139,31 +165,36 @@ function enterParents(state: WalkState, target: string): boolean {
   return true;
 }
 
-function visitTarget(state: WalkState, target: string): void {
-  if (!enterParents(state, target)) return;
-  const stat = inspect(state, target);
+async function visitTarget(state: WalkState, target: string): Promise<void> {
+  if (!(await enterParents(state, target))) return;
+  const stat = await inspect(state, target);
   if (!stat) return;
   if (stat.isSymbolicLink()) {
-    const linkTarget = recordSymlink(state, target, stat);
+    const linkTarget = await recordSymlink(state, target, stat);
     if (linkTarget !== null) {
       state.warnings.push(`${target} is a symlink to ${linkTarget}; what it points at is not in this backup`);
     }
     return;
   }
-  if (visit(state, target)) walkDirectory(state, target);
+  if (await visit(state, target)) await walkDirectory(state, target);
 }
 
-/** Lists everything under the archive targets of `home`, without following a single symlink. */
-export function collectHomeEntries(home: string, options: { excludePaths?: string[] } = {}): HomeWalk {
+/**
+ * Lists everything under the archive targets of `home`, without following a
+ * single symlink. Asynchronous throughout: this runs inside the gateway once a
+ * day, and a home with a great many files must not stall it while they are
+ * counted.
+ */
+export async function collectHomeEntries(home: string, options: { excludePaths?: string[] } = {}): Promise<HomeWalk> {
   const state: WalkState = {
     home,
-    excluded: new Set((options.excludePaths ?? []).map((excluded) => path.resolve(excluded))),
+    excluded: await excludedInside(home, options.excludePaths ?? []),
     entries: new Map(),
     skipped: [],
     warnings: [],
   };
   for (const target of HOME_ARCHIVE_TARGETS) {
-    for (const root of target.paths) visitTarget(state, root);
+    for (const root of target.paths) await visitTarget(state, root);
   }
   const entries = [...state.entries.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   return { entries, skipped: state.skipped, warnings: state.warnings };

@@ -21,8 +21,8 @@ const STAMP = String.raw`(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z`;
 const ARCHIVE_NAME = new RegExp(`^(home|pre-restore)-(${STAMP})(?:-(\\d+))?\\.tar\\.gz$`);
 const DAILY_DATABASE_NAME = /^(sessions|workflows)-\d{4}-\d{2}-\d{2}\.db$/;
 const DATABASE_SNAPSHOT_NAME = new RegExp(`^pre-restore-(${STAMP})(?:-(\\d+))?-(sessions|workflows)\\.db$`);
-/** Temporary names this feature writes under: a leading dot for archives, a bare suffix for database copies. */
-const TEMPORARY_NAME = /^\.?(home|pre-restore|sessions|workflows)-.+\.tmp-[0-9a-f-]+$/;
+/** Temporary names this feature writes under: a leading dot for archives, a bare suffix for database copies and the state file. */
+const TEMPORARY_NAME = /^(\.?(home|pre-restore|sessions|workflows)-.+\.tmp-[0-9a-f-]+|backup-state\.json\.\d+\.[0-9a-f]+\.tmp)$/;
 const STALE_TEMPORARY_MS = 24 * 60 * 60 * 1000;
 
 /** `20261012T030000Z`: the moment an archive was taken, in a form that sorts as text. */

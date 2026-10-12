@@ -181,14 +181,15 @@ describe("pruneBackups", () => {
     const directory = tempDir();
     seed(directory, ".home-20261010T030000Z.tar.gz.tmp-4242-deadbeef", 8, 2);
     seed(directory, "sessions-2026-10-10.db.tmp-4242", 8, 2);
+    seed(directory, "backup-state.json.4242.deadbeef.tmp", 8, 2);
     seed(directory, ".home-20261012T030000Z.tar.gz.tmp-4243-cafef00d", 8, 0);
     seed(directory, "important.tmp-notes", 8, 9);
 
     const removed = pruneBackups(directory, { retention: 14, now: NOW });
 
-    expect(removed.map((file) => path.basename(file)).sort()).toEqual(
-      [".home-20261010T030000Z.tar.gz.tmp-4242-deadbeef", "sessions-2026-10-10.db.tmp-4242"].sort(),
-    );
+    expect(removed.map((file) => path.basename(file)).sort()).toEqual([
+      ".home-20261010T030000Z.tar.gz.tmp-4242-deadbeef", "backup-state.json.4242.deadbeef.tmp", "sessions-2026-10-10.db.tmp-4242",
+    ].sort());
     expect(fs.readdirSync(directory).sort()).toEqual([".home-20261012T030000Z.tar.gz.tmp-4243-cafef00d", "important.tmp-notes"].sort());
   });
 

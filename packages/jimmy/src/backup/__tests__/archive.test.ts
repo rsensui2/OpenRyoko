@@ -144,6 +144,33 @@ describe("createHomeArchive", () => {
     expect((await entriesOf(result.file)).filter((entry) => entry.path.startsWith("knowledge/backups"))).toEqual([]);
   });
 
+  it("leaves that directory out even when the home is reached under another name", async () => {
+    // RYOKO_HOME may be a symlink (a volume mounted elsewhere, /var on macOS)
+    // while the config names the backup directory by its real path, or the
+    // other way round. Either way it is the same directory.
+    const root = tempDir();
+    const home = makeHome(root);
+    const alias = path.join(root, "alias-to-home");
+    fs.symlinkSync(home, alias);
+    const nested = path.join(home, "knowledge", "backups");
+    writeTree(nested, { "home-20261001T000000Z.tar.gz": "an older archive\n" });
+
+    const viaAlias = await createHomeArchive({
+      home: alias, destination: path.join(nested, "home-20261012T030000Z.tar.gz"), id: "home-20261012T030000Z",
+      createdAt: AT, excludePaths: [nested],
+    });
+    const aliasedExclude = await createHomeArchive({
+      home, destination: path.join(nested, "home-20261012T040000Z.tar.gz"), id: "home-20261012T040000Z",
+      createdAt: AT, excludePaths: [path.join(alias, "knowledge", "backups")],
+    });
+
+    for (const result of [viaAlias, aliasedExclude]) {
+      const entries = await entriesOf(result.file);
+      expect(entries.filter((entry) => entry.path.startsWith("knowledge/backups")), result.id).toEqual([]);
+      expect(entries.map((entry) => entry.path), result.id).toContain("knowledge/議事録/notes.md");
+    }
+  });
+
   it.skipIf(!POSIX_MODES_SUPPORTED)("writes the archive owner-only, because it carries config tokens", async () => {
     const root = tempDir();
     const home = makeHome(root);

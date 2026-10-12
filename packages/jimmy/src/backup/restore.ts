@@ -208,9 +208,9 @@ function buildPlan(home: string, manifest: BackupManifest, selected: ManifestEnt
   return plan;
 }
 
-function untouchedInHome(home: string, manifest: BackupManifest, kinds: BackupKind[], backupDirectory: string): string[] {
+async function untouchedInHome(home: string, manifest: BackupManifest, kinds: BackupKind[], backupDirectory: string): Promise<string[]> {
   const inArchive = new Set(manifest.entries.map((entry) => entry.path));
-  return collectHomeEntries(home, { excludePaths: [backupDirectory] }).entries
+  return (await collectHomeEntries(home, { excludePaths: [backupDirectory] })).entries
     .filter((entry) => entry.type !== "directory" && !inArchive.has(entry.path))
     .filter((entry) => {
       const kind = kindOfPath(entry.path);
@@ -383,7 +383,7 @@ export async function restoreHomeArchive(options: RestoreOptions): Promise<Resto
     kinds,
     changes,
     unchanged: plan.length - changes.length,
-    untouched: untouchedInHome(home, manifest, kinds, options.backupDirectory),
+    untouched: await untouchedInHome(home, manifest, kinds, options.backupDirectory),
     ignored: manifest.entries.filter((entry) => kindOfPath(entry.path) === null && !holdsATarget(entry.path)).map((entry) => entry.path),
     preRestore: null,
   };
