@@ -1,13 +1,12 @@
 import Database from "better-sqlite3";
 import fs from "node:fs";
-import path from "node:path";
 import { createDailyDatabaseBackup, type DatabaseBackupName } from "../sessions/backup.js";
 import { ensureOwnerOnlyDirectory } from "../shared/owner-only.js";
-import { JINN_HOME, SESSIONS_DB, WORKFLOWS_DB_PATH } from "../shared/paths.js";
 import { getDiskSpaceStatus, type DiskSpaceStatus } from "../shared/storage-health.js";
 import { createHomeArchive } from "./archive.js";
 import { pruneBackups, reserveArchiveName } from "./catalog.js";
 import { errorMessage } from "./format.js";
+import { databasePath } from "./layout.js";
 import type { BackupSettings } from "./settings.js";
 
 /** What one run can back up, in the order it does so. */
@@ -55,11 +54,6 @@ export interface BackupRunOptions {
   databases?: Partial<Record<DatabaseBackupName, DatabaseSource>>;
   /** The existing free-space judgement, replaceable in tests. */
   diskSpace?: (directory: string) => DiskSpaceStatus;
-}
-
-/** Where a database lives inside a home, read off the one module that defines the layout. */
-export function databasePath(home: string, name: DatabaseBackupName): string {
-  return path.join(home, path.relative(JINN_HOME, name === "sessions" ? SESSIONS_DB : WORKFLOWS_DB_PATH));
 }
 
 /**

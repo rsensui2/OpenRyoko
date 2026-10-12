@@ -30,6 +30,14 @@ export class ArchiveTooLargeError extends Error {
   }
 }
 
+/** The home has no file under any archive target: a fresh or emptied one. */
+export class NothingToArchiveError extends Error {
+  constructor(home: string) {
+    super(`nothing to archive in ${home}`);
+    this.name = "NothingToArchiveError";
+  }
+}
+
 export interface ArchiveInspection {
   ok: boolean;
   problems: string[];
@@ -195,7 +203,7 @@ function summarizeProblems(problems: string[]): string {
  */
 export async function createHomeArchive(options: CreateHomeArchiveOptions): Promise<HomeArchiveResult> {
   const walk = collectHomeEntries(options.home, { excludePaths: options.excludePaths });
-  if (!walk.entries.some((entry) => entry.type !== "directory")) throw new Error(`nothing to archive in ${options.home}`);
+  if (!walk.entries.some((entry) => entry.type !== "directory")) throw new NothingToArchiveError(options.home);
   const expected = walk.entries.reduce((total, entry) => total + entry.size, 0);
   if (options.maxBytes !== undefined && expected > options.maxBytes) throw tooLarge(expected, options.maxBytes, walk.entries);
 
