@@ -144,8 +144,12 @@ export async function runUpdateMaintenance(
         text: buildMaintenancePrompt(audit, mode), raw: { trigger: "update-maintenance" },
         transportMeta: { maintenanceJobId: job.id, maintenanceMode: mode },
       }, buffer, {
-        employee, engine: job.engine || employee?.engine || config.engines.default,
-        model: job.model || employee?.model, effortLevel: job.effortLevel, title: `OpenRyoko運用点検 (${mode})`,
+        // Only what the job itself names, as the cron runner does. route()
+        // resolves the employee and the default engine; one spelled out here
+        // reads as an engine the job insists on, and the session then spends a
+        // failed turn on an engine already known to be out of allowance.
+        employee, engine: job.engine || undefined,
+        model: job.model || undefined, effortLevel: job.effortLevel, title: `OpenRyoko運用点検 (${mode})`,
       });
       const session = routed && getSession(routed.sessionId);
       if (routed) receipt.sessionId = routed.sessionId;
