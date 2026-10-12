@@ -52,6 +52,7 @@ import { effortLevelsForModel } from "../shared/models.js";
 import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit, isDeadSessionError, isPoisonedTranscriptError, isTransientServerError, MAX_USAGE_LIMIT_WAIT_MS, withEarlierProgress } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt, isLikelyNearClaudeUsageLimit, recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { buildSpeakerPrefix, type SpeakerPrefixMeta } from "./speaker-prefix.js";
+import { guardConnectorMessage } from "./connector-command-guard.js";
 import { loadJobs } from "../cron/jobs.js";
 import { setCronJobEnabled, triggerCronJob } from "../cron/scheduler.js";
 import { checkBudget } from "../gateway/budgets.js";
@@ -435,7 +436,7 @@ export class SessionManager {
     try {
       await this.queue.enqueue(msg.sessionKey, () => {
         executionStarted = true;
-        return this.runSession(session!, msg, attachmentPaths, connector, target, opts.employee);
+        return this.runSession(session!, guardConnectorMessage(msg, this.config), attachmentPaths, connector, target, opts.employee);
       });
     } finally {
       // The turn is over, however it ended: it ran to its end, it was
