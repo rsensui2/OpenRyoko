@@ -6,6 +6,7 @@ import { effortLevelsForModel, getModelRegistry } from "../shared/models.js";
 import { detectRateLimit } from "../shared/rateLimit.js";
 import { recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { redactText } from "../shared/redact.js";
+import { reportEngineAttempt } from "../provider-auth/failure-signal.js";
 import { getMessages, getSession, updateSession, type UpdateSessionFields } from "./registry.js";
 import { recordTurnAccounting } from "./accounting.js";
 
@@ -143,6 +144,9 @@ export async function runEngineWithResponseTimeout(
     arm();
     opts.onStream?.(delta);
   } })).catch((error): EngineResult => ({ sessionId: opts.resumeSessionId ?? "", result: "", error: error instanceof Error ? error.message : String(error) }));
+  // Every engine attempt — connector, cron, workflow, web — settles here, so a
+  // lost provider login is noticed whichever path ran the turn.
+  void running.then((result) => reportEngineAttempt(engine.name, opts, result));
   const withProgress = (result: EngineResult): EngineResult => {
     const progress = [streamedText, toolProgress.length ? `Observed tool events (verify their effects before continuing):\n${toolProgress.join("\n")}` : ""].filter(Boolean).join("\n\n");
     const annotated = progress ? { ...result, handoffContext: redactText(progress).slice(-8000) } : result;
