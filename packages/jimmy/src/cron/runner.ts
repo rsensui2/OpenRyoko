@@ -9,8 +9,8 @@ import { getLastNotifiedVersion, markVersionNotified } from "../updates/notifica
 import { runUpdateMaintenance } from "../updates/maintenance.js";
 import type { MaintenanceMode } from "../updates/maintenance-audit.js";
 import { runCommand } from "./command.js";
-import { settledRunFailure } from "./run-outcome.js";
-import { clearAlertThrottle, isAlertThrottled, recordAlertSent } from "./alert-throttle.js";
+import { settledLimitFailure, settledRunFailure } from "./run-outcome.js";
+import { clearAlertThrottle, isAlertThrottled, isLimitAlertThrottled, recordAlertSent, recordLimitAlertSent } from "./alert-throttle.js";
 import { fireWaitingOnUsageLimit, trackFire } from "./waiting-fires.js";
 
 const updateNotificationRuns = new Set<string>();
@@ -281,13 +281,19 @@ export async function runCronJob(
       if (alertConnector && alertChannel) {
         const alertTarget = connectors.get(alertConnector);
         const destination = `${alertConnector}:${alertChannel}`;
-        if (alertTarget && isAlertThrottled(job.id, message, destination, config.cron?.alertThrottleMinutes)) {
+        // A usage limit that is not waited for fails every fire until it
+        // resets: its alert is held for that limit period, not for a window.
+        const limit = settledLimitFailure(sessionId);
+        const throttled = limit
+          ? isLimitAlertThrottled(job.id, limit, destination, config.cron?.alertThrottleMinutes)
+          : isAlertThrottled(job.id, message, destination, config.cron?.alertThrottleMinutes);
+        if (alertTarget && throttled) {
           logger.info(`Cron alert for "${job.name}" not repeated: the same failure was already reported`);
         } else if (alertTarget) {
           await alertTarget.sendMessage(
             { channel: alertChannel },
             `⚠️ Cron job "${job.name}" failed:\n${message.slice(0, 500)}`,
-          ).then(() => recordAlertSent(job.id, message, destination), (alertErr) => {
+          ).then(() => (limit ? recordLimitAlertSent(job.id, limit, destination) : recordAlertSent(job.id, message, destination)), (alertErr) => {
             logger.error(`Failed to send cron alert: ${alertErr instanceof Error ? alertErr.message : alertErr}`);
           });
         }

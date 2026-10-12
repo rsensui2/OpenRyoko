@@ -99,7 +99,7 @@ function setup(options: Options = {}) {
   ]);
   const fire = () => runCronJob(job, manager, config, connectors);
   return {
-    job, claudeRun, codexRun, alert, posted, post, connectors, fire,
+    job, config, claudeRun, codexRun, alert, posted, post, connectors, fire,
     /** What one delivery channel received. */
     postedIn: (channel: string) => postedTo.filter((message) => message.channel === channel).map((message) => message.text),
     /** Fire another job on the same gateway. */
@@ -369,14 +369,16 @@ describe("cron fires while the only usable engine is out of allowance", () => {
       expect(entry.durationMs).toBeLessThan(MINUTE); // not waited for
       expect(getSession(entry.sessionId)).toMatchObject({ engine: "claude", status: "error" });
     }
-    // The same job failing for the same reason alerts once an hour …
+    // The alert goes out once for the limit period, and so does the word to the delivery channel.
     expect(f.alert).toHaveBeenCalledExactlyOnceWith({ channel: "C-alerts" }, expect.stringContaining(iso(reset)));
-    // … and its delivery channel is told once for the whole limit period.
     expect(f.posted).toEqual([entries[0]!.error]);
 
+    // An hour on, and a day on, it is still the same limit: neither is repeated.
     await f.fireAt(75);
-    expect(f.alert).toHaveBeenCalledTimes(2);
+    await f.fireAt(24 * 60 + 15);
+    expect(f.alert).toHaveBeenCalledTimes(1);
     expect(f.posted).toHaveLength(1);
+    expect(outcomes(f.job.id)).toEqual(Array(5).fill("error"));
     // A fire that posted nothing is still an error for the limit, not for a delivery that failed.
     const last = runs(f.job.id).at(-1)!;
     expect(last).toMatchObject({ status: "error", error: entries[0]!.error });
@@ -395,7 +397,70 @@ describe("cron fires while the only usable engine is out of allowance", () => {
     await f.fireAt(5 * 24 * 60 + 16);
 
     expect(f.posted).toEqual([expect.stringContaining(iso(firstReset)), expect.stringContaining(iso(secondReset))]);
+    expect(f.alert.mock.calls.map(([, text]) => text)).toEqual([expect.stringContaining(iso(firstReset)), expect.stringContaining(iso(secondReset))]);
     expect(outcomes(f.job.id)).toEqual(["error", "error", "error", "error"]);
+  });
+
+  // An alert is about a job. Two jobs that fail on the same limit each say so, once.
+  it("alert once per limit period for each job that fails on it", async () => {
+    const f = setup({ claudeFallback: [] });
+    f.claudeSpentUntil(START + 5 * 24 * HOUR, "7d");
+    const other: CronJob = { ...f.job, id: `${f.job.id}-other`, name: "Evening digest" };
+
+    for (const minutes of [0, 15, 75, 24 * 60]) {
+      vi.setSystemTime(START + minutes * MINUTE);
+      await f.fire();
+      await f.fireJob(other);
+    }
+
+    expect(f.alert.mock.calls.map(([, text]) => text)).toEqual([
+      expect.stringContaining(`Cron job "${f.job.name}" failed`), expect.stringContaining(`Cron job "${other.name}" failed`),
+    ]);
+  });
+
+  it("keep the hourly alert for a failure of any other kind, and do not repeat the limit's alert after one", async () => {
+    const f = setup({ claudeFallback: [] });
+    const spent = () => spentUntil(START + 5 * 24 * HOUR, "7d");
+    const loggedOut = (): EngineResult => ({ sessionId: "claude-thread", result: "", error: "Not logged in · Please run /login", cost: 0.01, numTurns: 1 });
+    // What each fire meets, by the minute it fires at.
+    const schedule: Array<[number, () => EngineResult]> = [[0, spent], [15, loggedOut], [30, spent], [45, loggedOut], [80, loggedOut], [95, spent]];
+
+    for (const [minutes, result] of schedule) {
+      f.claudeRun.mockImplementation(async () => result());
+      await f.fireAt(minutes);
+    }
+
+    // The limit at 0, the login at 15 and again at 80 — an hour after it was last alerted.
+    expect(f.alert.mock.calls.map(([, text]) => text)).toEqual([
+      expect.stringContaining("usage limit reached"), expect.stringContaining("Not logged in"), expect.stringContaining("Not logged in"),
+    ]);
+    expect(outcomes(f.job.id)).toEqual(Array(6).fill("error"));
+  });
+
+  it("alert again for the same limit period after a fire that succeeded in between", async () => {
+    const f = setup({ claudeFallback: [] });
+    const reset = START + 5 * 24 * HOUR;
+    f.claudeRun.mockImplementation(async () => spentUntil(reset, "7d"));
+    await f.fireAt(0);
+    f.claudeRun.mockImplementation(async () => answered("claude"));
+    await f.fireAt(15);
+    f.claudeRun.mockImplementation(async () => spentUntil(reset, "7d"));
+    await f.fireAt(30);
+
+    expect(outcomes(f.job.id)).toEqual(["error", "success", "error"]);
+    expect(f.alert).toHaveBeenCalledTimes(2);
+  });
+
+  it("alert on every fire when cron.alertThrottleMinutes is 0", async () => {
+    const f = setup({ claudeFallback: [] });
+    f.config.cron = { ...f.config.cron, alertThrottleMinutes: 0 };
+    f.claudeSpentUntil(START + 5 * 24 * HOUR, "7d");
+
+    await f.fireAt(0);
+    await f.fireAt(15);
+    await f.fireAt(30);
+
+    expect(f.alert).toHaveBeenCalledTimes(3);
   });
 
   // Once per limit period is counted per delivery channel: every channel that
@@ -546,6 +611,8 @@ describe("cron fires while an earlier fire of the same job waits for a usage lim
     for (const entry of entries) expect(entry.error).toContain(iso(weekly));
     // The channel heard that the job was waiting, then why it stopped — and not a second time from the fire after it.
     expect(f.posted).toEqual([expect.stringMatching(WAITING_NOTICE), entries[0]!.error]);
+    // The same goes for the alert: one, for the limit the wait was given up on.
+    expect(f.alert).toHaveBeenCalledExactlyOnceWith({ channel: "C-alerts" }, expect.stringContaining(iso(weekly)));
   });
 
   // A session that was waiting when the gateway went down is still marked so,
