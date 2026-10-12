@@ -105,6 +105,54 @@ export function validateEngineFallbackModelMaps(engines: Record<string, unknown>
 }
 
 /**
+ * Everything wrong with the fallback chains and model maps of a config exactly
+ * as it was loaded (empty = nothing to report). For telling the operator, never
+ * for refusing the config: an instance that started yesterday must start today,
+ * so this answers with nothing rather than throwing when there is no engines
+ * block it can read.
+ */
+export function engineFallbackConfigProblems(config: JinnConfig): string[] {
+  try {
+    const engines = (config as { engines?: unknown }).engines;
+    if (!isYamlMapping(engines)) return [];
+    return [...validateEngineFallbackChains(engines), ...validateEngineFallbackModelMaps(engines)];
+  } catch {
+    return [];
+  }
+}
+
+// Said once per problem: the config is loaded again on every hot reload, so a
+// single hand-edit would otherwise repeat itself through the gateway's lifetime.
+const warnedFallbackConfigProblems = new Set<string>();
+
+/**
+ * Warn about each fallback problem in a loaded config that has not been
+ * mentioned yet. Reporting only — nothing is rejected or rewritten, and neither
+ * an unreadable config nor a failing logger can make this throw.
+ */
+export function warnEngineFallbackConfigProblems(
+  config: JinnConfig,
+  warn: (message: string) => void = (message) => logger.warn(message),
+): string[] {
+  const problems = engineFallbackConfigProblems(config);
+  for (const problem of problems) {
+    if (warnedFallbackConfigProblems.has(problem)) continue;
+    warnedFallbackConfigProblems.add(problem);
+    try {
+      warn(`config.yaml: ${problem} — this fallback setting does not take effect as written.`);
+    } catch {
+      // a logger must never be the reason a config load fails
+    }
+  }
+  return problems;
+}
+
+/** Test-only: forget which fallback problems were already reported. */
+export function _resetEngineFallbackConfigWarnings(): void {
+  warnedFallbackConfigProblems.clear();
+}
+
+/**
  * The model a turn should run on once its engine has been substituted.
  *
  * `undefined` is the floor rule and the default answer: drop the pin, let the
@@ -171,8 +219,11 @@ export function applyLegacyFallbackMigration(
   );
 }
 
+/** A chain that is not a list — a hand-edit the load-time check has already
+ *  warned about — is no chain, rather than a throw in the middle of a turn. */
 function fallbackChain(config: JinnConfig, engine: string): EngineName[] {
-  return config.engines[engine as EngineName]?.fallback ?? [];
+  const chain: unknown = config.engines[engine as EngineName]?.fallback;
+  return Array.isArray(chain) ? chain : [];
 }
 
 /**

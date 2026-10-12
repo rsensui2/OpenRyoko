@@ -1,4 +1,4 @@
-import { resolveSubstituteModel } from "../shared/engine-fallback.js";
+import { resolveSubstituteModel, warnEngineFallbackConfigProblems } from "../shared/engine-fallback.js";
 import { ModelManagement } from "../models/service.js";
 import http from "node:http";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -187,6 +187,9 @@ export async function startGateway(
 
   const gatewayName = config.portal?.portalName || "Ryoko";
   logger.info(`Starting ${gatewayName} gateway (boot ${bootId}, pid ${process.pid})...`);
+  // A fallback chain or model map that cannot work as written is worth a line
+  // in the startup log. It is never a reason not to start.
+  warnEngineFallbackConfigProblems(config);
 
   // Initialize database and recover any sessions stuck from a previous run
   const database = initDb();
@@ -1242,6 +1245,7 @@ export async function startGateway(
         // even when the connectors block didn't change.
         sessionManager.setConfig(currentConfig);
         configureClaudeAutoMemory(currentConfig.engines?.claude?.autoMemory);
+        warnEngineFallbackConfigProblems(currentConfig); // each problem is reported once
         logger.info("Config reloaded successfully");
         emit("config:reloaded", {});
 
