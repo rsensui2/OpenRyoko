@@ -1,6 +1,6 @@
 import yaml from "js-yaml";
 import { describe, expect, it } from "vitest";
-import { editYamlText } from "../config-yaml-edit.js";
+import { editYamlText, MAX_EDITABLE_CHARS } from "../config-yaml-edit.js";
 
 /* editYamlText rewrites the lines whose value changed and nothing else. Two
  * things are checked throughout: every other line survives byte for byte, and
@@ -574,6 +574,69 @@ describe("editYamlText: very long lists", () => {
     expect(out).toContain(`  - ${item(3)}   # an operator\n`);
     expect(out).toContain(`  - ${item(197)}   # an operator\n`);
     expect(out).toBe(raw.replace(`  - ${item(0)}\n`, "").replace(`  - ${item(199)}\n`, `  - ${item(199)}\n  - ${item(0)}\n`));
+  });
+});
+
+describe("editYamlText: very large files", () => {
+  /* Finding where each value sits means parsing the whole text into a tree of
+   * nodes, whatever the size of the change — time and memory in proportion to
+   * the file, with the gateway doing nothing else meanwhile. The shipped
+   * config.yaml is 6 KB; a file that has grown past 256 KB is not one somebody
+   * keeps notes in, and is not worth it. Past the limit this declines at
+   * once, and the caller writes the document out in full, as every save once
+   * did. */
+  const padding = "x".repeat(1000);
+  const sized = (entries: number) => `# notes\nfirst: 1   # kept?\n${Array.from({ length: entries }, (_, n) => `k${n}: ${padding}\n`).join("")}`;
+
+  it("declines a file past the limit, however small the change", () => {
+    const raw = sized(270);
+    expect(raw.length).toBeGreaterThan(MAX_EDITABLE_CHARS);
+    const before = yaml.load(raw) as Doc;
+    expect(editYamlText(raw, before, { ...before, first: 2 })).toBeNull();
+  });
+
+  it("still edits a file just under the limit in place", () => {
+    const raw = sized(250);
+    expect(raw.length).toBeLessThanOrEqual(MAX_EDITABLE_CHARS);
+    const out = edited(raw, (doc) => { doc.first = 2; });
+    expect(out).toBe(raw.replace("first: 1   # kept?", "first: 2   # kept?"));
+  });
+
+  it("hands a large file back untouched when nothing changed", () => {
+    const raw = sized(270);
+    const before = yaml.load(raw) as Doc;
+    expect(editYamlText(raw, before, structuredClone(before))).toBe(raw);
+  });
+
+  it("draws the line at 256 KB of text, forty times the shipped config", () => {
+    expect(MAX_EDITABLE_CHARS).toBe(256 * 1024);
+  });
+
+  it("takes time in proportion to the number of keys in a mapping, not to its square", () => {
+    /* Below the size limit the cost still has to be linear. It was not: the
+     * parser that locates the values checked every key against all the keys
+     * before it, so 20,000 keys in one mapping — a quarter of a megabyte —
+     * took a second and a half for a one-line change, with the gateway doing
+     * nothing else meanwhile. Measured as a ratio, which a busy machine does
+     * not move: four times the keys is about four times the work, or sixteen. */
+    const flat = (keys: number) => `# notes\nfirst: 1   # kept\n${Array.from({ length: keys }, (_, n) => `k${String(n).padStart(7, "0")}: 1\n`).join("")}`;
+    const fastestOf = (runs: number, keys: number) => {
+      const raw = flat(keys);
+      const before = yaml.load(raw) as Doc;
+      const after = { ...before, first: 2 };
+      let fastest = Number.POSITIVE_INFINITY;
+      for (let run = 0; run < runs; run++) {
+        const started = performance.now();
+        const out = editYamlText(raw, before, after);
+        fastest = Math.min(fastest, performance.now() - started);
+        expect(out).toBe(raw.replace("first: 1   # kept", "first: 2   # kept"));
+      }
+      return fastest;
+    };
+    fastestOf(1, 2_000); // warm up
+    const small = fastestOf(2, 5_000);
+    const large = fastestOf(2, 20_000);
+    expect(large / small).toBeLessThan(9);
   });
 });
 

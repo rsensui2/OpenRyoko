@@ -458,7 +458,11 @@ function applyEdits({ raw, eol }: Source, edits: Edit[]): string | null {
 }
 
 function planEdits(source: Source, before: Data, after: Data): Edit[] | null {
-  const document = parseDocument(source.raw);
+  // uniqueKeys off: the parser's own check compares every key with all the
+  // keys before it — seven seconds for 40,000 keys in one mapping. It is not
+  // needed: `before` came out of js-yaml, which refuses a duplicated key, and
+  // editMap declines a mapping that repeats one.
+  const document = parseDocument(source.raw, { uniqueKeys: false });
   if (document.errors.length > 0) return null;
   const root = document.contents;
   if (root === null || root === undefined) {
@@ -474,8 +478,19 @@ function planEdits(source: Source, before: Data, after: Data): Edit[] | null {
 }
 
 /**
+ * The largest text {@link editYamlText} takes on. Editing in place starts by
+ * parsing the whole text into a tree of nodes, whatever the size of the
+ * change: for a file of many small values that is about 0.4 s and well over
+ * 100 MB per megabyte, with the gateway doing nothing else meanwhile. The
+ * shipped config.yaml is 6 KB. One that has grown past forty times that is
+ * not a file somebody keeps notes in, and is not worth it.
+ */
+export const MAX_EDITABLE_CHARS = 256 * 1024;
+
+/**
  * `raw` with the changes from `before` to `after` applied in place, or null
- * when that cannot be done safely. `before` must be what js-yaml loads from
+ * when that cannot be done safely — or when `raw` is too large to be worth it
+ * (see {@link MAX_EDITABLE_CHARS}). `before` must be what js-yaml loads from
  * `raw` (an empty mapping for a file that holds no data). `after` is taken the
  * way a dump would store it: see {@link asStored}.
  */
@@ -483,6 +498,7 @@ export function editYamlText(raw: string, before: Data, document: Data): string 
   try {
     const after = asStored(document) as Data;
     if (sameData(before, after)) return raw;
+    if (raw.length > MAX_EDITABLE_CHARS) return null;
     const source: Source = { raw, eol: raw.includes("\r\n") ? "\r\n" : "\n" };
     const edits = planEdits(source, before, after);
     const text = edits ? applyEdits(source, edits) : null;

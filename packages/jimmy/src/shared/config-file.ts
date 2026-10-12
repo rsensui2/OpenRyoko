@@ -2,7 +2,7 @@ import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import yaml from "js-yaml";
-import { editYamlText } from "./config-yaml-edit.js";
+import { editYamlText, MAX_EDITABLE_CHARS } from "./config-yaml-edit.js";
 import { logger } from "./logger.js";
 import { CONFIG_PATH } from "./paths.js";
 
@@ -206,7 +206,11 @@ function renderConfig(snapshot: ConfigSnapshot, document: Record<string, unknown
   const edited = editYamlText(snapshot.raw, snapshot.document, document);
   if (edited !== null) return edited;
   if (/^\s*#/m.test(snapshot.raw)) {
-    logger.info("config.yaml was rewritten in full: this change could not be applied in place, so its comments were not kept");
+    const why =
+      snapshot.raw.length > MAX_EDITABLE_CHARS
+        ? `it is larger than ${MAX_EDITABLE_CHARS / 1024} KB, too large to edit in place`
+        : "this change could not be applied in place";
+    logger.info(`config.yaml was rewritten in full: ${why}, so its comments were not kept`);
   }
   return yaml.dump(document);
 }

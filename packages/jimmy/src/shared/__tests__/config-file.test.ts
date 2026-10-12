@@ -6,6 +6,7 @@ import yaml from "js-yaml";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { expectPosixMode, POSIX_MODES_SUPPORTED } from "../test-support/posix-mode.js";
 import { ConfigFileUnreadableError, configErrorForLog, readConfigSnapshot, writeConfigDocument } from "../config-file.js";
+import { logger } from "../logger.js";
 
 /* config.yaml is the one file every job and connection is defined in. The
  * property under test: a writer that cannot read it never replaces it, and a
@@ -187,6 +188,22 @@ describe("writeConfigDocument", () => {
     writeConfigDocument(snapshot, { engines: { default: "codex" } }, configPath);
     expect(yaml.load(fs.readFileSync(configPath, "utf-8"))).toEqual({ engines: { default: "codex" } });
     expect(fs.readdirSync(dir)).toEqual(["config.yaml"]);
+  });
+});
+
+describe("writeConfigDocument and a config.yaml that has grown very large", () => {
+  it("writes the document out in full, and says why the comments are gone", () => {
+    const info = vi.spyOn(logger, "info").mockImplementation(() => {});
+    const raw = `# notes to self\nfirst: 1\n${Array.from({ length: 300 }, (_, n) => `k${n}: ${"x".repeat(1000)}\n`).join("")}`;
+    fs.writeFileSync(configPath, raw);
+    const snapshot = readConfigSnapshot(configPath);
+
+    writeConfigDocument(snapshot, { ...snapshot.document, first: 2 }, configPath);
+
+    const written = fs.readFileSync(configPath, "utf-8");
+    expect(yaml.load(written)).toEqual({ ...snapshot.document, first: 2 });
+    expect(written).not.toContain("# notes to self");
+    expect(info.mock.calls.map(([message]) => String(message)).join("\n")).toMatch(/larger than 256 KB/);
   });
 });
 

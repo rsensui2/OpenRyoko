@@ -109,6 +109,10 @@ import { newAttachmentDir } from "../shared/attachments.js";
 /** Max bytes accepted on /api/internal/hook (loopback-only relay payloads are tiny). */
 const HOOK_BODY_MAX_BYTES = 64 * 1024;
 const PAIR_BODY_MAX_BYTES = 1024;
+/** Max bytes accepted on PUT /api/config. The body is merged into config.yaml,
+ *  and what a save costs grows with the size of that file: a megabyte is far
+ *  more than a configuration needs (the shipped one is tens of kilobytes). */
+const CONFIG_BODY_MAX_BYTES = 1024 * 1024;
 /** Max bytes accepted on /api/connectors/:id/incoming. A forwarded Discord
  *  message is a few thousand characters, ten attachment URLs and some
  *  metadata: tens of kilobytes at the very most. */
@@ -1946,7 +1950,7 @@ Handle this as a priority request from a colleague.`;
 
     // PUT /api/config
     if (method === "PUT" && pathname === "/api/config") {
-      const _parsed = await readJsonBody(req, res);
+      const _parsed = await readJsonBody(req, res, CONFIG_BODY_MAX_BYTES);
       if (!_parsed.ok) return;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const body = _parsed.body as any;
