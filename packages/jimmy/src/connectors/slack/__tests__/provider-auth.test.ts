@@ -370,6 +370,32 @@ describe("Slack provider login — endings", () => {
     expect(await f.message("ログイン")).toBe(false);
   });
 
+  it("waits at shutdown for a blanking edit that is still on its way to Slack", async () => {
+    const f = fixture();
+    const pty = await startLogin(f, "codex");
+    const pending: Array<() => void> = [];
+    f.update.mockImplementation(() => new Promise((resolve) => { pending.push(() => resolve({})); }));
+
+    pty.emitData(CODEX_LOGIN_OUTPUT);
+    await settle();
+    pty.emitExit(1);
+    await settle();
+    expect(pending).toHaveLength(1);
+    pending[0]();
+    await settle();
+    expect(pending).toHaveLength(2);
+    expect(f.update.mock.calls[1][0].text).toContain("完了しませんでした");
+
+    let stopped = false;
+    const stopping = f.auth.stop().then(() => { stopped = true; });
+    await settle();
+    expect(stopped).toBe(false);
+
+    pending[1]();
+    await stopping;
+    expect(stopped).toBe(true);
+  });
+
   it("removes the message when it cannot be edited, and still reports the outcome", async () => {
     const f = fixture();
     const pty = await startLogin(f, "codex");

@@ -286,6 +286,9 @@ export class SlackProviderAuth {
   }
 
   private async redraw(view: FlowView): Promise<void> {
+    // Decided before drawing: an outcome that arrives while this draw is on
+    // its way to Slack belongs to the next one, which `stop()` must still wait for.
+    const final = view.outcome !== undefined;
     try {
       const message = this.messageFor(view);
       const drawn = JSON.stringify(message);
@@ -293,7 +296,7 @@ export class SlackProviderAuth {
       view.lastDrawn = drawn;
       await this.show(view, message);
     } finally {
-      if (view.outcome) this.views.delete(view);
+      if (final) this.views.delete(view);
     }
   }
 
