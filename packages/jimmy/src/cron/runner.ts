@@ -9,6 +9,7 @@ import { getLastNotifiedVersion, markVersionNotified } from "../updates/notifica
 import { runUpdateMaintenance } from "../updates/maintenance.js";
 import type { MaintenanceMode } from "../updates/maintenance-audit.js";
 import { runCommand } from "./command.js";
+import { settledRunFailure } from "./run-outcome.js";
 
 const updateNotificationRuns = new Set<string>();
 
@@ -152,6 +153,7 @@ export async function runCronJob(
 
     const connector = new CronConnector(connectors, delivery);
     const sessionKey = `cron:${job.id}:${Date.now()}`;
+    let sessionId: string | null = null;
 
     try {
       const routeResult = await sessionManager.route(
@@ -190,6 +192,13 @@ export async function runCronJob(
           effortLevel: job.effortLevel,
         },
       );
+      sessionId = routeResult?.sessionId ?? null;
+
+      // route() returning is not the turn succeeding: a failed turn settles its
+      // session as an error and still returns here. Read that receipt before
+      // anything else is awaited, and fail the run the way a throw already does.
+      const failure = settledRunFailure(sessionId, job.name);
+      if (failure) throw new Error(failure);
 
       if (updateVersion && (
         connector.getDeliveredMessageCount() === 0 ||
@@ -201,7 +210,7 @@ export async function runCronJob(
       appendRunLog(job.id, {
         timestamp: startedAt,
         sessionKey,
-        sessionId: routeResult?.sessionId ?? null,
+        sessionId,
         status: "success",
         durationMs: Date.now() - startTime,
         error: null,
@@ -215,6 +224,7 @@ export async function runCronJob(
       appendRunLog(job.id, {
         timestamp: startedAt,
         sessionKey,
+        ...(sessionId ? { sessionId } : {}),
         status: "error",
         durationMs: Date.now() - startTime,
         error: message,
