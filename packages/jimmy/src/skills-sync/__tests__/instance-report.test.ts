@@ -206,20 +206,19 @@ describe("what gateway start logs about the bundled skill sync", () => {
     for (const level of ["info", "warn", "error"] as const) expect(said(level), level).toEqual([]);
   });
 
-  it.each(["newer-receipt", "newer-format"] as const)("warns once that it stood back (%s), then stays at debug level", (skipped) => {
-    ran({ skipped, announceSkip: true });
-    syncBundledSkillsOnBoot({});
+  it.each(["newer-receipt", "newer-format"] as const)("warns at every start that it stood back (%s)", (skipped) => {
+    // The sync is switched off by a file anyone with the home can write. That stays
+    // visible for as long as it is so: a warning given once could be pre-empted by
+    // whoever wrote the file, simply by leaving the note that it had been given.
+    for (let start = 1; start <= 3; start++) {
+      for (const spy of Object.values(log)) spy.mockClear();
+      ran({ skipped });
 
-    // The sync is switched off by a file anyone with the home can write; that must be visible.
-    expect(said("warn")).toEqual([expect.stringMatching(/newer OpenRyoko/)]);
-    expect(said("warn")[0]).toContain(".shipped-skills.json");
-    expect(said("error")).toEqual([]);
+      syncBundledSkillsOnBoot({});
 
-    for (const spy of Object.values(log)) spy.mockClear();
-    ran({ skipped, announceSkip: false });
-    syncBundledSkillsOnBoot({});
-
-    expect(said("debug")).toHaveLength(1);
-    for (const level of ["info", "warn", "error"] as const) expect(said(level), level).toEqual([]);
+      expect(said("warn"), `start ${start}`).toEqual([expect.stringMatching(/newer OpenRyoko/)]);
+      expect(said("warn")[0]).toContain(".shipped-skills.json");
+      for (const level of ["debug", "info", "error"] as const) expect(said(level), level).toEqual([]);
+    }
   });
 });

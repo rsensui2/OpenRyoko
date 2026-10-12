@@ -62,7 +62,4 @@ export interface BundledSkillSync {
    * version, or a format this one does not read).
    */
   skipped?: "skills-root-symlink" | "newer-receipt" | "newer-format";
-  /** With a newer receipt: whether this is the first time for this pair of versions,
-   *  and so the time to tell the user. */
-  announceSkip?: boolean;
 }

@@ -130,10 +130,11 @@ function reportTrouble(result: BundledSkillSync): void {
   }
   if (result.skipped === "skills-root-symlink") logger.debug("Bundled skills not synced: skills/ is a symlink the user manages.");
   if (result.skipped === "newer-receipt" || result.skipped === "newer-format") {
-    // Said out loud once: the receipt is a file in the home, and a forged one switches the sync off.
-    const said = "Bundled skills not synced: skills/.shipped-skills.json says a newer OpenRyoko synced this home last. "
-      + "This version leaves the skills as they are. If no newer version runs against this home, the file is wrong: fix or delete it.";
-    if (result.announceSkip) logger.warn(said);
-    else logger.debug(said);
+    // At every start, for as long as it is so: the receipt is a file in the home, and a
+    // forged one switches the sync off. Nothing kept in the home decides whether to say it.
+    logger.warn(
+      "Bundled skills not synced: skills/.shipped-skills.json says a newer OpenRyoko synced this home last. "
+      + "This version leaves the skills as they are. If no newer version runs against this home, the file is wrong: fix or delete it.",
+    );
   }
 }

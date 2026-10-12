@@ -9,7 +9,6 @@ import { own } from "./names.js";
 import { planSkillSync, type SkillPlan } from "./plan.js";
 import { markDeleted, markReplacing, NewerReceiptFormat, RECEIPT_FILE, readReceipt, receiptSkill, serializeReceipt, writeReceipt, type Receipt, type ReceiptSkill } from "./receipt.js";
 import { removeAbandonedStaging } from "./staging.js";
-import { forgetStandBack, shouldAnnounceStandBack } from "./stand-back.js";
 import type { BundledSkillSync, KeepReason, KeptSkill } from "./types.js";
 
 export interface SyncBundledSkillsOptions {
@@ -67,10 +66,9 @@ export function syncBundledSkills(options: SyncBundledSkillsOptions): BundledSki
   if (bundled.length === 0) return nothing();
 
   const receiptPath = path.join(skillsRoot, RECEIPT_FILE);
-  const read = readReceiptOrStandBack(receiptPath, skillsRoot, options.packageVersion);
+  const read = readReceiptOrStandBack(receiptPath, options.packageVersion);
   if ("standBack" in read) return read.standBack;
   const receipt = read.receipt;
-  forgetStandBack(skillsRoot);
 
   const history = loadShippedHistory(options.templateDir);
   const run: Run = { home, skillsRoot, receiptPath, packageVersion: options.packageVersion, now: options.now ?? new Date() };
@@ -159,20 +157,19 @@ function summarise(plans: readonly SkillPlan[], receipt: Receipt | null, outcome
 /**
  * The receipt, or the reason to leave this home alone: a newer OpenRyoko synced it
  * last, or wrote the receipt in a format this one cannot read. An older CLI sharing a
- * home must not undo what a newer one did, so it changes nothing — and says so once
- * per pair of versions, since a receipt is also something a person can forge.
+ * home must not undo what a newer one did, so it changes nothing, and writes nothing:
+ * not even a note that it stood back. A receipt is also something a person can forge,
+ * and whether the caller has said so before is not to be kept beside it.
  */
-function readReceiptOrStandBack(file: string, skillsRoot: string, ours: string): { receipt: Receipt | null } | { standBack: BundledSkillSync } {
-  const standBack = (reason: "newer-receipt" | "newer-format", theirs: string) => ({
-    standBack: { ...nothing(), skipped: reason, announceSkip: shouldAnnounceStandBack(skillsRoot, { reason, ours, theirs }) },
-  });
+function readReceiptOrStandBack(file: string, ours: string): { receipt: Receipt | null } | { standBack: BundledSkillSync } {
+  const standBack = (reason: "newer-receipt" | "newer-format") => ({ standBack: { ...nothing(), skipped: reason } });
   let receipt: Receipt | null;
   try { receipt = readReceipt(file); }
   catch (error) {
-    if (error instanceof NewerReceiptFormat) return standBack("newer-format", `format ${error.format}`);
+    if (error instanceof NewerReceiptFormat) return standBack("newer-format");
     throw error;
   }
-  if (receipt && compareSemver(ours, receipt.packageVersion) < 0) return standBack("newer-receipt", receipt.packageVersion);
+  if (receipt && compareSemver(ours, receipt.packageVersion) < 0) return standBack("newer-receipt");
   return { receipt };
 }
 
