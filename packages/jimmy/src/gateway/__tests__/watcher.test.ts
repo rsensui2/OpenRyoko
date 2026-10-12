@@ -136,7 +136,7 @@ describe("gateway file watchers", () => {
     watchers[1].emit("add", CRON_JOBS);
     watchers[2].emit("all", "add", ORG_DIR);
     watchers[3].emit("all", "addDir", SKILLS_DIR);
-    expect(vi.getTimerCount()).toBe(5);
+    expect(vi.getTimerCount()).toBe(6); // four debounces, plus the cron and config.yaml reconciliation timers
     const stopping = stopWatchers();
     expect(vi.getTimerCount()).toBe(0);
     for (const watcher of watchers) {
@@ -163,7 +163,7 @@ describe("gateway file watchers", () => {
     await vi.advanceTimersByTimeAsync(30_000);
     expectNoCallbacks();
     expect(replacement.onCronReload).toHaveBeenCalledTimes(1);
-    expect(vi.getTimerCount()).toBe(1);
+    expect(vi.getTimerCount()).toBe(2); // the new group's cron and config.yaml reconciliation timers
     for (const watcher of old) expect(watcher.close).toHaveBeenCalledTimes(1);
   });
 
