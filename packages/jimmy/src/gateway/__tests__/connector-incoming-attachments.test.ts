@@ -142,4 +142,30 @@ describe("POST /api/connectors/:id/incoming attachments", () => {
     expect(outbound).not.toHaveBeenCalled();
     expect(delivered[0].attachments).toEqual([{ name: "note.txt", mimeType: "text/plain" }]);
   });
+
+  it("never takes a local file path from the request", async () => {
+    // The session hands every attachment's localPath to the engine as a file
+    // to read, and deletes it when the turn ends. A routed message that could
+    // name one would read, and then remove, any file the gateway can reach.
+    const victim = path.join(JINN_HOME, `private-${randomUUID()}.txt`);
+    created.push(victim);
+    fs.writeFileSync(victim, "not for the model");
+
+    await postIncoming(message([
+      { name: "note.txt", mimeType: "text/plain", localPath: victim },
+      { name: "photo.png", url: "http://127.0.0.1:7777/x", mimeType: "image/png", localPath: victim },
+    ]));
+
+    expect(delivered[0].attachments).toEqual([
+      { name: "note.txt", mimeType: "text/plain" },
+      { name: "photo.png", url: "http://127.0.0.1:7777/x", mimeType: "image/png" },
+    ]);
+    expect(JSON.stringify(delivered[0].attachments)).not.toContain(victim);
+  });
+
+  it("keeps only the fields a primary sends, and only as text", async () => {
+    await postIncoming(message([{ name: { toString: "x" }, mimeType: 42, url: ["http://a"], extra: "field", size: 10 }, "not-an-object", null]));
+    expect(outbound).not.toHaveBeenCalled();
+    expect(delivered[0].attachments).toEqual([{}]);
+  });
 });

@@ -64,6 +64,22 @@ const DISCORD_CDN_HOSTS = ["cdn.discordapp.com", "media.discordapp.net"];
 const MAX_INCOMING_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 
 /**
+ * What a routed attachment may say about itself: the three fields a Discord
+ * primary sends, each only as text. Everything else in the request is dropped
+ * — above all `localPath`. The session gives every attachment's localPath to
+ * the engine as a file to read and deletes it when the turn ends, so a routed
+ * message must never be able to name one; it is set here, by the download.
+ */
+function incomingAttachmentMeta(att: Record<string, unknown>): Attachment {
+  const meta: Partial<Attachment> = {};
+  for (const key of ["name", "url", "mimeType"] as const) {
+    const value = att[key];
+    if (typeof value === "string") meta[key] = value;
+  }
+  return meta as Attachment;
+}
+
+/**
  * Fetch a routed message's attachments to `destDir`. Their names and URLs come
  * straight from the request body, so only what a Discord primary really sends
  * is fetched: an https URL on Discord's CDN, up to a size limit. Anything else
@@ -72,18 +88,19 @@ const MAX_INCOMING_ATTACHMENT_BYTES = 50 * 1024 * 1024;
  */
 export async function downloadIncomingAttachments(attachments: unknown, destDir: string): Promise<Attachment[]> {
   if (!Array.isArray(attachments)) return [];
-  const listed = attachments.filter((att): att is Attachment => Boolean(att) && typeof att === "object");
+  const listed = attachments.filter((att): att is Record<string, unknown> => Boolean(att) && typeof att === "object");
   return Promise.all(
     listed.map(async (att) => {
-      if (!att.url) return att;
+      const meta = incomingAttachmentMeta(att);
+      if (!meta.url) return meta;
       try {
-        const localPath = await downloadAttachment(att.url, destDir, att.name, {
+        const localPath = await downloadAttachment(meta.url, destDir, meta.name, {
           allowedHosts: DISCORD_CDN_HOSTS,
           maxBytes: MAX_INCOMING_ATTACHMENT_BYTES,
         });
-        return { name: att.name, url: att.url, mimeType: att.mimeType, localPath };
+        return { ...meta, localPath };
       } catch {
-        return { name: att.name, url: att.url, mimeType: att.mimeType };
+        return meta;
       }
     }),
   );
