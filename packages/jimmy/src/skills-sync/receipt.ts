@@ -120,11 +120,16 @@ export function serializeReceipt(receipt: Receipt): string {
   return `${JSON.stringify(body, null, 2)}\n`;
 }
 
-/** Replace the receipt in one step: a reader sees the old file or the new one. */
+/**
+ * Replace the receipt in one step: a reader sees the old file or the new one.
+ * The temporary file is created exclusively, after clearing whatever sits at its
+ * path, so a link left there (the name is predictable) is removed, never written through.
+ */
 export function writeReceipt(file: string, text: string): void {
   const temporary = `${file}.tmp-${process.pid}`;
   try {
-    fs.writeFileSync(temporary, text);
+    fs.rmSync(temporary, { force: true });
+    fs.writeFileSync(temporary, text, { flag: "wx" });
     fs.renameSync(temporary, file);
   } catch (error) {
     fs.rmSync(temporary, { force: true });

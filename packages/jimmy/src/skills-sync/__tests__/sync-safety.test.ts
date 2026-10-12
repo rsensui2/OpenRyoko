@@ -126,6 +126,38 @@ describe("bundled skill sync: staying inside skills/", () => {
     expect(snapshot(f.root)).toEqual(before);
   });
 
+  it("never writes the receipt through a link left where its temporary file goes", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    fs.mkdirSync(f.skills);
+    const outside = path.join(f.root, "outside.json");
+    fs.writeFileSync(outside, "the user's file");
+    // The gateway is often the same PID on every container start, so this name is predictable.
+    fs.symlinkSync(outside, path.join(f.skills, `${RECEIPT_FILE}.tmp-${process.pid}`));
+
+    const result = f.sync();
+
+    expect(result.added).toEqual(["example"]);
+    expect(fs.readFileSync(outside, "utf8")).toBe("the user's file");
+    expect(Object.keys(f.receipt().skills)).toEqual(["example"]);
+    expect(fs.lstatSync(path.join(f.skills, RECEIPT_FILE)).isFile()).toBe(true);
+    expect(fs.readdirSync(f.skills).sort()).toEqual([RECEIPT_FILE, "example"]);
+  });
+
+  it("refuses a receipt that is itself a link", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    const elsewhere = path.join(f.root, "receipt-elsewhere.json");
+    fs.renameSync(path.join(f.skills, RECEIPT_FILE), elsewhere);
+    fs.symlinkSync(elsewhere, path.join(f.skills, RECEIPT_FILE));
+    f.ship("example", { "SKILL.md": "v2" });
+    const before = snapshot(f.root);
+
+    expect(() => f.sync("2026.10.11")).toThrow(RECEIPT_FILE);
+    expect(snapshot(f.root)).toEqual(before);
+  });
+
   it("refuses to treat something that is not a directory as the skills directory", () => {
     const f = fixture();
     f.ship("example", { "SKILL.md": "v1" });
