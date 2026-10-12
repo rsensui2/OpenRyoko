@@ -133,6 +133,17 @@ describe("restart resume — a Slack session interrupted mid-turn is nudged and 
     schedule: (run: () => Promise<void>) => { void run(); },
   });
 
+  /**
+   * The nudge takes the mark off once its POST has returned, which can be after
+   * the turn it started has already settled. Every test shares one registry, so
+   * a test that ends on a nudge waits for this: left behind, the mark is counted
+   * by the next test's boot.
+   */
+  const markConsumed = (sessionId: string): Promise<void> => vi.waitFor(
+    () => expect(restartResume.readRestartResumeState(registry.getSession(sessionId)!.transportMeta).interruptedAt).toBeUndefined(),
+    { timeout: 10_000 },
+  );
+
   it("boot → one nudge turn → the reply lands in the original channel and thread", async () => {
     const { sessionId, interruptedAt } = interruptedSlackSession("111.222");
     expect(interruptedAt).toEqual(expect.any(String));
@@ -204,6 +215,7 @@ describe("restart resume — a Slack session interrupted mid-turn is nudged and 
     expect(target).toMatchObject({ channel: "C_DEPLOY", thread: "999.000" });
     expect(text).toBe("デプロイが完了しました。");
     await vi.waitFor(() => expect(registry.getSession(session.id)?.status).toBe("idle"));
+    await markConsumed(session.id);
   });
 
   it("a reply whose delivery failed during the shutdown is asked for too, and its record is cleared once it lands", async () => {
@@ -276,6 +288,7 @@ describe("restart resume — a Slack session interrupted mid-turn is nudged and 
     // A post that was deliberately not made is not a failed delivery.
     expect(hasUndeliveredReply(registry.getSession(session.id)!)).toBe(false);
     expect(registry.getMessages(session.id).filter((m) => m.role === "notification" && m.content.includes("NOT delivered"))).toEqual([]);
+    await markConsumed(session.id);
   });
 
   it("a session the queue replay already re-dispatched is not resumed a second time", async () => {

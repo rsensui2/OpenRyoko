@@ -82,7 +82,9 @@ function withTagsFromElsewhere() {
   return r;
 }
 
-describe.skipIf(!canRun)("the generator of the bundled skill history", () => {
+// Every test builds a git repository and starts Node several times over: seconds on a
+// busy machine, well past the default limit of five.
+describe.skipIf(!canRun)("the generator of the bundled skill history", { timeout: 60_000 }, () => {
   it("takes the releases the commit being built descends from, and no other tag", () => {
     const r = withTagsFromElsewhere();
 
