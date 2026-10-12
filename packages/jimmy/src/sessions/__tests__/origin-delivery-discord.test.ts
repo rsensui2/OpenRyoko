@@ -126,7 +126,8 @@ describe("origin delivery through the Discord connector", () => {
 
     const recorded = await deliverBackgroundReply(channel, "遅れましたが完成しました");
 
-    expect(recorded.lastError).toContain("origin delivery failed");
+    // This path passes no reason, so the record keeps its long-standing wording.
+    expect(recorded.lastError).toBe("origin delivery failed — reply not posted to the original conversation");
     expect(recorded.notes.some((note) => note.includes("NOT delivered to the original conversation"))).toBe(true);
   });
 

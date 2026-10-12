@@ -3,6 +3,7 @@ import { normalizeDelivery, deliverPublic, type DeliveryContext } from "./reply-
 import { insertMessage, updateSession } from "./registry.js";
 import { logger } from "../shared/logger.js";
 import { isPartialDelivery } from "../shared/partial-delivery.js";
+import { redactText } from "../shared/redact.js";
 
 /**
  * Deliver an engine result back to the conversation a session originated from
@@ -94,6 +95,22 @@ export function isUndeliveredToOrigin(result: OriginDeliveryResult, session: Ses
   return result === "failed" || (result === "no_target" && hasAddressableTarget(session));
 }
 
+const DELIVERY_FAILED = "origin delivery failed — reply not posted to the original conversation";
+const MAX_REASON_LENGTH = 300;
+
+/**
+ * A failure reason fit to store on a session and to be quoted from there (the
+ * cron run log and the operator's alert quote lastError): secrets masked, one
+ * line, bounded. Masking comes first — cutting first could leave the head of
+ * a token behind.
+ */
+function storableReason(reason: string | undefined): string {
+  const characters = Array.from(redactText(reason ?? "").replace(/\s+/g, " ").trim());
+  return characters.length > MAX_REASON_LENGTH
+    ? `${characters.slice(0, MAX_REASON_LENGTH).join("")}…`
+    : characters.join("");
+}
+
 /**
  * A turn computed its reply but it never reached the origin conversation, or
  * reached it only in part. Persist that fact into the session (message +
@@ -102,18 +119,26 @@ export function isUndeliveredToOrigin(result: OriginDeliveryResult, session: Ses
  *
  * The note covers both cases on purpose: after a partial delivery, "repost it"
  * would put the part that landed into the conversation a second time.
+ *
+ * `reason` is the transport's explanation, when the caller has one. It is
+ * appended to both, so an operator reading an alert learns why the reply did
+ * not arrive (channel_not_found, or how many chunks landed) without opening
+ * the gateway log.
  */
 export function recordFailedOriginDelivery(
   session: Session,
   emit?: (event: string, payload: unknown) => void,
+  reason?: string,
 ): void {
+  const why = storableReason(reason);
   const note =
     `⚠️ Your reply above was NOT delivered to the original conversation (connector "${session.connector}" failed or the reply target is unreachable). ` +
     `The customer has seen none of it, or only the beginning — check the conversation, then send what is missing (send_message / reply) as soon as the connector recovers. ` +
-    `Do not repost a part that is already there.`;
+    `Do not repost a part that is already there.` +
+    (why ? ` Reason: ${why}` : "");
   try {
     insertMessage(session.id, "notification", note);
-    updateSession(session.id, { lastError: "origin delivery failed — reply not posted to the original conversation" });
+    updateSession(session.id, { lastError: why ? `${DELIVERY_FAILED}: ${why}` : DELIVERY_FAILED });
     emit?.("session:notification", { sessionId: session.id, message: note });
   } catch (err) {
     logger.error(`Failed to record origin-delivery failure for session ${session.id}: ${err instanceof Error ? err.message : String(err)}`);

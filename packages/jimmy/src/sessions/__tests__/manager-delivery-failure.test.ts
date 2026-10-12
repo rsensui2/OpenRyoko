@@ -104,14 +104,16 @@ describe("SessionManager — the reply cannot be delivered", () => {
     await manager.route(msg, connector);
 
     const session = getSessionBySessionKey(sessionKey)!;
-    expect(session.lastError).toContain("origin delivery failed");
+    // The cron run log and the operator's alert quote lastError, so it says why.
+    expect(session.lastError).toBe("origin delivery failed — reply not posted to the original conversation: connector offline");
     const notes = getMessages(session.id).filter((m) => m.role === "notification");
     expect(notes.some((m) => m.content.includes("NOT delivered to the original conversation"))).toBe(true);
+    expect(notes.some((m) => m.content.includes("Reason: connector offline"))).toBe(true);
     // One attempt at the reply, and no "Error: connector offline" sent after it.
     expect(replyMessage.mock.calls.map(([, text]) => text)).toEqual(["調査が終わりました。"]);
   });
 
-  it("keeps the transport error, and any credential in it, out of the session", async () => {
+  it("stores the reason with any credential in it masked", async () => {
     // Synthetic value in the shape of a Telegram bot token inside an API URL.
     const botToken = "1234567890:" + "AAE" + "abcdefghijklmnopqrstuvwxyz012345";
     const { manager, connector, replyMessage, msg, sessionKey } = setup();
@@ -125,13 +127,15 @@ describe("SessionManager — the reply cannot be delivered", () => {
       print.mockRestore();
     }
 
-    // The undelivered record is fixed text: the reason is not stored at all.
+    // The record carries the reason, through the same redaction as the log.
     const session = getSessionBySessionKey(sessionKey)!;
-    const stored = JSON.stringify([session, getMessages(session.id)]);
-    expect(session.lastError).toContain("origin delivery failed");
-    expect(stored).not.toContain(botToken);
-    expect(stored).not.toContain("api.telegram.org");
-    // The reason goes to the log, through the logger's redaction.
+    expect(session.lastError).toBe(
+      "origin delivery failed — reply not posted to the original conversation: request to https://api.telegram.org/bot[REDACTED]/sendMessage failed",
+    );
+    const notes = getMessages(session.id).filter((m) => m.role === "notification").map((m) => m.content);
+    expect(notes[0]).toContain("Reason: request to https://api.telegram.org/bot[REDACTED]/sendMessage failed");
+    expect(JSON.stringify([session, getMessages(session.id)])).not.toContain(botToken);
+    // The log line is redacted as well.
     const reason = lines.find((line) => line.includes("reply was not delivered"));
     expect(reason).toContain("https://api.telegram.org/bot[REDACTED]/sendMessage");
     expect(lines.join("\n")).not.toContain(botToken);
@@ -154,8 +158,11 @@ describe("SessionManager — the reply cannot be delivered", () => {
     const session = getSessionBySessionKey(sessionKey)!;
     expect(session.status).toBe("idle");
     expect(session.engineSessionId).toBe("engine-session-1");
-    // A reply the conversation only half received is not a delivered reply.
-    expect(session.lastError).toContain("origin delivery failed");
+    // A reply the conversation only half received is not a delivered reply,
+    // and the record says how much of it landed.
+    expect(session.lastError).toBe(
+      "origin delivery failed — reply not posted to the original conversation: Discord replyMessage: only 1 of 2 chunks were delivered (rate limited)",
+    );
     const notes = getMessages(session.id).filter((m) => m.role === "notification").map((m) => m.content);
     expect(notes).toHaveLength(1);
     expect(notes[0]).toContain("NOT delivered to the original conversation");
@@ -231,8 +238,8 @@ describe("SessionManager — the reply cannot be delivered", () => {
     expect(session.status).toBe("idle");
     const [, outcome] = vi.mocked(notifyParentSession).mock.calls.at(-1)!;
     expect(outcome).toMatchObject({ result: "再開して完了しました。", error: null });
-    // … and, as on the ordinary path, the lost reply is on record.
-    expect(session.lastError).toContain("origin delivery failed");
+    // … and, as on the ordinary path, the lost reply is on record with its reason.
+    expect(session.lastError).toBe("origin delivery failed — reply not posted to the original conversation: connector offline");
     const notes = getMessages(session.id).filter((m) => m.role === "notification");
     expect(notes.some((m) => m.content.includes("NOT delivered to the original conversation"))).toBe(true);
     expect(replyMessage.mock.calls.at(-1)![1]).toBe("再開して完了しました。");
