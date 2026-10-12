@@ -48,7 +48,7 @@ import { JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 import { resolveEffort } from "../shared/effort.js";
 import { effortLevelsForModel } from "../shared/models.js";
-import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit, isDeadSessionError, isPoisonedTranscriptError, isTransientServerError, MAX_USAGE_LIMIT_WAIT_MS, usageLimitOutlastsWait, withEarlierProgress } from "../shared/rateLimit.js";
+import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit, isDeadSessionError, isPoisonedTranscriptError, isTransientServerError, MAX_USAGE_LIMIT_WAIT_MS, withEarlierProgress } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt, isLikelyNearClaudeUsageLimit, recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { buildSpeakerPrefix, type SpeakerPrefixMeta } from "./speaker-prefix.js";
 import { loadJobs } from "../cron/jobs.js";
@@ -1038,7 +1038,7 @@ export class SessionManager {
             }
 
             logger.info(`Session ${session.id} retrying after usage limit (attempt ${attempt})`);
-            const retryResult = await runEngine(engine, {
+            const retried = await runEngine(engine, {
               prompt: msg.text,
               resumeSessionId: currentSession.engineSessionId ?? undefined,
               systemPrompt,
@@ -1053,6 +1053,11 @@ export class SessionManager {
               attachments: attachments.length > 0 ? attachments : undefined,
               sessionId: session.id,
             });
+            // Told that the next reset is further off than a turn waits for, the
+            // wait ends the way a turn that starts on such a limit does: failed
+            // now, with the reset time for its answer — not slept through.
+            const retryResult = failLimitThatOutlastsTheWait({ result: retried, engine, attempted: false, session });
+            const gaveUp = retryResult !== retried;
 
             const retryInterrupted = retryResult.error?.startsWith("Interrupted");
             const retryRateLimit = !retryInterrupted ? detectRateLimit(retryResult) : { limited: false as const };
@@ -1081,9 +1086,6 @@ export class SessionManager {
                   : `${session.engine} usage limit — waiting for reset`,
               });
 
-              // Now told a reset further off than a turn waits for: give up here
-              // rather than sleep until it, as a turn that starts that way does.
-              if (usageLimitOutlastsWait(retryRateLimit.resetsAt)) break;
               continue;
             }
 
@@ -1126,13 +1128,15 @@ export class SessionManager {
               ...(typeof retryResult.contextTokens === "number" ? { lastContextTokens: retryResult.contextTokens } : {}),
             });
             if (retryUpdated) {
-              notifyRateLimitResumed(retryUpdated);
-              notifyDiscordChannel(
-                `✅ ${session.engine} usage limit cleared. Session ${session.id}${session.employee ? ` (${session.employee})` : ""} resumed.`,
+              // A wait that was given up did not end with the limit clearing.
+              if (!gaveUp) notifyRateLimitResumed(retryUpdated);
+              notifyDiscordChannel(gaveUp
+                ? `❌ ${session.engine} usage limit did not clear in time. Session ${session.id}${session.employee ? ` (${session.employee})` : ""} has been stopped.`
+                : `✅ ${session.engine} usage limit cleared. Session ${session.id}${session.employee ? ` (${session.employee})` : ""} resumed.`,
               );
               notifyParentSession(retryUpdated, { result: retryResult.result, error: retryResult.error ?? null, cost: retryResult.cost, durationMs: retryResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
             }
-            logger.info(`Session ${session.id} resumed after usage reset`);
+            logger.info(`Session ${session.id} ${gaveUp ? "stopped waiting: the next usage reset is too far off" : "resumed after usage reset"}`);
             return;
           }
 

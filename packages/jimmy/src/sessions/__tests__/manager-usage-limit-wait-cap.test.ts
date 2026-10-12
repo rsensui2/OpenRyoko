@@ -2,10 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionManager } from "../manager.js";
+import { notifyDiscordChannel, notifyParentSession, notifyRateLimitResumed } from "../callbacks.js";
 import { failLimitThatOutlastsTheWait } from "../engine-fallback.js";
 import { _resetUsageLimitAnnouncements, setEngineInstallProbe } from "../engine-health-gate.js";
 import { _resetEngineLoginKnowledge } from "../engine-login.js";
-import { getSessionBySessionKey } from "../registry.js";
+import { getMessages, getSessionBySessionKey } from "../registry.js";
 import { invalidateModelRegistry } from "../../shared/models.js";
 import { JINN_HOME } from "../../shared/paths.js";
 import { MAX_USAGE_LIMIT_WAIT_MS } from "../../shared/rateLimit.js";
@@ -63,6 +64,7 @@ async function parked(f: ReturnType<typeof setup>, msg: IncomingMessage) {
 }
 
 beforeEach(() => {
+  vi.clearAllMocks();
   invalidateModelRegistry();
   _resetUsageLimitAnnouncements();
   _resetEngineLoginKnowledge();
@@ -125,11 +127,17 @@ describe("a usage limit with nowhere to switch to", () => {
   });
 
   // The 5h window reopens, the parked turn is tried again, and the engine now
-  // names the weekly window: a reset no longer worth waiting for either.
-  it("stops waiting when the retry after the reset is told the next reset is days away", async () => {
+  // names the weekly window: a reset no longer worth waiting for either. The
+  // wait ends the way a turn that starts on such a limit does.
+  it("stops waiting when the retry after the reset is told the next reset is days away, and says when that is", async () => {
     vi.useFakeTimers();
     const f = setup();
-    f.claudeRun.mockImplementationOnce(async () => limitedUntil(2 * HOUR)).mockImplementationOnce(async () => limitedUntil(5 * 24 * HOUR));
+    let nextReset = 0;
+    f.claudeRun.mockImplementationOnce(async () => limitedUntil(2 * HOUR)).mockImplementationOnce(async () => {
+      const weekly = limitedUntil(5 * 24 * HOUR);
+      nextReset = weekly.rateLimit!.resetsAt!;
+      return weekly;
+    });
     const msg = f.message();
     const pending = f.manager.route(msg, f.connector);
     try {
@@ -138,12 +146,45 @@ describe("a usage limit with nowhere to switch to", () => {
       await vi.advanceTimersByTimeAsync(2 * HOUR + 60_000);
 
       expect(f.claudeRun).toHaveBeenCalledTimes(2);
-      expect(getSessionBySessionKey(msg.sessionKey)).toMatchObject({ status: "error", lastError: "claude usage limit did not clear in time" });
-      expect(f.replies().at(-1)).toBe("Usage limit didn't reset in time. Please try again later.");
+      const session = getSessionBySessionKey(msg.sessionKey)!;
+      expect(session.status).toBe("error");
+      expect(session.lastError).toContain("claude usage limit reached");
+      expect(session.lastError).toContain(new Date(nextReset * 1000).toISOString());
+      // The same shape as a turn that is failed at the start: the answer is
+      // replied and kept, and whoever started the session is told it failed —
+      // not that it resumed.
+      expect(f.replies().at(-1)).toBe(session.lastError);
+      expect(getMessages(session.id).filter((item) => item.role === "assistant").at(-1)?.content).toBe(session.lastError);
+      expect(notifyParentSession).toHaveBeenCalledWith(expect.objectContaining({ id: session.id }), expect.objectContaining({ error: session.lastError }), expect.anything());
+      expect(notifyRateLimitResumed).not.toHaveBeenCalled();
+      const operatorNotices = vi.mocked(notifyDiscordChannel).mock.calls.map(([text]) => text);
+      expect(operatorNotices.at(-1)).toContain("has been stopped");
+      expect(operatorNotices.some((text) => text.includes("usage limit cleared"))).toBe(false);
     } finally {
       f.manager.getQueue().clearQueue(msg.sessionKey);
       await vi.advanceTimersByTimeAsync(600);
       await pending;
+    }
+  });
+
+  it("ends a wait whose reset never became known the way it always has, after six hours", async () => {
+    vi.useFakeTimers();
+    const f = setup();
+    f.claudeRun.mockImplementation(async () => limitedUntil(undefined));
+    const msg = f.message();
+    const pending = f.manager.route(msg, f.connector);
+    try {
+      await vi.waitFor(() => expect(getSessionBySessionKey(msg.sessionKey)?.status).toBe("waiting"));
+
+      await vi.advanceTimersByTimeAsync(6 * HOUR + 2 * 60_000);
+      await pending;
+
+      expect(getSessionBySessionKey(msg.sessionKey)).toMatchObject({ status: "error", lastError: "claude usage limit did not clear in time" });
+      expect(f.replies().at(-1)).toBe("Usage limit didn't reset in time. Please try again later.");
+      expect(notifyParentSession).not.toHaveBeenCalled();
+    } finally {
+      f.manager.getQueue().clearQueue(msg.sessionKey);
+      await vi.advanceTimersByTimeAsync(600);
     }
   });
 });

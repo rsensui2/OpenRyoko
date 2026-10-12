@@ -23,11 +23,13 @@ process.env.RYOKO_HOME = scratch;
 let api: typeof import("../api.js");
 let registry: typeof import("../../sessions/registry.js");
 let Manager: typeof import("../../sessions/manager.js").SessionManager;
+let callbacks: typeof import("../../sessions/callbacks.js");
 
 beforeAll(async () => {
   api = await import("../api.js");
   registry = await import("../../sessions/registry.js");
   Manager = (await import("../../sessions/manager.js")).SessionManager;
+  callbacks = await import("../../sessions/callbacks.js");
 });
 beforeEach(() => {
   vi.clearAllMocks();
@@ -80,8 +82,13 @@ describe("Web session — a usage limit with nowhere to switch to", () => {
   it("fails the turn at once, saying when the limit resets, when that is days away", async () => {
     vi.useFakeTimers();
     const f = setup();
-    const resetsAt = new Date(Math.floor((Date.now() + 5 * 24 * HOUR) / 1000) * 1000).toISOString();
-    f.claudeRun.mockImplementation(async () => limitedUntil(5 * 24 * HOUR));
+    // Read off the turn itself: the clock moves while the test waits for it.
+    let resetsAt = 0;
+    f.claudeRun.mockImplementation(async () => {
+      const weekly = limitedUntil(5 * 24 * HOUR);
+      resetsAt = weekly.rateLimit!.resetsAt!;
+      return weekly;
+    });
     try {
       await send(f.context, f.session.id);
       await vi.waitFor(() => expect(f.emitted("session:completed")).toHaveLength(1));
@@ -89,7 +96,7 @@ describe("Web session — a usage limit with nowhere to switch to", () => {
       const failed = registry.getSession(f.session.id)!;
       expect(failed).toMatchObject({ status: "error", engine: "claude", totalCost: 0.2, totalTurns: 1 }); // the limited turn, counted once
       expect(failed.lastError).toContain("claude usage limit reached");
-      expect(failed.lastError).toContain(resetsAt);
+      expect(failed.lastError).toContain(new Date(resetsAt * 1000).toISOString());
       expect(f.emitted("session:completed")[0]).toMatchObject({ sessionId: f.session.id, error: failed.lastError });
       expect(f.emitted("session:rate-limited")).toEqual([]);
       expect(f.claudeRun).toHaveBeenCalledTimes(1);
@@ -114,10 +121,17 @@ describe("Web session — a usage limit with nowhere to switch to", () => {
     }
   });
 
-  it("stops waiting when the retry after the reset is told the next reset is days away", async () => {
+  // The wait ends the way a turn that starts on such a limit does: failed, with
+  // the reset time for its error, and whoever started the session told so.
+  it("stops waiting when the retry after the reset is told the next reset is days away, and says when that is", async () => {
     vi.useFakeTimers();
     const f = setup();
-    f.claudeRun.mockImplementationOnce(async () => limitedUntil(2 * HOUR)).mockImplementationOnce(async () => limitedUntil(5 * 24 * HOUR));
+    let nextReset = 0;
+    f.claudeRun.mockImplementationOnce(async () => limitedUntil(2 * HOUR)).mockImplementationOnce(async () => {
+      const weekly = limitedUntil(5 * 24 * HOUR);
+      nextReset = weekly.rateLimit!.resetsAt!;
+      return weekly;
+    });
     try {
       await send(f.context, f.session.id);
       await vi.waitFor(() => expect(registry.getSession(f.session.id)?.status).toBe("waiting"));
@@ -125,8 +139,35 @@ describe("Web session — a usage limit with nowhere to switch to", () => {
       await vi.advanceTimersByTimeAsync(2 * HOUR + 60_000);
 
       expect(f.claudeRun).toHaveBeenCalledTimes(2);
-      expect(registry.getSession(f.session.id)).toMatchObject({ status: "error", lastError: "claude usage limit did not clear in time" });
-      expect(f.emitted("session:completed")).toEqual([expect.objectContaining({ sessionId: f.session.id, error: "claude usage limit did not clear in time" })]);
+      const failed = registry.getSession(f.session.id)!;
+      expect(failed).toMatchObject({ status: "error", totalCost: 0.4, totalTurns: 2 }); // both limited turns, once each
+      expect(failed.lastError).toContain("claude usage limit reached");
+      expect(failed.lastError).toContain(new Date(nextReset * 1000).toISOString());
+      expect(f.emitted("session:completed")).toEqual([expect.objectContaining({ sessionId: f.session.id, error: failed.lastError })]);
+      expect(callbacks.notifyParentSession).toHaveBeenCalledWith(expect.objectContaining({ id: f.session.id }), expect.objectContaining({ error: failed.lastError }), expect.anything());
+      expect(callbacks.notifyRateLimitResumed).not.toHaveBeenCalled();
+      const operatorNotices = vi.mocked(callbacks.notifyDiscordChannel).mock.calls.map(([text]) => text);
+      expect(operatorNotices.at(-1)).toContain("has been stopped");
+      expect(operatorNotices.some((text) => text.includes("usage limit cleared"))).toBe(false);
+    } finally {
+      await f.release();
+    }
+  });
+
+  it("ends a wait whose reset never became known the way it always has, after six hours", async () => {
+    vi.useFakeTimers();
+    const f = setup();
+    f.claudeRun.mockImplementation(async () => ({ ...limitedUntil(0), rateLimit: { status: "rejected", rateLimitType: "interactive_detected" } }));
+    try {
+      await send(f.context, f.session.id);
+      await vi.waitFor(() => expect(registry.getSession(f.session.id)?.status).toBe("waiting"));
+
+      await vi.advanceTimersByTimeAsync(6 * HOUR + 2 * 60_000);
+
+      const timedOut = "claude usage limit did not clear in time";
+      expect(registry.getSession(f.session.id)).toMatchObject({ status: "error", lastError: timedOut });
+      expect(f.emitted("session:completed")).toEqual([expect.objectContaining({ sessionId: f.session.id, result: null, error: timedOut })]);
+      expect(callbacks.notifyParentSession).toHaveBeenCalledWith(expect.objectContaining({ id: f.session.id }), { error: timedOut }, expect.anything());
     } finally {
       await f.release();
     }

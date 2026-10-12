@@ -61,7 +61,7 @@ import { handleHookPost, LOOPBACK as HOOK_LOOPBACK } from "./hook-endpoint.js";
 import { resolveEffort } from "../shared/effort.js";
 import { explicitThread } from "../shared/threading.js";
 import { effortLevelsForModel, invalidateModelRegistry } from "../shared/models.js";
-import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit, MAX_USAGE_LIMIT_WAIT_MS, usageLimitOutlastsWait } from "../shared/rateLimit.js";
+import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit, MAX_USAGE_LIMIT_WAIT_MS } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt, recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { CronJobsReadError, loadJobs, saveJobs } from "../cron/jobs.js";
 import { getCronJobScheduleStatus, getSchedulerSnapshot, reloadScheduler } from "../cron/scheduler.js";
@@ -3065,10 +3065,15 @@ async function runWebSession(
 
           logger.info(`Web session ${currentSession.id} retrying after usage limit (attempt ${attempt})`);
 
-          const retryResult = await runTurn(engine, { ...initialOpts, prompt,
+          const retried = await runTurn(engine, { ...initialOpts, prompt,
             resumeSessionId: current.engineSessionId ?? undefined,
           });
           if (shouldStop()) return;
+          // Told that the next reset is further off than a turn waits for, the
+          // wait ends the way a turn that starts on such a limit does: failed
+          // now, with the reset time for its error — not slept through.
+          const retryResult = failLimitThatOutlastsTheWait({ result: retried, engine, attempted: false, session: currentSession });
+          const gaveUp = retryResult !== retried;
           const retryInterrupted = retryResult.error?.startsWith("Interrupted");
           const retryRateLimit = !retryInterrupted ? detectRateLimit(retryResult) : { limited: false as const };
 
@@ -3089,9 +3094,6 @@ async function runWebSession(
                 : `${engineLabel} usage limit — waiting for reset`,
             });
 
-            // Now told a reset further off than a turn waits for: give up here
-            // rather than sleep until it, as a turn that starts that way does.
-            if (usageLimitOutlastsWait(retryRateLimit.resetsAt)) break;
             continue;
           }
 
@@ -3110,9 +3112,11 @@ async function runWebSession(
           });
 
           if (completedAfterRetry) {
-            notifyRateLimitResumed(completedAfterRetry);
-            notifyDiscordChannel(
-              `✅ ${engineLabel} usage limit cleared. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} resumed.`,
+            // A wait that was given up did not end with the limit clearing.
+            if (!gaveUp) notifyRateLimitResumed(completedAfterRetry);
+            notifyDiscordChannel(gaveUp
+              ? `❌ ${engineLabel} usage limit did not clear in time. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} has been stopped.`
+              : `✅ ${engineLabel} usage limit cleared. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} resumed.`,
             );
             notifyParentSession(completedAfterRetry, { result: retryResult.result, error: retryResult.error ?? null, cost: retryResult.cost, durationMs: retryResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
             if (deliverToConnector && retryResult.result && (!retryResult.error || retryResult.retryable === false)) {
@@ -3131,7 +3135,7 @@ async function runWebSession(
             durationMs: retryResult.durationMs,
           });
 
-          logger.info(`Web session ${currentSession.id} resumed after usage reset`);
+          logger.info(`Web session ${currentSession.id} ${gaveUp ? "stopped waiting: the next usage reset is too far off" : "resumed after usage reset"}`);
           return;
         }
 
