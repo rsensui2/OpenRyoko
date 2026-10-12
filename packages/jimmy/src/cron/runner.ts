@@ -217,7 +217,8 @@ export async function runCronJob(
       // notice lost along the way is logged, not failed, once the result arrived.
       const undelivered = connector.getUndeliveredMessageCount();
       if (connector.isOutputUndelivered()) {
-        throw new Error(`Delivery connector "${delivery?.connector}" is not available: ${undelivered} message${undelivered === 1 ? " was" : "s were"} not delivered`);
+        // No count in the reason: how many messages a fire lost varies, the failure does not.
+        throw new Error(`Delivery connector "${delivery?.connector}" is not available: the run's output was not delivered`);
       }
       if (undelivered > 0) {
         logger.warn(`Cron job "${job.name}" delivered its result, but ${undelivered} earlier message${undelivered === 1 ? " was" : "s were"} not delivered: connector "${delivery?.connector}" was not available`);

@@ -468,4 +468,26 @@ describe("cron alerts for a job that keeps failing", () => {
 
     expect(f.alert).toHaveBeenCalledTimes(2);
   });
+
+  it("alerts once for each of two reasons a job alternates between", async () => {
+    const f = setup();
+    const crashed = failed("Engine crashed");
+    await fireAt(f, [[0, loggedOut], [15, crashed], [30, loggedOut], [45, crashed]]);
+
+    expect(runs(f.job.id)).toHaveLength(4);
+    expect(f.alert).toHaveBeenCalledTimes(2);
+  });
+
+  it("counts a missing delivery connector as one failure, however many messages each fire lost", async () => {
+    const f = setup({}, { claude: ["codex"] });
+    f.connectors.delete("slack");
+    // The first fire loses its result; the second loses a fallback notice and its result.
+    await fireAt(f, [[0, ok], [15, { sessionId: "claude-1", result: "", error: "Usage limit reached" }]]);
+
+    const errors = runs(f.job.id).map((entry) => entry.error);
+    expect(errors).toHaveLength(2);
+    expect(errors[0]).toContain('"slack"');
+    expect(errors[1]).toBe(errors[0]);
+    expect(f.alert).toHaveBeenCalledTimes(1);
+  });
 });
