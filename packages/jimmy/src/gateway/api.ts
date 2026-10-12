@@ -11,7 +11,6 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import yaml from "js-yaml";
 import cron from "node-cron";
 import type { CronJob, Engine, EngineRunOpts, IncomingMessage, JinnConfig, Session, Target } from "../shared/types.js";
 import { isInterruptibleEngine } from "../shared/types.js";
@@ -50,7 +49,6 @@ import { forkEngineSession } from "../sessions/fork.js";
 import { deliverToOriginConnector, isUndeliveredToOrigin, recordFailedOriginDelivery } from "../sessions/origin-delivery.js";
 import { isCompletionBatchItem, queueChildCompletion, queuedPrompt } from "../sessions/completion-batching.js";
 import {
-  CONFIG_PATH,
   CRON_JOBS,
   ORG_DIR,
   SKILLS_DIR,

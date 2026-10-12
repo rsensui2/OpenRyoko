@@ -69,6 +69,11 @@ connectors:
     # 使い方と注意点は docs/connectors.md の「Provider Re-login」を参照。
     # providerAuth:
     #   enabled: true
+    #
+    # 受け取る添付ファイルの上限（MB、既定 200）。これより大きい添付は取得せず、どの添付が
+    # なぜ読めなかったかをセッションに伝える（返信でその旨を案内できる）。
+    # discord / whatsapp の下でも同じキーが使える。
+    # maxAttachmentMb: 200
 
 # MCPサーバーは従業員にブラウザ・検索・メッセージング機能を提供する。
 # Claude Codeセッションに --mcp-config 経由で自動注入される。
