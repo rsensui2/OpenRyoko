@@ -73,6 +73,8 @@ export interface HomeArchiveResult {
   skipped: SkippedEntry[];
   skippedCount: number;
   warnings: string[];
+  /** What the archive holds, entry by entry: the way to ask whether a given path made it in. */
+  manifest: BackupManifest;
 }
 
 interface WriteState {
@@ -257,6 +259,7 @@ export async function createHomeArchive(options: CreateHomeArchiveOptions): Prom
       skipped: manifest.skipped,
       skippedCount,
       warnings: warningsFor(walk, manifest.skipped, skippedCount),
+      manifest,
     };
   } catch (error) {
     fs.rmSync(temporary, { force: true });

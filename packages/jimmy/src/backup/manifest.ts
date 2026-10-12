@@ -38,6 +38,23 @@ export interface BackupManifest {
   skipped: SkippedEntry[];
 }
 
+/**
+ * The entry for `entryPath`, by binary search. A manifest lists its entries in
+ * path order, so nothing has to be indexed to look one up.
+ */
+export function findManifestEntry(entries: readonly ManifestEntry[], entryPath: string): ManifestEntry | undefined {
+  let low = 0;
+  let high = entries.length - 1;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    const candidate = entries[middle]!.path;
+    if (candidate === entryPath) return entries[middle];
+    if (candidate < entryPath) low = middle + 1;
+    else high = middle - 1;
+  }
+  return undefined;
+}
+
 export function serializeManifest(manifest: BackupManifest): Buffer {
   return Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 }

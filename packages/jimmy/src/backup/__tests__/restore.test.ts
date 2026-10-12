@@ -352,6 +352,39 @@ describe("restoreHomeArchive", () => {
     expect(fs.statSync(path.join(home, "knowledge", "large.bin")).size).toBe(300_000);
   });
 
+  it.skipIf(!POSIX_MODES_SUPPORTED || IS_ROOT)("will not replace a file it could not save first", async () => {
+    // The snapshot leaves out what it cannot read and says so. The restore then
+    // replaced that very file, and reported the previous state as saved.
+    const target = await scene();
+    const soul = path.join(target.home, "SOUL.md");
+    fs.writeFileSync(path.join(target.home, "config.yaml"), "broken\n");
+    for (const rewritten of ["rewritten at length since the backup was taken\n", "# Sole\n"]) {
+      // Once with a different size, once with the archived size: then it cannot even be compared.
+      fs.writeFileSync(soul, rewritten);
+      fs.chmodSync(soul, 0o000);
+      try {
+        await expect(restoreHomeArchive(optionsFor(target))).rejects.toThrow(/SOUL\.md.*could not be saved.*nothing was restored/s);
+      } finally {
+        fs.chmodSync(soul, 0o600);
+      }
+
+      expect(read(target.home, "SOUL.md")).toBe(rewritten);
+      expect(read(target.home, "config.yaml")).toBe("broken\n");
+      expect(listBackups(target.backups).filter((item) => item.preRestore)).toEqual([]);
+    }
+
+    // What it cannot save is only in the way of restoring that file. Restoring something else goes ahead.
+    fs.chmodSync(soul, 0o000);
+    try {
+      const result = await restoreHomeArchive(optionsFor(target, { only: ["config"] }));
+      expect(result.preRestore).not.toBeNull();
+    } finally {
+      fs.chmodSync(soul, 0o600);
+    }
+    expect(read(target.home, "config.yaml")).toBe(HOME_CONTENT["config.yaml"]);
+    expect(read(target.home, "SOUL.md")).toBe("# Sole\n");
+  });
+
   it("restores nothing when the current state cannot be saved first", async () => {
     const target = await scene();
     fs.writeFileSync(path.join(target.home, "config.yaml"), "broken\n");

@@ -4,7 +4,7 @@ import { pipeline } from "node:stream/promises";
 import zlib from "node:zlib";
 import { errorMessage, formatBytes } from "./format.js";
 import { ArchiveTooLargeError, manifestByteLimit, pathByteLimit, type ArchiveLimits } from "./limits.js";
-import { parseManifest, serializeManifest, type BackupManifest, type ManifestEntry } from "./manifest.js";
+import { findManifestEntry, parseManifest, serializeManifest, type BackupManifest, type ManifestEntry } from "./manifest.js";
 import { DEFAULT_ARCHIVE_LIMITS } from "./settings.js";
 import { readTar, type TarEntry, type TarEntrySink } from "./tar.js";
 import { MANIFEST_ENTRY_PATH, unsafePathReason } from "./targets.js";
@@ -117,19 +117,6 @@ async function loadManifest(file: string, limits: ArchiveLimits): Promise<{ mani
   }
 }
 
-function findEntry(entries: ManifestEntry[], entryPath: string): ManifestEntry | undefined {
-  let low = 0;
-  let high = entries.length - 1;
-  while (low <= high) {
-    const middle = (low + high) >> 1;
-    const candidate = entries[middle]!.path;
-    if (candidate === entryPath) return entries[middle];
-    if (candidate < entryPath) low = middle + 1;
-    else high = middle - 1;
-  }
-  return undefined;
-}
-
 /**
  * An entry below something that is not a directory would be written through it:
  * `skills/link -> /etc` followed by `skills/link/passwd` is how an archive
@@ -140,7 +127,7 @@ function nonDirectoryAbove(entries: ManifestEntry[], entryPath: string): string 
   const segments = entryPath.split("/");
   for (let depth = 1; depth < segments.length; depth += 1) {
     const ancestor = segments.slice(0, depth).join("/");
-    const found = findEntry(entries, ancestor);
+    const found = findManifestEntry(entries, ancestor);
     if (found && found.type !== "directory") return ancestor;
   }
   return null;

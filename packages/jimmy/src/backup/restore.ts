@@ -14,7 +14,7 @@ import {
 import { reserveArchiveName } from "./catalog.js";
 import { errorMessage } from "./format.js";
 import type { ArchiveLimits } from "./limits.js";
-import type { BackupManifest, ManifestEntry } from "./manifest.js";
+import { findManifestEntry, type BackupManifest, type ManifestEntry } from "./manifest.js";
 import { DEFAULT_ARCHIVE_LIMITS } from "./settings.js";
 import { BACKUP_KINDS, HOME_ARCHIVE_TARGETS, kindOfPath, unsafePathReason, type BackupKind } from "./targets.js";
 import { absolutePathOf, collectHomeEntries } from "./walk.js";
@@ -290,11 +290,17 @@ function assertRoomToStage(options: RestoreOptions, home: string, staged: number
  * back. It needs room too, and when it shares a disk with the home, room beside
  * the files about to be staged there.
  */
-async function snapshotCurrentState(options: RestoreOptions, home: string, staged: number): Promise<{ id: string; file: string } | null> {
+interface Snapshot {
+  id: string;
+  file: string;
+  manifest: BackupManifest;
+}
+
+async function snapshotCurrentState(options: RestoreOptions, home: string, staged: number): Promise<Snapshot | null> {
   const { id, file } = reserveArchiveName(options.backupDirectory, "pre-restore", options.now);
   const alsoStaged = sameFilesystem(home, options.backupDirectory) ? staged : 0;
   try {
-    await createHomeArchive({
+    const { manifest } = await createHomeArchive({
       home, destination: file, id, createdAt: options.now, excludePaths: [options.backupDirectory],
       limits: options.limits ?? DEFAULT_ARCHIVE_LIMITS,
       beforeWrite: ({ bytes }) => {
@@ -302,11 +308,38 @@ async function snapshotCurrentState(options: RestoreOptions, home: string, stage
         if (reason) throw new Error(reason);
       },
     });
-    return { id, file };
+    return { id, file, manifest };
   } catch (error) {
     if (error instanceof NothingToArchiveError) return null;
     throw new Error(`the current state could not be saved first, so nothing was restored: ${errorMessage(error)}`);
   }
+}
+
+/**
+ * Stops a restore that would overwrite something the snapshot does not hold.
+ *
+ * The snapshot leaves out what it cannot read and reports it as skipped; that
+ * is right for a backup and wrong as the last word before a replacement. If the
+ * file about to be replaced is not in the snapshot just taken, "the previous
+ * state was saved" would be false for exactly the file that matters. Checked
+ * against the snapshot's own manifest, path by path, so it does not depend on
+ * a list of skips that is only kept up to a point.
+ */
+function refuseToReplaceUnsaved(plan: PlanItem[], snapshot: Snapshot | null): void {
+  const unsaved = plan
+    .filter(({ action }) => action === "replace" || action === "mode")
+    .filter(({ entry }) => !snapshot || !findManifestEntry(snapshot.manifest.entries, entry.path))
+    .map(({ entry }) => {
+      const why = snapshot?.manifest.skipped.find((skipped) => skipped.path === entry.path)?.reason;
+      return why ? `${entry.path} (${why})` : entry.path;
+    });
+  if (unsaved.length === 0) return;
+  // The snapshot is of a restore that is not going to happen.
+  if (snapshot) fs.rmSync(snapshot.file, { force: true });
+  throw new Error(
+    `${listed(unsaved)} could not be saved before being replaced, so nothing was restored. `
+    + "Make it readable or move it out of the way, and run the restore again.",
+  );
 }
 
 /**
@@ -476,7 +509,9 @@ export async function restoreHomeArchive(options: RestoreOptions): Promise<Resto
 
   const staged = bytesToStage(plan);
   assertRoomToStage(options, home, staged);
-  const preRestore = await snapshotCurrentState(options, home, staged);
+  const snapshot = await snapshotCurrentState(options, home, staged);
+  refuseToReplaceUnsaved(plan, snapshot);
+  const preRestore = snapshot ? { id: snapshot.id, file: snapshot.file } : null;
   await writeIntoHome(options, home, plan, preRestore);
   return { ...result, preRestore };
 }
