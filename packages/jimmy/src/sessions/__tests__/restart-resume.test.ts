@@ -323,10 +323,12 @@ describe("selectRestartResumeCandidates", () => {
   });
 
   it("leaves out a session whose conversation moved on after the mark", () => {
-    // The mark outlived its restart (the nudge could not be posted), and the user has since carried on.
+    // The mark outlived its restart (the nudge could not be posted), and the
+    // user has since carried on: asked again, and was answered.
     const movedOn = interrupted(iso(10 * MINUTE), { status: "idle" });
     message(movedOn.id, "user", 20 * MINUTE, "the request that was cut off");
     message(movedOn.id, "user", 5 * MINUTE, "a new request, after the restart");
+    message(movedOn.id, "assistant", 4 * MINUTE, "the answer to it");
     const waiting = interrupted(iso(10 * MINUTE), { status: "idle" });
     message(waiting.id, "user", 20 * MINUTE, "the request that was cut off");
     message(waiting.id, "notification", 5 * MINUTE, "not something the user said");
@@ -336,6 +338,22 @@ describe("selectRestartResumeCandidates", () => {
     expect(candidates.map((s) => s.id)).toEqual([waiting.id]);
     expect(skipped).toEqual([{ sessionId: movedOn.id, reason: "moved-on" }]);
     expect(markOf(movedOn.id).interruptedAt).toBeUndefined();
+  });
+
+  it("keeps a session whose later message was only recorded, never answered", () => {
+    // A message queued behind the turn that was cut off: the dying process
+    // starts its turn, records it, and exits before anything else happens.
+    // That is not the conversation moving on — neither turn was resumed.
+    const session = interrupted(iso(10 * MINUTE), { status: "idle" });
+    message(session.id, "user", 20 * MINUTE, "the request that was cut off");
+    message(session.id, "assistant", 9 * MINUTE + 59_000, "Interrupted: gateway shutting down");
+    message(session.id, "user", 9 * MINUTE + 58_000, "a follow-up that was waiting in the queue");
+
+    const { candidates, skipped } = select();
+
+    expect(candidates.map((s) => s.id)).toEqual([session.id]);
+    expect(skipped).toEqual([]);
+    expect(markOf(session.id).interruptedAt).toBe(iso(10 * MINUTE));
   });
 
   it("leaves out a session that was nudged a moment ago (restart-loop guard)", () => {
@@ -448,6 +466,20 @@ describe("restartResumeMessage", () => {
     expect(message).toContain(`GET /api/sessions/${session.id}?last=10`);
   });
 
+  it("points at a message the user sent that never reached the session", () => {
+    const session = interrupted(iso(MINUTE));
+
+    const plain = restartResumeMessage(session, iso(MINUTE));
+    const withUnseen = restartResumeMessage(session, iso(MINUTE), { unseenUserMessage: true });
+
+    expect(plain).not.toContain("never reached you");
+    expect(withUnseen).toContain("never reached you");
+    expect(withUnseen).toContain(`GET /api/sessions/${session.id}?last=10`);
+    // Everything else the session has to know is still there.
+    expect(withUnseen.startsWith(RESTART_NUDGE_PREFIX)).toBe(true);
+    expect(withUnseen).toContain("Do NOT trigger it again");
+  });
+
   it("differs per interruption, so the route's duplicate check never swallows a later nudge", () => {
     const session = interrupted(iso(MINUTE));
     expect(restartResumeMessage(session, iso(MINUTE))).not.toBe(restartResumeMessage(session, iso(0)));
@@ -539,6 +571,18 @@ describe("resumeRestartInterruptedSessions", () => {
 
     expect(run.post).not.toHaveBeenCalled();
     expect(markOf(session.id)).toEqual({ nudgedAt: [] });
+  });
+
+  it("tells the session about a message that was recorded after the interruption but never answered", async () => {
+    const session = interrupted(iso(MINUTE), { status: "idle" });
+    message(session.id, "user", 5 * MINUTE, "the request that was cut off");
+    message(session.id, "user", 30_000, "a follow-up that was waiting in the queue");
+
+    const run = boot();
+    await run.fire();
+
+    expect(run.post).toHaveBeenCalledTimes(1);
+    expect(run.post.mock.calls[0][2].message).toBe(restartResumeMessage(session, iso(MINUTE), { unseenUserMessage: true }));
   });
 
   it("does not retry a refused nudge once the user has carried on by themselves", async () => {

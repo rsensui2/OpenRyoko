@@ -75,6 +75,13 @@ export interface RestartNudgeBody {
   dedupeKey: string;
 }
 
+/** What the nudge has to tell the session beyond "you were cut off". */
+export interface RestartNudgeSituation {
+  /** A user message was recorded after the interruption and never answered:
+   *  it was waiting in the queue and never reached the engine. */
+  unseenUserMessage?: boolean;
+}
+
 export interface RestartResumeDeps {
   config: JinnConfig;
   /** The port this gateway is listening on. */
@@ -244,6 +251,26 @@ function hasUserMessageAfter(sessionId: string, sinceMs: number): boolean {
   return !!initDb().prepare("SELECT 1 FROM messages WHERE session_id = ? AND role = 'user' AND timestamp > ? LIMIT 1").get(sessionId, sinceMs);
 }
 
+/**
+ * A user message recorded since `sinceMs` that an assistant reply does
+ * (`answered`) or does not follow. Recording a message is the first thing a
+ * turn does, so a message with nothing behind it was only received: a process
+ * that is shutting down still starts the next queued turn, records its
+ * message, and can exit before the session is even "running" again.
+ */
+function hasUserMessageSince(sessionId: string, sinceMs: number, answered: boolean): boolean {
+  return !!initDb().prepare(`
+    SELECT 1 FROM messages u
+    WHERE u.session_id = ? AND u.role = 'user' AND u.timestamp > ?
+      AND ${answered ? "" : "NOT "}EXISTS (
+        SELECT 1 FROM messages a
+        WHERE a.session_id = u.session_id AND a.role = 'assistant'
+          AND (a.timestamp > u.timestamp OR (a.timestamp = u.timestamp AND a.rowid > u.rowid))
+      )
+    LIMIT 1
+  `).get(sessionId, sinceMs);
+}
+
 /** New work reached the session after `sinceIso`: something the user said, or
  *  a turn queued for it (a web message, a child completion, a job wake-up).
  *  A restart nudge's own queue row is not new work. */
@@ -287,8 +314,9 @@ function skipReason(session: Session, input: SelectInput): RestartResumeSkip | n
   if (session.workflowProvenance) return "workflow"; // recoverStaleWorkflowAttemptSessions owns these
   if (session.source === "cron") return "cron"; // its connector lived for one run — nowhere to deliver
   if (isActive(session, input.isBusy)) return "active"; // the queue replay, or a new message, is already driving it
-  // A mark can outlive its restart (the nudge could not be posted). Once the user has carried on, it is history.
-  if (hasUserMessageAfter(session.id, interruptedAt)) return "moved-on";
+  // A mark can outlive its restart (the nudge could not be posted). Once the user has asked again
+  // and been answered, it is history. A later message that was merely recorded proves nothing.
+  if (hasUserMessageSince(session.id, interruptedAt, true)) return "moved-on";
   if (input.now - interruptedAt > input.maxAgeMs) return "too-old";
   if (underLoopGuard(session, state.nudgedAt, input.now)) return "recently-nudged";
   return null;
@@ -344,14 +372,17 @@ export function planRestartResumes(input: { candidates: Session[]; now: number }
  * time makes the text unique per interruption: the notification route treats
  * an identical persisted notification as a duplicate.
  */
-export function restartResumeMessage(session: Session, interruptedAt: string): string {
+export function restartResumeMessage(session: Session, interruptedAt: string, situation: RestartNudgeSituation = {}): string {
+  const transcript = `GET /api/sessions/${session.id}?last=10`;
   return [
     `${RESTART_NUDGE_PREFIX} Your previous turn in this conversation was cut off by a gateway restart at ${interruptedAt} — not by the user, and not by a mistake in your work.`,
     "",
     "Pick the request back up and finish it:",
     "1. First re-check anything that was in flight (a command, a tool call, a delegated child, a detached job). Look at its actual state before you assume it finished or run it again.",
     "2. If you restarted or updated the gateway yourself (for example `ryoko update --restart`), that restart is this one and it is done. Do NOT trigger it again — confirm the result and report it.",
-    `3. If you have no memory of the interrupted turn, read this session's latest messages before acting: GET /api/sessions/${session.id}?last=10`,
+    situation.unseenUserMessage
+      ? `3. The user wrote again while the gateway was restarting, and that message never reached you. Read this session's latest messages before acting — ${transcript} — and deal with it in the same answer.`
+      : `3. If you have no memory of the interrupted turn, read this session's latest messages before acting: ${transcript}`,
     "4. Then answer in the original conversation as usual; it is still waiting on you. If your answer to that request had already been delivered and nothing is left to do, do not post it a second time.",
   ].join("\n");
 }
@@ -374,7 +405,9 @@ async function sendRestartNudge(sessionId: string, plannedAt: number, deps: Rest
   }
   try {
     await (deps.post ?? postSessionNotification)(deps.port, sessionId, {
-      message: restartResumeMessage(session, interruptedAt),
+      message: restartResumeMessage(session, interruptedAt, {
+        unseenUserMessage: hasUserMessageSince(sessionId, Date.parse(interruptedAt), false),
+      }),
       dedupeKey: `restart-resume:${sessionId}:${interruptedAt}`,
     });
   } catch (err) {
