@@ -186,8 +186,12 @@ export async function runCronJob(
         connector,
         {
           employee,
-          engine: job.engine || employee?.engine || config.engines.default,
-          model: job.model || employee?.model || config.engines[(job.engine || config.engines.default) as "claude" | "codex" | "gemini"]?.model,
+          // Only what the job itself names. route() resolves the employee and
+          // config defaults, and the engine that runs supplies its own model;
+          // spelling a default out here handed an employee on another engine
+          // the default engine's model.
+          engine: job.engine || undefined,
+          model: job.model || undefined,
           title: job.name,
           effortLevel: job.effortLevel,
         },
