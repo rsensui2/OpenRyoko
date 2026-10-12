@@ -13,10 +13,11 @@ function entryExists(file: string): boolean {
 /** Add newly bundled skills on upgrade, including when no version migration is
  * pending. Existing skills (including user-managed symlinks) belong to the user.
  *
- * `ryoko migrate` no longer calls this: it goes through skills-sync, which also
- * updates and retires skills it can prove are unmodified. This remains the
- * add-only installer earlier releases ran, and the sync's tests use it to stand
- * in for a home those releases left behind. */
+ * `ryoko migrate` goes through skills-sync instead, which also updates and retires
+ * skills it can prove are unmodified. It still calls this in one kind of home: one
+ * whose skills/ is the user's own symlink, where the sync does not run and skills
+ * are handled as before it existed. The sync's tests also use it to stand in for a
+ * home earlier releases left behind. */
 export function stageMissingBundledSkills(
   templateDir: string,
   home: string,

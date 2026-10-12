@@ -50,9 +50,9 @@ vi.mock("../../skills-sync/instance.js", () => ({
 
 import fs from "node:fs";
 import path from "node:path";
-import { JINN_HOME, MIGRATIONS_DIR } from "../../shared/paths.js";
+import { JINN_HOME, MIGRATIONS_DIR, TEMPLATE_DIR } from "../../shared/paths.js";
 import {
-  dirent, missing, mockExistsSync, mockLstatSync, mockReaddirSync, mockSync, mockWriteFileSync, output, resetMigrateMocks, stampedVersions, stat, synced,
+  dirent, missing, mockExecFileSync, mockExistsSync, mockLstatSync, mockReaddirSync, mockSync, mockWriteFileSync, output, resetMigrateMocks, stampedVersions, stat, synced,
 } from "./migrate-harness.js";
 
 describe("migrate: where a migration's files may be written", () => {
@@ -184,6 +184,10 @@ describe("migrate: where a migration's files may be written", () => {
 
       expect(vi.mocked(fs.mkdirSync).mock.calls.map((call) => String(call[0])).filter((dir) => dir.startsWith(dangling))).toEqual([]);
       expect(output()).not.toMatch(/\[staged\] migrate/);
+      // The AI is not pointed at a skill that is not there: it reads the packaged copy.
+      const prompt = (mockExecFileSync.mock.calls[0][1] as string[]).at(-1)!;
+      expect(prompt).toContain(path.join(TEMPLATE_DIR, "skills", "migrate", "SKILL.md"));
+      expect(prompt).not.toContain(path.join(dangling, "SKILL.md"));
     });
   });
 });

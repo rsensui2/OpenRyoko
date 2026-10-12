@@ -259,62 +259,6 @@ describe("migrate: bundled skill sync", () => {
     });
   });
 
-  describe.each([
-    ["the sync fails", () => mockSync.mockImplementation(() => { throw new Error("receipt is unreadable"); })],
-    ["skills/ is the user's own symlink", () => mockSync.mockReturnValue(synced({ skipped: "skills-root-symlink" }))],
-    ["a newer OpenRyoko owns the home", () => mockSync.mockReturnValue(synced({ skipped: "newer-receipt" }))],
-    ["the receipt is in a newer format", () => mockSync.mockReturnValue(synced({ skipped: "newer-format" }))],
-  ])("when %s, migrate creates nothing under skills/", (_label, arrange) => {
-    const skillsDir = path.join(JINN_HOME, "skills");
-    const createdUnderSkills = () => [
-      ...vi.mocked(fs.mkdirSync).mock.calls.map((call) => String(call[0])),
-      ...mockWriteFileSync.mock.calls.map((call) => String(call[0])),
-      ...vi.mocked(fs.copyFileSync).mock.calls.map((call) => String(call[1])),
-    ].filter((file) => file === skillsDir || file.startsWith(skillsDir + path.sep));
-
-    beforeEach(() => {
-      // Migration 1.1.0 ships a skill file; the home has no skills/migrate at all.
-      shipMigrateSkillInMigration();
-      mockExistsSync.mockImplementation((file) => !String(file).startsWith(path.join(skillsDir, "migrate")));
-      arrange();
-    });
-
-    it("--auto neither stages the migrate skill nor copies the migration's skill files, and does not call the update done", async () => {
-      const { runMigrate } = await import("../migrate.js");
-
-      await runMigrate({ auto: true });
-
-      // Without the sync's word on which skills were deleted or retired, any of these
-      // files might put back something the operator removed.
-      expect(createdUnderSkills()).toEqual([]);
-      expect(fs.symlinkSync).not.toHaveBeenCalled();
-      expect(output()).not.toMatch(/\[staged\] migrate|\[new\] skills/);
-      expect(stampedVersions()).toEqual([]);
-    });
-
-    it("the AI run is told to leave skills/ alone and reads the packaged migrate skill", async () => {
-      const { runMigrate } = await import("../migrate.js");
-
-      await runMigrate({});
-
-      expect(createdUnderSkills()).toEqual([]);
-      const prompt = (mockExecFileSync.mock.calls[0][1] as string[]).at(-1)!;
-      expect(prompt).toMatch(/did not run/i);
-      expect(prompt).toMatch(/[Dd]o not create.* under skills\//);
-      expect(prompt).toContain(path.join(TEMPLATE_DIR, "skills", "migrate", "SKILL.md"));
-    });
-  });
-
-  it("uses the instance's migrate skill when the sync did not run but the skill is there", async () => {
-    mockSync.mockImplementation(() => { throw new Error("receipt is unreadable"); });
-    const { runMigrate } = await import("../migrate.js");
-
-    await runMigrate({});
-
-    const prompt = (mockExecFileSync.mock.calls[0][1] as string[]).at(-1)!;
-    expect(prompt).toContain(path.join(JINN_HOME, "skills", "migrate", "SKILL.md"));
-  });
-
   it("says so when the receipt could not be saved, and still honours what the sync found", async () => {
     shipMigrateSkillInMigration();
     mockExistsSync.mockImplementation((file) => !String(file).startsWith(path.join(JINN_HOME, "skills", "migrate")));
@@ -400,16 +344,6 @@ describe("migrate: bundled skill sync", () => {
     // Only the colour codes this command itself adds, never one from the data.
     for (const line of skillLines) expect(line.replace(/\u001b\[\d+m/g, "")).not.toMatch(/[\u0000-\u001f\u007f]/);
     expect(output().split("\n").filter((line) => line.includes("forged") && !line.includes("EROFS"))).toEqual([]);
-  });
-
-  it("carries on with the migrations when the sync cannot run", async () => {
-    mockSync.mockImplementation(() => { throw new Error("receipt is unreadable"); });
-    const { runMigrate } = await import("../migrate.js");
-
-    await expect(runMigrate({})).resolves.toBeUndefined();
-
-    expect(output()).toContain("receipt is unreadable");
-    expect(mockExecFileSync).toHaveBeenCalledOnce();
   });
 
   it("--auto counts a migration's files for an in-sync bundled skill as applied and completes", async () => {

@@ -97,13 +97,22 @@ bundled skill it placed.
   untouched and is brought up to date. Anything else is left alone — a skill you
   edited, or one installed under an assistant name other than the current one or the
   installer's default.
-- If `~/.ryoko/skills` is itself a symlink, nothing is synced into it.
+- If `~/.ryoko/skills` is itself a symlink, it is your own skill store and nothing is
+  synced into it: no receipt, no updates, no retirements. `ryoko migrate` says so, and
+  handles skills there as it did before the sync existed: it adds bundled skills that
+  are missing, copies a migration's new skill files, and leaves the ones that exist to
+  the AI merge.
 - Do not edit `.shipped-skills.json`. Deleting it is safe, though it also forgets which
   skills you deleted: missing bundled skills are installed again, skills identical to the
   shipped version are tracked again, and everything else is left alone.
 - When the receipt was written by a newer OpenRyoko than the one running (an older CLI
   pointed at the same home, say), the older one changes no skill and says so once.
   If no newer version uses the home, the receipt is wrong and can be fixed or deleted.
+- When the sync cannot run at all — the receipt is unreadable, say, or was written by a
+  newer OpenRyoko — `ryoko migrate` does not start a migration: it would end up recorded
+  as applied with its skill changes left out. It names the cause; fix that and run it
+  again. `ryoko migrate --auto` still applies what has nothing to do with skills, and
+  records the version only when that was everything.
 - `skills.autoSync: false` in `config.yaml` stops the sync at gateway start.
   `ryoko migrate` syncs either way.
 

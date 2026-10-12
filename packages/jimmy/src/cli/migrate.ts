@@ -25,6 +25,7 @@ import {
   buildTemplateReplacements,
 } from "../shared/templateReplacements.js";
 import { parseConfigPatch, applyPatchOps, type PatchOutcome } from "../shared/configPatch.js";
+import { stageMissingBundledSkills } from "./bundled-skills.js";
 import { auditGatewayReferences } from "./gateway-audit.js";
 import { migrationNeedsSession } from "./migration-declarations.js";
 import { syncInstanceBundledSkills } from "../skills-sync/instance.js";
@@ -118,13 +119,7 @@ const KEPT_SKILL_NOTES: Partial<Record<KeepReason, (name: string) => string>> = 
  * migration's files/ for any of them must not be applied: the sync has already put
  * each one in its final state, and a stray file would undo that.
  */
-interface SyncedSkills {
-  /**
-   * False when the sync could not run or stood back (skills/ is the user's symlink, or
-   * a newer OpenRyoko owns the home). Then nobody knows which skills were deleted,
-   * retired or edited, so this command creates nothing under skills/ at all.
-   */
-  available: boolean;
+interface SettledSkills {
   /** Skills that now match the shipped version. One more file would make them look edited. */
   inSync: ReadonlySet<string>;
   /** Shipped skills the operator deleted. Nothing in this command may put them back. */
@@ -135,9 +130,33 @@ interface SyncedSkills {
   kept: readonly KeptSkill[];
 }
 
+/**
+ * What the sync made of this home, which decides how far this command goes with skills.
+ *
+ * - "synced": the sync ran, and settled the skills listed.
+ * - "user-managed": skills/ is the user's own symlink. The sync never writes into such
+ *   a home, so its skills are handled as they were before the sync existed: bundled
+ *   skills it lacks are added, and a migration's files/skills/ is copied or merged like
+ *   any other file. Nothing is settled.
+ * - "blocked": the sync failed, or stood back because a newer OpenRyoko synced the home
+ *   last. Nobody knows which skills were deleted, retired or edited, so nothing is
+ *   created under skills/ and no migration is recorded as applied — by --auto or by an
+ *   AI run, which is not started.
+ */
+type SyncedSkills = SettledSkills & (
+  | { mode: "synced" | "user-managed" }
+  /** Why, and what has to happen first: both shown to the operator as they are. */
+  | { mode: "blocked"; reason: string; remedy: string }
+);
+
+const NOTHING_SETTLED: SettledSkills = { inSync: new Set(), deleted: new Set(), retired: new Set(), kept: [] };
 /** --check: nothing is synced, and nothing is written either. */
-const NO_SYNCED_SKILLS: SyncedSkills = { available: true, inSync: new Set(), deleted: new Set(), retired: new Set(), kept: [] };
-const SYNC_UNAVAILABLE: SyncedSkills = { ...NO_SYNCED_SKILLS, available: false };
+const NO_SYNCED_SKILLS: SyncedSkills = { ...NOTHING_SETTLED, mode: "synced" };
+
+const NEWER_OWNER = "skills/.shipped-skills.json は、より新しい OpenRyoko がこのホームを同期したと記録しています";
+const NEWER_OWNER_REMEDY = "その版の ryoko で migrate を実行してください。より新しい版がこのホームを使っていないなら、このファイルが誤りです。"
+  + "修正するか削除してから、ryoko migrate を再実行してください（削除すると、同期が配置したスキルと、削除した同梱スキルの記録も消えます）";
+const SYNC_FAILED_REMEDY = "原因を取り除いてから、ryoko migrate を再実行してください";
 
 /** What the AI should do about a bundled skill the sync left untouched, by reason. */
 const KEPT_SKILL_GUIDANCE: Record<Exclude<KeepReason, "deleted">, string> = {
@@ -158,8 +177,12 @@ const KEPT_SKILL_GUIDANCE: Record<Exclude<KeepReason, "deleted">, string> = {
  * the sync existed — so the state of every bundled skill is spelled out here.
  */
 function bundledSkillPromptLines(skills: SyncedSkills): string[] {
-  if (!skills.available) {
-    return ["The bundled skill sync did not run, so the state of skills/ is unknown. Do not create, replace or delete anything under skills/, even if a migration ships files for it."];
+  if (skills.mode === "user-managed") {
+    return [
+      "skills/ in this home is a symlink the user manages, so the bundled skill sync does not run here and no bundled skill was synced. "
+      + "Handle each migration's files/skills/ yourself, as the migrate skill describes for a home without the sync: "
+      + "copy a skill that is missing, and merge one that exists, keeping the user's edits.",
+    ];
   }
   const listed = (label: string, names: ReadonlySet<string>) => (names.size > 0 ? [`- ${label}: ${[...names].sort().join(", ")}`] : []);
   const settled = [
@@ -179,9 +202,29 @@ function bundledSkillPromptLines(skills: SyncedSkills): string[] {
 }
 
 /**
+ * skills/ is the user's own symlink: their skill store, which the sync never writes
+ * into. Its skills are handled the way every release before the sync handled them,
+ * starting here with the bundled skills the home lacks. Failing to add them is
+ * reported and nothing more: the store may be on another volume or read-only, and
+ * the migrations do not depend on it.
+ */
+function addMissingSkillsWithoutSync(): SyncedSkills {
+  console.log(`  ${YELLOW}[skills]${RESET} skills/ が symlink（利用者管理）のため、同梱スキルは自動同期しません。無い同梱スキルの追加と migration のスキルファイルは、同期の導入前と同じ扱いです`);
+  try {
+    for (const name of stageMissingBundledSkills(TEMPLATE_DIR, JINN_HOME, buildTemplateReplacements(readPortalName()))) {
+      ensureSkillSymlinks(name);
+      console.log(`  ${GREEN}[new skill]${RESET} ${name}`);
+    }
+  } catch (err: any) {
+    console.log(`  ${YELLOW}[skills]${RESET} 無い同梱スキルを追加できませんでした: ${printable(String(err?.message ?? err))}`);
+  }
+  return { ...NOTHING_SETTLED, mode: "user-managed" };
+}
+
+/**
  * Run the bundled skill sync — the same one the gateway runs at start — and
- * report it. A sync that cannot run is reported and does not block the versioned
- * migrations.
+ * report it. A sync that cannot run is reported here; what follows from it is the
+ * caller's to decide (see SyncedSkills).
  *
  * Like gateway start, this leaves out a bundled skill the operator deleted:
  * `ryoko update` runs `ryoko migrate --auto`, and an update must not undo a
@@ -192,9 +235,15 @@ function syncBundledSkillsStep(restoreDeleted: boolean | readonly string[]): Syn
   try {
     result = syncInstanceBundledSkills({ restoreDeleted });
   } catch (err: any) {
-    console.log(`  ${YELLOW}[skills]${RESET} 同梱スキルを同期できませんでした: ${printable(String(err?.message ?? err))}`);
+    const reason = printable(String(err?.message ?? err));
+    console.log(`  ${YELLOW}[skills]${RESET} 同梱スキルを同期できませんでした: ${reason}`);
     console.log(`  ${YELLOW}[skills]${RESET} スキルの状態が分からないため、この実行では skills/ 配下に何も作成しません`);
-    return SYNC_UNAVAILABLE;
+    return { ...NOTHING_SETTLED, mode: "blocked", reason, remedy: SYNC_FAILED_REMEDY };
+  }
+  if (result.skipped === "skills-root-symlink") return addMissingSkillsWithoutSync();
+  if (result.skipped) {
+    console.log(`  ${YELLOW}[skills]${RESET} ${NEWER_OWNER}。同梱スキルは変更せず、skills/ 配下には何も作成しません`);
+    return { ...NOTHING_SETTLED, mode: "blocked", reason: NEWER_OWNER, remedy: NEWER_OWNER_REMEDY };
   }
   for (const name of result.added) {
     ensureSkillSymlinks(name);
@@ -215,14 +264,8 @@ function syncBundledSkillsStep(restoreDeleted: boolean | readonly string[]): Syn
   if (result.receiptError) {
     console.log(`  ${YELLOW}[skills]${RESET} 受領証を保存できませんでした（${printable(result.receiptError)}）。スキル自体は配置済みで、次回の実行で記録されます`);
   }
-  if (result.skipped === "skills-root-symlink") {
-    console.log(`  ${DIM}[skills] skills/ が symlink（利用者管理）のため、同梱スキルは同期せず、skills/ 配下には何も作成しません${RESET}`);
-  } else if (result.skipped === "newer-receipt" || result.skipped === "newer-format") {
-    console.log(`  ${YELLOW}[skills]${RESET} skills/.shipped-skills.json は、より新しい OpenRyoko がこのホームを同期したと記録しています。同梱スキルは変更せず、skills/ 配下には何も作成しません`);
-  }
-  if (result.skipped) return SYNC_UNAVAILABLE;
   return {
-    available: true,
+    mode: "synced",
     inSync: new Set(result.inSync),
     deleted: new Set(result.kept.filter((skill) => skill.reason === "deleted").map((skill) => skill.name)),
     retired: new Set(result.retired),
@@ -232,12 +275,13 @@ function syncBundledSkillsStep(restoreDeleted: boolean | readonly string[]): Syn
 
 /**
  * Why a migration file must be left out, when it lies in the directory of a skill
- * the sync has settled; null when the file is none of the sync's business.
+ * the sync has settled; null when the file is none of the sync's business — which is
+ * every file in a home whose skills the user manages, where nothing is settled.
  */
 function settledSkillNote(relPath: string, skills: SyncedSkills): string | null {
   const parts = relPath.split(path.sep);
   if (parts[0] !== "skills") return null;
-  if (!skills.available) return "bundled skill sync did not run";
+  if (skills.mode === "blocked") return "bundled skill sync did not run";
   if (parts.length < 2) return null;
   if (skills.deleted.has(parts[1])) return "bundled skill deleted by the operator";
   if (skills.retired.has(parts[1])) return "bundled skill retired";
@@ -413,6 +457,17 @@ export async function runMigrate(opts: {
     return;
   }
 
+  // The AI run ends by recording the version. With the sync blocked it would do that
+  // having applied none of what these migrations ship for skills, and for good.
+  if (skills.mode === "blocked" && !opts.auto) {
+    console.error(`${RED}エラー:${RESET} 同梱スキルを同期できないため、マイグレーションを開始しません。`);
+    console.error(`  理由: ${skills.reason}`);
+    console.error(`  ${skills.remedy}`);
+    console.error(`${DIM}マイグレーションのファイルはステージングしておらず、バージョン情報も更新していません。${RESET}\n`);
+    process.exitCode = 1;
+    return;
+  }
+
   // Stage migration files into ~/.ryoko/migrations/
   console.log("マイグレーションファイルをステージング中...");
   fs.mkdirSync(MIGRATIONS_DIR, { recursive: true });
@@ -426,16 +481,17 @@ export async function runMigrate(opts: {
 
   // Also ensure the migrate skill is available in the instance — unless the
   // operator deleted it, or the sync could not say whether they did. Then nothing
-  // is put there and the AI reads the packaged copy.
+  // is put there, and an AI run reads the packaged copy: as it does whenever the
+  // instance has none it can read, such as behind a link that leads nowhere.
   const migrateSkillSrc = path.join(TEMPLATE_DIR, "skills", "migrate");
   const migrateSkillDest = path.join(SKILLS_DIR, "migrate");
-  const migrateSkillDeleted = skills.deleted.has("migrate");
-  const readPackagedMigrateSkill = migrateSkillDeleted || (!skills.available && !fs.existsSync(migrateSkillDest));
-  if (skills.available && !migrateSkillDeleted && fs.existsSync(migrateSkillSrc) && !isTaken(migrateSkillDest)) {
+  const stageMigrateSkill = skills.mode !== "blocked" && !skills.deleted.has("migrate") && fs.existsSync(migrateSkillSrc) && !isTaken(migrateSkillDest);
+  if (stageMigrateSkill) {
     copyDirRecursive(migrateSkillSrc, migrateSkillDest);
     ensureSkillSymlinks("migrate");
     console.log(`  ${GREEN}[staged]${RESET} migrate スキル`);
   }
+  const migrateSkillToRead = stageMigrateSkill || fs.existsSync(migrateSkillDest) ? migrateSkillDest : migrateSkillSrc;
 
   // --auto: apply safe changes deterministically without launching AI
   if (opts.auto) {
@@ -454,7 +510,7 @@ export async function runMigrate(opts: {
   try {
     const prompt = [
       `Apply all pending migrations in ${MIGRATIONS_DIR}.`,
-      `Follow the migrate skill instructions at ${path.join(readPackagedMigrateSkill ? migrateSkillSrc : migrateSkillDest, "SKILL.md")}.`,
+      `Follow the migrate skill instructions at ${path.join(migrateSkillToRead, "SKILL.md")}.`,
       `Current instance version: ${instanceVersion}`,
       `Target version: ${packageVersion}`,
       `Pending versions: ${pending.join(", ")}`,
@@ -526,7 +582,7 @@ async function applyAutoMigrations(
       if (settled) {
         if (entry.type === "file") console.log(`  ${DIM}[skip]${RESET} ${entry.relPath} (${settled})`);
         // Left out because nobody knows the skill's state is not the same as applied.
-        if (entry.type === "file" && !skills.available) skippedExisting++;
+        if (entry.type === "file" && skills.mode === "blocked") skippedExisting++;
         continue;
       }
 
@@ -584,7 +640,14 @@ async function applyAutoMigrations(
     if (needSession.length > 0) {
       console.log(`${YELLOW}These migrations need an AI session or the owner, and --auto does not complete them:${RESET} ${needSession.join(", ")}`);
     }
-    console.log(`${YELLOW}Version was not updated.${RESET} Run ${RESET}ryoko migrate${YELLOW} (without --auto) to merge the skipped files and complete the migration.${RESET}`);
+    if (skills.mode === "blocked") {
+      // `ryoko migrate` refuses for the same reason, so it is not the next step yet.
+      console.log(`${YELLOW}Version was not updated.${RESET} 同梱スキルを同期できないため、ryoko migrate もこのマイグレーションを開始しません。`);
+      console.log(`  理由: ${skills.reason}`);
+      console.log(`  ${skills.remedy}`);
+    } else {
+      console.log(`${YELLOW}Version was not updated.${RESET} Run ${RESET}ryoko migrate${YELLOW} (without --auto) to merge the skipped files and complete the migration.${RESET}`);
+    }
     console.log(`${DIM}Staged migration files remain in ${MIGRATIONS_DIR}.${RESET}\n`);
     return;
   }
