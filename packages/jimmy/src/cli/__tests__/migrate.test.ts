@@ -391,7 +391,53 @@ describe("migrate: bundled skill sync", () => {
 
     const prompt = (mockExecFileSync.mock.calls[0][1] as string[]).at(-1)!;
     expect(prompt).toContain(path.join(JINN_HOME, "skills", "migrate", "SKILL.md"));
-    expect(prompt).not.toMatch(/deleted/i);
+    expect(prompt).not.toMatch(/deleted|retired|left untouched|up to date/i);
+  });
+
+  describe("what the AI is told about bundled skills", () => {
+    // The AI runs after the sync and never sees this command's output, and the migrate
+    // skill in the home may predate the sync. What it must know travels in the prompt.
+    const promptFor = async (result: Partial<BundledSkillSync>) => {
+      mockSync.mockReturnValue(synced(result));
+      const { runMigrate } = await import("../migrate.js");
+      await runMigrate({});
+      return (mockExecFileSync.mock.calls[0][1] as string[]).at(-1)!;
+    };
+
+    it("names the skills that are already up to date, so it applies nothing to them", async () => {
+      const prompt = await promptFor({ added: ["sync"], updated: ["status"], inSync: ["cron-manager", "status", "sync"] });
+
+      expect(prompt).toMatch(/synced before/i);
+      expect(prompt).toMatch(/up to date.*: cron-manager, status, sync\b/);
+      expect(prompt).toMatch(/files\/skills\//);
+    });
+
+    it("names each skill the sync left alone with the reason, and what to do about it", async () => {
+      const prompt = await promptFor({
+        inSync: ["sync"],
+        kept: [
+          { name: "migrate", reason: "modified" },
+          { name: "onboarding", reason: "unmanaged" },
+          { name: "self-heal", reason: "customized" },
+          { name: "status", reason: "symlink" },
+        ],
+      });
+
+      expect(prompt).toMatch(/^- migrate: .*edited.*newer version.*keep/m);
+      expect(prompt).toMatch(/^- self-heal: .*edited.*[Ll]eave/m);
+      expect(prompt).toMatch(/^- status: .*symlink.*[Dd]o not touch/m);
+      // An unrecorded skill is not presumed customized: with no additions of the
+      // user's it simply takes the migration's copy.
+      expect(prompt).toMatch(/^- onboarding: .*nothing records.*as is.*otherwise merge/m);
+    });
+
+    it("lists a deleted skill once, under the deleted ones", async () => {
+      const prompt = await promptFor({ kept: [{ name: "new", reason: "deleted" }, { name: "migrate", reason: "modified" }] });
+
+      expect(prompt.match(/\bnew\b/g)).toHaveLength(1);
+      expect(prompt).toMatch(/deleted.*: new\b/);
+      expect(prompt).toMatch(/^- migrate: /m);
+    });
   });
 
   it("carries on with the migrations when the sync cannot run", async () => {

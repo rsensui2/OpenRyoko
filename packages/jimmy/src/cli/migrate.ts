@@ -27,7 +27,7 @@ import {
 import { parseConfigPatch, applyPatchOps, type PatchOutcome } from "../shared/configPatch.js";
 import { auditGatewayReferences } from "./gateway-audit.js";
 import { syncInstanceBundledSkills } from "../skills-sync/instance.js";
-import type { BundledSkillSync, KeepReason } from "../skills-sync/types.js";
+import type { BundledSkillSync, KeepReason, KeptSkill } from "../skills-sync/types.js";
 import { claudeAutoMemoryEnvFor } from "../shared/claude-auto-memory.js";
 
 const GREEN = "\x1b[32m";
@@ -95,9 +95,46 @@ interface SyncedSkills {
   deleted: ReadonlySet<string>;
   /** Skills the package no longer ships, just moved to the backup directory. */
   retired: ReadonlySet<string>;
+  /** Skills left untouched for any other reason: the only ones that may need a merge. */
+  kept: readonly KeptSkill[];
 }
 
-const NO_SYNCED_SKILLS: SyncedSkills = { inSync: new Set(), deleted: new Set(), retired: new Set() };
+const NO_SYNCED_SKILLS: SyncedSkills = { inSync: new Set(), deleted: new Set(), retired: new Set(), kept: [] };
+
+/** What the AI should do about a bundled skill the sync left untouched, by reason. */
+const KEPT_SKILL_GUIDANCE: Record<Exclude<KeepReason, "deleted">, string> = {
+  modified: "edited by the user since it was installed, and a newer version ships. Merge the migration's changes into it and keep the user's edits.",
+  customized: "edited by the user; the shipped version has not changed since. Leave it as it is.",
+  unmanaged: "differs from every version ever shipped, and nothing records how it was installed. "
+    + "If it holds no additions of the user's, replace it with the migration's copy as is (when the migration ships one); otherwise merge and keep the additions.",
+  symlink: "a symlink, or holds one: the user manages it elsewhere. Do not touch it.",
+  "not-directory": "something that is not a directory occupies its name. Leave it.",
+  unreadable: "could not be read. Leave it.",
+  "retired-modified": "no longer shipped, but edited by the user. Leave it.",
+};
+
+/**
+ * What the AI needs to know about bundled skills. It starts after the sync, never
+ * sees this command's output, and may be following a migrate skill written before
+ * the sync existed — so the state of every bundled skill is spelled out here.
+ */
+function bundledSkillPromptLines(skills: SyncedSkills): string[] {
+  const listed = (label: string, names: ReadonlySet<string>) => (names.size > 0 ? [`- ${label}: ${[...names].sort().join(", ")}`] : []);
+  const settled = [
+    ...listed("already up to date", skills.inSync),
+    ...listed("deleted by the operator, do not recreate", skills.deleted),
+    ...listed("retired and moved to the backup directory, do not recreate", skills.retired),
+  ];
+  const kept = skills.kept.map(({ name, reason }) => `- ${name}: ${KEPT_SKILL_GUIDANCE[reason as Exclude<KeepReason, "deleted">]}`);
+  return [
+    ...(settled.length > 0
+      ? ["Bundled skills were synced before this session started. Apply nothing from a migration's files/skills/ to these:", ...settled]
+      : []),
+    ...(kept.length > 0
+      ? ["The sync left these bundled skills untouched. They are the only bundled skills that may need merging:", ...kept]
+      : []),
+  ];
+}
 
 /**
  * Run the bundled skill sync — the same one the gateway runs at start — and
@@ -137,6 +174,7 @@ function syncBundledSkillsStep(restoreDeleted: boolean): SyncedSkills {
     inSync: new Set(result.inSync),
     deleted: new Set(result.kept.filter((skill) => skill.reason === "deleted").map((skill) => skill.name)),
     retired: new Set(result.retired),
+    kept: result.kept.filter((skill) => skill.reason !== "deleted"),
   };
 }
 
@@ -367,13 +405,7 @@ export async function runMigrate(opts: {
       `For each version in order, read its MIGRATION.md and apply the changes.`,
       `After all migrations, update jinn.version in config.yaml to "${packageVersion}".`,
       `Clean up the migrations/ directory when done.`,
-      // Said here, not only in the skill: an instance may hold a migrate skill older than these rules.
-      ...(skills.deleted.size > 0
-        ? [`The operator deleted these bundled skills: ${[...skills.deleted].sort().join(", ")}. Do not recreate them, even if a migration ships files for them.`]
-        : []),
-      ...(skills.retired.size > 0
-        ? [`These bundled skills were retired and moved to the backup directory: ${[...skills.retired].sort().join(", ")}. Do not recreate them, even if a migration ships files for them.`]
-        : []),
+      ...bundledSkillPromptLines(skills),
     ].join("\n");
 
     const args = buildMigrateArgs(defaultEngine, prompt);

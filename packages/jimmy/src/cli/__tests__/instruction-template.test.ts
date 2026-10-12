@@ -75,6 +75,15 @@ describe("shipped instruction templates", () => {
     expect(read("migrations/2026.10.9/files/skills/migrate/SKILL.md")).toBe(read("skills/migrate/SKILL.md"));
   });
 
+  it("has the migrate skill rely on the list in its prompt, not on command output it never sees", () => {
+    const migrate = read("skills/migrate/SKILL.md");
+    // `ryoko migrate` prints "[skill kept]" lines to the terminal; the AI it then starts does not get them.
+    expect(migrate).not.toContain("[skill kept]");
+    expect(migrate).toMatch(/プロンプト.*挙が/);
+    // No receipt yet: an old copy is not automatically the user's customization.
+    expect(migrate).toMatch(/追記が無ければ.*そのまま/);
+  });
+
   it("tells the migrate skill not to append sections to an entry-point CLAUDE.md", () => {
     const migrate = read("skills/migrate/SKILL.md");
     expect(migrate).toContain("@AGENTS.md");
