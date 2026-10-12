@@ -430,10 +430,16 @@ export class SessionManager {
         return this.runSession(session!, msg, attachmentPaths, connector, target, opts.employee);
       });
     } finally {
+      // The turn is over, however it ended: it ran to its end, it was
+      // cancelled in the queue, or it stopped at one of runSession's early
+      // exits (engine not available, /goal on an engine that cannot take it,
+      // session gone). Its attachments — the message's own directory under
+      // tmp/attachments/, never any other path — are removed here, the one
+      // place every one of those ways out passes through.
+      removeAttachmentDirs(attachmentPaths);
       // A cancelled queue item never enters runSession's cleanup. Clear only
       // that item's pending indicators; a started session may have deliberately
       // delivered :eyes: as its final response and must retain that reaction.
-      if (!executionStarted) removeAttachmentDirs(attachmentPaths);
       if (!executionStarted) await this.clearPendingReactions(connector, target);
     }
 
@@ -1232,10 +1238,8 @@ export class SessionManager {
         await connector.removeReaction(target, "hourglass_flowing_sand").catch(() => {});
       }
     } finally {
-      // Clean up the attachments downloaded for this message: its own
-      // directory under tmp/attachments/, and never any other path.
-      removeAttachmentDirs(attachments);
-
+      // (The attachments downloaded for this message are removed by route(),
+      // once the turn is over — whichever way it ended.)
       if (mcpConfigPath) cleanupMcpConfigFile(session.id);
     }
   }

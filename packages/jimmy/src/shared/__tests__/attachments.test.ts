@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -11,7 +12,7 @@ import {
   sweepStaleAttachmentDirs,
 } from "../attachments.js";
 import { JINN_HOME, TMP_DIR } from "../paths.js";
-import { confineRemovals, type ConfinedRemovals } from "../test-support/confined-removals.js";
+import { confineRemovals, isStrictlyInside, type ConfinedRemovals } from "../test-support/confined-removals.js";
 
 /* Attachments a connector downloads are named by whoever sent them. Saved
  * straight into tmp/, a file called engine-health.json replaces the gateway's
@@ -34,8 +35,14 @@ const stateFile = path.join(TMP_DIR, "engine-health.json");
 const outsideTmp = path.join(JINN_HOME, "not-an-attachment.txt");
 let removals: ConfinedRemovals;
 
+/** Write a file — but only at an absolute path inside the OS temp directory.
+ *  A path the code under test got wrong (a relative one, say) fails here, as an
+ *  error, before anything is created where it happens to point. */
 function save(dir: string, ...segments: string[]): string {
   const file = path.join(dir, ...segments);
+  if (!isStrictlyInside(os.tmpdir(), file) && !isStrictlyInside(fs.realpathSync(os.tmpdir()), file)) {
+    throw new Error(`refusing to write outside the OS temp directory: ${JSON.stringify(file)}`);
+  }
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, "bytes");
   return file;
@@ -258,6 +265,79 @@ describe("sweepStaleAttachmentDirs", () => {
 
     expect(fs.existsSync(fine)).toBe(false);
     expect(fs.existsSync(stuck)).toBe(true);
+  });
+});
+
+describe("attachments under a home given as a relative path", () => {
+  /* RYOKO_HOME=./home is a home like any other: every path in it is then
+   * relative to where the gateway was started. The cleanup refuses relative
+   * paths outright — it must never guess what one is relative to — and so,
+   * with such a home, it refused its own directory: nothing was ever removed
+   * or swept. The attachment directory is resolved once, when the gateway
+   * loads, and is absolute from then on.
+   *
+   * The working directory is only pretended here (process.cwd is replaced),
+   * the module is loaded afresh inside that pretence, and fs.rmSync stays
+   * confined to the sandbox the pretended directory is in. */
+  let sandbox: string;
+  let relativeHome: typeof import("../attachments.js");
+
+  beforeEach(async () => {
+    vi.restoreAllMocks(); // the outer confinement is to the test home; this block has a sandbox of its own
+    sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "ryoko-relative-home-"));
+    removals = confineRemovals(sandbox);
+    vi.spyOn(process, "cwd").mockReturnValue(sandbox);
+    vi.resetModules();
+    vi.doMock("../paths.js", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("../paths.js")>()),
+      TMP_DIR: path.join("home", "tmp"),
+    }));
+    relativeHome = await import("../attachments.js");
+  });
+
+  afterEach(() => {
+    vi.doUnmock("../paths.js");
+    vi.resetModules();
+    vi.restoreAllMocks();
+    removals.remove(sandbox, { recursive: true, force: true }); // the real rmSync, on the directory made above
+    removals = confineRemovals(ATTACHMENTS_DIR); // for the outer afterEach
+  });
+
+  it("knows its directory by an absolute path", () => {
+    expect(relativeHome.ATTACHMENTS_DIR).toBe(path.join(sandbox, "home", "tmp", "attachments"));
+    expect(path.dirname(relativeHome.newAttachmentDir())).toBe(relativeHome.ATTACHMENTS_DIR);
+  });
+
+  it("removes a message's directory at the end of its turn", () => {
+    const dir = relativeHome.newAttachmentDir();
+    const file = save(dir, "0", "photo.png");
+
+    relativeHome.removeAttachmentDirs([file]);
+
+    expect(removals.requests).toEqual([dir]);
+    expect(fs.existsSync(dir)).toBe(false);
+  });
+
+  it("sweeps what was left behind", () => {
+    const stale = relativeHome.newAttachmentDir();
+    save(stale, "0", "old.png");
+    const longAgo = new Date(Date.now() - 2 * relativeHome.STALE_ATTACHMENTS_AFTER_MS);
+    fs.lutimesSync(stale, longAgo, longAgo);
+
+    expect(relativeHome.sweepStaleAttachmentDirs()).toBe(1);
+
+    expect(removals.requests).toEqual([stale]);
+    expect(fs.existsSync(stale)).toBe(false);
+  });
+
+  it("still refuses a relative path it is handed: only its own directory is resolved", () => {
+    const dir = relativeHome.newAttachmentDir();
+    const file = save(dir, "0", "photo.png");
+
+    relativeHome.removeAttachmentDirs([path.relative(sandbox, file), path.join("home", "tmp", "attachments", path.basename(dir))]);
+
+    expect(removals.requests).toEqual([]);
+    expect(fs.existsSync(file)).toBe(true);
   });
 });
 

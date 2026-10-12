@@ -14,8 +14,14 @@ import { TMP_DIR } from "./paths.js";
  * would then delete it. A directory per message also keeps two messages — or
  * two files of one message — with the same file name from overwriting each
  * other while a turn is still reading them.
+ *
+ * Absolute, always. The home can be given as a relative path (RYOKO_HOME=./home),
+ * and the cleanup below refuses every relative path it is handed — it must
+ * never guess what one is relative to. Left relative, this directory was
+ * refused along with them, and nothing was ever removed or swept. It is
+ * resolved here, once, against the directory the gateway was started in.
  */
-export const ATTACHMENTS_DIR = path.join(TMP_DIR, "attachments");
+export const ATTACHMENTS_DIR = path.resolve(TMP_DIR, "attachments");
 
 /**
  * A directory for the attachments of one incoming message. Only the name is
@@ -37,8 +43,8 @@ export function attachmentSlot(messageDir: string, slot: number): string {
 
 /**
  * The per-message directory under tmp/attachments/ that `filePath` lies in, or
- * null when it lies anywhere else. Nothing here depends on the working
- * directory: a path that is not absolute is not resolved, it is refused.
+ * null when it lies anywhere else. A path that is not absolute is not
+ * resolved, it is refused: what it is relative to is anybody's guess.
  */
 function messageDirOf(filePath: unknown): string | null {
   if (typeof filePath !== "string" || !path.isAbsolute(filePath) || !path.isAbsolute(ATTACHMENTS_DIR)) return null;

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionManager } from "../manager.js";
+import { deleteSession, getSessionBySessionKey } from "../registry.js";
 import { ATTACHMENTS_DIR, attachmentSlot, newAttachmentDir, STALE_ATTACHMENTS_AFTER_MS, sweepStaleAttachmentDirs } from "../../shared/attachments.js";
 import { TMP_DIR } from "../../shared/paths.js";
 import { confineRemovals, type ConfinedRemovals } from "../../shared/test-support/confined-removals.js";
@@ -26,9 +27,9 @@ const stateFile = path.join(TMP_DIR, "engine-health.json");
 let removals: ConfinedRemovals;
 let sequence = 0;
 
-function setup(attachments: Attachment[]) {
+function setup(attachments: Attachment[], { defaultEngine = "codex", registered = ["codex"] }: { defaultEngine?: string; registered?: string[] } = {}) {
   const config = {
-    engines: { default: "codex", codex: { bin: "codex" } },
+    engines: { default: defaultEngine, codex: { bin: "codex" }, gemini: { bin: "gemini" } },
     connectors: { discord: {} }, sessions: {}, logging: { level: "error", stdout: false },
   } as unknown as JinnConfig;
   const seen: Array<{ paths: string[]; existed: boolean[] }> = [];
@@ -37,7 +38,7 @@ function setup(attachments: Attachment[]) {
     seen.push({ paths, existed: paths.map((file) => fs.existsSync(file)) });
     return { sessionId: "native-test", result: "done" };
   });
-  const manager = new SessionManager(config, new Map<string, Engine>([["codex", { name: "codex", run } as Engine]]));
+  const manager = new SessionManager(config, new Map<string, Engine>(registered.map((name) => [name, { name, run } as Engine])));
   const sessionKey = `discord:attachment-cleanup-${++sequence}`;
   const msg = {
     connector: "discord", source: "discord", sessionKey, channel: "C-attachments",
@@ -143,5 +144,76 @@ describe("attachments and the sweep of old leftovers", () => {
 
     expect(duringTheTurn).toEqual([{ swept: 0, stillThere: true }]);
     expect(fs.existsSync(dir)).toBe(false); // and the turn's own cleanup still removes it at the end
+  });
+});
+
+describe("attachments of a turn that stops before it reaches the engine", () => {
+  /* A turn can end at its very first steps: the session's engine is not
+   * registered, the message is /goal for an engine that cannot do it, the
+   * session was deleted while the message waited. None of these reached the
+   * cleanup at the end of a turn — and since the turn had been started, the
+   * attachments stayed marked as in use, so the sweep never took them either. */
+  const attached = () => {
+    const dir = newAttachmentDir();
+    const file = saved(dir, 0, "report.pdf");
+    return { dir, file, attachments: [{ name: "report.pdf", url: "", mimeType: "application/pdf", localPath: file }] };
+  };
+  /** Not on disk any more, and not held: put back and aged, the sweep takes it. */
+  const expectReleased = (dir: string) => {
+    expect(fs.existsSync(dir)).toBe(false);
+    saved(dir, 0, "again.pdf");
+    const longAgo = new Date(Date.now() - 2 * STALE_ATTACHMENTS_AFTER_MS);
+    fs.lutimesSync(dir, longAgo, longAgo);
+    expect(sweepStaleAttachmentDirs()).toBe(1);
+    expect(fs.existsSync(dir)).toBe(false);
+  };
+
+  it("removes them when the session's engine is not available", async () => {
+    const { dir, attachments } = attached();
+    const { manager, connector, msg, seen } = setup(attachments, { registered: [] });
+
+    await manager.route(msg, connector);
+
+    expect(seen).toEqual([]);
+    expect(connector.replyMessage).toHaveBeenCalledWith(expect.anything(), expect.stringContaining("not available"));
+    expectReleased(dir);
+  });
+
+  it("removes them when /goal is sent to a session whose engine cannot take it", async () => {
+    const { dir, attachments } = attached();
+    const { manager, connector, msg, seen } = setup(attachments, { defaultEngine: "gemini", registered: ["gemini"] });
+
+    await manager.route({ ...msg, text: "/goal finish the report" }, connector);
+
+    expect(seen).toEqual([]);
+    expect(connector.replyMessage).toHaveBeenCalledWith(expect.anything(), expect.stringContaining("/goal requires"));
+    expectReleased(dir);
+  });
+
+  it("removes them when the session is gone by the time its turn comes", async () => {
+    const { dir, attachments } = attached();
+    const { manager, connector, msg, seen } = setup(attachments);
+    vi.spyOn(manager.getQueue(), "enqueue").mockImplementationOnce(async (_key, task) => {
+      deleteSession(getSessionBySessionKey(msg.sessionKey)!.id); // deleted while the message waited
+      await task();
+    });
+
+    await manager.route(msg, connector);
+
+    expect(seen).toEqual([]);
+    expectReleased(dir);
+  });
+
+  it("removes them when the turn fails before the engine is called", async () => {
+    const { dir, attachments } = attached();
+    const { manager, connector, msg, seen } = setup(attachments);
+    (connector as unknown as { getCapabilities: () => unknown }).getCapabilities = () => { throw new Error("connector went away"); };
+    // The queue hands the turn's failure straight back to route(); this test is about what route() does with it.
+    vi.spyOn(manager.getQueue(), "enqueue").mockImplementationOnce(async (_key, task) => { await task(); });
+
+    await expect(manager.route(msg, connector)).rejects.toThrow("connector went away");
+
+    expect(seen).toEqual([]);
+    expectReleased(dir);
   });
 });
