@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
+import { formatBytes } from "./format.js";
+import { ArchiveTooLargeError, MAX_RECORDED_ITEMS, pathByteLimit, type ArchiveLimits } from "./limits.js";
 import type { SkippedEntry } from "./manifest.js";
 import { HOME_ARCHIVE_TARGETS, isExcludedPath, TOP_LEVEL_FILE_TARGETS } from "./targets.js";
 
@@ -7,7 +9,6 @@ import { HOME_ARCHIVE_TARGETS, isExcludedPath, TOP_LEVEL_FILE_TARGETS } from "./
 export interface HomeEntry {
   /** Home-relative, slash-separated. */
   path: string;
-  absolute: string;
   type: "file" | "directory" | "symlink";
   mode: number;
   size: number;
@@ -18,16 +19,23 @@ export interface HomeEntry {
 export interface HomeWalk {
   /** Sorted by path, so a directory always precedes what it holds. */
   entries: HomeEntry[];
+  /** The first of what was left out; `skippedCount` is how many there were. */
   skipped: SkippedEntry[];
+  skippedCount: number;
   warnings: string[];
 }
 
 interface WalkState {
   home: string;
+  limits: ArchiveLimits;
   /** Home-relative paths of directories the walk must not enter. */
   excluded: Set<string>;
   entries: Map<string, HomeEntry>;
+  bytes: number;
+  /** Entries and bytes under each top-level name, to say what is large when a limit is hit. */
+  weight: Map<string, { entries: number; bytes: number }>;
   skipped: SkippedEntry[];
+  skippedCount: number;
   warnings: string[];
 }
 
@@ -64,28 +72,62 @@ async function excludedInside(home: string, excludePaths: string[]): Promise<Set
   return inside;
 }
 
+/** Counts something left out, and keeps the first of them: the list is for reading, the count is the truth. */
+function noteSkipped(state: WalkState, relativePath: string, reason: string): void {
+  state.skippedCount += 1;
+  if (state.skipped.length < MAX_RECORDED_ITEMS) state.skipped.push({ path: relativePath, reason });
+}
+
+function heaviest(state: WalkState, by: "entries" | "bytes"): string {
+  return [...state.weight.entries()]
+    .sort((a, b) => b[1][by] - a[1][by])
+    .slice(0, 3)
+    .map(([name, weight]) => `${name} ${by === "bytes" ? formatBytes(weight.bytes) : weight.entries}`)
+    .join(", ");
+}
+
+/**
+ * Adds one entry, and stops the walk the moment it is one too many. Stopping
+ * here rather than after the listing is the point: the walk runs inside the
+ * gateway, and a home flooded with empty files must not be held in memory
+ * whole before it is found to be too large.
+ */
+function record(state: WalkState, relativePath: string, stat: fs.Stats, type: HomeEntry["type"], linkTarget?: string): void {
+  const size = type === "file" ? stat.size : 0;
+  const top = relativePath.split("/", 1)[0]!;
+  const weight = state.weight.get(top) ?? { entries: 0, bytes: 0 };
+  state.weight.set(top, { entries: weight.entries + 1, bytes: weight.bytes + size });
+  state.bytes += size;
+  if (state.entries.size + 1 > state.limits.maxEntries) {
+    throw new ArchiveTooLargeError(
+      `the home holds more than ${state.limits.maxEntries} files and directories to archive (backup.maxEntries); `
+      + `nothing was written. Most so far are under: ${heaviest(state, "entries")}`,
+    );
+  }
+  if (state.bytes > state.limits.maxBytes) {
+    throw new ArchiveTooLargeError(
+      `the home holds at least ${formatBytes(state.bytes)} to archive, over the ${formatBytes(state.limits.maxBytes)} limit `
+      + `(backup.maxArchiveMb); nothing was written. Largest so far: ${heaviest(state, "bytes")}`,
+    );
+  }
+  state.entries.set(relativePath, {
+    path: relativePath,
+    type,
+    mode: stat.mode & 0o7777,
+    size,
+    mtimeSeconds: Math.max(0, Math.floor(stat.mtimeMs / 1000)),
+    ...(linkTarget !== undefined ? { linkTarget } : {}),
+  });
+}
+
 /** lstat that reports a vanished path as absent and anything else as skipped. */
 async function inspect(state: WalkState, relativePath: string): Promise<fs.Stats | null> {
   try {
     return await fs.promises.lstat(absolutePathOf(state.home, relativePath));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      state.skipped.push({ path: relativePath, reason: `could not be read (${errorCode(error)})` });
-    }
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") noteSkipped(state, relativePath, `could not be read (${errorCode(error)})`);
     return null;
   }
-}
-
-function record(state: WalkState, relativePath: string, stat: fs.Stats, type: HomeEntry["type"], linkTarget?: string): void {
-  state.entries.set(relativePath, {
-    path: relativePath,
-    absolute: absolutePathOf(state.home, relativePath),
-    type,
-    mode: stat.mode & 0o7777,
-    size: type === "file" ? stat.size : 0,
-    mtimeSeconds: Math.max(0, Math.floor(stat.mtimeMs / 1000)),
-    ...(linkTarget !== undefined ? { linkTarget } : {}),
-  });
 }
 
 /**
@@ -95,18 +137,30 @@ function record(state: WalkState, relativePath: string, stat: fs.Stats, type: Ho
  * write through it.
  */
 async function recordSymlink(state: WalkState, relativePath: string, stat: fs.Stats): Promise<string | null> {
+  let linkTarget: string;
   try {
-    const linkTarget = await fs.promises.readlink(absolutePathOf(state.home, relativePath));
-    record(state, relativePath, stat, "symlink", linkTarget);
-    return linkTarget;
+    linkTarget = await fs.promises.readlink(absolutePathOf(state.home, relativePath));
   } catch (error) {
-    state.skipped.push({ path: relativePath, reason: `link could not be read (${errorCode(error)})` });
+    noteSkipped(state, relativePath, `link could not be read (${errorCode(error)})`);
     return null;
   }
+  const limit = pathByteLimit(state.limits);
+  if (Buffer.byteLength(linkTarget) > limit) {
+    noteSkipped(state, relativePath, `link target longer than ${limit} bytes`);
+    return null;
+  }
+  record(state, relativePath, stat, "symlink", linkTarget);
+  return linkTarget;
 }
 
 /** Classifies one path. Resolves true when it is a directory the walk should descend into. */
 async function visit(state: WalkState, relativePath: string): Promise<boolean> {
+  const limit = pathByteLimit(state.limits);
+  if (Buffer.byteLength(relativePath) > limit) {
+    // Not listed any further either: what is under a path this long is longer still.
+    noteSkipped(state, relativePath, `path longer than ${limit} bytes`);
+    return false;
+  }
   const stat = await inspect(state, relativePath);
   if (!stat) return false;
   if (stat.isSymbolicLink()) {
@@ -119,28 +173,56 @@ async function visit(state: WalkState, relativePath: string): Promise<boolean> {
     return true;
   }
   if (!stat.isFile()) {
-    state.skipped.push({ path: relativePath, reason: "not a regular file" });
+    noteSkipped(state, relativePath, "not a regular file");
     return false;
   }
   if (!isExcludedPath(relativePath, false)) record(state, relativePath, stat, "file");
   return false;
 }
 
+/**
+ * Hands `each` the names in a directory one at a time. Never `readdir`: that
+ * returns every name as one array, so a single directory flooded with files is
+ * held whole in memory before the first of them has been counted, and the entry
+ * limit arrives too late to matter. The order is whatever the filesystem gives;
+ * the entries are sorted once, at the end.
+ */
+async function eachName(state: WalkState, directory: string, each: (name: string) => Promise<void>): Promise<void> {
+  let listing: fs.Dir;
+  try {
+    listing = await fs.promises.opendir(directory === "." ? state.home : absolutePathOf(state.home, directory));
+  } catch (error) {
+    // A home that is not there has nothing in it; anything else is worth saying.
+    if (directory !== "." || (error as NodeJS.ErrnoException).code !== "ENOENT") {
+      noteSkipped(state, directory, `could not be listed (${errorCode(error)})`);
+    }
+    return;
+  }
+  try {
+    for (;;) {
+      let child: fs.Dirent | null;
+      try {
+        child = await listing.read();
+      } catch (error) {
+        noteSkipped(state, directory, `could not be listed (${errorCode(error)})`);
+        return;
+      }
+      if (!child) return;
+      await each(child.name);
+    }
+  } finally {
+    await listing.close().catch(() => { /* already closed */ });
+  }
+}
+
 async function walkDirectory(state: WalkState, start: string): Promise<void> {
   const pending = [start];
   while (pending.length > 0) {
     const directory = pending.pop()!;
-    let names: string[];
-    try {
-      names = (await fs.promises.readdir(absolutePathOf(state.home, directory))).sort();
-    } catch (error) {
-      state.skipped.push({ path: directory, reason: `could not be listed (${errorCode(error)})` });
-      continue;
-    }
-    for (const name of names) {
+    await eachName(state, directory, async (name) => {
       const child = `${directory}/${name}`;
       if (await visit(state, child)) pending.push(child);
-    }
+    });
   }
 }
 
@@ -187,37 +269,33 @@ async function visitTarget(state: WalkState, target: string): Promise<void> {
  * document, and is left for the named targets to claim or not.
  */
 async function visitTopLevelFiles(state: WalkState, pattern: RegExp): Promise<void> {
-  let names: string[];
-  try {
-    names = (await fs.promises.readdir(state.home)).sort();
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      state.skipped.push({ path: ".", reason: `the home could not be listed (${errorCode(error)})` });
-    }
-    return;
-  }
-  for (const name of names) {
-    if (!pattern.test(name) || state.entries.has(name)) continue;
+  await eachName(state, ".", async (name) => {
+    if (!pattern.test(name) || state.entries.has(name)) return;
     const stat = await inspect(state, name);
-    if (!stat || stat.isDirectory()) continue;
+    if (!stat || stat.isDirectory()) return;
     if (stat.isSymbolicLink()) await recordTargetSymlink(state, name, stat);
     else if (stat.isFile()) record(state, name, stat, "file");
-    else state.skipped.push({ path: name, reason: "not a regular file" });
-  }
+    else noteSkipped(state, name, "not a regular file");
+  });
 }
 
 /**
  * Lists everything under the archive targets of `home`, without following a
- * single symlink. Asynchronous throughout: this runs inside the gateway once a
- * day, and a home with a great many files must not stall it while they are
- * counted.
+ * single symlink, and gives up with {@link ArchiveTooLargeError} as soon as it
+ * has seen more than `limits` allow. Asynchronous throughout: this runs inside
+ * the gateway once a day, and a home with a great many files must not stall it
+ * while they are counted.
  */
-export async function collectHomeEntries(home: string, options: { excludePaths?: string[] } = {}): Promise<HomeWalk> {
+export async function collectHomeEntries(home: string, options: { excludePaths?: string[]; limits: ArchiveLimits }): Promise<HomeWalk> {
   const state: WalkState = {
     home,
+    limits: options.limits,
     excluded: await excludedInside(home, options.excludePaths ?? []),
     entries: new Map(),
+    bytes: 0,
+    weight: new Map(),
     skipped: [],
+    skippedCount: 0,
     warnings: [],
   };
   for (const target of HOME_ARCHIVE_TARGETS) {
@@ -226,5 +304,5 @@ export async function collectHomeEntries(home: string, options: { excludePaths?:
   // After the named paths, so a file one of them already claimed (MEMORY.md) is not taken twice.
   for (const { pattern } of TOP_LEVEL_FILE_TARGETS) await visitTopLevelFiles(state, pattern);
   const entries = [...state.entries.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  return { entries, skipped: state.skipped, warnings: state.warnings };
+  return { entries, skipped: state.skipped, skippedCount: state.skippedCount, warnings: state.warnings };
 }

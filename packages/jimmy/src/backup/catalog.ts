@@ -84,17 +84,42 @@ function newestFirst(a: BackupItem, b: BackupItem): number {
   return b.id.length - a.id.length || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
 }
 
-function readNames(directory: string): string[] {
+/**
+ * Far more backups than retention ever leaves behind. Past it the listing stops
+ * taking names in: the directory is being flooded, and the next prune removes
+ * what it has seen.
+ */
+const MAX_LISTED_BACKUPS = 10_000;
+
+/**
+ * The names in `directory` that `wanted` accepts, read one at a time and at
+ * most `limit` of them. Never `readdirSync`: the gateway lists this directory
+ * after every backup, and a directory somebody has filled with files must not
+ * arrive as one array of every name in it.
+ */
+function matchingNames(directory: string, wanted: (name: string) => boolean, limit: number): string[] {
+  let listing: fs.Dir;
   try {
-    return fs.readdirSync(directory);
+    listing = fs.opendirSync(directory);
   } catch {
     return [];
   }
+  const names: string[] = [];
+  try {
+    for (let entry = listing.readSync(); entry && names.length < limit; entry = listing.readSync()) {
+      if (wanted(entry.name)) names.push(entry.name);
+    }
+  } catch {
+    // What was read so far is still a true, if partial, picture.
+  } finally {
+    try { listing.closeSync(); } catch { /* already closed */ }
+  }
+  return names;
 }
 
 /** Every backup in `directory`, newest first. */
-export function listBackups(directory: string): BackupItem[] {
-  return readNames(directory)
+export function listBackups(directory: string, options: { maxItems?: number } = {}): BackupItem[] {
+  return matchingNames(directory, (name) => classify(name) !== null, options.maxItems ?? MAX_LISTED_BACKUPS)
     .map((name) => describe(path.join(directory, name)))
     .filter((item): item is BackupItem => item !== null)
     .sort(newestFirst);
@@ -144,8 +169,7 @@ function removeWithSidecars(file: string, removed: string[]): void {
 }
 
 function sweepStaleTemporaries(directory: string, now: Date, removed: string[]): void {
-  for (const name of readNames(directory)) {
-    if (!TEMPORARY_NAME.test(name)) continue;
+  for (const name of matchingNames(directory, (candidate) => TEMPORARY_NAME.test(candidate), MAX_LISTED_BACKUPS)) {
     const file = path.join(directory, name);
     try {
       const stat = fs.lstatSync(file);

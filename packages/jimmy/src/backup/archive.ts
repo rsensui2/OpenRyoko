@@ -5,30 +5,27 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import zlib from "node:zlib";
 import { errorMessage, formatBytes } from "./format.js";
+import { inspectHomeArchive, type ArchiveInspection, type InspectOptions } from "./inspect.js";
+import { ArchiveTooLargeError, manifestByteLimit, MAX_RECORDED_ITEMS, type ArchiveLimits } from "./limits.js";
 import {
   MANIFEST_FORMAT,
   MANIFEST_SCHEMA_VERSION,
-  parseManifest,
   serializeManifest,
   type BackupManifest,
   type ManifestEntry,
   type SkippedEntry,
 } from "./manifest.js";
-import { encodeTarEntry, readTar, tarPadding, TAR_TRAILER, type TarEntry, type TarEntrySink } from "./tar.js";
-import { MANIFEST_ENTRY_PATH, unsafePathReason } from "./targets.js";
-import { collectHomeEntries, type HomeEntry } from "./walk.js";
+import { DEFAULT_ARCHIVE_LIMITS } from "./settings.js";
+import { encodeTarEntry, tarPadding, TAR_TRAILER } from "./tar.js";
+import { MANIFEST_ENTRY_PATH } from "./targets.js";
+import { absolutePathOf, collectHomeEntries, type HomeEntry, type HomeWalk } from "./walk.js";
+
+export { inspectHomeArchive, readHomeArchive, type ArchiveInspection, type InspectOptions } from "./inspect.js";
+export { ArchiveTooLargeError } from "./limits.js";
 
 const READ_CHUNK_BYTES = 64 * 1024;
-const MANIFEST_MAX_BYTES = 64 * 1024 * 1024;
-const MAX_REPORTED_PROBLEMS = 50;
-
-/** The home holds more than one archive is allowed to carry. */
-export class ArchiveTooLargeError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ArchiveTooLargeError";
-  }
-}
+/** How many of the things left out are spelled out in the warnings. The rest are a count. */
+const MAX_SKIPPED_WARNINGS = 10;
 
 /** The home has no file under any archive target: a fresh or emptied one. */
 export class NothingToArchiveError extends Error {
@@ -38,25 +35,18 @@ export class NothingToArchiveError extends Error {
   }
 }
 
-export interface ArchiveInspection {
-  ok: boolean;
-  problems: string[];
-  /** Present whenever the archive could be read far enough to find one. */
-  manifest?: BackupManifest;
-}
-
 export interface CreateHomeArchiveOptions {
   home: string;
   /** Final path of the archive. Its directory is created owner-only when missing. */
   destination: string;
   id: string;
   createdAt: Date;
-  /** Cap on the uncompressed bytes of archived files. Unset means no cap. */
-  maxBytes?: number;
+  /** What the archive may hold, in entries and in bytes. Default: what an instance uses when its config says nothing. */
+  limits?: ArchiveLimits;
   /** Absolute directories the walk must not enter - the backup directory, when it sits inside a target. */
   excludePaths?: string[];
   /** Overrides the read-back check. The seam that lets a test produce an archive that fails it. */
-  inspect?: (file: string) => Promise<ArchiveInspection>;
+  inspect?: (file: string, context: InspectOptions) => Promise<ArchiveInspection>;
 }
 
 export interface HomeArchiveResult {
@@ -67,32 +57,24 @@ export interface HomeArchiveResult {
   /** Uncompressed bytes of the files inside it. */
   contentBytes: number;
   files: number;
+  /** The first of what was left out; `skippedCount` is how many there were. */
   skipped: SkippedEntry[];
+  skippedCount: number;
   warnings: string[];
 }
 
 interface WriteState {
+  home: string;
+  limits: ArchiveLimits;
   entries: ManifestEntry[];
   skipped: SkippedEntry[];
+  skippedCount: number;
   contentBytes: number;
-  maxBytes: number | undefined;
 }
 
-function tooLarge(bytes: number, maxBytes: number, entries: HomeEntry[]): ArchiveTooLargeError {
-  const byTarget = new Map<string, number>();
-  for (const entry of entries) {
-    const target = entry.path.split("/")[0]!;
-    byTarget.set(target, (byTarget.get(target) ?? 0) + entry.size);
-  }
-  const largest = [...byTarget.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 3)
-    .map(([target, size]) => `${target} ${formatBytes(size)}`)
-    .join(", ");
-  return new ArchiveTooLargeError(
-    `the home holds ${formatBytes(bytes)} to archive, over the ${formatBytes(maxBytes)} limit (backup.maxArchiveMb); `
-    + `nothing was written. Largest: ${largest}`,
-  );
+function noteSkipped(state: WriteState, entryPath: string, reason: string): void {
+  state.skippedCount += 1;
+  if (state.skipped.length < MAX_RECORDED_ITEMS) state.skipped.push({ path: entryPath, reason });
 }
 
 /**
@@ -101,24 +83,27 @@ function tooLarge(bytes: number, maxBytes: number, entries: HomeEntry[]): Archiv
  * that turns out shorter than its header promised fails the archive, because
  * the alternative is padding a backup with zeros and calling it good.
  */
-async function* fileBlocks(entry: HomeEntry, state: WriteState, all: HomeEntry[]): AsyncGenerator<Buffer> {
+async function* fileBlocks(entry: HomeEntry, state: WriteState): AsyncGenerator<Buffer> {
   let handle: fs.promises.FileHandle;
   try {
-    handle = await fs.promises.open(entry.absolute, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    handle = await fs.promises.open(absolutePathOf(state.home, entry.path), fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code ?? errorMessage(error);
-    state.skipped.push({ path: entry.path, reason: `could not be read (${code})` });
+    noteSkipped(state, entry.path, `could not be read (${(error as NodeJS.ErrnoException).code ?? errorMessage(error)})`);
     return;
   }
   try {
     const stat = await handle.stat();
     if (!stat.isFile()) {
-      state.skipped.push({ path: entry.path, reason: "not a regular file" });
+      noteSkipped(state, entry.path, "not a regular file");
       return;
     }
     state.contentBytes += stat.size;
-    if (state.maxBytes !== undefined && state.contentBytes > state.maxBytes) {
-      throw tooLarge(state.contentBytes, state.maxBytes, all);
+    if (state.contentBytes > state.limits.maxBytes) {
+      // The walk let it through; it has grown since.
+      throw new ArchiveTooLargeError(
+        `the home holds at least ${formatBytes(state.contentBytes)} to archive, over the ${formatBytes(state.limits.maxBytes)} limit `
+        + "(backup.maxArchiveMb); nothing was written",
+      );
     }
     const mode = stat.mode & 0o7777;
     yield encodeTarEntry({
@@ -141,6 +126,28 @@ async function* fileBlocks(entry: HomeEntry, state: WriteState, all: HomeEntry[]
   }
 }
 
+/**
+ * The manifest, as the bytes that close the archive. It names every entry, so
+ * it is refused when it outgrows what the entry limit allows: a home of few
+ * entries with enormous names costs a reader what thousands of ordinary ones do.
+ */
+function manifestBlocks(manifest: BackupManifest, limits: ArchiveLimits, mtimeSeconds: number): Buffer[] {
+  const body = serializeManifest(manifest);
+  const allowed = manifestByteLimit(limits);
+  if (body.length > allowed) {
+    throw new ArchiveTooLargeError(
+      `the home's list of what it holds is too large to record: ${formatBytes(body.length)}, where backup.maxEntries = ${limits.maxEntries} `
+      + `allows ${formatBytes(allowed)}; nothing was written`,
+    );
+  }
+  return [
+    encodeTarEntry({ path: MANIFEST_ENTRY_PATH, type: "file", mode: 0o600, size: body.length, mtimeSeconds }),
+    body,
+    tarPadding(body.length),
+    TAR_TRAILER,
+  ];
+}
+
 async function* archiveBlocks(
   entries: HomeEntry[],
   state: WriteState,
@@ -149,7 +156,7 @@ async function* archiveBlocks(
 ): AsyncGenerator<Buffer> {
   for (const entry of entries) {
     if (entry.type === "file") {
-      yield* fileBlocks(entry, state, entries);
+      yield* fileBlocks(entry, state);
       continue;
     }
     yield encodeTarEntry({
@@ -161,15 +168,13 @@ async function* archiveBlocks(
       : { path: entry.path, type: "directory", mode: entry.mode });
   }
   // Last, because it is only complete once every file has been hashed in passing.
-  const body = serializeManifest(manifest());
-  yield encodeTarEntry({ path: MANIFEST_ENTRY_PATH, type: "file", mode: 0o600, size: body.length, mtimeSeconds });
-  yield body;
-  yield tarPadding(body.length);
-  yield TAR_TRAILER;
+  yield* manifestBlocks(manifest(), state.limits, mtimeSeconds);
 }
 
-async function writeArchive(temporary: string, entries: HomeEntry[], skipped: SkippedEntry[], options: CreateHomeArchiveOptions): Promise<BackupManifest> {
-  const state: WriteState = { entries: [], skipped: [...skipped], contentBytes: 0, maxBytes: options.maxBytes };
+async function writeArchive(temporary: string, walk: HomeWalk, options: CreateHomeArchiveOptions, limits: ArchiveLimits): Promise<{ manifest: BackupManifest; skippedCount: number }> {
+  const state: WriteState = {
+    home: options.home, limits, entries: [], skipped: [...walk.skipped], skippedCount: walk.skippedCount, contentBytes: 0,
+  };
   const manifest = (): BackupManifest => ({
     schemaVersion: MANIFEST_SCHEMA_VERSION,
     format: MANIFEST_FORMAT,
@@ -181,16 +186,22 @@ async function writeArchive(temporary: string, entries: HomeEntry[], skipped: Sk
     skipped: state.skipped,
   });
   await pipeline(
-    Readable.from(archiveBlocks(entries, state, manifest, Math.floor(options.createdAt.getTime() / 1000)), { objectMode: false }),
+    Readable.from(archiveBlocks(walk.entries, state, manifest, Math.floor(options.createdAt.getTime() / 1000)), { objectMode: false }),
     zlib.createGzip(),
     fs.createWriteStream(temporary, { mode: 0o600, flags: "wx" }),
   );
-  return manifest();
+  return { manifest: manifest(), skippedCount: state.skippedCount };
 }
 
 function summarizeProblems(problems: string[]): string {
   const shown = problems.slice(0, 5).join("; ");
   return problems.length > 5 ? `${shown}; and ${problems.length - 5} more` : shown;
+}
+
+function warningsFor(walk: HomeWalk, skipped: SkippedEntry[], skippedCount: number): string[] {
+  const shown = skipped.slice(0, MAX_SKIPPED_WARNINGS).map((item) => `skipped ${item.path}: ${item.reason}`);
+  const summary = skippedCount > shown.length ? [`${skippedCount} entries were left out of this backup in all`] : [];
+  return [...walk.warnings, ...shown, ...summary];
 }
 
 /**
@@ -200,12 +211,15 @@ function summarizeProblems(problems: string[]): string {
  * entry by entry against the manifest it carries, and only then renamed into
  * place - so a file with the final name is always one that has been verified,
  * and a run that fails or dies halfway leaves nothing that looks like a backup.
+ *
+ * It holds at most `limits` allow. A home past them is refused with
+ * {@link ArchiveTooLargeError} while it is still being listed, not after: this
+ * runs inside the gateway, and the listing is what would not fit.
  */
 export async function createHomeArchive(options: CreateHomeArchiveOptions): Promise<HomeArchiveResult> {
-  const walk = await collectHomeEntries(options.home, { excludePaths: options.excludePaths });
+  const limits = options.limits ?? DEFAULT_ARCHIVE_LIMITS;
+  const walk = await collectHomeEntries(options.home, { excludePaths: options.excludePaths, limits });
   if (!walk.entries.some((entry) => entry.type !== "directory")) throw new NothingToArchiveError(options.home);
-  const expected = walk.entries.reduce((total, entry) => total + entry.size, 0);
-  if (options.maxBytes !== undefined && expected > options.maxBytes) throw tooLarge(expected, options.maxBytes, walk.entries);
 
   const directory = path.dirname(options.destination);
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -214,8 +228,10 @@ export async function createHomeArchive(options: CreateHomeArchiveOptions): Prom
     `.${path.basename(options.destination)}.tmp-${process.pid}-${crypto.randomBytes(4).toString("hex")}`,
   );
   try {
-    const manifest = await writeArchive(temporary, walk.entries, walk.skipped, options);
-    const inspection = await (options.inspect ?? inspectHomeArchive)(temporary);
+    const { manifest, skippedCount } = await writeArchive(temporary, walk, options, limits);
+    // Against the manifest already in hand, in one pass: the copy inside the
+    // archive is compared, not loaded, and no second listing is built.
+    const inspection = await (options.inspect ?? inspectHomeArchive)(temporary, { expected: manifest, limits });
     if (!inspection.ok) throw new Error(`the archive did not read back - ${summarizeProblems(inspection.problems)}`);
     try { fs.chmodSync(temporary, 0o600); } catch { /* Windows has no POSIX modes */ }
     fs.renameSync(temporary, options.destination);
@@ -226,133 +242,11 @@ export async function createHomeArchive(options: CreateHomeArchiveOptions): Prom
       contentBytes: manifest.contentBytes,
       files: manifest.entries.filter((entry) => entry.type === "file").length,
       skipped: manifest.skipped,
-      warnings: [...walk.warnings, ...manifest.skipped.map((item) => `skipped ${item.path}: ${item.reason}`)],
+      skippedCount,
+      warnings: warningsFor(walk, manifest.skipped, skippedCount),
     };
   } catch (error) {
     fs.rmSync(temporary, { force: true });
     throw error;
   }
-}
-
-/** Decompresses an archive and hands its entries to `onEntry`, in order. */
-export async function readHomeArchive(file: string, onEntry: Parameters<typeof readTar>[1]): Promise<void> {
-  await pipeline(fs.createReadStream(file), zlib.createGunzip(), async (source: AsyncIterable<Buffer>) => {
-    await readTar(source, onEntry);
-  });
-}
-
-interface SeenEntry {
-  type: TarEntry["type"];
-  size?: number;
-  sha256?: string;
-  target?: string;
-}
-
-function collectManifest(entry: TarEntry, done: (bytes: Buffer) => void): TarEntrySink {
-  if (entry.size > MANIFEST_MAX_BYTES) throw new Error("the archive's manifest is implausibly large");
-  const chunks: Buffer[] = [];
-  return {
-    write: (chunk) => { chunks.push(Buffer.from(chunk)); },
-    end: () => { done(Buffer.concat(chunks)); },
-  };
-}
-
-function observe(entry: TarEntry, seen: Map<string, SeenEntry>): TarEntrySink | undefined {
-  if (entry.type !== "file") {
-    seen.set(entry.path, { type: entry.type, ...(entry.type === "symlink" ? { target: entry.linkTarget ?? "" } : {}) });
-    return undefined;
-  }
-  const hash = crypto.createHash("sha256");
-  return {
-    write: (chunk) => { hash.update(chunk); },
-    end: () => { seen.set(entry.path, { type: "file", size: entry.size, sha256: hash.digest("hex") }); },
-  };
-}
-
-function mismatch(listed: ManifestEntry, found: SeenEntry | undefined): string | null {
-  if (!found) return `${listed.path}: listed in the manifest but missing from the archive`;
-  if (found.type !== listed.type) return `${listed.path}: is a ${found.type} in the archive but a ${listed.type} in the manifest`;
-  if (listed.type === "symlink" && found.target !== listed.target) return `${listed.path}: symlink target does not match the manifest`;
-  if (listed.type !== "file") return null;
-  if (found.size !== listed.size) return `${listed.path}: expected ${listed.size} bytes, found ${found.size}`;
-  return found.sha256 === listed.sha256 ? null : `${listed.path}: sha256 does not match the manifest`;
-}
-
-/**
- * An entry below something that is not a directory would be written through it:
- * `skills/link -> /etc` followed by `skills/link/passwd` is how an archive
- * leaves the home. Checked over the whole archive rather than in arrival order,
- * so listing the file before the link changes nothing.
- */
-function throughNonDirectory(entryPath: string, seen: Map<string, SeenEntry>): string | null {
-  const segments = entryPath.split("/");
-  for (let depth = 1; depth < segments.length; depth += 1) {
-    const ancestor = segments.slice(0, depth).join("/");
-    const found = seen.get(ancestor);
-    if (found && found.type !== "directory") return `${entryPath}: is inside ${ancestor}, which is not a directory`;
-  }
-  return null;
-}
-
-function compare(manifest: BackupManifest, seen: Map<string, SeenEntry>): string[] {
-  const problems: string[] = [];
-  const listed = new Set<string>();
-  for (const entry of manifest.entries) {
-    if (listed.has(entry.path)) problems.push(`${entry.path}: listed more than once in the manifest`);
-    listed.add(entry.path);
-    const problem = mismatch(entry, seen.get(entry.path));
-    if (problem) problems.push(problem);
-  }
-  for (const entryPath of seen.keys()) {
-    if (!listed.has(entryPath)) problems.push(`${entryPath}: not listed in the manifest`);
-    const escape = throughNonDirectory(entryPath, seen);
-    if (escape) problems.push(escape);
-  }
-  return problems;
-}
-
-function capProblems(problems: string[]): string[] {
-  if (problems.length <= MAX_REPORTED_PROBLEMS) return problems;
-  return [...problems.slice(0, MAX_REPORTED_PROBLEMS), `... and ${problems.length - MAX_REPORTED_PROBLEMS} more`];
-}
-
-/**
- * Reads an archive end to end and checks it against the manifest inside it:
- * every entry hashed, every path in the plain relative form, nothing present
- * that the manifest does not vouch for and nothing promised that is absent.
- *
- * Nothing is written. Defects in the archive come back as `problems` rather
- * than as a throw, so a caller can show all of them.
- */
-export async function inspectHomeArchive(file: string): Promise<ArchiveInspection> {
-  const seen = new Map<string, SeenEntry>();
-  const problems: string[] = [];
-  let manifestBytes: Buffer | undefined;
-  try {
-    await readHomeArchive(file, (entry) => {
-      if (entry.path === MANIFEST_ENTRY_PATH && entry.type === "file") {
-        if (manifestBytes) problems.push("the manifest appears more than once");
-        return collectManifest(entry, (bytes) => { manifestBytes = bytes; });
-      }
-      const reason = unsafePathReason(entry.path);
-      if (reason) throw new Error(`unsafe path in the archive (${reason}): ${JSON.stringify(entry.path)}`);
-      if (seen.has(entry.path)) {
-        problems.push(`${entry.path}: appears more than once`);
-        return undefined;
-      }
-      return observe(entry, seen);
-    });
-  } catch (error) {
-    return { ok: false, problems: [`the archive could not be read: ${errorMessage(error)}`] };
-  }
-  if (!manifestBytes) return { ok: false, problems: ["the archive carries no manifest"] };
-
-  let manifest: BackupManifest;
-  try {
-    manifest = parseManifest(manifestBytes);
-  } catch (error) {
-    return { ok: false, problems: [errorMessage(error)] };
-  }
-  const all = capProblems([...problems, ...compare(manifest, seen)]);
-  return { ok: all.length === 0, problems: all, manifest };
 }

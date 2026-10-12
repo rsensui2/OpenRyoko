@@ -16,7 +16,7 @@ import { GATEWAY_STOPPED_FLAG, inspectDatabaseBackup, restoreDatabase, type Data
 import { errorMessage, formatBytes } from "../backup/format.js";
 import { restoreHomeArchive, type RestoreResult } from "../backup/restore.js";
 import { runBackup, type BackupRunReport, type BackupTargetReport } from "../backup/run.js";
-import { resolveBackupSettings, type BackupSettings } from "../backup/settings.js";
+import { archiveLimits, resolveBackupSettings, type BackupSettings } from "../backup/settings.js";
 import { applyRunReport, readBackupState, writeBackupState } from "../backup/state.js";
 import { BACKUP_KINDS, type BackupKind } from "../backup/targets.js";
 import { loadConfig } from "../shared/config.js";
@@ -155,13 +155,14 @@ interface Verdict {
   contentBytes?: number;
 }
 
-async function verify(item: BackupItem): Promise<Verdict> {
+async function verify(item: BackupItem, settings: BackupSettings): Promise<Verdict> {
   const base = { id: item.id, kind: item.kind, file: item.file };
   if (item.kind !== "home") {
     const problems = inspectDatabaseBackup(item.file);
     return { ...base, ok: problems.length === 0, problems };
   }
-  const inspection = await inspectHomeArchive(item.file);
+  // Under the instance's limits: a file planted in the backup directory is read only as far as they reach.
+  const inspection = await inspectHomeArchive(item.file, { limits: archiveLimits(settings) });
   return {
     ...base,
     ok: inspection.ok,
@@ -175,7 +176,7 @@ async function verify(item: BackupItem): Promise<Verdict> {
 /** `ryoko backup verify <id>`: read a backup back and check it, without restoring anything. */
 export async function runBackupVerify(reference: string, options: { json?: boolean } = {}, deps: BackupCliDeps = {}): Promise<void> {
   await guarded(deps, options.json, async ({ io, settings, json }) => {
-    const verdict = await verify(findBackup(settings.directory, reference));
+    const verdict = await verify(findBackup(settings.directory, reference), settings);
     if (json) printJson(io, verdict);
     else if (verdict.ok) {
       const detail = verdict.files === undefined ? "" : `（ファイル ${verdict.files} 件、${formatBytes(verdict.contentBytes ?? 0)}）`;
@@ -262,6 +263,7 @@ export async function runBackupRestore(reference: string, options: BackupRestore
       const result = await restoreHomeArchive({
         archive: item.file, home, only: kinds, dryRun: options.dryRun,
         allowExternalSymlinks: options.allowExternalSymlinks, backupDirectory: settings.directory, now,
+        limits: archiveLimits(settings),
       });
       if (json) printJson(io, result);
       else printFileRestore(io, result);

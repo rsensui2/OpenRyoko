@@ -106,6 +106,7 @@ cron:
 #   directory: /path/to/backups   # 省略時は <ホーム>/backups。ホームの外（別ディスクなど）も指定できる
 #   retention: 14                 # アーカイブを残す世代数（DBのコピーは7世代で固定）
 #   maxArchiveMb: 512             # 1回のアーカイブに入れるファイル合計の上限。超えたら書かずに失敗として報告する
+#   maxEntries: 50000             # 同じく、ファイル・ディレクトリ・symlink の数の上限（空のファイルも数える）
 
 # portal.operatorSlackId / portal.operatorDiscordId = オペレータ本人の Slack ID と
 # Discord ユーザー ID（スノーフレーク。プロフィール右クリック → ユーザーIDをコピー）。

@@ -2,10 +2,20 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { getDiskSpaceStatus, type DiskSpaceStatus } from "../shared/storage-health.js";
-import { createHomeArchive, inspectHomeArchive, NothingToArchiveError, readHomeArchive, type ArchiveInspection } from "./archive.js";
+import {
+  ArchiveTooLargeError,
+  createHomeArchive,
+  inspectHomeArchive,
+  NothingToArchiveError,
+  readHomeArchive,
+  type ArchiveInspection,
+  type InspectOptions,
+} from "./archive.js";
 import { reserveArchiveName } from "./catalog.js";
 import { errorMessage } from "./format.js";
+import type { ArchiveLimits } from "./limits.js";
 import type { BackupManifest, ManifestEntry } from "./manifest.js";
+import { DEFAULT_ARCHIVE_LIMITS } from "./settings.js";
 import { BACKUP_KINDS, HOME_ARCHIVE_TARGETS, kindOfPath, unsafePathReason, type BackupKind } from "./targets.js";
 import { absolutePathOf, collectHomeEntries } from "./walk.js";
 
@@ -24,10 +34,15 @@ export interface RestoreOptions {
   /** Where the snapshot of the current state goes before anything is written. */
   backupDirectory: string;
   now: Date;
+  /**
+   * What an archive may hold - the one being restored, and the snapshot of the
+   * current state taken first. Default: what an instance uses when its config says nothing.
+   */
+  limits?: ArchiveLimits;
   /** The existing free-space judgement, replaceable in tests. */
   diskSpace?: (directory: string) => DiskSpaceStatus;
   /** Overrides the verification pass. The seam that lets a test stand in for an inspector that misses something. */
-  inspect?: (file: string) => Promise<ArchiveInspection>;
+  inspect?: (file: string, context: InspectOptions) => Promise<ArchiveInspection>;
 }
 
 export type RestoreAction = "create" | "replace" | "unchanged";
@@ -213,9 +228,28 @@ function buildPlan(home: string, manifest: BackupManifest, selected: ManifestEnt
   return plan;
 }
 
-async function untouchedInHome(home: string, manifest: BackupManifest, kinds: BackupKind[], backupDirectory: string): Promise<string[]> {
+/**
+ * What is in the home under the restored kinds and not in the archive. It is
+ * for the operator to read, nothing depends on it, so a home too large to list
+ * yields an empty answer rather than stopping a dry run; the restore itself
+ * will say so when it comes to saving the current state.
+ */
+async function untouchedInHome(
+  home: string,
+  manifest: BackupManifest,
+  kinds: BackupKind[],
+  backupDirectory: string,
+  limits: ArchiveLimits,
+): Promise<string[]> {
   const inArchive = new Set(manifest.entries.map((entry) => entry.path));
-  return (await collectHomeEntries(home, { excludePaths: [backupDirectory] })).entries
+  let entries: Awaited<ReturnType<typeof collectHomeEntries>>["entries"];
+  try {
+    ({ entries } = await collectHomeEntries(home, { excludePaths: [backupDirectory], limits }));
+  } catch (error) {
+    if (error instanceof ArchiveTooLargeError) return [];
+    throw error;
+  }
+  return entries
     .filter((entry) => entry.type !== "directory" && !inArchive.has(entry.path))
     .filter((entry) => {
       const kind = kindOf(entry);
@@ -238,7 +272,10 @@ function assertRoomToWork(options: RestoreOptions, home: string): void {
 async function snapshotCurrentState(options: RestoreOptions, home: string): Promise<{ id: string; file: string } | null> {
   const { id, file } = reserveArchiveName(options.backupDirectory, "pre-restore", options.now);
   try {
-    await createHomeArchive({ home, destination: file, id, createdAt: options.now, excludePaths: [options.backupDirectory] });
+    await createHomeArchive({
+      home, destination: file, id, createdAt: options.now, excludePaths: [options.backupDirectory],
+      limits: options.limits ?? DEFAULT_ARCHIVE_LIMITS,
+    });
     return { id, file };
   } catch (error) {
     if (error instanceof NothingToArchiveError) return null;
@@ -252,7 +289,12 @@ async function snapshotCurrentState(options: RestoreOptions, home: string): Prom
  * directories, no links - so no entry name from the archive is ever used as a
  * path here, and the archive is held to the manifest that was just verified.
  */
-async function stageFiles(archive: string, staging: string, needed: Map<string, ManifestEntry>): Promise<Map<string, string>> {
+async function stageFiles(
+  archive: string,
+  staging: string,
+  needed: Map<string, ManifestEntry>,
+  limits: ArchiveLimits,
+): Promise<Map<string, string>> {
   const staged = new Map<string, string>();
   // The one descriptor that may still be open if the archive fails mid-entry.
   const open: { descriptor?: number } = {};
@@ -278,7 +320,7 @@ async function stageFiles(archive: string, staging: string, needed: Map<string, 
           staged.set(entry.path, file);
         },
       };
-    });
+    }, limits);
   } finally {
     if (open.descriptor !== undefined) fs.closeSync(open.descriptor);
   }
@@ -341,7 +383,7 @@ async function writeIntoHome(options: RestoreOptions, home: string, plan: PlanIt
     const needed = new Map(plan
       .filter((item) => item.action !== "unchanged" && item.entry.type === "file")
       .map((item) => [item.entry.path, item.entry]));
-    const staged = await stageFiles(options.archive, staging, needed);
+    const staged = await stageFiles(options.archive, staging, needed, options.limits ?? DEFAULT_ARCHIVE_LIMITS);
     try {
       applyPlan(home, plan, staged);
     } catch (error) {
@@ -367,7 +409,8 @@ async function writeIntoHome(options: RestoreOptions, home: string, plan: PlanIt
  * symlink, and never recreates a symlink leading out of the home unless asked.
  */
 export async function restoreHomeArchive(options: RestoreOptions): Promise<RestoreResult> {
-  const inspection = await (options.inspect ?? inspectHomeArchive)(options.archive);
+  const limits = options.limits ?? DEFAULT_ARCHIVE_LIMITS;
+  const inspection = await (options.inspect ?? inspectHomeArchive)(options.archive, { limits });
   if (!inspection.ok || !inspection.manifest) {
     throw new Error(`refusing to restore an archive that failed verification - ${listed(inspection.problems)}`);
   }
@@ -388,7 +431,7 @@ export async function restoreHomeArchive(options: RestoreOptions): Promise<Resto
     kinds,
     changes,
     unchanged: plan.length - changes.length,
-    untouched: await untouchedInHome(home, manifest, kinds, options.backupDirectory),
+    untouched: await untouchedInHome(home, manifest, kinds, options.backupDirectory, limits),
     ignored: manifest.entries.filter((entry) => kindOf(entry) === null && !holdsATarget(entry.path)).map((entry) => entry.path),
     preRestore: null,
   };

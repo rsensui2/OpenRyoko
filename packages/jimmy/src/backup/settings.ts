@@ -1,6 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import type { JinnConfig } from "../shared/types.js";
+import type { ArchiveLimits } from "./limits.js";
 
 export const DEFAULT_ARCHIVE_RETENTION = 14;
 /**
@@ -10,8 +11,18 @@ export const DEFAULT_ARCHIVE_RETENTION = 14;
  * reported rather than silently filling the disk it shares with the instance.
  */
 export const DEFAULT_MAX_ARCHIVE_MB = 512;
+/**
+ * Files, directories and symlinks in one archive. An ordinary home holds a few
+ * thousand; this leaves it an order of magnitude to grow into, and still bounds
+ * what the gateway holds in memory while it archives one. Empty files and
+ * directories weigh nothing, so the size cap above never sees them.
+ */
+export const DEFAULT_MAX_ENTRIES = 50_000;
 
 const MIB = 1024 * 1024;
+
+/** The limits an archive is held to when nobody says otherwise. */
+export const DEFAULT_ARCHIVE_LIMITS: ArchiveLimits = { maxEntries: DEFAULT_MAX_ENTRIES, maxBytes: DEFAULT_MAX_ARCHIVE_MB * MIB };
 
 export interface BackupSettings {
   enabled: boolean;
@@ -22,8 +33,14 @@ export interface BackupSettings {
   /** Home archive generations to keep. */
   retention: number;
   maxArchiveBytes: number;
+  maxEntries: number;
   /** Values in the config that were ignored, and why. */
   warnings: string[];
+}
+
+/** The pair of limits every archive this instance writes or reads is held to. */
+export function archiveLimits(settings: Pick<BackupSettings, "maxEntries" | "maxArchiveBytes">): ArchiveLimits {
+  return { maxEntries: settings.maxEntries, maxBytes: settings.maxArchiveBytes };
 }
 
 export function defaultBackupDirectory(home: string): string {
@@ -89,6 +106,7 @@ export function resolveBackupSettings(config: JinnConfig["backup"] | undefined, 
     defaultDirectory: resolvedDirectory === fallbackDirectory,
     retention: positive(section.retention, DEFAULT_ARCHIVE_RETENTION, "backup.retention", true, warnings),
     maxArchiveBytes: positive(section.maxArchiveMb, DEFAULT_MAX_ARCHIVE_MB, "backup.maxArchiveMb", false, warnings) * MIB,
+    maxEntries: positive(section.maxEntries, DEFAULT_MAX_ENTRIES, "backup.maxEntries", true, warnings),
     warnings,
   };
 }

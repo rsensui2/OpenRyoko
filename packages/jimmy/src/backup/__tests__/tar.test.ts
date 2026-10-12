@@ -142,6 +142,19 @@ describe("tar codec", () => {
     expect(seen).toEqual([{ entry: expect.objectContaining({ path: "small.txt", size: 5 }), data: "hello" }]);
   });
 
+  it("refuses a pax header far larger than a path, a link target and a size could need", async () => {
+    // A reader has to hold a pax header whole before it can use it.
+    const body = Buffer.alloc(64 * 1024, 0x61);
+    const archive = Buffer.concat([
+      encodeTarHeaderBlock({ name: "PaxHeader", mode: 0o644, size: body.length, mtimeSeconds: MTIME, typeflag: "x" }),
+      body,
+      tarPadding(body.length),
+      TAR_TRAILER,
+    ]);
+
+    await expect(readAll(archive)).rejects.toThrow(/implausibly large/);
+  });
+
   it("skips the data of an entry nobody asked for", async () => {
     const archive = archiveOf([file("skip.txt", "a".repeat(3000)), file("keep.txt", "kept")]);
     const kept: string[] = [];

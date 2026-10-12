@@ -862,6 +862,8 @@ export interface JinnConfig {
     retention?: number;
     /** Largest home, in MB of file content, one archive may hold; a larger one is refused. Default: 512. */
     maxArchiveMb?: number;
+    /** Most files, directories and symlinks one archive may hold; a home with more is refused. Default: 50000. */
+    maxEntries?: number;
   };
   notifications?: {
     connector?: string;  // defaults to "discord"

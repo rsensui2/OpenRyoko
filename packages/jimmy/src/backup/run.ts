@@ -7,7 +7,7 @@ import { ArchiveTooLargeError, createHomeArchive, NothingToArchiveError } from "
 import { pruneBackups, reserveArchiveName } from "./catalog.js";
 import { errorMessage } from "./format.js";
 import { databasePath } from "./layout.js";
-import type { BackupSettings } from "./settings.js";
+import { archiveLimits, type BackupSettings } from "./settings.js";
 
 /** What one run can back up, in the order it does so. */
 export const BACKUP_TARGETS = ["home", "sessions", "workflows"] as const;
@@ -106,14 +106,14 @@ function blockedReason(options: BackupRunOptions): string | null {
 }
 
 async function backupHome(options: BackupRunOptions): Promise<BackupTargetReport> {
-  const { directory, maxArchiveBytes } = options.settings;
+  const { directory } = options.settings;
   const { id, file } = reserveArchiveName(directory, "home", options.now);
   const result = await createHomeArchive({
     home: options.home,
     destination: file,
     id,
     createdAt: options.now,
-    maxBytes: maxArchiveBytes,
+    limits: archiveLimits(options.settings),
     excludePaths: [directory],
   });
   return { name: "home", status: "ok", file: result.file, bytes: result.bytes, warnings: result.warnings };

@@ -19,8 +19,12 @@ export const TAR_TRAILER = Buffer.alloc(TAR_BLOCK_BYTES * 2);
 /** Largest value an 11-digit octal field holds (8 GiB - 1). Past it the size rides in a pax record. */
 const USTAR_MAX_SIZE = 0o77777777777;
 const USTAR_NAME_BYTES = 100;
-/** A pax header only ever carries a path, a link target and a size. */
-const PAX_MAX_BYTES = 1024 * 1024;
+/**
+ * A pax header only ever carries a path, a link target and a size, and it has
+ * to be held whole before it can be used. Sixteen kilobytes is several times
+ * the longest path any filesystem allows.
+ */
+const PAX_MAX_BYTES = 16 * 1024;
 const PLAIN_ASCII = /^[\x20-\x7e]*$/;
 const PAX_TYPEFLAG = "x";
 

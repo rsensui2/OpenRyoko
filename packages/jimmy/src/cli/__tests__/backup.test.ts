@@ -7,10 +7,12 @@ import {
   HOME_CONTENT,
   leaveMidFlight,
   makeHome,
+  rawDirectory,
   removeTempDirs,
   rowCount,
   setDatabaseModified,
   tempDir,
+  writeRawArchive,
   writeTree,
 } from "../../backup/__tests__/fixture.js";
 import { listBackups } from "../../backup/catalog.js";
@@ -261,6 +263,25 @@ describe("ryoko backup verify", () => {
     const verdict = json<{ ok: boolean; problems: string[] }>(state);
     expect(verdict.ok).toBe(false);
     expect(verdict.problems).toHaveLength(1);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("gives up on an archive that holds more than the configured limits, rather than reading it all in", async () => {
+    // What a planted file in backups/ looks like: tens of thousands of empty
+    // directories in a few kilobytes of gzip.
+    const home = makeHome(tempDir());
+    const state = cli(home, { backup: { maxEntries: 100 } });
+    writeRawArchive(
+      path.join(home, "backups", "home-20261012T010000Z.tar.gz"),
+      [rawDirectory("skills"), ...Array.from({ length: 400 }, (_, index) => rawDirectory(`skills/d${String(index).padStart(4, "0")}`))],
+    );
+
+    await runBackupVerify("home-20261012T010000Z", { json: true }, state.deps);
+
+    const verdict = json<{ ok: boolean; problems: string[] }>(state);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.problems).toHaveLength(1);
+    expect(verdict.problems[0]).toMatch(/more than 100 entries.*backup\.maxEntries/);
     expect(process.exitCode).toBe(1);
   });
 

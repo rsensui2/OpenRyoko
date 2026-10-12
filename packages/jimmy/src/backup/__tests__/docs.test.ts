@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { DATABASE_BACKUP_RETENTION } from "../../sessions/backup.js";
 import { TEMPLATE_DIR } from "../../shared/paths.js";
 import { GATEWAY_STOPPED_FLAG } from "../database-restore.js";
-import { DEFAULT_ARCHIVE_RETENTION, DEFAULT_MAX_ARCHIVE_MB } from "../settings.js";
+import { DEFAULT_ARCHIVE_RETENTION, DEFAULT_MAX_ARCHIVE_MB, DEFAULT_MAX_ENTRIES } from "../settings.js";
 import { BACKUP_KINDS } from "../targets.js";
 
 /* A backup nobody knows about is not used. The doc that ships with every
@@ -50,6 +50,7 @@ describe("docs/backup.md", () => {
   it("shows the settings with the defaults the code actually uses", () => {
     expect(doc()).toContain(`retention: ${DEFAULT_ARCHIVE_RETENTION}`);
     expect(doc()).toContain(`maxArchiveMb: ${DEFAULT_MAX_ARCHIVE_MB}`);
+    expect(doc()).toContain(`maxEntries: ${DEFAULT_MAX_ENTRIES}`);
     expect(doc()).toContain(`${DATABASE_BACKUP_RETENTION} 世代`);
   });
 });

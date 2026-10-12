@@ -1,7 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_ARCHIVE_RETENTION, DEFAULT_MAX_ARCHIVE_MB, resolveBackupSettings } from "../settings.js";
+import { archiveLimits, DEFAULT_ARCHIVE_RETENTION, DEFAULT_MAX_ARCHIVE_MB, DEFAULT_MAX_ENTRIES, resolveBackupSettings } from "../settings.js";
 
 const HOME = path.join(path.sep, "srv", "instances", "ryoko");
 const MIB = 1024 * 1024;
@@ -15,18 +15,32 @@ describe("resolveBackupSettings", () => {
         defaultDirectory: true,
         retention: DEFAULT_ARCHIVE_RETENTION,
         maxArchiveBytes: DEFAULT_MAX_ARCHIVE_MB * MIB,
+        maxEntries: DEFAULT_MAX_ENTRIES,
         warnings: [],
       });
     }
     expect(DEFAULT_ARCHIVE_RETENTION).toBe(14);
+    // An ordinary home holds a few thousand files; this leaves it an order of magnitude to grow into.
+    expect(DEFAULT_MAX_ENTRIES).toBe(50_000);
   });
 
   it("takes every value the config sets", () => {
     const outside = path.join(path.sep, "mnt", "backups", "ryoko");
 
-    expect(resolveBackupSettings({ enabled: false, directory: outside, retention: 3, maxArchiveMb: 64 }, HOME)).toEqual({
-      enabled: false, directory: outside, defaultDirectory: false, retention: 3, maxArchiveBytes: 64 * MIB, warnings: [],
+    expect(resolveBackupSettings({ enabled: false, directory: outside, retention: 3, maxArchiveMb: 64, maxEntries: 200_000 }, HOME)).toEqual({
+      enabled: false, directory: outside, defaultDirectory: false, retention: 3, maxArchiveBytes: 64 * MIB, maxEntries: 200_000, warnings: [],
     });
+  });
+
+  it.each([0, -1, 2.5, "many", Number.POSITIVE_INFINITY])("falls back to the default entry limit when given %s", (maxEntries) => {
+    const settings = resolveBackupSettings({ maxEntries: maxEntries as number }, HOME);
+
+    expect(settings.maxEntries).toBe(DEFAULT_MAX_ENTRIES);
+    expect(settings.warnings).toEqual([expect.stringMatching(/backup\.maxEntries/)]);
+  });
+
+  it("hands both limits over as the pair every archive is held to", () => {
+    expect(archiveLimits(resolveBackupSettings({ maxArchiveMb: 64, maxEntries: 1234 }, HOME))).toEqual({ maxEntries: 1234, maxBytes: 64 * MIB });
   });
 
   it("resolves a relative directory against the home and expands a leading tilde", () => {

@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { archiveStamp, findBackup, listBackups, pruneBackups, reserveArchiveName, reserveDatabaseSnapshotName } from "../catalog.js";
 import { removeTempDirs, tempDir } from "./fixture.js";
 
@@ -78,6 +78,33 @@ describe("listBackups", () => {
 
   it("is empty for a directory that does not exist yet", () => {
     expect(listBackups(path.join(tempDir(), "never-created"))).toEqual([]);
+  });
+
+  it("looks through a crowded directory without taking every name into memory at once", () => {
+    // The gateway lists this directory after every backup. Whatever else has
+    // been dropped into it must not be read in as one array of names.
+    const directory = tempDir();
+    seed(directory, "home-20261012T030000Z.tar.gz");
+    for (let index = 0; index < 300; index += 1) seed(directory, `dropped-here-${index}.bin`, 1);
+    const wholeListing = vi.spyOn(fs, "readdirSync");
+
+    const items = listBackups(directory);
+    const removed = pruneBackups(directory, { retention: 14, now: NOW });
+    const calls = wholeListing.mock.calls.length;
+    wholeListing.mockRestore();
+
+    expect(items.map((item) => item.id)).toEqual(["home-20261012T030000Z"]);
+    expect(removed).toEqual([]);
+    expect(calls).toBe(0);
+  });
+
+  it("stops collecting once a directory holds more backups than could be real, and still trims them", () => {
+    const directory = tempDir();
+    const stamps = Array.from({ length: 60 }, (_, index) => archiveStamp(new Date(NOW.getTime() - index * DAY_MS)));
+    for (const stamp of stamps) seed(directory, `home-${stamp}.tar.gz`, 1);
+
+    expect(listBackups(directory, { maxItems: 25 })).toHaveLength(25);
+    expect(listBackups(directory)).toHaveLength(60);
   });
 });
 

@@ -1,9 +1,11 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import zlib from "node:zlib";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { expectPosixMode, POSIX_MODES_SUPPORTED } from "../../shared/test-support/posix-mode.js";
 import { ArchiveTooLargeError, createHomeArchive, inspectHomeArchive } from "../archive.js";
+import { encodeTarEntry, TAR_TRAILER } from "../tar.js";
 import { MANIFEST_ENTRY_PATH } from "../targets.js";
 import {
   HOME_CONTENT,
@@ -247,12 +249,145 @@ describe("createHomeArchive", () => {
     const home = makeHome(root);
     writeTree(home, { "knowledge/dump.bin": "x".repeat(200_000), "skills/demo/assets.bin": "y".repeat(50_000) });
 
-    const failure = await archiveInto(root, home, { maxBytes: 100_000 }).catch((error: unknown) => error);
+    const failure = await archiveInto(root, home, { limits: { maxEntries: 50_000, maxBytes: 100_000 } }).catch((error: unknown) => error);
 
     expect(failure).toBeInstanceOf(ArchiveTooLargeError);
     expect((failure as Error).message).toMatch(/knowledge.*skills/s);
     expect((failure as Error).message).toMatch(/backup\.maxArchiveMb/);
     expect(fs.existsSync(path.join(root, "backups")) ? fs.readdirSync(path.join(root, "backups")) : []).toEqual([]);
+  });
+
+  it("stops at the entry limit, which empty files and directories reach without weighing anything", async () => {
+    // The size cap counts bytes of file content. Ten thousand empty files and
+    // directories are zero bytes, and every one of them is an object the
+    // gateway would hold in memory to archive.
+    const root = tempDir();
+    const home = makeHome(root);
+    const flood: Record<string, string> = {};
+    for (let index = 0; index < 400; index += 1) flood[`knowledge/flood/d${index}/empty-${index}`] = "";
+    writeTree(home, flood);
+    const stats = vi.spyOn(fs.promises, "lstat");
+
+    const failure = await archiveInto(root, home, { limits: { maxEntries: 120, maxBytes: 1024 ** 3 } }).catch((error: unknown) => error);
+    const looked = stats.mock.calls.length;
+    stats.mockRestore();
+
+    expect(failure).toBeInstanceOf(ArchiveTooLargeError);
+    expect((failure as Error).message).toMatch(/more than 120 files and directories/);
+    expect((failure as Error).message).toMatch(/backup\.maxEntries/);
+    expect((failure as Error).message).toMatch(/knowledge/);
+    // It gave up at the limit instead of listing all eight hundred first.
+    expect(looked).toBeLessThan(300);
+    expect(fs.existsSync(path.join(root, "backups")) ? fs.readdirSync(path.join(root, "backups")) : []).toEqual([]);
+  });
+
+  it("reads a directory a few names at a time, never the whole listing at once", async () => {
+    // readdir hands back every name in a directory as one array. A single
+    // directory flooded with files is then held whole in memory before the
+    // first of them is counted, and the entry limit is reached too late.
+    const root = tempDir();
+    const home = makeHome(root);
+    writeTree(home, Object.fromEntries(Array.from({ length: 400 }, (_, index) => [`knowledge/empty-${index}`, ""])));
+    const wholeListings = [vi.spyOn(fs.promises, "readdir"), vi.spyOn(fs, "readdirSync")];
+
+    const failure = await archiveInto(root, home, { limits: { maxEntries: 120, maxBytes: 1024 ** 3 } }).catch((error: unknown) => error);
+    const ok = await createHomeArchive({
+      home, destination: path.join(root, "backups", "home-20261012T040000Z.tar.gz"), id: "home-20261012T040000Z", createdAt: AT,
+    });
+    const calls = wholeListings.map((spy) => spy.mock.calls.length);
+    for (const spy of wholeListings) spy.mockRestore();
+
+    expect(failure).toBeInstanceOf(ArchiveTooLargeError);
+    expect(ok.files).toBe(Object.keys(HOME_CONTENT).length + 400);
+    expect(calls).toEqual([0, 0]);
+  });
+
+  it("archives a home that is exactly at the entry limit", async () => {
+    const root = tempDir();
+    const home = makeHome(root);
+    const expected = (await entriesOf((await archiveInto(root, home)).file)).length;
+
+    const atLimit = await createHomeArchive({
+      home, destination: path.join(root, "backups", "home-20261012T040000Z.tar.gz"), id: "home-20261012T040000Z", createdAt: AT,
+      limits: { maxEntries: expected, maxBytes: 1024 ** 3 },
+    });
+
+    expect(await entriesOf(atLimit.file)).toHaveLength(expected);
+    await expect(createHomeArchive({
+      home, destination: path.join(root, "backups", "home-20261012T050000Z.tar.gz"), id: "home-20261012T050000Z", createdAt: AT,
+      limits: { maxEntries: expected - 1, maxBytes: 1024 ** 3 },
+    })).rejects.toBeInstanceOf(ArchiveTooLargeError);
+  });
+
+  it("leaves out a path too long to carry, and keeps count of how many it left out", async () => {
+    const root = tempDir();
+    const home = makeHome(root);
+    const long: Record<string, string> = {};
+    for (let index = 0; index < 130; index += 1) long[`knowledge/${"deep-directory-name/".repeat(4)}note-${index}.md`] = "x";
+    writeTree(home, long);
+
+    const result = await archiveInto(root, home, { limits: { maxEntries: 50_000, maxBytes: 1024 ** 3, maxPathBytes: 60 } });
+    const paths = (await entriesOf(result.file)).map((entry) => entry.path);
+
+    expect(paths.filter((entry) => Buffer.byteLength(entry) > 60)).toEqual([]);
+    expect(paths).toContain("config.yaml");
+    // The first directory past the limit is where it stops; what is inside is never listed at all.
+    expect(result.skipped).toEqual([expect.objectContaining({ path: expect.stringMatching(/^knowledge\/deep-directory-name\//), reason: expect.stringMatching(/longer than 60 bytes/) })]);
+    expect(result.warnings.join("\n")).toMatch(/longer than 60 bytes/);
+  });
+
+  it("records only the first hundred things it skipped, and says how many there were", async () => {
+    const root = tempDir();
+    const home = makeHome(root);
+    const long: Record<string, string> = {};
+    for (let index = 0; index < 150; index += 1) long[`knowledge/a-name-well-past-the-limit-${String(index).padStart(3, "0")}.md`] = "x";
+    writeTree(home, long);
+
+    const result = await archiveInto(root, home, { limits: { maxEntries: 50_000, maxBytes: 1024 ** 3, maxPathBytes: 40 } });
+
+    expect(result.skipped).toHaveLength(100);
+    expect(result.skippedCount).toBe(150);
+    expect((await inspectHomeArchive(result.file)).manifest!.skipped).toHaveLength(100);
+    expect(result.warnings.length).toBeLessThan(20);
+    expect(result.warnings.join("\n")).toMatch(/150/);
+  });
+
+  it("refuses a home whose list of files alone is too large to record", async () => {
+    // The manifest names every entry, so a few dozen entries with enormous
+    // names cost what thousands of ordinary ones do.
+    const root = tempDir();
+    const home = makeHome(root);
+    const long: Record<string, string> = {};
+    const directory = `knowledge/${"n".repeat(240)}/${"n".repeat(240)}/${"n".repeat(240)}`;
+    for (let index = 0; index < 110; index += 1) long[`${directory}/note-${index}.md`] = "x";
+    writeTree(home, long);
+
+    // 150 entries are allowed, and this home has fewer: it is the names that do not fit.
+    const failure = await archiveInto(root, home, { limits: { maxEntries: 150, maxBytes: 1024 ** 3 } }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(ArchiveTooLargeError);
+    expect((failure as Error).message).toMatch(/list of what it holds/);
+    expect(fs.readdirSync(path.join(root, "backups"))).toEqual([]);
+  });
+
+  it("checks what it wrote against the manifest it holds, without loading the archive's own", async () => {
+    const root = tempDir();
+    const home = makeHome(root);
+    const handed: unknown[] = [];
+
+    const result = await archiveInto(root, home, {
+      inspect: (file, context) => {
+        handed.push(context);
+        return inspectHomeArchive(file, context);
+      },
+    });
+
+    expect(handed).toHaveLength(1);
+    expect(handed[0]).toMatchObject({
+      expected: { id: "home-20261012T030000Z", entries: expect.arrayContaining([expect.objectContaining({ path: "config.yaml" })]) },
+      limits: { maxEntries: 50_000 },
+    });
+    expect(result.files).toBe(Object.keys(HOME_CONTENT).length);
   });
 
   it("refuses a home that has nothing to archive", async () => {
@@ -376,6 +511,111 @@ describe("inspectHomeArchive", () => {
       expect(inspection.ok).toBe(false);
       expect(inspection.problems.join("\n")).toMatch(/skills\/escape\/planted\.txt.*not a directory/);
     }
+  });
+
+  it("refuses entries that are not in the order the writer leaves them", async () => {
+    // The check walks the archive and its manifest side by side, which only works in path order.
+    const root = tempDir();
+    const file = writeRawArchive(
+      path.join(root, "home-a.tar.gz"),
+      [rawFile("skills.json", "{}\n"), rawFile("config.yaml", "port: 1\n")],
+      undefined,
+      { preserveOrder: true },
+    );
+
+    const inspection = await inspectHomeArchive(file);
+
+    expect(inspection.ok).toBe(false);
+    expect(inspection.problems.join("\n")).toMatch(/out of order/);
+  });
+
+  it("refuses an archive with more entries than the limit, however little it weighs", async () => {
+    const root = tempDir();
+    const directories = Array.from({ length: 300 }, (_, index) => rawDirectory(`skills/d${String(index).padStart(4, "0")}`));
+    const file = writeRawArchive(path.join(root, "home-a.tar.gz"), [rawDirectory("skills"), ...directories]);
+    expect(fs.statSync(file).size).toBeLessThan(20_000);
+
+    const inspection = await inspectHomeArchive(file, { limits: { maxEntries: 100, maxBytes: 1024 ** 3 } });
+
+    expect(inspection.ok).toBe(false);
+    expect(inspection.problems).toHaveLength(1);
+    expect(inspection.problems[0]).toMatch(/more than 100 entries/);
+    expect(inspection.problems[0]).toMatch(/backup\.maxEntries/);
+    expect(inspection.manifest).toBeUndefined();
+    expect((await inspectHomeArchive(file, { limits: { maxEntries: 301, maxBytes: 1024 ** 3 } })).ok).toBe(true);
+  });
+
+  it("refuses an archive that declares more content than the limit, before reading any of it", async () => {
+    const root = tempDir();
+    const file = path.join(root, "home-a.tar.gz");
+    // A header that promises a terabyte and then nothing. Believing it means waiting for the data.
+    fs.writeFileSync(file, zlib.gzipSync(Buffer.concat([
+      encodeTarEntry({ path: "knowledge/huge.bin", type: "file", mode: 0o644, size: 2 ** 40, mtimeSeconds: 1_760_000_000 }),
+      TAR_TRAILER,
+    ])));
+
+    const inspection = await inspectHomeArchive(file, { limits: { maxEntries: 50_000, maxBytes: 512 * 1024 ** 2 } });
+
+    expect(inspection.ok).toBe(false);
+    expect(inspection.problems).toHaveLength(1);
+    expect(inspection.problems[0]).toMatch(/more than 512\.0 MB/);
+    expect(inspection.problems[0]).toMatch(/backup\.maxArchiveMb/);
+  });
+
+  it("refuses a manifest that lists more than the limit, is out of order, or names a path that leaves the home", async () => {
+    const root = tempDir();
+    const phantom = (index: number) => ({ path: `knowledge/phantom-${String(index).padStart(4, "0")}.md`, type: "file" as const, mode: 0o644, size: 1, sha256: sha256("x") });
+    const bloated = writeRawArchive(path.join(root, "home-a.tar.gz"), [rawFile("config.yaml", "port: 1\n")], (manifest) => ({
+      ...manifest, entries: [...manifest.entries, ...Array.from({ length: 200 }, (_, index) => phantom(index))],
+    }));
+    const shuffled = writeRawArchive(
+      path.join(root, "home-b.tar.gz"),
+      [rawFile("config.yaml", "port: 1\n"), rawFile("skills.json", "{}\n")],
+      (manifest) => ({ ...manifest, entries: [...manifest.entries].reverse() }),
+      { preserveOrder: true },
+    );
+    const escaping = writeRawArchive(path.join(root, "home-c.tar.gz"), [rawFile("config.yaml", "port: 1\n")], (manifest) => ({
+      ...manifest, entries: [...manifest.entries, { ...phantom(0), path: "skills/../../outside.md" }],
+    }));
+
+    expect((await inspectHomeArchive(bloated, { limits: { maxEntries: 100, maxBytes: 1024 ** 3 } })).problems.join("\n"))
+      .toMatch(/manifest lists more than 100 entries/);
+    expect((await inspectHomeArchive(shuffled)).problems.join("\n")).toMatch(/manifest.*out of order/);
+    const escape = await inspectHomeArchive(escaping);
+    expect(escape.ok).toBe(false);
+    expect(escape.problems.join("\n")).toMatch(/unsafe path in the manifest/);
+  });
+
+  it("stops listing problems at fifty, and says how many more there were", async () => {
+    const root = tempDir();
+    const smuggled = Array.from({ length: 180 }, (_, index) => ({
+      ...rawFile(`knowledge/smuggled-${String(index).padStart(3, "0")}.md`, "x"), unlisted: true,
+    }));
+    const file = writeRawArchive(path.join(root, "home-a.tar.gz"), [rawFile("config.yaml", "port: 1\n"), rawDirectory("knowledge"), ...smuggled]);
+
+    const inspection = await inspectHomeArchive(file);
+
+    expect(inspection.ok).toBe(false);
+    expect(inspection.problems).toHaveLength(51);
+    expect(inspection.problems[0]).toBe("knowledge/smuggled-000.md: not listed in the manifest");
+    expect(inspection.problems[50]).toBe("... and 130 more");
+  });
+
+  it("checks against a manifest it is handed, entry by entry as they stream past", async () => {
+    const root = tempDir();
+    const home = makeHome(root);
+    const result = await archiveInto(root, home);
+    const manifest = (await inspectHomeArchive(result.file)).manifest!;
+    const changed = { ...manifest, entries: manifest.entries.map((entry) => (entry.path === "SOUL.md" ? { ...entry, sha256: sha256("something else") } : entry)) };
+    const longer = { ...manifest, entries: [...manifest.entries, { path: "zzz-never-written.md", type: "file" as const, mode: 0o644, size: 1, sha256: sha256("x") }] };
+    const shorter = { ...manifest, entries: manifest.entries.filter((entry) => entry.path !== "TOOLS.md") };
+
+    expect(await inspectHomeArchive(result.file, { expected: manifest })).toMatchObject({ ok: true, problems: [] });
+    expect((await inspectHomeArchive(result.file, { expected: changed })).problems).toContain("SOUL.md: sha256 does not match the manifest");
+    expect((await inspectHomeArchive(result.file, { expected: longer })).problems).toContain("zzz-never-written.md: listed in the manifest but missing from the archive");
+    expect((await inspectHomeArchive(result.file, { expected: shorter })).problems).toContain("TOOLS.md: not listed in the manifest");
+    // The manifest riding inside is held to the one that was handed over, too.
+    expect((await inspectHomeArchive(result.file, { expected: { ...manifest, id: "home-some-other-run" } })).ok).toBe(false);
   });
 
   it("refuses a path that appears twice", async () => {

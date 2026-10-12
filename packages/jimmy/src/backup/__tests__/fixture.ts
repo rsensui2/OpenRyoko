@@ -194,16 +194,23 @@ function manifestEntryFor({ entry, data }: RawArchiveEntry): ManifestEntry {
   return { path: entry.path, type: "directory", mode: entry.mode };
 }
 
+const byPath = <T extends { path: string }>(a: T, b: T): number => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+
 /**
  * Writes an archive by hand, entry by entry, so tests can produce the ones the
  * real writer never would: paths that climb out of the home, entries the
  * manifest does not vouch for, contents that disagree with their recorded hash.
+ *
+ * Entries and manifest are put in path order, as the real writer leaves them,
+ * unless `preserveOrder` asks for exactly what was given.
  */
 export function writeRawArchive(
   file: string,
-  entries: RawArchiveEntry[],
+  given: RawArchiveEntry[],
   manifestOverride?: (manifest: BackupManifest) => BackupManifest | null,
+  options: { preserveOrder?: boolean } = {},
 ): string {
+  const entries = options.preserveOrder ? given : [...given].sort((a, b) => byPath(a.entry, b.entry));
   const generated: BackupManifest = {
     schemaVersion: 1,
     format: "openryoko-home-archive",
@@ -214,7 +221,8 @@ export function writeRawArchive(
     entries: entries.filter((item) => !item.unlisted).map(manifestEntryFor),
     skipped: [],
   };
-  const manifest = manifestOverride ? manifestOverride(generated) : generated;
+  const overridden = manifestOverride ? manifestOverride(generated) : generated;
+  const manifest = overridden && !options.preserveOrder ? { ...overridden, entries: [...overridden.entries].sort(byPath) } : overridden;
   const blocks: Buffer[] = [];
   for (const { entry, data } of entries) {
     const body = data ?? Buffer.alloc(0);

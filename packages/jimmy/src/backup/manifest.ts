@@ -50,15 +50,17 @@ function parseEntry(value: unknown, index: number): ManifestEntry {
   if (!isRecord(value) || typeof value.path !== "string" || typeof value.mode !== "number") {
     throw new Error(`manifest entry ${index} is malformed`);
   }
-  const base = { path: value.path, mode: value.mode };
-  if (value.type === "directory") return { ...base, type: "directory" };
-  if (value.type === "symlink" && typeof value.target === "string") return { ...base, type: "symlink", target: value.target };
+  // Keys in the order the writer emits them, so a manifest that is read and
+  // written again comes out byte for byte the same and can be compared as bytes.
+  const { path: entryPath, mode } = value;
+  if (value.type === "directory") return { path: entryPath, type: "directory", mode };
+  if (value.type === "symlink" && typeof value.target === "string") return { path: entryPath, type: "symlink", mode, target: value.target };
   if (
     value.type === "file"
     && typeof value.size === "number" && Number.isSafeInteger(value.size) && value.size >= 0
     && typeof value.sha256 === "string" && /^[0-9a-f]{64}$/.test(value.sha256)
   ) {
-    return { ...base, type: "file", size: value.size, sha256: value.sha256 };
+    return { path: entryPath, type: "file", mode, size: value.size, sha256: value.sha256 };
   }
   throw new Error(`manifest entry ${index} (${value.path}) is malformed`);
 }

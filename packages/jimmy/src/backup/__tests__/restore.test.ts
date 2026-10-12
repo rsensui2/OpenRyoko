@@ -337,6 +337,25 @@ describe("restoreHomeArchive, refusing what it must not trust", () => {
     expect(listBackups(target.backups).filter((item) => item.preRestore)).toEqual([]);
   });
 
+  it("refuses an archive that holds more than the limits allow, and one it would take more than the limits to save first", async () => {
+    const target = await scene();
+    fs.writeFileSync(path.join(target.home, "config.yaml"), "broken\n");
+    const tight = { maxEntries: 10, maxBytes: 1024 ** 3 };
+
+    // The archive itself is over the entry limit: refused while it is being read.
+    await expect(restoreHomeArchive(optionsFor(target, { limits: tight }))).rejects.toThrow(/failed verification.*backup\.maxEntries/s);
+
+    // The archive is fine, but the home has since grown past the limit, so the
+    // state about to be overwritten cannot be saved. Nothing is restored.
+    writeTree(target.home, Object.fromEntries(Array.from({ length: 300 }, (_, index) => [`knowledge/flood/empty-${index}`, ""])));
+    const entries = (await inspectHomeArchive(target.archive)).manifest!.entries.length;
+    await expect(restoreHomeArchive(optionsFor(target, { limits: { maxEntries: entries + 20, maxBytes: 1024 ** 3 } })))
+      .rejects.toThrow(/current state could not be saved.*backup\.maxEntries/s);
+
+    expect(read(target.home, "config.yaml")).toBe("broken\n");
+    expect(listBackups(target.backups).filter((item) => item.preRestore)).toEqual([]);
+  });
+
   it("refuses an archive whose contents no longer match its manifest", async () => {
     const root = tempDir();
     const home = makeHome(root);
