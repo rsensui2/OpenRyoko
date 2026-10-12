@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionManager } from "../manager.js";
 import { getMessages, getSession, getSessionBySessionKey } from "../registry.js";
-import { interruptRunningSessionsForShutdown, readRestartResumeState, restartResumeMessage, selectRestartResumeCandidates } from "../restart-resume.js";
+import { interruptRunningSessionsForShutdown, readRestartResumeState, selectRestartResumeCandidates } from "../restart-resume.js";
 import type { Connector, Engine, EngineRunOpts, IncomingMessage, JinnConfig } from "../../shared/types.js";
 
 vi.mock("../context.js", () => ({ buildContext: () => "Test context" }));
@@ -67,11 +67,11 @@ describe("restart interruption mark — survives the killed turn's completion", 
 
   // The other half of the same handler: a connector turn stays "running" after
   // its engine has finished, until the reply has been delivered. A shutdown
-  // that lands in that window used to stamp the mark as well — the reply went
-  // out, the handler wrote idle, the mark stayed, and the next boot nudged a
-  // conversation that had nothing left to do. The nudge turn's output is
-  // posted into the original thread, so that was an unprompted message.
-  it("is not stamped on a turn that has already answered, when the shutdown lands during delivery", async () => {
+  // that lands in that window stamps the mark too — and whether to act on it
+  // depends on what the turn managed to do afterwards. Here the reply went out
+  // and the handler wrote idle: nothing is left to do, and a nudge would post
+  // an unprompted second message into the thread.
+  it("does not lead to a nudge when the reply was delivered: shutdown landing during delivery", async () => {
     const config = {
       engines: { default: "codex", codex: { bin: "codex" } },
       connectors: { slack: {} }, sessions: {}, logging: { level: "error", stdout: false },
@@ -106,10 +106,62 @@ describe("restart interruption mark — survives the killed turn's completion", 
     expect(replyMessage.mock.calls[0]).toEqual([expect.anything(), "デプロイが完了しました。"]);
     expect(statusAtShutdown).toBe("interrupted"); // the shutdown did see it as running
     expect(settled.status).toBe("idle");
-    // Nothing is left to resume, so nothing is left for the next boot to find.
-    expect(readRestartResumeState(settled.transportMeta).interruptedAt).toBeUndefined();
-    const { candidates } = selectRestartResumeCandidates({ now: Date.now(), maxAgeMs: 120 * 60_000 });
+    // The mark is there, saying the reply had been recorded; the final status says the delivery came back.
+    expect(readRestartResumeState(settled.transportMeta)).toMatchObject({ replyRecorded: true });
+    const { candidates, skipped } = selectRestartResumeCandidates({ now: Date.now(), maxAgeMs: 120 * 60_000 });
     expect(candidates.map((session) => session.id)).not.toContain(settled.id);
+    expect(skipped).toContainEqual({ sessionId: settled.id, reason: "answered" });
+    expect(readRestartResumeState(getSession(settled.id)!.transportMeta).interruptedAt).toBeUndefined();
+  });
+
+  // Same window, other outcome. Shutdown does not wait for a delivery that is
+  // in flight: between recording the reply and the post returning there are up
+  // to three Slack calls, and the process can be gone before they finish. The
+  // reply is then in the transcript and nowhere else, and the session is still
+  // "interrupted" — the turn never got to write its final status.
+  it("leads to a delivery nudge when the process is gone before the reply was posted", async () => {
+    const config = {
+      engines: { default: "codex", codex: { bin: "codex" } },
+      connectors: { slack: {} }, sessions: {}, logging: { level: "error", stdout: false },
+    } as unknown as JinnConfig;
+    const sessionKey = "slack:restart-mark-undelivered";
+    const run = vi.fn<Engine["run"]>(async () => ({ sessionId: "native-4", result: "デプロイが完了しました。" }));
+    const manager = new SessionManager(config, new Map<string, Engine>([["codex", { name: "codex", run } as Engine]]));
+    const replyMessage = vi.fn(async () => undefined);
+    // The reply is recorded; the turn is clearing its "eyes" reaction — one of the
+    // Slack calls that come before the post — when the gateway shuts down, and
+    // the process exits before that call returns. The post never starts.
+    const removeReaction = vi.fn(async (_target: unknown, emoji: string) => {
+      if (emoji !== "eyes") return;
+      interruptRunningSessionsForShutdown();
+      await new Promise(() => {});
+    });
+    const connector = {
+      name: "slack", replyMessage, sendMessage: replyMessage,
+      addReaction: vi.fn(async () => {}), removeReaction,
+      getCapabilities: () => ({ threading: true, messageEdits: false, reactions: true, attachments: false }),
+      reconstructTarget: () => ({ channel: "C-mark", thread: "4.1" }),
+    } as unknown as Connector;
+    const msg = {
+      connector: "slack", source: "slack", sessionKey, channel: "C-mark", thread: "4.1",
+      messageId: "4.2", user: "Test", userId: "U-test", text: "デプロイして", attachments: [], raw: {},
+      replyContext: { channel: "C-mark", thread: "4.1" },
+      transportMeta: { channelExternal: false },
+    } as IncomingMessage;
+
+    void manager.route(msg, connector); // never settles: the process "exits" before the post
+    await vi.waitFor(() => expect(removeReaction).toHaveBeenCalledWith(expect.anything(), "eyes"));
+
+    const left = getSessionBySessionKey(sessionKey)!;
+    expect(replyMessage).not.toHaveBeenCalled(); // nothing reached Slack
+    expect(getMessages(left.id).at(-1)).toMatchObject({ role: "assistant", content: "デプロイが完了しました。" });
+    expect(left.status).toBe("interrupted");
+    expect(readRestartResumeState(left.transportMeta)).toMatchObject({ replyRecorded: true });
+
+    const { candidates, skipped } = selectRestartResumeCandidates({ now: Date.now(), maxAgeMs: 120 * 60_000 });
+
+    expect(candidates.map((session) => session.id)).toContain(left.id);
+    expect(skipped.filter((entry) => entry.sessionId === left.id)).toEqual([]);
   });
 
   // A message that waits behind the running turn makes the dying process do one

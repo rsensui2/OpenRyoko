@@ -61,11 +61,11 @@ function slackSession(overrides: { status?: Session["status"]; lastActivity?: st
 }
 
 /** The same session as the gateway's shutdown loop leaves it: status interrupted + the mark. */
-function interrupted(at = iso(MINUTE), overrides: Parameters<typeof slackSession>[0] = {}): Session {
+function interrupted(at = iso(MINUTE), overrides: Parameters<typeof slackSession>[0] & { replyRecorded?: boolean } = {}): Session {
   const session = slackSession(overrides);
   updateSession(session.id, {
     status: overrides.status ?? "interrupted",
-    transportMeta: withRestartInterruptedMark(session.transportMeta, at),
+    transportMeta: withRestartInterruptedMark(session.transportMeta, at, { replyRecorded: overrides.replyRecorded }),
   });
   return getSession(session.id)!;
 }
@@ -130,6 +130,16 @@ describe("restart interruption mark", () => {
     expect(withRestartInterruptedMark(null, iso(0))).toEqual({ [RESTART_RESUME_META_KEY]: { interruptedAt: iso(0) } });
   });
 
+  it("can say the turn had already recorded its reply — and a later interruption starts clean", () => {
+    const marked = withRestartInterruptedMark({ channelExternal: true }, iso(MINUTE), { replyRecorded: true });
+    expect(marked).toEqual({ channelExternal: true, [RESTART_RESUME_META_KEY]: { interruptedAt: iso(MINUTE), replyRecorded: true } });
+    expect(readRestartResumeState(marked)).toEqual({ interruptedAt: iso(MINUTE), replyRecorded: true, nudgedAt: [] });
+
+    // The same session, cut off again later in the middle of a turn.
+    const again = withRestartInterruptedMark(marked, iso(0));
+    expect(readRestartResumeState(again)).toEqual({ interruptedAt: iso(0), nudgedAt: [] });
+  });
+
   it("is stamped at boot on a session the previous process never got to shut down cleanly", () => {
     const crashed = slackSession({ status: "running", lastActivity: iso(7 * MINUTE) });
     const idle = slackSession({ status: "idle" });
@@ -146,7 +156,8 @@ describe("restart interruption mark", () => {
     for (const untouched of [idle, waiting]) expect(markOf(untouched.id).interruptedAt).toBeUndefined();
   });
 
-  it("is not stamped at boot on a session that crashed after recording its reply", () => {
+  it("records at boot that a crashed session had already recorded its reply", () => {
+    // Whether that reply went out is unknown: the crash came before the turn could write its final status.
     const delivering = slackSession({ status: "running" });
     message(delivering.id, "user", 10 * MINUTE);
     message(delivering.id, "assistant", 5_000);
@@ -155,10 +166,11 @@ describe("restart interruption mark", () => {
     message(queued.id, "assistant", 2 * MINUTE, "the previous turn's reply");
     runningRow(queued, "📩 child finished", MINUTE);
 
-    expect(prepareRestartResume(NOW).marked).toBe(1);
+    expect(prepareRestartResume(NOW).marked).toBe(2);
 
-    expect(markOf(delivering.id).interruptedAt).toBeUndefined();
-    expect(markOf(queued.id).interruptedAt).toBeDefined(); // a later turn was running: it never answered
+    expect(markOf(delivering.id)).toMatchObject({ interruptedAt: iso(5_000), replyRecorded: true });
+    expect(markOf(queued.id).interruptedAt).toBeDefined();
+    expect(markOf(queued.id).replyRecorded).toBeUndefined(); // a later turn was running: it never answered
   });
 
   it("dates a crash by the last sign of life — the heartbeat or the transcript, whichever is newer", () => {
@@ -211,7 +223,7 @@ describe("interruptRunningSessionsForShutdown — the graceful-shutdown half", (
     }
   });
 
-  it("does not stamp a turn that has already answered — only its delivery was still running", () => {
+  it("stamps a turn that had recorded its reply, and says that only the delivery is in doubt", () => {
     // A connector turn records its reply, then delivers it, then writes idle.
     const delivering = slackSession({ status: "running" });
     message(delivering.id, "user", 10 * MINUTE);
@@ -219,8 +231,8 @@ describe("interruptRunningSessionsForShutdown — the graceful-shutdown half", (
 
     expect(interruptRunningSessionsForShutdown(NOW)).toBe(1);
 
-    expect(getSession(delivering.id)?.status).toBe("interrupted"); // unchanged: every running session is preserved
-    expect(markOf(delivering.id).interruptedAt).toBeUndefined();
+    expect(getSession(delivering.id)?.status).toBe("interrupted");
+    expect(markOf(delivering.id)).toEqual({ interruptedAt: iso(0), replyRecorded: true, nudgedAt: [] });
   });
 
   it("still stamps a queued turn whose input was recorded before the previous turn's reply", () => {
@@ -235,7 +247,7 @@ describe("interruptRunningSessionsForShutdown — the graceful-shutdown half", (
 
     interruptRunningSessionsForShutdown(NOW);
 
-    expect(markOf(parent.id).interruptedAt).toBe(iso(0));
+    expect(markOf(parent.id)).toEqual({ interruptedAt: iso(0), nudgedAt: [] }); // mid-turn: nothing recorded for it yet
   });
 
   it("leaves a workflow attempt to its own sweep", () => {
@@ -320,6 +332,42 @@ describe("selectRestartResumeCandidates", () => {
     expect(skipped).toEqual([{ sessionId: stale.id, reason: "too-old" }]);
     expect(markOf(stale.id).interruptedAt).toBeUndefined();
     expect(markOf(recent.id).interruptedAt).toBe(iso(119 * MINUTE)); // a candidate keeps its mark until it is nudged
+  });
+
+  it("leaves out a turn whose reply was recorded and whose completion then finished", () => {
+    // The completion handler writes its final status only after the delivery has
+    // returned, so anything other than the shutdown's own "interrupted" means it did.
+    const delivered = interrupted(iso(MINUTE), { status: "idle", replyRecorded: true });
+    const deliveredWithError = interrupted(iso(MINUTE), { status: "error", replyRecorded: true });
+
+    const { candidates, skipped } = select();
+
+    expect(candidates).toEqual([]);
+    expect(skipped).toEqual(expect.arrayContaining([
+      { sessionId: delivered.id, reason: "answered" },
+      { sessionId: deliveredWithError.id, reason: "answered" },
+    ]));
+    expect(markOf(delivered.id)).toEqual({ nudgedAt: [] });
+  });
+
+  it("picks a turn whose reply was recorded but whose delivery never came back", () => {
+    // Still "interrupted": the process was gone before the turn could write anything else.
+    const undelivered = interrupted(iso(MINUTE), { status: "interrupted", replyRecorded: true });
+
+    const { candidates, skipped } = select();
+
+    expect(candidates.map((s) => s.id)).toEqual([undelivered.id]);
+    expect(skipped).toEqual([]);
+  });
+
+  it("picks an answered turn after all when a later message was recorded and never answered", () => {
+    // The reply went out; then the dying process started the next queued message and got no further.
+    const session = interrupted(iso(MINUTE), { status: "idle", replyRecorded: true });
+    message(session.id, "user", 5 * MINUTE, "the request that was answered");
+    message(session.id, "assistant", MINUTE + 2_000, "its answer");
+    message(session.id, "user", 30_000, "a follow-up that was waiting in the queue");
+
+    expect(select()).toMatchObject({ candidates: [{ id: session.id }], skipped: [] });
   });
 
   it("leaves out a session whose conversation moved on after the mark", () => {
@@ -480,6 +528,24 @@ describe("restartResumeMessage", () => {
     expect(withUnseen).toContain("Do NOT trigger it again");
   });
 
+  it("asks for the reply to be delivered again — not for the work to be redone — when only the delivery is in doubt", () => {
+    const session = interrupted(iso(MINUTE), { replyRecorded: true });
+
+    const message = restartResumeMessage(session, iso(MINUTE), { replyUndelivered: true });
+
+    expect(message.startsWith(RESTART_NUDGE_PREFIX)).toBe(true);
+    expect(message).toContain(iso(MINUTE));
+    expect(message).toContain("may never have reached the conversation");
+    expect(message).toContain("there is no work to redo");
+    expect(message).toContain("send it again");
+    expect(message).toContain("do not post it a second time");
+    expect(message).toContain(`GET /api/sessions/${session.id}?last=10`);
+    expect(message).toContain("Do NOT trigger it again");
+    // Not the "you were cut off mid-flight" instructions.
+    expect(message).not.toContain("Pick the request back up");
+    expect(message).not.toBe(restartResumeMessage(session, iso(MINUTE)));
+  });
+
   it("differs per interruption, so the route's duplicate check never swallows a later nudge", () => {
     const session = interrupted(iso(MINUTE));
     expect(restartResumeMessage(session, iso(MINUTE))).not.toBe(restartResumeMessage(session, iso(0)));
@@ -571,6 +637,20 @@ describe("resumeRestartInterruptedSessions", () => {
 
     expect(run.post).not.toHaveBeenCalled();
     expect(markOf(session.id)).toEqual({ nudgedAt: [] });
+  });
+
+  it("sends the delivery nudge to a session whose reply was recorded but never came back from delivery", async () => {
+    const session = interrupted(iso(MINUTE), { status: "interrupted", replyRecorded: true });
+    message(session.id, "user", 5 * MINUTE, "本番にデプロイして");
+    message(session.id, "assistant", MINUTE + 1_000, "デプロイが完了しました。");
+
+    const run = boot();
+    expect(run.summary).toMatchObject({ planned: 1, skipped: 0 });
+    await run.fire();
+
+    expect(run.post).toHaveBeenCalledTimes(1);
+    expect(run.post.mock.calls[0][2].message).toBe(restartResumeMessage(session, iso(MINUTE), { replyUndelivered: true }));
+    expect(markOf(session.id)).toEqual({ nudgedAt: [new Date(NOW).toISOString()] });
   });
 
   it("tells the session about a message that was recorded after the interruption but never answered", async () => {

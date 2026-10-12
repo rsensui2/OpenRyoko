@@ -52,11 +52,14 @@ export interface RestartResumeState {
   /** When a restart cut this session's turn off. Present until that
    *  interruption has been handled (nudged, or deliberately left alone). */
   interruptedAt?: string;
+  /** Goes with `interruptedAt`: the turn had already recorded its reply when
+   *  it was interrupted. What is in doubt is the delivery, not the work. */
+  replyRecorded?: true;
   /** When this session was nudged, oldest first — what the loop guard reads. */
   nudgedAt: string[];
 }
 
-export type RestartResumeSkip = "workflow" | "cron" | "active" | "moved-on" | "too-old" | "recently-nudged";
+export type RestartResumeSkip = "workflow" | "cron" | "active" | "moved-on" | "answered" | "too-old" | "recently-nudged";
 
 export interface RestartResumeSelection {
   candidates: Session[];
@@ -80,6 +83,9 @@ export interface RestartNudgeSituation {
   /** A user message was recorded after the interruption and never answered:
    *  it was waiting in the queue and never reached the engine. */
   unseenUserMessage?: boolean;
+  /** The turn had finished and recorded its reply, but the process was gone
+   *  before the delivery came back: the reply may not have reached anyone. */
+  replyUndelivered?: boolean;
 }
 
 export interface RestartResumeDeps {
@@ -117,8 +123,10 @@ const isInstant = (value: unknown): value is string => typeof value === "string"
 export function readRestartResumeState(meta: Session["transportMeta"]): RestartResumeState {
   const raw = metaObject(meta)[RESTART_RESUME_META_KEY];
   const state = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  const marked = isInstant(state.interruptedAt);
   return {
-    ...(isInstant(state.interruptedAt) ? { interruptedAt: state.interruptedAt } : {}),
+    ...(marked ? { interruptedAt: state.interruptedAt as string } : {}),
+    ...(marked && state.replyRecorded === true ? { replyRecorded: true as const } : {}),
     nudgedAt: Array.isArray(state.nudgedAt) ? state.nudgedAt.filter(isInstant) : [],
   };
 }
@@ -127,6 +135,7 @@ function withRestartResumeState(meta: Session["transportMeta"], state: RestartRe
   const next = metaObject(meta);
   const stored: JsonObject = {
     ...(state.interruptedAt ? { interruptedAt: state.interruptedAt } : {}),
+    ...(state.interruptedAt && state.replyRecorded ? { replyRecorded: true } : {}),
     ...(state.nudgedAt.length > 0 ? { nudgedAt: state.nudgedAt } : {}),
   };
   if (Object.keys(stored).length > 0) next[RESTART_RESUME_META_KEY] = stored;
@@ -134,9 +143,18 @@ function withRestartResumeState(meta: Session["transportMeta"], state: RestartRe
   return Object.keys(next).length > 0 ? next : null;
 }
 
-/** The transport meta to persist for a session a restart is cutting off now. */
-export function withRestartInterruptedMark(meta: Session["transportMeta"], at: string): JsonObject {
-  return withRestartResumeState(meta, { ...readRestartResumeState(meta), interruptedAt: at }) ?? {};
+/** The transport meta to persist for a session a restart is cutting off now.
+ *  A new interruption starts clean: only the nudge history carries over. */
+export function withRestartInterruptedMark(
+  meta: Session["transportMeta"],
+  at: string,
+  mark: { replyRecorded?: boolean } = {},
+): JsonObject {
+  return withRestartResumeState(meta, {
+    interruptedAt: at,
+    ...(mark.replyRecorded ? { replyRecorded: true as const } : {}),
+    nudgedAt: readRestartResumeState(meta).nudgedAt,
+  }) ?? {};
 }
 
 /** Take the pending mark off a session, optionally putting a nudge on record. */
@@ -156,11 +174,11 @@ function clearRestartInterruptedMark(sessionId: string, nudgedAt?: string): void
 const newestMessage = (sessionId: string): SessionMessage | undefined => getMessagePage(sessionId, { limit: 1 }).messages.at(-1);
 
 /**
- * True when a "running" session has in fact answered its current turn and has
- * nothing left to resume. A connector turn records its reply, THEN delivers
- * it, and only then leaves "running" — a restart that lands in between must
- * not be answered with a nudge, whose output would be posted into the thread
- * as an unprompted second message.
+ * True when a "running" session has already recorded the reply of its current
+ * turn. A connector turn records its reply, THEN delivers it, and only then
+ * leaves "running", so a restart can land in between. The work is done; what
+ * the mark cannot know yet is whether the delivery will come back before the
+ * process is gone (see the "answered" rule in skipReason).
  *
  * The newest transcript entry being the assistant's reply is the evidence,
  * with one exception. A notification or web message is recorded when it is
@@ -168,7 +186,7 @@ const newestMessage = (sessionId: string): SessionMessage | undefined => getMess
  * newer entry while the queued turn runs. A queue row that started running
  * after the reply says so: the reply belongs to the turn before it.
  */
-function turnAlreadyAnswered(session: Session, newest = newestMessage(session.id)): boolean {
+function replyAlreadyRecorded(session: Session, newest = newestMessage(session.id)): boolean {
   if (newest?.role !== "assistant") return false;
   const running = initDb().prepare(
     "SELECT started_at AS startedAt FROM queue_items WHERE session_key = ? AND status = 'running' AND session_id = ? ORDER BY started_at DESC LIMIT 1",
@@ -179,8 +197,8 @@ function turnAlreadyAnswered(session: Session, newest = newestMessage(session.id
 /**
  * Graceful shutdown, right before the engines are killed: every session that
  * is mid-turn becomes "interrupted" (its engine session id is kept, so it can
- * be resumed) and, unless its turn has already answered, gets the mark the
- * next boot reads. Returns how many were interrupted.
+ * be resumed) and gets the mark the next boot reads — which also says whether
+ * the turn had already recorded its reply. Returns how many were interrupted.
  *
  * Workflow attempts are skipped: recoverStaleWorkflowAttemptSessions(), which
  * the caller runs first, stamps their `gateway-restart` receipt — a plain
@@ -196,7 +214,7 @@ export function interruptRunningSessionsForShutdown(now = Date.now()): number {
       lastActivity: interruptedAt,
       lastError: "Interrupted: gateway shutting down gracefully",
       // The killed turn's completion overwrites the status; the mark is what the next boot reads.
-      ...(turnAlreadyAnswered(session) ? {} : { transportMeta: withRestartInterruptedMark(session.transportMeta, interruptedAt) }),
+      transportMeta: withRestartInterruptedMark(session.transportMeta, interruptedAt, { replyRecorded: replyAlreadyRecorded(session) }),
     });
     logger.info(`Marked session ${session.id} as interrupted for resume`);
     interrupted++;
@@ -211,7 +229,7 @@ export function interruptRunningSessionsForShutdown(now = Date.now()): number {
  * - A session still "running" was never shut down cleanly (crash, SIGKILL, a
  *   shutdown that ran out of time). Its last sign of life — the heartbeat or
  *   the newest transcript entry, whichever is later — is the best estimate of
- *   when it was cut off. One whose turn had already answered is not stamped.
+ *   when it was cut off.
  * - A nudge turn that was itself in flight is cancelled instead of going back
  *   to pending: replaying it is how a turn that restarts the gateway would
  *   loop. The session is interrupted again and falls under the cooldown.
@@ -227,11 +245,11 @@ export function prepareRestartResume(now = Date.now()): { marked: number; cancel
       // Workflow attempts have their own restart recovery; a cron run has no conversation to answer in.
       if (session.workflowProvenance || session.source === "cron") continue;
       const newest = newestMessage(session.id);
-      if (turnAlreadyAnswered(session, newest)) continue;
       const heartbeat = Date.parse(session.lastActivity);
       const lastAlive = Math.max(Number.isFinite(heartbeat) ? heartbeat : 0, newest?.timestamp ?? 0);
       const at = new Date(lastAlive > 0 ? Math.min(lastAlive, now) : now).toISOString();
-      updateSession(session.id, { transportMeta: withRestartInterruptedMark(session.transportMeta, at) });
+      const replyRecorded = replyAlreadyRecorded(session, newest);
+      updateSession(session.id, { transportMeta: withRestartInterruptedMark(session.transportMeta, at, { replyRecorded }) });
       marked++;
     }
     return { marked, cancelledNudges };
@@ -317,6 +335,10 @@ function skipReason(session: Session, input: SelectInput): RestartResumeSkip | n
   // A mark can outlive its restart (the nudge could not be posted). Once the user has asked again
   // and been answered, it is history. A later message that was merely recorded proves nothing.
   if (hasUserMessageSince(session.id, interruptedAt, true)) return "moved-on";
+  // The turn had recorded its reply. Its completion writes a final status only after the delivery
+  // has returned, so any status but the interruption's own means the reply was dealt with — and
+  // "interrupted" means the process was gone first. A later message nobody answered still needs a turn.
+  if (state.replyRecorded && session.status !== "interrupted" && !hasUserMessageSince(session.id, interruptedAt, false)) return "answered";
   if (input.now - interruptedAt > input.maxAgeMs) return "too-old";
   if (underLoopGuard(session, state.nudgedAt, input.now)) return "recently-nudged";
   return null;
@@ -371,15 +393,32 @@ export function planRestartResumes(input: { candidates: Session[]; now: number }
  * again, and — if it caused the restart — not cause another. The interruption
  * time makes the text unique per interruption: the notification route treats
  * an identical persisted notification as a duplicate.
+ *
+ * A turn that had already recorded its reply gets a different message: there
+ * is nothing to pick back up, only a reply that may not have been delivered,
+ * and the session has to be told to send that same reply again rather than
+ * redo the work or carry on as if it had been cut off mid-flight.
  */
 export function restartResumeMessage(session: Session, interruptedAt: string, situation: RestartNudgeSituation = {}): string {
   const transcript = `GET /api/sessions/${session.id}?last=10`;
+  const ownRestart = "If you restarted or updated the gateway yourself (for example `ryoko update --restart`), that restart is this one and it is done. Do NOT trigger it again";
+  if (situation.replyUndelivered) {
+    return [
+      `${RESTART_NUDGE_PREFIX} The gateway restarted at ${interruptedAt}, just as your last reply in this conversation was being delivered — not something the user did, and not a mistake in your work. That reply is saved in this session, but it may never have reached the conversation.`,
+      "",
+      "Your turn had finished, so there is no work to redo. Only the delivery is in doubt:",
+      "1. If you can read the conversation itself (the thread or channel), check whether that reply arrived.",
+      `2. If it did not arrive, or you cannot tell, send it again: answer this message with the same reply, unchanged. You can read it back with ${transcript}`,
+      "3. If it did arrive, do not post it a second time.",
+      `4. ${ownRestart}.`,
+    ].join("\n");
+  }
   return [
     `${RESTART_NUDGE_PREFIX} Your previous turn in this conversation was cut off by a gateway restart at ${interruptedAt} — not by the user, and not by a mistake in your work.`,
     "",
     "Pick the request back up and finish it:",
     "1. First re-check anything that was in flight (a command, a tool call, a delegated child, a detached job). Look at its actual state before you assume it finished or run it again.",
-    "2. If you restarted or updated the gateway yourself (for example `ryoko update --restart`), that restart is this one and it is done. Do NOT trigger it again — confirm the result and report it.",
+    `2. ${ownRestart} — confirm the result and report it.`,
     situation.unseenUserMessage
       ? `3. The user wrote again while the gateway was restarting, and that message never reached you. Read this session's latest messages before acting — ${transcript} — and deal with it in the same answer.`
       : `3. If you have no memory of the interrupted turn, read this session's latest messages before acting: ${transcript}`,
@@ -407,6 +446,7 @@ async function sendRestartNudge(sessionId: string, plannedAt: number, deps: Rest
     await (deps.post ?? postSessionNotification)(deps.port, sessionId, {
       message: restartResumeMessage(session, interruptedAt, {
         unseenUserMessage: hasUserMessageSince(sessionId, Date.parse(interruptedAt), false),
+        replyUndelivered: readRestartResumeState(session.transportMeta).replyRecorded === true && session.status === "interrupted",
       }),
       dedupeKey: `restart-resume:${sessionId}:${interruptedAt}`,
     });

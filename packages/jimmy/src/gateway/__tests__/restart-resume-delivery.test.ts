@@ -173,6 +173,39 @@ describe("restart resume — a Slack session interrupted mid-turn is nudged and 
     expect(replyMessage).toHaveBeenCalledTimes(1);
   });
 
+  it("a reply that was recorded but never posted is asked for again, and reaches the thread this time", async () => {
+    engineRun.mockClear();
+    replyMessage.mockClear();
+    requests.length = 0;
+    const session = registry.createSession({
+      engine: "claude", source: "slack", sourceRef: "C_DEPLOY", connector: "slack", sessionKey: "slack:C_DEPLOY:999.000",
+      replyContext: { channel: "C_DEPLOY", thread: "999.000" }, transportMeta: { channelExternal: false }, prompt: "本番にデプロイして",
+    });
+    // The connector turn finished its work and recorded the reply; the post was still in flight…
+    registry.insertMessage(session.id, "user", "本番にデプロイして");
+    registry.insertMessage(session.id, "assistant", "デプロイが完了しました。");
+    registry.updateSession(session.id, { status: "running", engineSessionId: "engine-before-restart" });
+    // …when the gateway shut down, and the process was gone before the turn could write its final status.
+    restartResume.interruptRunningSessionsForShutdown();
+    expect(registry.getSession(session.id)?.status).toBe("interrupted");
+    expect(restartResume.readRestartResumeState(registry.getSession(session.id)!.transportMeta)).toMatchObject({ replyRecorded: true });
+    // The model does what the nudge asks: it answers with the same reply.
+    engineRun.mockImplementationOnce(async () => ({ result: "デプロイが完了しました。", sessionId: "engine-resumed", numTurns: 1 }));
+
+    expect(restartResume.resumeRestartInterruptedSessions(bootDeps())).toMatchObject({ planned: 1, skipped: 0 });
+
+    await vi.waitFor(() => expect(replyMessage).toHaveBeenCalledTimes(1), { timeout: 10_000 });
+    const prompt = (engineRun.mock.calls[0][0] as { prompt: string }).prompt;
+    expect(prompt.startsWith(restartResume.RESTART_NUDGE_PREFIX)).toBe(true);
+    expect(prompt).toContain("may never have reached the conversation");
+    expect(prompt).toContain("send it again");
+    expect(prompt).not.toContain("Pick the request back up");
+    const [target, text] = replyMessage.mock.calls[0] as unknown as [Record<string, unknown>, string];
+    expect(target).toMatchObject({ channel: "C_DEPLOY", thread: "999.000" });
+    expect(text).toBe("デプロイが完了しました。");
+    await vi.waitFor(() => expect(registry.getSession(session.id)?.status).toBe("idle"));
+  });
+
   it("a session the queue replay already re-dispatched is not resumed a second time", async () => {
     engineRun.mockClear();
     replyMessage.mockClear();
