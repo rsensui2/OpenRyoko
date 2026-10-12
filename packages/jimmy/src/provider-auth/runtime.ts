@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { buildChildEnv } from "../shared/childEnv.js";
 import { loadConfig } from "../shared/config.js";
 import { JINN_HOME } from "../shared/paths.js";
-import { resolveBin } from "../shared/resolveBin.js";
+import { tryResolveBin } from "../shared/resolveBin.js";
 import type { JinnConfig } from "../shared/types.js";
 import type { AuthClock, AuthProvider, ProviderCommand, RunCommand, SpawnPty } from "./types.js";
 
@@ -19,18 +19,27 @@ import type { AuthClock, AuthProvider, ProviderCommand, RunCommand, SpawnPty } f
  * node-pty and the interactive engine are loaded on first use: importing this
  * module (every Slack connector does) must not load a native addon.
  */
+
+/** A PTY starts even when its program does not exist — the child just exits 1.
+ *  Finding the binary first lets the operator hear "the CLI is missing". */
+function locate(bin: string): string {
+  const file = tryResolveBin(bin);
+  if (!file) throw Object.assign(new Error("login CLI not found"), { code: "ENOENT" });
+  return file;
+}
+
 export async function resolveProviderCommand(
   provider: AuthProvider,
   config: Pick<JinnConfig, "engines"> = loadConfig(),
 ): Promise<ProviderCommand> {
   if (provider === "codex") {
     return {
-      file: resolveBin(config.engines?.codex?.bin || "codex"),
+      file: locate(config.engines?.codex?.bin || "codex"),
       env: buildChildEnv({ stripPrefixes: ["CODEX_"], stripExact: ["CODEX"] }),
       cwd: JINN_HOME,
     };
   }
-  const file = resolveBin(config.engines?.claude?.bin || "claude");
+  const file = locate(config.engines?.claude?.bin || "claude");
   if (config.engines?.claude?.interactive !== true) return { file, env: buildChildEnv(), cwd: JINN_HOME };
   const { buildClaudePtyEnv } = await import("../engines/claude-interactive.js");
   return { file, env: buildClaudePtyEnv(undefined, process.env), cwd: JINN_HOME };

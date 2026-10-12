@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const spawn = vi.hoisted(() => vi.fn());
 vi.mock("node-pty", () => ({ spawn }));
@@ -9,21 +9,30 @@ vi.mock("node-pty", () => ({ spawn }));
 import { buildClaudePtyEnv } from "../../engines/claude-interactive.js";
 import { buildChildEnv } from "../../shared/childEnv.js";
 import { JINN_HOME } from "../../shared/paths.js";
+import { _clearResolveBinCache } from "../../shared/resolveBin.js";
 import { resolveProviderCommand, runStatusCommand, spawnLoginPty } from "../runtime.js";
+
+// Stand-ins for the two CLIs, so no test depends on what this machine has installed.
+const BIN_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "provider-auth-bin-"));
+const CLAUDE_BIN = path.join(BIN_DIR, "claude");
+const CODEX_BIN = path.join(BIN_DIR, "codex");
+for (const file of [CLAUDE_BIN, CODEX_BIN]) fs.writeFileSync(file, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+afterAll(() => { fs.rmSync(BIN_DIR, { recursive: true, force: true }); });
 
 const ENGINES = {
   default: "claude" as const,
-  claude: { bin: "/opt/provider-auth-test/claude", model: "opus", interactive: true },
-  codex: { bin: "/opt/provider-auth-test/codex", model: "gpt" },
+  claude: { bin: CLAUDE_BIN, model: "opus", interactive: true },
+  codex: { bin: CODEX_BIN, model: "gpt" },
 };
 
 describe("resolveProviderCommand", () => {
   const touched = [
     "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CONFIG_DIR",
-    "CODEX_HOME", "CODEX_SANDBOX", "CODEX",
+    "CODEX_HOME", "CODEX_SANDBOX", "CODEX", "PATH",
   ];
   let saved: Record<string, string | undefined>;
   beforeEach(() => {
+    _clearResolveBinCache();
     saved = Object.fromEntries(touched.map((key) => [key, process.env[key]]));
     Object.assign(process.env, {
       ANTHROPIC_API_KEY: "sk-test", ANTHROPIC_BASE_URL: "http://127.0.0.1:1", CLAUDECODE: "1",
@@ -36,12 +45,13 @@ describe("resolveProviderCommand", () => {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+    _clearResolveBinCache();
   });
 
   it("gives the Claude login the interactive engine's environment", async () => {
     const command = await resolveProviderCommand("claude", { engines: ENGINES });
 
-    expect(command.file).toBe("/opt/provider-auth-test/claude");
+    expect(command.file).toBe(CLAUDE_BIN);
     expect(command.cwd).toBe(JINN_HOME);
     expect(command.env).toEqual(buildClaudePtyEnv(undefined, process.env));
     // Where the credentials land is decided by these, exactly as for the engine.
@@ -65,20 +75,27 @@ describe("resolveProviderCommand", () => {
   it("gives the Codex login the Codex engine's environment — no CODEX_HOME override", async () => {
     const command = await resolveProviderCommand("codex", { engines: ENGINES });
 
-    expect(command.file).toBe("/opt/provider-auth-test/codex");
+    expect(command.file).toBe(CODEX_BIN);
     expect(command.cwd).toBe(JINN_HOME);
     expect(command.env).toEqual(buildChildEnv({ stripPrefixes: ["CODEX_"], stripExact: ["CODEX"] }));
     expect(command.env.HOME).toBe(process.env.HOME);
     expect(Object.keys(command.env).filter((key) => key === "CODEX" || key.startsWith("CODEX_"))).toEqual([]);
   });
 
-  it("falls back to the CLI's own name when no bin is configured", async () => {
+  it("looks the CLI up on PATH by its own name when no bin is configured", async () => {
+    process.env.PATH = BIN_DIR;
     const engines = { default: "claude" as const, claude: { model: "opus" }, codex: { model: "gpt" } };
-    const claude = await resolveProviderCommand("claude", { engines } as never);
-    const codex = await resolveProviderCommand("codex", { engines } as never);
 
-    expect(path.basename(claude.file)).toBe("claude");
-    expect(path.basename(codex.file)).toBe("codex");
+    expect((await resolveProviderCommand("claude", { engines } as never)).file).toBe(CLAUDE_BIN);
+    expect((await resolveProviderCommand("codex", { engines } as never)).file).toBe(CODEX_BIN);
+  });
+
+  it("says the CLI is missing rather than starting a PTY that would die at once", async () => {
+    process.env.PATH = BIN_DIR;
+    const missing = { ...ENGINES, claude: { ...ENGINES.claude, bin: "/opt/provider-auth-test/missing" }, codex: { ...ENGINES.codex, bin: "no-such-cli" } };
+
+    await expect(resolveProviderCommand("claude", { engines: missing })).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(resolveProviderCommand("codex", { engines: missing })).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
 
