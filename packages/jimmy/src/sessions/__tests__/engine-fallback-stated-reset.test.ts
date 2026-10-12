@@ -61,4 +61,19 @@ describe("how long a usage-limit switch is held", () => {
     expect(held).toBeGreaterThanOrEqual(6 * 60 * 60_000);
     expect(held).toBeLessThan(6 * 60 * 60_000 + 5_000);
   });
+
+  // A weekly window can name a reset six days out. Believing that for six days
+  // pinned the conversation to the fallback engine long after the account was
+  // usable again, so it is believed for twelve hours and then tried for real.
+  it("is held for twelve hours at most, however far away the named reset is", async () => {
+    const before = Date.now();
+    const sixDays = Math.floor(before / 1000) + 6 * 24 * 60 * 60;
+    const { session, options } = limitedClaudeTurn({ status: "rejected", rateLimitType: "interactive_detected", resetsAt: sixDays, window: "7d" });
+
+    await runFallbackAttempts(options);
+
+    const held = overrideUntil(session.id) - before;
+    expect(held).toBeGreaterThanOrEqual(12 * 60 * 60_000);
+    expect(held).toBeLessThan(12 * 60 * 60_000 + 5_000);
+  });
 });

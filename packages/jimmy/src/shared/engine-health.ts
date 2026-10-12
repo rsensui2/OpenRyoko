@@ -244,6 +244,16 @@ export function withEngineHealth(
 // also forgets one on evidence, and the re-check timer follows the store
 // instead of polling it, so both need a way in that upstream does not have.
 
+/**
+ * How long a stated reopening is acted on before the engine is tried for real:
+ * the reopening itself, or the re-probe interval when that comes first. The
+ * same bound a record's `recheckAt` gets, for a caller that holds a session
+ * away from an engine on the strength of a stated reset.
+ */
+export function reprobeAtMs(statedMs: number, now: Date = new Date()): number {
+  return Math.min(statedMs, now.getTime() + REPROBE_INTERVAL_MS);
+}
+
 const changeListeners = new Set<() => void>();
 
 /** Called after every write that reached the store. A listener that throws is

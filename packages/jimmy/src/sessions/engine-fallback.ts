@@ -9,7 +9,8 @@ import { recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { redactText } from "../shared/redact.js";
 import { getMessages, getSession, updateSession, type UpdateSessionFields } from "./registry.js";
 import { recordTurnAccounting, unrecordTurnAccounting } from "./accounting.js";
-import { claimUsageLimitAnnouncement, healthOverrideReleased, isUsableFallbackTarget, noteEngineTurnOutcome } from "./engine-health-gate.js";
+import { readEngineHealth, reprobeAtMs } from "../shared/engine-health.js";
+import { claimUsageLimitAnnouncement, HEALTH_OVERRIDE_SOURCE, healthOverrideReleased, isUsableFallbackTarget, noteEngineTurnOutcome } from "./engine-health-gate.js";
 import { confirmLoginRefusal, isLoginRefusal, LOGIN_REFUSAL_HOLD_MS, loginRefusalConfirmed } from "./engine-login.js";
 
 export type EngineFallbackReason = "rate_limit" | "no_response" | "timeout";
@@ -191,6 +192,19 @@ export async function runEngineWithResponseTimeout(
   }
 }
 
+/**
+ * Whether the limit a switch is being made for is the one on `engine`'s health
+ * record — a limit the engine declared, with the same stated reset. Only then
+ * does the record speak for the switch, so that forgetting the record (the
+ * engine served a turn; a re-check found the allowance open) can end the hold.
+ * A limit with no such record — unstated, undeclared, or met on a remote
+ * machine's account — keeps its hold until it expires.
+ */
+function restsOnHealthRecord(engine: string, statedMs: number): boolean {
+  const record = readEngineHealth()[engine];
+  return record?.state === "exhausted" && record.until === new Date(statedMs).toISOString();
+}
+
 const ENGINE_SWITCHED = "Interrupted: engine switched";
 
 /** Stop what `engine` still runs for one session — this session's process and
@@ -287,10 +301,16 @@ export async function runFallbackAttempts(options: EngineFallbackOptions): Promi
     if (result.sessionId || session.engineSessionId) engineSessions[engine.name] = result.sessionId || session.engineSessionId;
     const now = new Date().toISOString();
     const reset = detectRateLimit(result).resetsAt;
-    const until = new Date(reset && reset * 1000 > Date.now() ? reset * 1000 + 1000 : Date.now() + (reason === "rate_limit" ? 6 * 60 * 60_000 : 5 * 60_000)).toISOString();
+    // A stated reset is acted on for twelve hours at most, then the session
+    // tries its own engine for real: a weekly window can name a reset six days
+    // out, and the account is often usable again long before that.
+    const stated = reset && reset * 1000 > Date.now() ? reset * 1000 : undefined;
+    const until = new Date(stated ? reprobeAtMs(stated) + 1000 : Date.now() + (reason === "rate_limit" ? 6 * 60 * 60_000 : 5 * 60_000)).toISOString();
     const override = object(meta.engineOverride);
     if (!override.originalEngine) Object.assign(override, { originalEngine: engine.name, originalEngineSessionId: engineSessions[engine.name] ?? null,
-      originalModel: session.model, originalEffortLevel: session.effortLevel, until, syncSince: now });
+      originalModel: session.model, originalEffortLevel: session.effortLevel, until, syncSince: now,
+      // Held on the health record this limit left: let go with it (see healthOverrideReleased).
+      ...(stated && restsOnHealthRecord(engine.name, stated) ? { source: HEALTH_OVERRIDE_SOURCE } : {}) });
     const resume = typeof engineSessions[targetName] === "string" ? engineSessions[targetName] : undefined;
     // What this switch replaces, in case it has to be taken back (see below).
     const left: BeforeSwitch = { engine, result, attempted, override: meta.engineOverride,

@@ -429,16 +429,48 @@ describe("how a wrong record stops steering sessions", () => {
     expect(f.claudeRun.mock.calls.at(-1)![0].prompt).toContain("Answered by codex.");
   });
 
-  it("leaves a session that was switched by its own failed turn on the hold that turn was given", async () => {
+  // A weekly window: the limit that switched this conversation resets in six days.
+  const weeklyLimit = (): EngineResult => {
+    const resetsAt = inMinutes(6 * 24 * 60);
+    return { ...limited(resetsAt), rateLimit: { status: "rejected", rateLimitType: "interactive_detected", resetsAt, window: "7d" } };
+  };
+
+  it("takes back a conversation that was switched by its own failed turn too, once the record is let go", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
     const f = setup();
-    f.claudeRun.mockResolvedValueOnce(limited(inMinutes(60)));
+    f.claudeRun.mockResolvedValueOnce(weeklyLimit());
     const switched = f.message();
     expect((await f.route(switched)).engine).toBe("codex");
 
+    // An hour later Claude answers someone else — extra usage was bought, or
+    // the window was reset early. New sessions are back on Claude from here.
+    vi.setSystemTime(Date.now() + 60 * 60_000);
     await f.route(f.message(), { engine: "claude" });
     expect(readEngineHealth().claude).toBeUndefined();
 
-    expect((await f.route({ ...switched, text: "続きをお願いします" })).engine).toBe("codex");
+    // And so is the conversation that was switched: it is not left on Codex
+    // for the six days the limit had said it would last.
+    const back = await f.route({ ...switched, text: "続きをお願いします" });
+    expect(back.engine).toBe("claude");
+    expect(override(back.id)).toBeUndefined();
+  });
+
+  it("holds a conversation switched on a limit days away for twelve hours at most before trying its own engine again", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const f = setup();
+    const started = Date.now();
+    f.claudeRun.mockResolvedValueOnce(weeklyLimit());
+    const switched = f.message();
+
+    const held = await f.route(switched);
+    expect(Date.parse(String(override(held.id)!.until))).toBe(started + 12 * 60 * 60_000 + 1000);
+
+    vi.setSystemTime(started + 11 * 60 * 60_000);
+    expect((await f.route({ ...switched, text: "まだですか" })).engine).toBe("codex");
+
+    vi.setSystemTime(started + 13 * 60 * 60_000);
+    expect((await f.route({ ...switched, text: "続きをお願いします" })).engine).toBe("claude");
+    expect(f.claudeRun).toHaveBeenCalledTimes(2);
   });
 
   it("lets go as soon as the engine serves a turn", async () => {
