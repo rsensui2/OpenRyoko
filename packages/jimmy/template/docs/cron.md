@@ -86,7 +86,7 @@ Each job execution is logged to `~/.ryoko/cron/runs/<jobId>.jsonl`. Each line is
 }
 ```
 
-`status` is `success`, `error` or `skipped` (with a `reason`). A prompt run is an `error`, with the reason in `error`, when its session ended in error, when its result was not delivered (the delivery connector was not running, or refused the message), or when the job names an engine the gateway does not have. It is not a `success` merely because the turn returned. `GET /api/cron/<id>/runs` lists runs oldest first; add `?limit=N` for only the newest N.
+`status` is `success`, `error` or `skipped` (with a `reason`). The `kind: "maintenance"` lines an update-notification job writes for its inspection use `notified`, not `success`, once the inspection report has been delivered. A prompt run is an `error`, with the reason in `error`, when its session ended in error, when its result was not delivered (the delivery connector was not running, or refused the message), or when the job names an engine the gateway does not have. It is not a `success` merely because the turn returned. `GET /api/cron/<id>/runs` lists runs oldest first; add `?limit=N` for only the newest N.
 
 ## Failure Alerts
 

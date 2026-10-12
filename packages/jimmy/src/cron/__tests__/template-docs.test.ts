@@ -35,6 +35,22 @@ describe("shipped cron documentation", () => {
     for (const stale of ['"runId"', '"completedAt"', '"output"']) expect(text).not.toContain(stale);
   });
 
+  // The inspection an update-notification job runs writes its own lines, and
+  // those report a delivered result as `notified`, never as `success`.
+  it("names every status a run-log line can carry, including the maintenance lines' own", () => {
+    const text = read("docs/cron.md");
+    for (const status of ["success", "error", "skipped", "notified"]) expect(text).toContain(`\`${status}\``);
+    expect(text).toMatch(/`kind: "maintenance"`[^.]*`notified`/);
+  });
+
+  // A job naming an unknown engine is failed before any session is started, so
+  // that error line has no `sessionId` to follow.
+  it("does not promise a sessionId for a run that failed before a session existed", () => {
+    const text = read("skills/cron-manager/SKILL.md");
+    expect(text).not.toContain("and the session in `sessionId`");
+    expect(text).toMatch(/`sessionId`, when present[^.]*\babsent\b[^.]*engine the gateway does not have/);
+  });
+
   it("mentions that the run history can be limited to the newest runs", () => {
     expect(read("docs/cron.md")).toContain("?limit=");
     expect(read("skills/cron-manager/SKILL.md")).toContain("?limit=");

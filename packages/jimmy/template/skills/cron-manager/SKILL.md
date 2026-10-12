@@ -90,7 +90,7 @@ The AI instruction is `prompt`. Legacy `payload.message` is ignored. A cron's ex
 
 For command success, history should show `kind: "command"`, `status: "success"`, `exitCode: 0`, and no AI `sessionId`. Nonzero exit, spawn failure, or timeout is failure. `logFile`, `signal`, `timedOut`, and `durationMs` provide diagnostic evidence. An exit code is not proof of an external delivery; inspect the actual result as required by the workflow.
 
-For a prompt job, `status: "error"` covers more than a routing failure. The run is an error, with the reason in `error` and the session in `sessionId`, when its session ended in error, when its result was not delivered (the delivery connector was not running, or refused the message), or when the job names an engine the gateway does not have. Use `GET /api/cron/<id>/runs?limit=N` to read only the newest N runs.
+For a prompt job, `status: "error"` covers more than a routing failure. The run is an error, with the reason in `error`, when its session ended in error, when its result was not delivered (the delivery connector was not running, or refused the message), or when the job names an engine the gateway does not have. `sessionId`, when present, names the session to inspect; it is absent when the run failed before a session was reported, which is always so for a job naming an engine the gateway does not have. Use `GET /api/cron/<id>/runs?limit=N` to read only the newest N runs.
 
 Failure alerts for prompt jobs go to `cron.alertConnector` / `cron.alertChannel`. A job that keeps failing for the same reason alerts once per `cron.alertThrottleMinutes` (default 60; `0` alerts every time), so the absence of a new alert is not recovery. Confirm with the run history.
 
