@@ -321,6 +321,69 @@ describe("migrate: bundled skill sync", () => {
     });
   });
 
+  describe("when a migration ships files for a skill the sync manages", () => {
+    const skillsDir = path.join(JINN_HOME, "skills");
+    /** Everything written under skills/, by any of the three ways migrate writes. */
+    const created = () => [
+      ...vi.mocked(fs.mkdirSync).mock.calls.map((call) => String(call[0])),
+      ...mockWriteFileSync.mock.calls.map((call) => String(call[0])),
+      ...vi.mocked(fs.copyFileSync).mock.calls.map((call) => String(call[1])),
+    ].filter((file) => file.startsWith(skillsDir));
+
+    /** Migration 1.1.0 ships these files; none of the listed paths exist in the home yet. */
+    function shipInMigration(skill: string, fileNames: string[], missingInHome: string[]): void {
+      const files = path.join(MIGRATIONS_DIR, "1.1.0", "files");
+      const tree: Record<string, ReturnType<typeof dirent>[]> = {
+        [files]: [dirent("skills", true)],
+        [path.join(files, "skills")]: [dirent(skill, true)],
+        [path.join(files, "skills", skill)]: fileNames.map((name) => dirent(name, false)),
+      };
+      mockReaddirSync.mockImplementation(((dir: string) => tree[dir] ?? []) as never);
+      vi.mocked(fs.readFileSync).mockReturnValue("jinn:\n  version: 1.0.0\n");
+      const missing = missingInHome.map((relative) => path.join(skillsDir, relative));
+      mockExistsSync.mockImplementation((file) => !missing.includes(String(file)));
+    }
+
+    it("--auto adds nothing to a skill that is in sync, not even a file the shipped version no longer has", async () => {
+      // The migration predates the current skill: it still carries a file since dropped.
+      // Copied in as "new", it would make the skill look edited and stop its updates for good.
+      shipInMigration("migrate", ["SKILL.md", "dropped-since.md"], ["migrate/dropped-since.md"]);
+      mockSync.mockReturnValue(synced({ inSync: ["migrate"] }));
+      const { runMigrate } = await import("../migrate.js");
+
+      await runMigrate({ auto: true });
+
+      expect(created()).toEqual([]);
+      expect(output()).not.toMatch(/\[new\]|needs AI merge/);
+      expect(stampedVersions()).toEqual(["1.1.0"]);
+    });
+
+    it("--auto does not rebuild a skill the sync has just retired", async () => {
+      shipInMigration("old-skill", ["SKILL.md"], ["old-skill", "old-skill/SKILL.md"]);
+      mockSync.mockReturnValue(synced({ retired: ["old-skill"] }));
+      const { runMigrate } = await import("../migrate.js");
+
+      await runMigrate({ auto: true });
+
+      expect(created()).toEqual([]);
+      expect(fs.symlinkSync).not.toHaveBeenCalled();
+      expect(output()).not.toMatch(/\[new\]|needs AI merge/);
+      expect(stampedVersions()).toEqual(["1.1.0"]);
+    });
+
+    it("the AI is told which skills were retired, so it does not rebuild them either", async () => {
+      shipInMigration("old-skill", ["SKILL.md"], ["old-skill", "old-skill/SKILL.md"]);
+      mockSync.mockReturnValue(synced({ retired: ["old-skill", "older-skill"] }));
+      const { runMigrate } = await import("../migrate.js");
+
+      await runMigrate({});
+
+      const prompt = (mockExecFileSync.mock.calls[0][1] as string[]).at(-1)!;
+      expect(prompt).toMatch(/retired.*: old-skill, older-skill\b/);
+      expect(prompt).toMatch(/do not recreate/i);
+    });
+  });
+
   it("points the AI at the instance's own migrate skill and mentions no deletions when there are none", async () => {
     const { runMigrate } = await import("../migrate.js");
 
@@ -369,10 +432,9 @@ describe("migrate: bundled skill sync", () => {
   it("--auto never mistakes a file outside skills/<name>/ for a synced skill file", async () => {
     const files = path.join(MIGRATIONS_DIR, "1.1.0", "files");
     const tree: Record<string, ReturnType<typeof dirent>[]> = {
-      [files]: [dirent("docs", true), dirent("skills", true), dirent("migrate", false)],
+      [files]: [dirent("docs", true), dirent("migrate", false)],
       [path.join(files, "docs")]: [dirent("migrate", true)],
       [path.join(files, "docs", "migrate")]: [dirent("SKILL.md", false)],
-      [path.join(files, "skills")]: [dirent("migrate", false)],
     };
     mockReaddirSync.mockImplementation(((dir: string) => tree[dir] ?? []) as never);
     mockSync.mockReturnValueOnce(synced({ inSync: ["migrate", "docs", "skills"] }));
@@ -381,7 +443,7 @@ describe("migrate: bundled skill sync", () => {
     await runMigrate({ auto: true });
 
     const skipped = output().split("\n").filter((line) => line.includes("needs AI merge"));
-    expect(skipped).toHaveLength(3);
+    expect(skipped).toHaveLength(2);
     expect(stampedVersions()).toEqual([]);
   });
 });

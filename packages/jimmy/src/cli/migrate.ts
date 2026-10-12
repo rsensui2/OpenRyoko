@@ -83,15 +83,21 @@ const KEPT_SKILL_NOTES: Partial<Record<KeepReason, string>> = {
   deleted: `削除済みのため配置しません。戻すには ${RESTORE_DELETED_SKILLS}`,
 };
 
-/** What the bundled skill sync left behind, as far as the migrations care. */
+/**
+ * The bundled skills whose directories belong to the sync after it has run. A
+ * migration's files/ for any of them must not be applied: the sync has already put
+ * each one in its final state, and a stray file would undo that.
+ */
 interface SyncedSkills {
-  /** Skills that now match the shipped version. */
+  /** Skills that now match the shipped version. One more file would make them look edited. */
   inSync: ReadonlySet<string>;
   /** Shipped skills the operator deleted. Nothing in this command may put them back. */
   deleted: ReadonlySet<string>;
+  /** Skills the package no longer ships, just moved to the backup directory. */
+  retired: ReadonlySet<string>;
 }
 
-const NO_SYNCED_SKILLS: SyncedSkills = { inSync: new Set(), deleted: new Set() };
+const NO_SYNCED_SKILLS: SyncedSkills = { inSync: new Set(), deleted: new Set(), retired: new Set() };
 
 /**
  * Run the bundled skill sync — the same one the gateway runs at start — and
@@ -130,20 +136,22 @@ function syncBundledSkillsStep(restoreDeleted: boolean): SyncedSkills {
   return {
     inSync: new Set(result.inSync),
     deleted: new Set(result.kept.filter((skill) => skill.reason === "deleted").map((skill) => skill.name)),
+    retired: new Set(result.retired),
   };
 }
 
-/** A migration's copy of a bundled skill's file needs no merge once that skill
- *  matches the shipped version: the instance has that file, or a newer one. */
-function isSyncedSkillFile(relPath: string, syncedSkills: ReadonlySet<string>): boolean {
+/**
+ * Why a migration file must be left out, when it lies in the directory of a skill
+ * the sync has settled; null when the file is none of the sync's business.
+ */
+function settledSkillNote(relPath: string, skills: SyncedSkills): string | null {
   const parts = relPath.split(path.sep);
-  return parts.length >= 3 && parts[0] === "skills" && syncedSkills.has(parts[1]);
-}
-
-/** Is this path the directory of one of these skills, or anything inside it? */
-function isInsideSkill(relPath: string, skills: ReadonlySet<string>): boolean {
-  const parts = relPath.split(path.sep);
-  return parts.length >= 2 && parts[0] === "skills" && skills.has(parts[1]);
+  if (parts.length < 2 || parts[0] !== "skills") return null;
+  if (skills.deleted.has(parts[1])) return "bundled skill deleted by the operator";
+  if (skills.retired.has(parts[1])) return "bundled skill retired";
+  // The instance already has this file or a newer one — or the skill dropped it since.
+  if (skills.inSync.has(parts[1])) return "bundled skill already in sync";
+  return null;
 }
 
 /**
@@ -359,9 +367,12 @@ export async function runMigrate(opts: {
       `For each version in order, read its MIGRATION.md and apply the changes.`,
       `After all migrations, update jinn.version in config.yaml to "${packageVersion}".`,
       `Clean up the migrations/ directory when done.`,
-      // Said here, not only in the skill: an instance may hold a migrate skill older than this rule.
+      // Said here, not only in the skill: an instance may hold a migrate skill older than these rules.
       ...(skills.deleted.size > 0
         ? [`The operator deleted these bundled skills: ${[...skills.deleted].sort().join(", ")}. Do not recreate them, even if a migration ships files for them.`]
+        : []),
+      ...(skills.retired.size > 0
+        ? [`These bundled skills were retired and moved to the backup directory: ${[...skills.retired].sort().join(", ")}. Do not recreate them, even if a migration ships files for them.`]
         : []),
     ].join("\n");
 
@@ -385,9 +396,9 @@ export async function runMigrate(opts: {
 /**
  * Auto-migration: deterministically apply safe changes without AI.
  * Copies new files, adds new config keys. Does NOT modify user-customized files.
- * Files of a bundled skill the sync already brought up to date count as applied;
- * only skills the user edited are still left to the AI merge. Files of a bundled
- * skill the operator deleted are not applied at all: the skill stays deleted.
+ * Nothing is written into the directory of a bundled skill the sync has settled —
+ * one it brought up to date, retired, or found deleted by the operator. Only skills
+ * the user edited are still left to the AI merge.
  */
 async function applyAutoMigrations(
   pending: string[],
@@ -419,8 +430,9 @@ async function applyAutoMigrations(
     for (const entry of entries) {
       const destPath = path.join(JINN_HOME, entry.relPath);
 
-      if (isInsideSkill(entry.relPath, skills.deleted)) {
-        if (entry.type === "file") console.log(`  ${DIM}[skip]${RESET} ${entry.relPath} (bundled skill deleted by the operator)`);
+      const settled = settledSkillNote(entry.relPath, skills);
+      if (settled) {
+        if (entry.type === "file") console.log(`  ${DIM}[skip]${RESET} ${entry.relPath} (${settled})`);
         continue;
       }
 
@@ -450,8 +462,6 @@ async function applyAutoMigrations(
         if (parts[0] === "skills" && parts.length >= 2) {
           ensureSkillSymlinks(parts[1]);
         }
-      } else if (isSyncedSkillFile(entry.relPath, skills.inSync)) {
-        console.log(`  ${DIM}[ok]${RESET} ${entry.relPath} (bundled skill already in sync)`);
       } else {
         console.log(`  ${YELLOW}[skip]${RESET} ${entry.relPath} (exists — needs AI merge)`);
         skippedExisting++;
