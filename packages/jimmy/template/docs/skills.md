@@ -104,7 +104,8 @@ bundled skill it placed.
   edited, or one installed under an assistant name other than the current one or the
   installer's default.
 - If `~/.ryoko/skills` is itself a symlink, it is your own skill store and nothing is
-  synced into it: no receipt, no updates, no retirements. `ryoko migrate` says so, and
+  synced into it: no receipt, no updates, no retirements. The gateway says so in its
+  log at every start. `ryoko migrate` says so too, and
   handles skills there as it did before the sync existed: it adds bundled skills that
   are missing, copies a migration's new skill files, and leaves the ones that exist to
   the AI merge.

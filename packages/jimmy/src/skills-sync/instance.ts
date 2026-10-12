@@ -130,7 +130,14 @@ function reportTrouble(result: BundledSkillSync): void {
   if (result.receiptError) {
     logger.warn(`The bundled skill receipt could not be saved (${printable(result.receiptError)}). The skills themselves are in place; the next start records them.`);
   }
-  if (result.skipped === "skills-root-symlink") logger.debug("Bundled skills not synced: skills/ is a symlink the user manages.");
+  if (result.skipped === "skills-root-symlink") {
+    // The user's own arrangement, so not a warning; but said where it is read, at every
+    // start. Nothing is written to the home to remember that it was said.
+    logger.info(
+      "Bundled skills not synced: skills/ is a symlink, so it is taken for your own skill store and left alone. "
+      + '"ryoko migrate" adds bundled skills that are missing from it; see docs/skills.md.',
+    );
+  }
   if (result.skipped === "newer-receipt" || result.skipped === "newer-format") {
     // At every start, for as long as it is so: the receipt is a file in the home, and a
     // forged one switches the sync off. Nothing kept in the home decides whether to say it.

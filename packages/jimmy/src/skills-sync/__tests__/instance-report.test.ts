@@ -200,13 +200,19 @@ describe("what gateway start logs about the bundled skill sync", () => {
     expect(said("error")).toEqual([]);
   });
 
-  it("only mentions a symlinked skills directory at debug level: it is the user's arrangement", () => {
-    ran({ skipped: "skills-root-symlink" });
+  it("says at every start, for anyone reading the log, that it leaves a symlinked skills directory alone", () => {
+    // The user's own arrangement, so not a warning. But a sync that has stepped back
+    // and says so only at debug level is one nobody knows is off.
+    for (let start = 1; start <= 3; start++) {
+      for (const spy of Object.values(log)) spy.mockClear();
+      ran({ skipped: "skills-root-symlink" });
 
-    syncBundledSkillsOnBoot({});
+      syncBundledSkillsOnBoot({});
 
-    expect(said("debug")).toHaveLength(1);
-    for (const level of ["info", "warn", "error"] as const) expect(said(level), level).toEqual([]);
+      expect(said("info"), `start ${start}`).toEqual([expect.stringMatching(/not synced: skills\/ is a symlink/)]);
+      expect(said("info")[0]).toMatch(/ryoko migrate/);
+      for (const level of ["debug", "warn", "error"] as const) expect(said(level), level).toEqual([]);
+    }
   });
 
   it.each(["newer-receipt", "newer-format"] as const)("warns at every start that it stood back (%s)", (skipped) => {

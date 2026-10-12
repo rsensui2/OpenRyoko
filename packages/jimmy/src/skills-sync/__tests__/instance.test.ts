@@ -208,14 +208,19 @@ describe("bundled skill sync at gateway start", () => {
     expect(getPendingMigrations(getInstanceVersion(), getPackageVersion())).toEqual(pending);
   });
 
-  it("stays quiet about a skills directory that is the user's own symlink", () => {
+  it("leaves a skills directory that is the user's own symlink alone, and says so without writing anything", () => {
     fs.mkdirSync(ELSEWHERE);
     fs.symlinkSync(ELSEWHERE, SKILLS_DIR);
+    const before = fs.readdirSync(JINN_HOME).sort();
 
+    syncBundledSkillsOnBoot({});
     syncBundledSkillsOnBoot({});
 
     expect(fs.readdirSync(ELSEWHERE)).toEqual([]);
-    for (const level of ["info", "warn", "error"] as const) expect(log[level], level).not.toHaveBeenCalled();
-    expect(log.debug).toHaveBeenCalledTimes(1);
+    expect(fs.readdirSync(JINN_HOME).sort()).toEqual(before);
+    // Said where it is read, at each start; the user's own arrangement, so not a warning.
+    expect(log.info).toHaveBeenCalledTimes(2);
+    expect(log.info.mock.calls[0][0]).toMatch(/skills\/ is a symlink/);
+    for (const level of ["debug", "warn", "error"] as const) expect(log[level], level).not.toHaveBeenCalled();
   });
 });
