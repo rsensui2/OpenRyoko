@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import Busboy from "busboy";
+import { megabytes } from "../shared/attachment-download.js";
 import { FILES_DIR } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 import { safeAttachmentName } from "../shared/safe-file-name.js";
@@ -59,11 +60,39 @@ function mimeFromFilename(filename: string): string {
   return MIME_MAP[ext] || "application/octet-stream";
 }
 
-function readBody(req: HttpRequest): Promise<string> {
+/**
+ * The largest file POST /api/files stores — however it is sent. A multipart
+ * upload was always held to this; a JSON body with the file in base64 was
+ * not, and was read into memory in full whatever its size.
+ */
+export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+
+const exceedsLimit = (maxBytes: number): string => `File exceeds ${megabytes(maxBytes)} MB limit`;
+
+/** Room in a JSON upload for everything but the file: the name and the punctuation. */
+const JSON_ENVELOPE_BYTES = 64 * 1024;
+
+/**
+ * The request body as text, or null once it runs past `maxBytes`: from then
+ * on nothing more of it is kept, however much is still sent.
+ */
+function readBodyWithin(req: HttpRequest, maxBytes: number): Promise<string | null> {
   return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
+    let chunks: Buffer[] | null = [];
+    let received = 0;
+    req.on("data", (chunk: Buffer) => {
+      if (chunks === null) return;
+      received += chunk.length;
+      if (received <= maxBytes) {
+        chunks.push(chunk);
+        return;
+      }
+      chunks = null;
+      resolve(null);
+    });
+    req.on("end", () => {
+      if (chunks !== null) resolve(Buffer.concat(chunks).toString("utf-8"));
+    });
     req.on("error", reject);
   });
 }
@@ -134,10 +163,11 @@ async function saveFile(result: UploadResult, context: ApiContext): Promise<File
 }
 
 /** Handle POST /api/files — multipart upload */
-async function handleMultipartUpload(req: HttpRequest, res: ServerResponse, context: ApiContext): Promise<void> {
+async function handleMultipartUpload(req: HttpRequest, res: ServerResponse, context: ApiContext, maxBytes: number): Promise<void> {
   return new Promise((resolve) => {
-    const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
-    const busboy = Busboy({ headers: req.headers, limits: { fileSize: MAX_FILE_SIZE } });
+    // busboy reports its limit when a file *reaches* it, so one byte more than
+    // ours: a file of exactly the limit is stored, as it is for a JSON upload.
+    const busboy = Busboy({ headers: req.headers, limits: { fileSize: maxBytes + 1 } });
     let filename = "";
     let fileBuffer: Buffer | null = null;
     let refusal: string | null = null;
@@ -158,7 +188,7 @@ async function handleMultipartUpload(req: HttpRequest, res: ServerResponse, cont
 
     busboy.on("finish", async () => {
       if (fileTruncated) {
-        badRequest(res, `File exceeds ${MAX_FILE_SIZE / 1024 / 1024} MB limit`);
+        badRequest(res, exceedsLimit(maxBytes));
         resolve();
         return;
       }
@@ -196,10 +226,18 @@ async function handleMultipartUpload(req: HttpRequest, res: ServerResponse, cont
 }
 
 /** Handle POST /api/files — JSON body (base64 content) */
-async function handleJsonUpload(req: HttpRequest, res: ServerResponse, context: ApiContext): Promise<void> {
+async function handleJsonUpload(req: HttpRequest, res: ServerResponse, context: ApiContext, maxBytes: number): Promise<void> {
+  // A body that cannot hold a file within the limit is not read: by its
+  // announced size where there is one, and by count while reading either way.
+  const bodyLimit = Math.ceil(maxBytes / 3) * 4 + JSON_ENVELOPE_BYTES;
+  const announced = Number(req.headers["content-length"] ?? Number.NaN);
+  if (Number.isFinite(announced) && announced > bodyLimit) return badRequest(res, exceedsLimit(maxBytes));
+  const raw = await readBodyWithin(req, bodyLimit);
+  if (raw === null) return badRequest(res, exceedsLimit(maxBytes));
+
   let body: Record<string, unknown>;
   try {
-    body = JSON.parse(await readBody(req));
+    body = JSON.parse(raw);
   } catch {
     return badRequest(res, "Invalid JSON body");
   }
@@ -222,6 +260,7 @@ async function handleJsonUpload(req: HttpRequest, res: ServerResponse, context: 
   } catch {
     return badRequest(res, "Invalid base64 content");
   }
+  if (buffer.length > maxBytes) return badRequest(res, exceedsLimit(maxBytes));
 
   try {
     const meta = await saveFile({
@@ -242,14 +281,15 @@ export async function handleFilesRequest(
   pathname: string,
   method: string,
   context: ApiContext,
+  maxUploadBytes: number = MAX_UPLOAD_BYTES,
 ): Promise<boolean> {
   // POST /api/files — upload
   if (method === "POST" && pathname === "/api/files") {
     const contentType = (req.headers["content-type"] || "").toLowerCase();
     if (contentType.includes("multipart/form-data")) {
-      await handleMultipartUpload(req, res, context);
+      await handleMultipartUpload(req, res, context, maxUploadBytes);
     } else {
-      await handleJsonUpload(req, res, context);
+      await handleJsonUpload(req, res, context, maxUploadBytes);
     }
     return true;
   }
