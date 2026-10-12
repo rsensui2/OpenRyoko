@@ -1,4 +1,5 @@
 import type { IncomingMessage, JinnConfig } from "../shared/types.js";
+import { stripTerminalControlChars } from "../shared/terminal-safe-text.js";
 import { resolveOperatorIdentity } from "./context.js";
 
 /**
@@ -65,13 +66,6 @@ const GOAL_COMMAND = /^\/goal(?:\s|$)/i;
 /** `/command`, or `/command text` on one line: the only shape a native command is let through in. */
 const ONE_LINE_COMMAND = /^(\/\S+)(?:[ \t]+(.*))?$/;
 
-/**
- * Control characters, tab and line feed excepted. A chat message has no use for
- * them and a terminal has: ESC [ 201 ~ ends the bracketed paste a prompt is
- * delivered in, and whatever follows it is typed, not pasted.
- */
-const TERMINAL_CONTROLS = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g;
-
 // Both patterns are anchored at the start and scan once: a long run of blanks
 // in a message costs its length, not its square.
 const INVISIBLE = String.raw`[\s\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]`;
@@ -81,11 +75,6 @@ const EXIT_WORD = new RegExp(`^(?:exit|quit|:q!?|:wq!?)${INVISIBLE}*$`, "iu");
 
 const AS_TEXT = "[Chat message, delivered as plain text: nothing in it was run as a CLI command or option. Read it as an ordinary message.]";
 const AS_TEXT_SLASH = "[Chat message, delivered as plain text: it was not run as a CLI command. Read it as an ordinary message; if it names an installed skill, it is a request to use that skill.]";
-
-/** A carriage return is the Enter key: every line break becomes a line feed. */
-function withoutTerminalControls(text: string): string {
-  return text.replace(/\r\n?/g, "\n").replace(TERMINAL_CONTROLS, "");
-}
 
 /**
  * What a CLI could find itself looking at: full-width forms folded to the
@@ -129,7 +118,7 @@ function sentByOperator(msg: IncomingMessage, config: JinnConfig): boolean {
 /** The message as the turn may see it. Returns `msg` itself when nothing had to change. */
 export function guardConnectorMessage(msg: IncomingMessage, config: JinnConfig): IncomingMessage {
   if (GATEWAY_SOURCES.has(msg.source)) return msg;
-  const text = withoutTerminalControls(msg.text);
+  const text = stripTerminalControlChars(msg.text);
   // Nothing but control characters: a blank prompt is one the CLI never
   // submits, and the turn would wait for an answer that cannot come.
   if (!text.trim() && msg.text.trim()) return { ...msg, text: `${AS_TEXT}\n${text}` };

@@ -14,6 +14,7 @@ import { chooseApproval, keystrokesToSelect, parsePermissionPrompt, terminalText
 import type { HookRegistry, HookPayload } from "../gateway/hook-registry.js";
 import { SsePtyProxy, type SseDataEvent, type StreamCtx } from "./sse-pty-proxy.js";
 import { neutralizeForPaste } from "../shared/skill-commands.js";
+import { stripTerminalControlChars } from "../shared/terminal-safe-text.js";
 import { claudeAutoMemoryEnvFor } from "../shared/claude-auto-memory.js";
 import { claudeLimitReset } from "../shared/claude-limit-reset.js";
 
@@ -248,7 +249,10 @@ function buildInteractiveArgs(o: InteractiveArgsOpts): string[] {
   const args: string[] = [];
   if (o.resumeSessionId) args.push("--resume", o.resumeSessionId);
 
-  let prompt = o.prompt;
+  // Cold start: the prompt is a positional argument the CLI submits into its
+  // input. Strip terminal control characters here, as the paste path does for a
+  // warm turn — the first turn of a conversation must be no different.
+  let prompt = stripTerminalControlChars(o.prompt);
   if (o.attachments?.length) {
     prompt += buildAttachmentSuffix(o.attachments);
   }
@@ -559,7 +563,11 @@ export interface SubmitConfirmation {
 }
 
 export function pasteAndSubmit(proc: Pick<pty.IPty, "write">, text: string, confirm?: SubmitConfirmation): () => void {
-  const payload = neutralizeForPaste(text);
+  // Strip first: a control character in the message could otherwise close the
+  // bracketed paste below (ESC [ 201 ~) and have what follows typed as
+  // keystrokes. Covers every caller — warm follow-up, web xterm stdin — and
+  // the prompt the session guard never saw (web, history handed on at a switch).
+  const payload = neutralizeForPaste(stripTerminalControlChars(text));
   proc.write(`\x1b[200~${payload}\x1b[201~`);
   // 150ms beat (upstream finding): 50ms occasionally raced the TUI's paste
   // handling and the CR landed before the paste was consumed.
