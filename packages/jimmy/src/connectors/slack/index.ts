@@ -151,6 +151,10 @@ export class SlackConnector implements Connector {
       token: config.botToken,
       appToken: config.appToken,
       socketMode: true,
+      // Bolt's default fires auth.test from this constructor and never awaits
+      // it, so a bad token or an unreachable API is an unhandled rejection.
+      // start() resolves the bot user ID with its own awaited auth.test.
+      tokenVerificationEnabled: false,
     });
     if (context.getModelManagement && context.getOperatorSlackId) this.modelControls = new SlackModelControls(context.getModelManagement, context.getOperatorSlackId, (config as { id?: string }).id || "slack");
     this.ignoreOldMessagesOnBoot = config.ignoreOldMessagesOnBoot !== false;
