@@ -73,6 +73,29 @@ describe("daily database backup", () => {
     ]);
   });
 
+  it("lets the caller call the copy off just before it starts, and only when there is one to make", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ryoko-backup-hook-"));
+    roots.push(root);
+    const database = new Database(":memory:");
+    database.exec("CREATE TABLE t (id INTEGER)");
+    const now = new Date("2026-08-17T12:00:00.000Z");
+    let asked = 0;
+
+    await expect(createDailyDatabaseBackup(database, {
+      directory: root, now, beforeWrite: () => { asked += 1; throw new Error("no room for it"); },
+    })).rejects.toThrow("no room for it");
+    expect(fs.readdirSync(root)).toEqual([]);
+
+    await createDailyDatabaseBackup(database, { directory: root, now, beforeWrite: () => { asked += 1; } });
+    // Today's copy exists now, so there is nothing to write and nothing to ask about.
+    const again = await createDailyDatabaseBackup(database, { directory: root, now, beforeWrite: () => { asked += 1; throw new Error("unreachable"); } });
+    database.close();
+
+    expect(again.created).toBe(false);
+    expect(asked).toBe(2);
+    expect(fs.readdirSync(root)).toEqual(["sessions-2026-08-17.db"]);
+  });
+
   it("removes an expired backup together with the sidecars reading it left behind", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ryoko-backup-sidecars-"));
     roots.push(root);

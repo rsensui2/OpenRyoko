@@ -8,6 +8,7 @@ import { pruneBackups, reserveArchiveName } from "./catalog.js";
 import { errorMessage } from "./format.js";
 import { databasePath } from "./layout.js";
 import { archiveLimits, type BackupSettings } from "./settings.js";
+import { fileBytes, insufficientSpace } from "./space.js";
 
 /** What one run can back up, in the order it does so. */
 export const BACKUP_TARGETS = ["home", "sessions", "workflows"] as const;
@@ -105,7 +106,17 @@ function blockedReason(options: BackupRunOptions): string | null {
   return `not enough free disk space to write a backup (${free} MiB free in ${directory})`;
 }
 
-async function backupHome(options: BackupRunOptions): Promise<BackupTargetReport> {
+/**
+ * Refuses to start a write that would not leave the gateway room to work. The
+ * check made before the run only asks whether the disk is low now; this asks
+ * about the disk after `bytes` more, on top of what the run has already put there.
+ */
+function requireRoom(options: BackupRunOptions, bytes: number, written: number): void {
+  const reason = insufficientSpace(options.settings.directory, bytes, options.diskSpace, written);
+  if (reason) throw new Error(reason);
+}
+
+async function backupHome(options: BackupRunOptions, written: number): Promise<BackupTargetReport> {
   const { directory } = options.settings;
   const { id, file } = reserveArchiveName(directory, "home", options.now);
   const result = await createHomeArchive({
@@ -115,16 +126,27 @@ async function backupHome(options: BackupRunOptions): Promise<BackupTargetReport
     createdAt: options.now,
     limits: archiveLimits(options.settings),
     excludePaths: [directory],
+    beforeWrite: ({ bytes }) => requireRoom(options, bytes, written),
   });
   return { name: "home", status: "ok", file: result.file, bytes: result.bytes, warnings: result.warnings };
 }
 
-async function backupDatabase(name: DatabaseBackupName, options: BackupRunOptions): Promise<BackupTargetReport> {
+/** What a copy of this database can take: its main file and whatever is still in its WAL. */
+function databaseBytes(database: Database.Database): number {
+  return database.memory ? 0 : fileBytes(database.name) + fileBytes(`${database.name}-wal`);
+}
+
+async function backupDatabase(name: DatabaseBackupName, options: BackupRunOptions, written: number): Promise<BackupTargetReport> {
   const source = options.databases?.[name] ?? readOnlyDatabaseSource(databasePath(options.home, name));
   const handle = source();
   if (!handle) return { name, status: "skipped", detail: "no database in this home", warnings: [] };
   try {
-    const result = await createDailyDatabaseBackup(handle.database, { directory: options.settings.directory, now: options.now, name });
+    const result = await createDailyDatabaseBackup(handle.database, {
+      directory: options.settings.directory,
+      now: options.now,
+      name,
+      beforeWrite: () => requireRoom(options, databaseBytes(handle.database), written),
+    });
     if (!result.created) return { name, status: "skipped", file: result.file, detail: "already copied today", warnings: [] };
     return { name, status: "ok", file: result.file, bytes: fs.statSync(result.file).size, warnings: [] };
   } finally {
@@ -137,10 +159,10 @@ function failsTheSameWayAgain(error: unknown): boolean {
   return error instanceof ArchiveTooLargeError || error instanceof NothingToArchiveError;
 }
 
-/** One target, with whatever it throws turned into its own failed report. */
-async function runTarget(name: BackupTargetName, options: BackupRunOptions): Promise<BackupTargetReport> {
+/** One target, with whatever it throws turned into its own failed report. `written` is what the run has put on disk so far. */
+async function runTarget(name: BackupTargetName, options: BackupRunOptions, written: number): Promise<BackupTargetReport> {
   try {
-    return name === "home" ? await backupHome(options) : await backupDatabase(name, options);
+    return name === "home" ? await backupHome(options, written) : await backupDatabase(name, options, written);
   } catch (error) {
     return {
       name, status: "failed", error: errorMessage(error), warnings: [],
@@ -170,8 +192,13 @@ function prune(options: BackupRunOptions): string[] {
 export async function runBackup(options: BackupRunOptions): Promise<BackupRunReport> {
   const blocked = blockedReason(options);
   const targets: BackupTargetReport[] = [];
+  let written = 0;
   for (const name of options.targets ?? BACKUP_TARGETS) {
-    targets.push(blocked ? { name, status: "failed", error: blocked, warnings: [] } : await runTarget(name, options));
+    const report: BackupTargetReport = blocked
+      ? { name, status: "failed", error: blocked, warnings: [] }
+      : await runTarget(name, options, written);
+    if (report.status === "ok") written += report.bytes ?? 0;
+    targets.push(report);
   }
   return {
     directory: options.settings.directory,

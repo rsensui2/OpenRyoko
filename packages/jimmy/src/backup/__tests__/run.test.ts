@@ -14,6 +14,15 @@ const NOW = new Date("2026-10-12T03:00:00.000Z");
 const DAY_MS = 86_400_000;
 const ROOMY: DiskSpaceStatus = { level: "ok", freeBytes: 50 * 1024 ** 3, totalBytes: 100 * 1024 ** 3, freePercent: 50 };
 const FULL: DiskSpaceStatus = { level: "critical", freeBytes: 12 * 1024 ** 2, totalBytes: 100 * 1024 ** 3, freePercent: 0.01 };
+/** Below this much free, the gateway refuses to write to its database (shared/storage-health). */
+const RESERVE_BYTES = 256 * 1024 ** 2;
+
+/** A disk with `spare` bytes free above the reserve: not low now, but low after writing more than that. */
+function freeAbove(reserve: number, spare: number): DiskSpaceStatus {
+  const totalBytes = 100 * 1024 ** 3;
+  const freeBytes = reserve + spare;
+  return { level: "warning", freeBytes, totalBytes, freePercent: (freeBytes / totalBytes) * 100 };
+}
 
 function optionsFor(home: string, config: Parameters<typeof resolveBackupSettings>[0] = {}, extra: Partial<BackupRunOptions> = {}): BackupRunOptions {
   return { home, settings: resolveBackupSettings(config, home), now: NOW, diskSpace: () => ROOMY, ...extra };
@@ -142,6 +151,51 @@ describe("runBackup", () => {
     // The two newest archives stay, and so does the file that is not a backup.
     expect(fs.readdirSync(directory).sort()).toEqual([...expired.slice(1), "older-notes.txt"].sort());
     expect(report.pruned).toEqual([path.join(directory, expired[0]!)]);
+  });
+
+  it("does not start a copy that would leave the disk too low for the gateway to keep writing", async () => {
+    // 300 MiB free and a 400 MB registry: "more than 256 MiB free" was true
+    // when the copy started and false long before it finished, and for as long
+    // as it ran the gateway refused to create sessions or store messages.
+    const home = makeHome(tempDir(), "home", { sessionRows: 6000, workflowRows: 5 });
+    const directory = path.join(home, "backups");
+    const spare = 96 * 1024;
+    expect(fs.statSync(path.join(home, "sessions", "registry.db")).size).toBeGreaterThan(spare);
+
+    const report = await runBackup(optionsFor(home, {}, { diskSpace: () => freeAbove(RESERVE_BYTES, spare) }));
+
+    const targets = byName(report);
+    // The home and the small workflows store fit in the 96 KB to spare; the registry does not.
+    expect(targets.home!.status).toBe("ok");
+    expect(targets.sessions).toMatchObject({ status: "failed", error: expect.stringMatching(/not enough free disk space/) });
+    expect(targets.sessions!.error).toContain(directory);
+    expect(targets.sessions!.persistent).toBeUndefined();
+    expect(targets.workflows!.status).toBe("ok");
+    expect(fs.readdirSync(directory).filter((name) => name.startsWith("sessions-"))).toEqual([]);
+  });
+
+  it("counts what the run has already written against the space the next target needs", async () => {
+    const home = makeHome(tempDir(), "home", { sessionRows: 6000, workflowRows: 6000 });
+    const each = fs.statSync(path.join(home, "sessions", "registry.db")).size;
+
+    // Room for the home and one database with a little over, but not for two.
+    const report = await runBackup(optionsFor(home, {}, { diskSpace: () => freeAbove(RESERVE_BYTES, Math.floor(each * 1.6)) }));
+
+    expect(report.targets.map((target) => [target.name, target.status])).toEqual([["home", "ok"], ["sessions", "ok"], ["workflows", "failed"]]);
+    expect(byName(report).workflows!.error).toMatch(/not enough free disk space/);
+  });
+
+  it("does not ask for space when there is nothing to write", async () => {
+    const home = makeHome(tempDir(), "home", { sessionRows: 6000 });
+    await runBackup(optionsFor(home));
+
+    // The same day again: the registry copy exists, so the registry's size is beside the point.
+    const again = await runBackup(optionsFor(home, {}, {
+      now: new Date(NOW.getTime() + 60_000), diskSpace: () => freeAbove(RESERVE_BYTES, 96 * 1024),
+    }));
+
+    expect(byName(again).sessions).toMatchObject({ status: "skipped", detail: expect.stringMatching(/already/) });
+    expect(byName(again).home!.status).toBe("ok");
   });
 
   it("fails every target, without throwing, when the directory cannot be created", async () => {

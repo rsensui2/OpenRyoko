@@ -299,6 +299,37 @@ describe("restoreHomeArchive", () => {
     expect(snapshotTree(target.home)).toEqual(before);
   });
 
+  it("refuses when staging the files, or saving the current state, would leave the disk too low", async () => {
+    // Not "is the disk critically low now" but "will it be once this is written".
+    const root = tempDir();
+    const home = makeHome(root);
+    writeTree(home, { "knowledge/large.bin": "x".repeat(300_000) });
+    const backups = path.join(root, "elsewhere");
+    const taken = await createHomeArchive({
+      home, destination: path.join(backups, "home-20261012T030000Z.tar.gz"), id: "home-20261012T030000Z", createdAt: TAKEN,
+    });
+    fs.rmSync(path.join(home, "knowledge", "large.bin"));
+    fs.writeFileSync(path.join(home, "config.yaml"), "broken\n");
+    const before = snapshotTree(home);
+    const total = 100 * 1024 ** 3;
+    const reserve = 256 * 1024 ** 2;
+    const tight: DiskSpaceStatus = { level: "warning", freeBytes: reserve + 100_000, totalBytes: total, freePercent: 0.25 };
+    const options: RestoreOptions = { archive: taken.file, home, backupDirectory: backups, now: NOW };
+
+    // 300 KB to stage in the home, 100 KB to spare there.
+    await expect(restoreHomeArchive({ ...options, diskSpace: (directory) => (directory === backups ? ROOMY : tight) }))
+      .rejects.toThrow(/not enough free disk space.*nothing was restored/s);
+    // Room in the home, none where the snapshot of the current state has to go.
+    await expect(restoreHomeArchive({ ...options, only: ["config"], diskSpace: (directory) => (directory === backups ? { ...tight, freeBytes: reserve + 1000 } : ROOMY) }))
+      .rejects.toThrow(/current state could not be saved.*not enough free disk space/s);
+
+    expect(snapshotTree(home)).toEqual(before);
+    expect(listBackups(backups).filter((item) => item.preRestore)).toEqual([]);
+
+    await restoreHomeArchive({ ...options, diskSpace: () => ROOMY });
+    expect(fs.statSync(path.join(home, "knowledge", "large.bin")).size).toBe(300_000);
+  });
+
   it("restores nothing when the current state cannot be saved first", async () => {
     const target = await scene();
     fs.writeFileSync(path.join(target.home, "config.yaml"), "broken\n");

@@ -24,6 +24,12 @@ export { inspectHomeArchive, readHomeArchive, type ArchiveInspection, type Inspe
 export { ArchiveTooLargeError } from "./limits.js";
 
 const READ_CHUNK_BYTES = 64 * 1024;
+/**
+ * What an entry adds to the tar besides its content: a header block, padding to
+ * the next block, its line in the manifest. Used to say how large an archive
+ * could come out before compression, which it never exceeds by much.
+ */
+const UNCOMPRESSED_OVERHEAD_PER_ENTRY = 1024;
 /** How many of the things left out are spelled out in the warnings. The rest are a count. */
 const MAX_SKIPPED_WARNINGS = 10;
 
@@ -45,6 +51,12 @@ export interface CreateHomeArchiveOptions {
   limits?: ArchiveLimits;
   /** Absolute directories the walk must not enter - the backup directory, when it sits inside a target. */
   excludePaths?: string[];
+  /**
+   * Called once the home has been listed and before anything is written, with
+   * how many bytes the archive may take at most. Throwing calls it off - the
+   * place to check that there is room for it.
+   */
+  beforeWrite?: (estimate: { bytes: number }) => void;
   /** Overrides the read-back check. The seam that lets a test produce an archive that fails it. */
   inspect?: (file: string, context: InspectOptions) => Promise<ArchiveInspection>;
 }
@@ -220,6 +232,7 @@ export async function createHomeArchive(options: CreateHomeArchiveOptions): Prom
   const limits = options.limits ?? DEFAULT_ARCHIVE_LIMITS;
   const walk = await collectHomeEntries(options.home, { excludePaths: options.excludePaths, limits });
   if (!walk.entries.some((entry) => entry.type !== "directory")) throw new NothingToArchiveError(options.home);
+  options.beforeWrite?.({ bytes: walk.bytes + walk.entries.length * UNCOMPRESSED_OVERHEAD_PER_ENTRY });
 
   const directory = path.dirname(options.destination);
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });

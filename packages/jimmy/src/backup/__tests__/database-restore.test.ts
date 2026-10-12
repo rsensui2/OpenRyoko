@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { expectPosixMode } from "../../shared/test-support/posix-mode.js";
+import type { DiskSpaceStatus } from "../../shared/storage-health.js";
 import { createDailyDatabaseBackup } from "../../sessions/backup.js";
 import { listBackups } from "../catalog.js";
 import { inspectDatabaseBackup, restoreDatabase, type DatabaseRestoreOptions } from "../database-restore.js";
@@ -12,6 +13,8 @@ const TAKEN = new Date("2026-10-11T03:00:00.000Z");
 const NOW = new Date("2026-10-12T09:30:00.000Z");
 /** Long enough before NOW that nothing reads as "just written". File times come from the wall clock otherwise. */
 const QUIET_SINCE = new Date(NOW.getTime() - 60 * 60 * 1000);
+/** Below this much free, the gateway refuses to write to its database (shared/storage-health). */
+const RESERVE_BYTES = 256 * 1024 ** 2;
 
 interface Scene {
   home: string;
@@ -245,6 +248,26 @@ describe("restoreDatabase, before it will replace anything", () => {
     expect(refusal).toMatch(/gateway appears to be running/);
     expect(refusal).toContain("workflows.db");
     expect(rowCount(target.live, "workflows")).toBe(8);
+  });
+
+  it("refuses when writing the copy and the new database would leave the disk too low, on a dry run as well", async () => {
+    const target = await sceneMidFlight();
+    const before = databaseFingerprint(target.live);
+    const total = 100 * 1024 ** 3;
+    // Just above what the gateway needs free to keep writing: fine now, not after two database files more.
+    const tight = (): DiskSpaceStatus => ({ level: "warning", freeBytes: RESERVE_BYTES + 4096, totalBytes: total, freePercent: 0.25 });
+    const roomy = (): DiskSpaceStatus => ({ level: "ok", freeBytes: 50 * 1024 ** 3, totalBytes: total, freePercent: 50 });
+
+    for (const dryRun of [true, false]) {
+      const refusal = await refusalOf(optionsFor(target, { dryRun, diskSpace: tight }));
+      expect(refusal).toMatch(/not enough free disk space/);
+      expect(refusal).toContain("Nothing was changed.");
+    }
+    expect(databaseFingerprint(target.live)).toEqual(before);
+    expect(listBackups(target.backups).filter((item) => item.preRestore)).toEqual([]);
+
+    await restoreDatabase(optionsFor(target, { diskSpace: roomy }));
+    expect(rowCount(target.live, "sessions")).toBe(5);
   });
 
   it("refuses on a dry run too, rather than promising a restore that would be refused", async () => {

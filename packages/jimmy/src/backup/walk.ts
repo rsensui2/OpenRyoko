@@ -19,6 +19,8 @@ export interface HomeEntry {
 export interface HomeWalk {
   /** Sorted by path, so a directory always precedes what it holds. */
   entries: HomeEntry[];
+  /** Bytes of file content among them. */
+  bytes: number;
   /** The first of what was left out; `skippedCount` is how many there were. */
   skipped: SkippedEntry[];
   skippedCount: number;
@@ -304,5 +306,5 @@ export async function collectHomeEntries(home: string, options: { excludePaths?:
   // After the named paths, so a file one of them already claimed (MEMORY.md) is not taken twice.
   for (const { pattern } of TOP_LEVEL_FILE_TARGETS) await visitTopLevelFiles(state, pattern);
   const entries = [...state.entries.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  return { entries, skipped: state.skipped, skippedCount: state.skippedCount, warnings: state.warnings };
+  return { entries, bytes: state.bytes, skipped: state.skipped, skippedCount: state.skippedCount, warnings: state.warnings };
 }

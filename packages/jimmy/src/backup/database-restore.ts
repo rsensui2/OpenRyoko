@@ -7,6 +7,7 @@ import { reserveDatabaseSnapshotName } from "./catalog.js";
 import { errorMessage } from "./format.js";
 import { detectRunningGateway, type GatewayLiveness } from "./gateway-liveness.js";
 import { databasePath } from "./layout.js";
+import { fileBytes, insufficientSpace, sameFilesystem, type DiskSpaceProbe } from "./space.js";
 
 export interface DatabaseRestoreOptions {
   /** The backup file to restore from. */
@@ -25,6 +26,8 @@ export interface DatabaseRestoreOptions {
   gatewayStopped?: boolean;
   /** Replaces the check for a running gateway. `destination` is the database about to be replaced. */
   detectGateway?: (home: string, destination: string, now: Date) => GatewayLiveness;
+  /** The existing free-space judgement, replaceable in tests. */
+  diskSpace?: DiskSpaceProbe;
 }
 
 export interface DatabaseRestoreResult {
@@ -116,6 +119,26 @@ async function installDatabase(backup: string, destination: string): Promise<voi
   }
 }
 
+/**
+ * Refuses a restore that would not leave room for the gateway to work once it
+ * is back. Two things get written: the copy of the database being replaced,
+ * into the backup directory, and the new database beside the old one, which
+ * exist together until the rename. Sizes are read from the directory entries;
+ * nothing is opened.
+ */
+function refuseWithoutRoom(options: DatabaseRestoreOptions, destination: string): void {
+  const incoming = fileBytes(options.backup) + fileBytes(`${options.backup}-wal`);
+  const outgoing = ["", ...SQLITE_SIDECAR_SUFFIXES].reduce((total, suffix) => total + fileBytes(`${destination}${suffix}`), 0);
+  const beside = fs.existsSync(path.dirname(destination)) ? path.dirname(destination) : options.home;
+  const needs: [string, number][] = sameFilesystem(beside, options.backupDirectory)
+    ? [[options.backupDirectory, incoming + outgoing]]
+    : [[beside, incoming], [options.backupDirectory, outgoing]];
+  for (const [directory, bytes] of needs) {
+    const reason = insufficientSpace(directory, bytes, options.diskSpace);
+    if (reason) throw new Error(`${reason}. Nothing was changed.`);
+  }
+}
+
 /** The flag that carries the operator's confirmation. Named here because the refusals quote it. */
 export const GATEWAY_STOPPED_FLAG = "--gateway-stopped";
 
@@ -178,6 +201,7 @@ export async function restoreDatabase(options: DatabaseRestoreOptions): Promise<
   if (problems.length > 0) {
     throw new Error(`refusing to restore a database backup that failed its integrity check - ${problems.slice(0, 3).join("; ")}`);
   }
+  refuseWithoutRoom(options, destination);
   const result: DatabaseRestoreResult = { name: options.name, backup: options.backup, destination, dryRun, preRestore: null };
   if (dryRun) return result;
 

@@ -20,9 +20,22 @@ export interface BackupResult {
   file: string;
 }
 
+export interface DailyDatabaseBackupOptions {
+  directory?: string;
+  now?: Date;
+  retention?: number;
+  name?: DatabaseBackupName;
+  /**
+   * Called once it is settled that a copy will be written, just before it is.
+   * Throwing calls the copy off with nothing on disk - the place to check that
+   * there is room for it.
+   */
+  beforeWrite?: () => void;
+}
+
 export async function createDailyDatabaseBackup(
   database: Database.Database,
-  options: { directory?: string; now?: Date; retention?: number; name?: DatabaseBackupName } = {},
+  options: DailyDatabaseBackupOptions = {},
 ): Promise<BackupResult> {
   const name = options.name ?? "sessions";
   const directory = options.directory ?? path.join(JINN_HOME, "backups");
@@ -31,6 +44,7 @@ export async function createDailyDatabaseBackup(
   const file = path.join(directory, `${name}-${day}.db`);
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   if (fs.existsSync(file)) return { created: false, file };
+  options.beforeWrite?.();
 
   const temporary = `${file}.tmp-${process.pid}`;
   try {

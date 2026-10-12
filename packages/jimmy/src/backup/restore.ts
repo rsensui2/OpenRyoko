@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { getDiskSpaceStatus, type DiskSpaceStatus } from "../shared/storage-health.js";
+import { insufficientSpace, sameFilesystem, type DiskSpaceProbe } from "./space.js";
 import {
   ArchiveTooLargeError,
   createHomeArchive,
@@ -40,7 +40,7 @@ export interface RestoreOptions {
    */
   limits?: ArchiveLimits;
   /** The existing free-space judgement, replaceable in tests. */
-  diskSpace?: (directory: string) => DiskSpaceStatus;
+  diskSpace?: DiskSpaceProbe;
   /** Overrides the verification pass. The seam that lets a test stand in for an inspector that misses something. */
   inspect?: (file: string, context: InspectOptions) => Promise<ArchiveInspection>;
 }
@@ -258,23 +258,33 @@ async function untouchedInHome(
     .map((entry) => entry.path);
 }
 
-function assertRoomToWork(options: RestoreOptions, home: string): void {
-  const probe = options.diskSpace ?? getDiskSpaceStatus;
-  for (const directory of new Set([home, options.backupDirectory])) {
-    const disk = probe(directory);
-    if (disk.level !== "critical") continue;
-    const free = disk.freeBytes === null ? "unknown" : Math.floor(disk.freeBytes / 1024 ** 2);
-    throw new Error(`not enough free disk space to restore safely (${free} MiB free in ${directory}); nothing was restored`);
-  }
+/** The bytes the plan will extract into the staging directory, and so into the home. */
+function bytesToStage(plan: PlanItem[]): number {
+  return plan.reduce((total, { entry, action }) => (action !== "unchanged" && entry.type === "file" ? total + (entry.size ?? 0) : total), 0);
 }
 
-/** Archives the home as it stands, so whatever the restore overwrites can be had back. */
-async function snapshotCurrentState(options: RestoreOptions, home: string): Promise<{ id: string; file: string } | null> {
+/** Refuses a restore whose files would not leave the home's disk room for the gateway to keep writing. */
+function assertRoomToStage(options: RestoreOptions, home: string, staged: number): void {
+  const reason = insufficientSpace(home, staged, options.diskSpace);
+  if (reason) throw new Error(`${reason}; nothing was restored`);
+}
+
+/**
+ * Archives the home as it stands, so whatever the restore overwrites can be had
+ * back. It needs room too, and when it shares a disk with the home, room beside
+ * the files about to be staged there.
+ */
+async function snapshotCurrentState(options: RestoreOptions, home: string, staged: number): Promise<{ id: string; file: string } | null> {
   const { id, file } = reserveArchiveName(options.backupDirectory, "pre-restore", options.now);
+  const alsoStaged = sameFilesystem(home, options.backupDirectory) ? staged : 0;
   try {
     await createHomeArchive({
       home, destination: file, id, createdAt: options.now, excludePaths: [options.backupDirectory],
       limits: options.limits ?? DEFAULT_ARCHIVE_LIMITS,
+      beforeWrite: ({ bytes }) => {
+        const reason = insufficientSpace(options.backupDirectory, bytes + alsoStaged, options.diskSpace);
+        if (reason) throw new Error(reason);
+      },
     });
     return { id, file };
   } catch (error) {
@@ -437,8 +447,9 @@ export async function restoreHomeArchive(options: RestoreOptions): Promise<Resto
   };
   if (result.dryRun || changes.length === 0) return result;
 
-  assertRoomToWork(options, home);
-  const preRestore = await snapshotCurrentState(options, home);
+  const staged = bytesToStage(plan);
+  assertRoomToStage(options, home, staged);
+  const preRestore = await snapshotCurrentState(options, home, staged);
   await writeIntoHome(options, home, plan, preRestore);
   return { ...result, preRestore };
 }
