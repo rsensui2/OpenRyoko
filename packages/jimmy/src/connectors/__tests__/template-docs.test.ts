@@ -7,6 +7,7 @@ import { PartialDeliveryError } from "../../shared/partial-delivery.js";
 import { TEMPLATE_DIR } from "../../shared/paths.js";
 import { downloadIncomingAttachments } from "../discord/remote.js";
 import { downloadAttachment as downloadSlackFile } from "../slack/format.js";
+import { deriveSessionKey } from "../slack/threads.js";
 
 const read = (rel: string) => fs.readFileSync(path.join(TEMPLATE_DIR, rel), "utf-8");
 
@@ -91,5 +92,41 @@ describe("shipped documentation of what a connector fetches and reports", () => 
   it("shows the connector interface as it is: sends take a target and report delivery", () => {
     expect(docs()).toContain("sendMessage(target: Target, text: string): Promise<string | void>;");
     expect(docs()).not.toContain("sendMessage(sourceRef: string");
+  });
+});
+
+// The Slack section described sessions and reactions of an early version: one
+// session per channel, and a check mark or a cross when a turn ended.
+describe("shipped documentation of Slack sessions and reactions", () => {
+  const docs = () => read("docs/connectors.md");
+
+  it("maps each kind of Slack message to the session key the connector derives", () => {
+    const keys = {
+      "`slack:dm:<userId>`": deriveSessionKey({ channel_type: "im", channel: "D1", user: "<userId>", ts: "2.0" }),
+      "`slack:dm:<userId>:<threadTs>`": deriveSessionKey({ channel_type: "im", channel: "D1", user: "<userId>", ts: "2.0", thread_ts: "<threadTs>" }),
+      "`slack:<channelId>:<ts>`": deriveSessionKey({ channel: "<channelId>", user: "U1", ts: "<ts>" }),
+      "`slack:<channelId>:<threadTs>`": deriveSessionKey({ channel: "<channelId>", user: "U1", ts: "2.0", thread_ts: "<threadTs>" }),
+    };
+
+    for (const [shown, derived] of Object.entries(keys)) {
+      expect(`\`${derived}\``).toBe(shown);
+      expect(docs(), shown).toContain(shown);
+    }
+    // A root message in a channel starts its own session; there is no session per channel.
+    expect(docs()).not.toContain("One session per channel");
+  });
+
+  it("names the reactions the gateway adds, and no mark for success or failure", () => {
+    const manager = fs.readFileSync(path.join(import.meta.dirname, "..", "..", "sessions", "manager.ts"), "utf-8");
+    const section = docs().split("\n### Reaction Workflow\n")[1]?.split("\n### ")[0] ?? "";
+
+    for (const emoji of ["clock1", "eyes", "hourglass_flowing_sand"]) {
+      expect(manager, emoji).toContain(`"${emoji}"`);
+      expect(section, emoji).toContain(`:${emoji}:`);
+    }
+    for (const never of ["white_check_mark", "x"]) {
+      expect(manager).not.toMatch(new RegExp(`addReaction\\([^)]*["']${never}["']`));
+      expect(section).not.toContain(`add :${never}:`);
+    }
   });
 });

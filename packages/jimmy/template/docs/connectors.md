@@ -88,20 +88,21 @@ Modes per scope: `always` | `mention` | `never`.
 
 Slack messages are mapped to sessions based on conversation context:
 
-| Slack Context | Source Ref Format | Session Behavior |
+| Slack Context | Session Key | Session Behavior |
 |---|---|---|
 | Direct message | `slack:dm:<userId>` | One session per DM user |
-| Channel root message | `slack:<channelId>` | One session per channel |
-| Thread reply | `slack:<channelId>:<threadTs>` | One session per thread |
+| Thread inside a direct message | `slack:dm:<userId>:<threadTs>` | One session per thread |
+| Channel root message | `slack:<channelId>:<ts>` | One session per root message; replies in its thread continue it |
+| Thread reply | `slack:<channelId>:<threadTs>` | The session of that thread's root message |
 
 ### Reaction Workflow
 
 Reactions provide visual feedback during processing:
 
-1. Message received → add :eyes: reaction (acknowledged)
-2. Engine processing...
-3. On success → remove :eyes:, add :white_check_mark:
-4. On error → remove :eyes:, add :x:
+1. Message waits behind a turn that is still running → add :clock1:
+2. Its turn starts → remove :clock1:, add :eyes:
+3. The turn waits for a usage limit to reset → replace :eyes: with :hourglass_flowing_sand:
+4. The turn ends → remove the reaction. The reply, or the error, is the answer; no reaction marks success or failure
 
 ### Employee Routing
 
