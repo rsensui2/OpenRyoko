@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { applyTemplateReplacements, isTemplateFile } from "../shared/templateReplacements.js";
-import { MAX_SKILL_ENTRIES, MAX_SKILL_FILE_BYTES } from "./bounded-read.js";
+import { MAX_SKILL_BYTES, MAX_SKILL_ENTRIES, MAX_SKILL_FILE_BYTES } from "./bounded-read.js";
 import { assertSkillFilePath, assertSkillName, isHousekeepingFile } from "./names.js";
 
 export interface BundledFile {
@@ -56,14 +56,16 @@ function loadBundledSkill(root: string, name: string, replacements: Record<strin
   const files: Record<string, BundledFile> = {};
   const directories: string[] = [];
   let entries = 0;
+  let bytes = 0;
   const walk = (directory: string, prefix: string): void => {
     for (const entry of fs.readdirSync(directory).sort()) {
       const full = path.join(directory, entry);
       const relative = prefix ? `${prefix}/${entry}` : entry;
       const stat = fs.lstatSync(full);
+      if (stat.isFile() && !isHousekeepingFile(entry)) bytes += stat.size;
       // The sync refuses to read a home copy beyond these limits, so a shipped skill
       // beyond them could never be recognised once installed.
-      if (++entries > MAX_SKILL_ENTRIES || (stat.isFile() && stat.size > MAX_SKILL_FILE_BYTES)) {
+      if (++entries > MAX_SKILL_ENTRIES || (stat.isFile() && stat.size > MAX_SKILL_FILE_BYTES) || bytes > MAX_SKILL_BYTES) {
         throw new Error(`The package's skill "${name}" is larger than a skill may be, at ${relative}`);
       }
       if (stat.isDirectory()) {

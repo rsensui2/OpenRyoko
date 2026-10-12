@@ -113,7 +113,7 @@ const KEPT_SKILL_NOTES: Partial<Record<KeepReason, (name: string) => string>> = 
   // Named, so the other skills the operator deleted are not brought back with it.
   deleted: (name) => `削除済みのため配置しません。戻すには ${RESTORE_DELETED_SKILLS} ${name}`,
   unreadable: () => "読めないため、変更していません。ディレクトリとファイルの権限を確認してください",
-  "too-large": () => "同梱スキルの上限を超える大きさのファイル、またはファイル数があるため、読まずに残しました",
+  "too-large": () => "同梱スキルの上限を超える大きさ（1ファイル・合計）またはファイル数のため、読まずに残しました",
 };
 
 /**
@@ -169,7 +169,7 @@ const KEPT_SKILL_GUIDANCE: Record<Exclude<KeepReason, "deleted">, string> = {
   symlink: "a symlink, or holds one: the user manages it elsewhere. Do not touch it.",
   "not-directory": "something that is not a directory occupies its name. Leave it.",
   unreadable: "could not be read. Leave it.",
-  "too-large": "holds a file, or more files, than any bundled skill does. Leave it.",
+  "too-large": "is larger than any bundled skill is, in one file, in total, or in its number of files. Leave it.",
   "retired-modified": "no longer shipped, but edited by the user. Leave it.",
 };
 

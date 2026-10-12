@@ -71,7 +71,7 @@ bundled skill it placed.
 | Unedited since the sync placed it, and a newer version ships | Replaces it and keeps the previous copy |
 | Edited, or holding files you added | Leaves it alone; tells you once per release when a newer version ships |
 | A symlink, or holding a symlink | Leaves it alone |
-| Unreadable, or larger than any bundled skill is | Leaves it alone, unread, and tells you once per release |
+| Unreadable, or larger than any bundled skill is (a file over 1 MiB, over 2 MiB in all, or over 500 files and directories) | Leaves it alone, unread, and tells you once per release |
 | Identical to the shipped version, not yet in the receipt | Leaves it alone and starts tracking it |
 | An untouched copy of a version an earlier release shipped, not in the receipt | Replaces it and keeps the previous copy |
 | Different from every version ever shipped, not in the receipt | Leaves it alone and tells you once per release |

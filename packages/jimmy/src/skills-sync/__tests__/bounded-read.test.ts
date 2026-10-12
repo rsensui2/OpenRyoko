@@ -3,7 +3,10 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { hashBounded, listBounded, readBounded, TooLargeError } from "../bounded-read.js";
+import { hashEachBounded, listBounded, readBounded, readEachBounded, TooLargeError } from "../bounded-read.js";
+
+/** One file under one limit: the simplest budget. */
+const hashBounded = (target: string, maxBytes: number): string => hashEachBounded([target], { file: maxBytes, total: maxBytes })[0];
 
 const dirs: string[] = [];
 function file(name: string, content: Buffer | string): string {
@@ -83,6 +86,46 @@ describe("bounded reads of files in the home", () => {
   it.skipIf(process.platform === "win32")("refuses a device, which would otherwise read as an empty or endless file", () => {
     expect(() => readBounded("/dev/null", 1024)).toThrow("it is not a regular file");
     expect(() => hashBounded("/dev/zero", 1024)).toThrow("it is not a regular file");
+  });
+});
+
+describe("reading the files of one skill under one budget", () => {
+  const limits = { file: 1000, total: 2500 };
+  const sha = (content: Buffer | string) => crypto.createHash("sha256").update(content).digest("hex");
+
+  it("hashes and reads each file, in the order given", () => {
+    const first = file("first", "first");
+    const second = file("second", Buffer.alloc(900, 1));
+
+    expect(hashEachBounded([first, second], limits)).toEqual([sha("first"), sha(Buffer.alloc(900, 1))]);
+    expect(readEachBounded([first, second], limits)).toEqual([Buffer.from("first"), Buffer.alloc(900, 1)]);
+    expect(hashEachBounded([], limits)).toEqual([]);
+  });
+
+  it("accepts files that add up to exactly the total, and refuses one byte more", () => {
+    const fits = [file("a", Buffer.alloc(1000)), file("b", Buffer.alloc(1000)), file("c", Buffer.alloc(500)), file("empty", "")];
+    expect(hashEachBounded(fits, limits)).toHaveLength(4);
+    expect(readEachBounded(fits, limits)).toHaveLength(4);
+
+    const over = [...fits.slice(0, 2), file("d", Buffer.alloc(501))];
+    expect(() => hashEachBounded(over, limits)).toThrow(TooLargeError);
+    expect(() => readEachBounded(over, limits)).toThrow(TooLargeError);
+  });
+
+  it("still refuses one file above the per-file limit, with all of the total left", () => {
+    expect(() => hashEachBounded([file("big", Buffer.alloc(1001))], limits)).toThrow(TooLargeError);
+    expect(() => readEachBounded([file("big", Buffer.alloc(1001))], limits)).toThrow(TooLargeError);
+  });
+
+  it("stops at the file that breaks the budget, without reading it or opening the ones after", () => {
+    const files = [file("a", Buffer.alloc(1000)), file("b", Buffer.alloc(1000)), file("c", Buffer.alloc(1000)), file("d", "never opened")];
+    const open = vi.spyOn(fs, "openSync");
+    const read = vi.spyOn(fs, "readSync");
+
+    expect(() => hashEachBounded(files, limits)).toThrow(TooLargeError);
+
+    expect(open.mock.calls.map((call) => path.basename(String(call[0])))).toEqual(["a", "b", "c"]);
+    expect(read.mock.results.reduce((sum, result) => sum + (result.value as number), 0)).toBe(2000);
   });
 });
 

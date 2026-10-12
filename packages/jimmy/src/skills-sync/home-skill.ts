@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { hashBounded, MAX_SKILL_ENTRIES, MAX_SKILL_FILE_BYTES, TooLargeError } from "./bounded-read.js";
+import { hashEachBounded, listBounded, MAX_SKILL_ENTRIES, SKILL_LIMITS, TooLargeError } from "./bounded-read.js";
 import { isHousekeepingFile } from "./names.js";
 
 /** What currently sits at skills/<name> in the instance home. */
@@ -35,13 +35,16 @@ export function inspectHomeSkill(directory: string): HomeSkill {
 }
 
 /** Sorted file paths, or null when the tree holds anything but files and directories.
- *  Gives up, rather than walking on, once the tree is bigger than a skill can be. */
+ *  Gives up, rather than walking on, once the tree is bigger than a skill can be: no
+ *  directory is listed whole, and none past what is left of the limit. */
 function listPlainFiles(root: string): string[] | null {
   const found: string[] = [];
   let entries = 0;
   const walk = (directory: string, prefix: string): boolean => {
-    for (const entry of fs.readdirSync(directory)) {
-      if (++entries > MAX_SKILL_ENTRIES) throw new TooLargeError(`it holds more than ${MAX_SKILL_ENTRIES} files and directories`);
+    const names = listBounded(directory, MAX_SKILL_ENTRIES - entries);
+    if (names === null) throw new TooLargeError(`it holds more than ${MAX_SKILL_ENTRIES} files and directories`);
+    entries += names.length;
+    for (const entry of names) {
       const full = path.join(directory, entry);
       const relative = prefix ? `${prefix}/${entry}` : entry;
       const stat = fs.lstatSync(full);
@@ -58,11 +61,10 @@ function listPlainFiles(root: string): string[] | null {
   return walk(root, "") ? found.sort() : null;
 }
 
-/** Throws TooLargeError when a file is bigger than a skill file can be. */
+/** Throws TooLargeError when a file, or all of them together, is bigger than a skill can be. */
 export function hashFiles(root: string, paths: readonly string[]): Record<string, string> {
-  return Object.fromEntries(
-    paths.map((relative) => [relative, hashBounded(path.join(root, ...relative.split("/")), MAX_SKILL_FILE_BYTES)]),
-  );
+  const hashes = hashEachBounded(paths.map((relative) => path.join(root, ...relative.split("/"))), SKILL_LIMITS);
+  return Object.fromEntries(paths.map((relative, index) => [relative, hashes[index]]));
 }
 
 function unreadable(error: unknown): HomeSkill {

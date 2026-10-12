@@ -118,7 +118,7 @@ function reportUntouched(result: BundledSkillSync): void {
   if (tooLarge.length > 0) {
     logger.warn(
       "Bundled skills left untouched, and unread, because they are larger than any bundled skill is "
-      + `(in one file, or in their number of files): ${tooLarge.join(", ")}. See docs/skills.md.`,
+      + `(in one file, in all their files together, or in the number of files): ${tooLarge.join(", ")}. See docs/skills.md.`,
     );
   }
 }

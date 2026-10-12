@@ -17,7 +17,8 @@ export type KeepReason =
   | "deleted"
   /** It could not be inspected (permissions, I/O). */
   | "unreadable"
-  /** It holds a file, or a number of files, beyond anything a bundled skill has. */
+  /** It is beyond anything a bundled skill is: in one file, in all of them together,
+   *  or in how many there are. It is not read. */
   | "too-large";
 
 export interface KeptSkill {

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { MAX_RECEIPT_BYTES, MAX_SKILL_ENTRIES, MAX_SKILL_FILE_BYTES } from "../bounded-read.js";
+import { MAX_RECEIPT_BYTES, MAX_SKILL_BYTES, MAX_SKILL_ENTRIES, MAX_SKILL_FILE_BYTES } from "../bounded-read.js";
 import { RECEIPT_FILE } from "../receipt.js";
 import { fixture, removeFixtures, snapshot } from "./fixture.js";
 
@@ -88,6 +88,86 @@ describe("bundled skill sync: nothing in the home can make it read without bound
     expect(f.read("example", "SKILL.md")).toBe("v1");
   });
 
+  /** Bytes the sync read from open files while `spy` was watching. */
+  const bytesRead = (spy: { mock: { results: { value: unknown }[] } }) => spy.mock.results.reduce((sum, result) => sum + (result.value as number), 0);
+
+  it("leaves a skill alone when its files, each small enough, add up to more than any skill holds", () => {
+    const f = fixture();
+    const files = { "SKILL.md": "v1", "references/a.md": "a1", "references/b.md": "b1" };
+    f.ship("example", files);
+    f.sync("2026.10.10");
+    // The same file names as the copy the sync placed, so only reading could tell them apart.
+    for (const relative of Object.keys(files)) sparse(path.join(f.skills, "example", relative), MAX_SKILL_FILE_BYTES);
+    expect(3 * MAX_SKILL_FILE_BYTES).toBeGreaterThan(MAX_SKILL_BYTES);
+    f.ship("example", { ...files, "SKILL.md": "v2" });
+    const before = snapshot(path.join(f.skills, "example"));
+    const read = vi.spyOn(fs, "readSync");
+
+    const result = f.sync("2026.10.11");
+    // Taken now: comparing snapshots below reads the files too.
+    const readBySync = bytesRead(read);
+
+    expect(result.kept).toEqual([{ name: "example", reason: "too-large" }]);
+    expect(result).toMatchObject({ updated: [], failed: [], backupDir: null });
+    expect(snapshot(path.join(f.skills, "example"))).toEqual(before);
+    // It gave up at the budget for one skill instead of reading every file to its end.
+    expect(readBySync).toBeGreaterThan(MAX_SKILL_FILE_BYTES);
+    expect(readBySync).toBeLessThanOrEqual(MAX_SKILL_BYTES + 64 * 1024);
+  });
+
+  it("holds no more than one skill's worth of an unrecorded skill while matching it against earlier releases", () => {
+    const f = fixture();
+    const files = { "SKILL.md": "old", "references/a.md": "a", "references/b.md": "b" };
+    f.ship("example", files);
+    f.release("v2026.7.1");
+    // The current version dropped a file, so the home copy can only be an earlier one.
+    f.ship("example", { "SKILL.md": "new", "references/a.md": "a" });
+    for (const relative of Object.keys(files)) sparse(path.join(f.skills, "example", relative), MAX_SKILL_FILE_BYTES);
+    const read = vi.spyOn(fs, "readSync");
+
+    expect(f.sync("2026.10.10")).toMatchObject({ updated: [], kept: [{ name: "example", reason: "too-large" }] });
+
+    expect(bytesRead(read)).toBeGreaterThan(MAX_SKILL_FILE_BYTES);
+    expect(bytesRead(read)).toBeLessThanOrEqual(MAX_SKILL_BYTES + 64 * 1024);
+  });
+
+  it("stops listing a skill's directory one entry past the limit, and never lists one whole", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    for (let index = 0; index < MAX_SKILL_ENTRIES + 200; index++) fs.writeFileSync(path.join(f.skills, "example", `note-${index}.md`), "");
+    f.ship("example", { "SKILL.md": "v2" });
+    const listedWhole = vi.spyOn(fs, "readdirSync");
+    const open = fs.opendirSync;
+    let entriesRead = 0;
+    vi.spyOn(fs, "opendirSync").mockImplementation(((...args: Parameters<typeof fs.opendirSync>) => {
+      const handle = open(...args);
+      if (String(args[0]).startsWith(path.join(f.skills, "example"))) {
+        const readSync = handle.readSync.bind(handle);
+        handle.readSync = () => { entriesRead += 1; return readSync(); };
+      }
+      return handle;
+    }) as typeof fs.opendirSync);
+
+    const result = f.sync("2026.10.11");
+
+    expect(result.kept).toEqual([{ name: "example", reason: "too-large" }]);
+    expect(entriesRead).toBe(MAX_SKILL_ENTRIES + 1);
+    expect(listedWhole.mock.calls.map((call) => String(call[0])).filter((dir) => dir.startsWith(f.skills))).toEqual([]);
+  });
+
+  it("counts the entries of nested directories towards the same limit", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    for (const directory of ["a", "b"]) {
+      fs.mkdirSync(path.join(f.skills, "example", directory));
+      for (let index = 0; index < MAX_SKILL_ENTRIES / 2; index++) fs.writeFileSync(path.join(f.skills, "example", directory, `note-${index}.md`), "");
+    }
+
+    expect(f.sync("2026.10.10").kept).toEqual([{ name: "example", reason: "too-large" }]);
+  });
+
   it("never reads a file in the home whole", () => {
     const f = fixture();
     f.ship("pristine", { "SKILL.md": "v1", "references/a.md": "a1" });
@@ -116,6 +196,15 @@ describe("bundled skill sync: nothing in the home can make it read without bound
     sparse(path.join(f.template, "skills", "example", "big.bin"), MAX_SKILL_FILE_BYTES + 1);
 
     expect(() => f.sync()).toThrow(/"example".*big\.bin/);
+    expect(fs.readdirSync(f.home)).toEqual([]);
+  });
+
+  it("refuses a package whose own skill is too large in total, though no file of it is", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    for (const name of ["a.bin", "b.bin", "c.bin"]) sparse(path.join(f.template, "skills", "example", name), MAX_SKILL_FILE_BYTES);
+
+    expect(() => f.sync()).toThrow(/"example".*larger than a skill may be/);
     expect(fs.readdirSync(f.home)).toEqual([]);
   });
 });
