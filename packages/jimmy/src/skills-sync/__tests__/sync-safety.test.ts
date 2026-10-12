@@ -348,6 +348,146 @@ describe("bundled skill sync: failures and odd states", () => {
     expect(fs.readdirSync(elsewhere)).toEqual([]);
   });
 
+  it("does not move a skill out of the home if the backup directory becomes a symlink while it works", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    f.ship("example", { "SKILL.md": "v2" });
+    const outside = path.join(f.root, "outside");
+    fs.mkdirSync(outside);
+    const write = fs.writeFileSync;
+    // The new copy is being written to staging: plenty of time to plant a link where the
+    // backup directory will be. Checked only at the start, that link would be followed.
+    vi.spyOn(fs, "writeFileSync").mockImplementation((file, ...rest) => {
+      if (String(file).includes(".bundled-skill-") && !fs.existsSync(f.backups)) fs.symlinkSync(outside, f.backups);
+      return (write as (...args: unknown[]) => void)(file, ...rest);
+    });
+
+    const mkdir = vi.spyOn(fs, "mkdirSync");
+
+    const result = f.sync("2026.10.11");
+
+    expect(fs.readdirSync(outside)).toEqual([]);
+    // Not even a directory was created through the link, let alone a skill moved.
+    expect(mkdir.mock.calls.map((call) => String(call[0])).filter((dir) => dir.startsWith(f.backups + path.sep))).toEqual([]);
+    expect(result.updated).toEqual([]);
+    expect(result.failed).toEqual([{ name: "example", error: expect.stringContaining(".migration-backups") }]);
+    expect(f.read("example", "SKILL.md")).toBe("v1");
+    expect(result.backupDir).toBeNull();
+  });
+
+  it("does not move a skill out of the home if the backup directory is swapped after this run's directory exists", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    f.ship("example", { "SKILL.md": "v2" });
+    const outside = path.join(f.root, "outside");
+    const mkdir = fs.mkdirSync;
+    let swapped = false;
+    // The run's directory is in place and real; then the whole backup directory is moved
+    // out of the home and a link left where it was. Every path still resolves.
+    vi.spyOn(fs, "mkdirSync").mockImplementation(((dir: fs.PathLike, ...rest: unknown[]) => {
+      const made = (mkdir as (...args: unknown[]) => string | undefined)(dir, ...rest);
+      if (!swapped && String(dir).startsWith(f.backups + path.sep) && path.basename(String(dir)) === "skills") {
+        swapped = true;
+        fs.renameSync(f.backups, outside);
+        fs.symlinkSync(outside, f.backups);
+      }
+      return made;
+    }) as typeof fs.mkdirSync);
+
+    const result = f.sync("2026.10.11");
+
+    expect(swapped).toBe(true);
+    const movedOut = fs.readdirSync(outside).flatMap((run) => fs.readdirSync(path.join(outside, run, "skills")));
+    expect(movedOut).toEqual([]);
+    expect(result.updated).toEqual([]);
+    expect(result.failed).toEqual([{ name: "example", error: expect.stringContaining("is not a plain directory") }]);
+    expect(f.read("example", "SKILL.md")).toBe("v1");
+  });
+
+  it("does not put the new copy through skills/ if it is swapped between the two moves", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    f.ship("example", { "SKILL.md": "v2" });
+    const elsewhere = path.join(f.root, "elsewhere");
+    fs.mkdirSync(elsewhere);
+    const rename = fs.renameSync;
+    let swapped = false;
+    // The previous copy has just gone to the backup; skills/ is replaced before the new one lands.
+    vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      rename(from, to);
+      if (!swapped && String(to).startsWith(f.backups)) {
+        swapped = true;
+        rename(f.skills, path.join(f.root, "real-skills"));
+        fs.symlinkSync(elsewhere, f.skills);
+      }
+    });
+
+    const result = f.sync("2026.10.11");
+
+    expect(swapped).toBe(true);
+    expect(fs.readdirSync(elsewhere)).toEqual([]);
+    expect(result.updated).toEqual([]);
+    // Neither the new copy nor the old one could be placed safely; the old one is kept, and said where.
+    const kept = path.join(f.backups, `2026.10.11-${STAMP}`, "skills", "example");
+    expect(result.failed).toEqual([{ name: "example", error: expect.stringContaining(kept) }]);
+    expect(fs.readFileSync(path.join(kept, "SKILL.md"), "utf8")).toBe("v1");
+    expect(result.backupDir).toBe(path.join(f.backups, `2026.10.11-${STAMP}`));
+  });
+
+  it("does not move anything through skills/ if it becomes a symlink just before a skill is moved", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    f.ship("example", { "SKILL.md": "v2" });
+    // Another skill store of the user's, with a skill of the same name.
+    const elsewhere = path.join(f.root, "elsewhere");
+    writeTree(path.join(elsewhere, "example"), { "SKILL.md": "v1" });
+    const mkdir = fs.mkdirSync;
+    let swapped = false;
+    // The last thing created before a move is this run's backup directory. If skills/
+    // was checked before that, swapping it now sends the move through the link.
+    vi.spyOn(fs, "mkdirSync").mockImplementation(((dir: fs.PathLike, ...rest: unknown[]) => {
+      const made = (mkdir as (...args: unknown[]) => string | undefined)(dir, ...rest);
+      if (!swapped && String(dir).startsWith(f.backups + path.sep)) {
+        swapped = true;
+        fs.renameSync(f.skills, path.join(f.root, "real-skills"));
+        fs.symlinkSync(elsewhere, f.skills);
+      }
+      return made;
+    }) as typeof fs.mkdirSync);
+
+    const result = f.sync("2026.10.11");
+
+    expect(swapped).toBe(true);
+    expect(fs.readFileSync(path.join(elsewhere, "example", "SKILL.md"), "utf8")).toBe("v1");
+    expect(fs.readdirSync(elsewhere)).toEqual(["example"]);
+    expect(result.updated).toEqual([]);
+    expect(result.failed).toEqual([{ name: "example", error: expect.stringContaining("is not a plain directory") }]);
+    expect(fs.readFileSync(path.join(f.root, "real-skills", "example", "SKILL.md"), "utf8")).toBe("v1");
+  });
+
+  it("leaves no empty backup directory behind when nothing ends up moved", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    f.ship("example", { "SKILL.md": "v2" });
+    const rename = fs.renameSync;
+    vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (String(to).startsWith(f.backups)) throw new Error("rename refused");
+      return rename(from, to);
+    });
+
+    const result = f.sync("2026.10.11");
+
+    expect(result.failed.map((failure) => failure.name)).toEqual(["example"]);
+    expect(result.backupDir).toBeNull();
+    expect(fs.existsSync(f.backups)).toBe(false);
+    expect(f.read("example", "SKILL.md")).toBe("v1");
+  });
+
   it("does not install over something that appears while the sync is running", () => {
     const f = fixture();
     f.ship("example", { "SKILL.md": "v1" });

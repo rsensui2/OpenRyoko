@@ -61,18 +61,24 @@ export function applyPlans(plans: readonly SkillPlan[], context: ApplyContext): 
     return {
       failed: failures.map(({ name, error }) => ({ name, error })),
       lost: failures.filter((failure) => failure.lost).map((failure) => failure.name),
-      backupDir: backup.directory(),
+      backupDir: backup.finish(),
     };
   } finally {
     if (staging) fs.rmSync(staging, { recursive: true, force: true });
   }
 }
 
+/**
+ * Every move below follows the same order: do the slow work and create whatever
+ * directories are needed, then check where both ends of the move really are, then
+ * rename — with nothing between the check and the rename. The home is the user's, and
+ * a path that was a directory a moment ago can be swapped for a link at any time; a
+ * check made before the slow work would vouch for a path that has since changed.
+ */
 function applyChange(plan: Change, context: ApplyContext, staging: string | null, backup: BackupRun): void {
   const destination = skillDirectory(context.skillsRoot, plan.name);
   if (plan.action === "retire") {
     assertUnchanged(destination, plan.observed);
-    assertSkillsRoot(context.skillsRoot);
     backup.take(plan.name, destination);
     return;
   }
@@ -80,15 +86,15 @@ function applyChange(plan: Change, context: ApplyContext, staging: string | null
   const staged = stageSkill(staging, plan.skill);
   if (plan.action === "install") {
     fs.mkdirSync(context.skillsRoot, { recursive: true });
-    assertSkillsRoot(context.skillsRoot);
     if (inspectHomeSkill(destination).kind !== "missing") throw new Error("something appeared at its path while the sync was running; it was left alone");
+    assertPlainDirectory(context.skillsRoot);
     fs.renameSync(staged, destination);
     return;
   }
   assertUnchanged(destination, plan.observed);
-  assertSkillsRoot(context.skillsRoot);
   const previous = backup.take(plan.name, destination);
   try {
+    assertPlainDirectory(context.skillsRoot);
     fs.renameSync(staged, destination);
   } catch (error) {
     backup.giveBack(previous, destination);
@@ -122,21 +128,24 @@ function sameContent(directory: string, paths: readonly string[], observed: Reco
   return paths.every((file) => current[file] === observed[file]);
 }
 
-/** Checked again right before every move: skills/ must still be a real directory in
- *  the home, not something swapped for a link since the plan was made. */
-function assertSkillsRoot(skillsRoot: string): void {
-  if (!fs.lstatSync(skillsRoot).isDirectory() || fs.realpathSync(skillsRoot) !== skillsRoot) {
-    throw new Error(`${skillsRoot} is not a plain directory inside the instance home`);
+/**
+ * Is this path, right now, the real directory it is supposed to be? `directory` is
+ * built from the home's real path, so it resolves to itself only while no part of it
+ * has been replaced by a link. Called immediately before a rename, never earlier.
+ */
+function assertPlainDirectory(directory: string): void {
+  if (!fs.lstatSync(directory).isDirectory() || fs.realpathSync(directory) !== directory) {
+    throw new Error(`${directory} is not a plain directory inside the instance home`);
   }
 }
 
-/** One backup directory per run, created only when something is actually moved into it. */
+/** One backup directory per run, created only when a skill is about to be moved into it. */
 function backupRun(context: ApplyContext) {
   const root = path.join(context.home, BACKUP_ROOT);
-  let directory: string | null = null;
+  let run: { directory: string; skills: string; createdRoot: boolean } | null = null;
+  let held = 0;
   return {
-    directory: () => directory,
-    /** A backup root that is a link would move skills out of the home. Refuse first. */
+    /** A backup root that is already a link refuses the whole run, before any write. */
     assertUsable(): void {
       let stat: fs.Stats;
       try { stat = fs.lstatSync(root); }
@@ -148,44 +157,57 @@ function backupRun(context: ApplyContext) {
     },
     /** Move a skill out of skills/ and return where it went. */
     take(name: string, source: string): string {
-      directory ??= createRunDirectory(root, context);
-      const target = path.join(directory, "skills", name);
-      fs.mkdirSync(path.dirname(target), { recursive: true });
+      run ??= createRun(root, context);
+      const target = path.join(run.skills, name);
+      assertPlainDirectory(context.skillsRoot);
+      assertPlainDirectory(run.skills);
       fs.renameSync(source, target);
+      held += 1;
       return target;
     },
-    /** Undo `take` after a failed replacement, leaving no empty run directory behind. */
+    /** Undo `take` after a failed replacement. */
     giveBack(previous: string, destination: string): void {
       try {
+        assertPlainDirectory(context.skillsRoot);
         fs.renameSync(previous, destination);
       } catch (error) {
         throw new SkillLostError(`its previous copy could not be put back and is at ${previous} (${messageOf(error)})`);
       }
-      if (directory && removeIfEmpty(path.dirname(previous)) && removeIfEmpty(directory)) directory = null;
+      held -= 1;
+    },
+    /** Where the previous copies are, or null — with nothing left behind — when no skill ended up there. */
+    finish(): string | null {
+      if (!run) return null;
+      if (held > 0) return run.directory;
+      for (const empty of [run.skills, run.directory, ...(run.createdRoot ? [root] : [])]) {
+        try { fs.rmdirSync(empty); } catch { break; }
+      }
+      return null;
     },
   };
 }
 
-function createRunDirectory(root: string, context: ApplyContext): string {
-  fs.mkdirSync(root, { recursive: true });
+/** Create <root>/<version>-<time>/skills. Nothing is created through a link: the root
+ *  is made without following one, and must be a real directory once it exists. */
+function createRun(root: string, context: ApplyContext): { directory: string; skills: string; createdRoot: boolean } {
+  let createdRoot = true;
+  try { fs.mkdirSync(root); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    createdRoot = false;
+  }
+  if (!fs.lstatSync(root).isDirectory()) throw new Error(`${root} is not a plain directory, so nothing can be backed up into it`);
   const version = context.packageVersion.replace(/[^A-Za-z0-9._+-]/g, "_") || "unknown";
   const base = `${version}-${context.now.toISOString().replace(/[:.]/g, "-")}`;
   for (let attempt = 1; ; attempt++) {
-    const candidate = path.join(root, attempt === 1 ? base : `${base}-${attempt}`);
+    const directory = path.join(root, attempt === 1 ? base : `${base}-${attempt}`);
     try {
-      fs.mkdirSync(candidate);
-      return candidate;
+      fs.mkdirSync(directory);
+      const skills = path.join(directory, "skills");
+      fs.mkdirSync(skills);
+      return { directory, skills, createdRoot };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST" || attempt >= 100) throw error;
     }
-  }
-}
-
-function removeIfEmpty(directory: string): boolean {
-  try {
-    fs.rmdirSync(directory);
-    return true;
-  } catch {
-    return false;
   }
 }
