@@ -52,6 +52,12 @@ export interface CreateHomeArchiveOptions {
   /** Absolute directories the walk must not enter - the backup directory, when it sits inside a target. */
   excludePaths?: string[];
   /**
+   * Home-relative paths to archive instead of everything under the archive
+   * targets: what a restore saves before it replaces them. The rest of the
+   * home is not read, listed or counted against `limits`.
+   */
+  only?: readonly string[];
+  /**
    * Called once the home has been listed and before anything is written, with
    * how many bytes the archive may take at most. Throwing calls it off - the
    * place to check that there is room for it.
@@ -245,7 +251,9 @@ function warningsFor(walk: HomeWalk, skipped: SkippedEntry[], skippedCount: numb
  */
 export async function createHomeArchive(options: CreateHomeArchiveOptions): Promise<HomeArchiveResult> {
   const limits = options.limits ?? DEFAULT_ARCHIVE_LIMITS;
-  const walk = await collectHomeEntries(options.home, { excludePaths: options.excludePaths, limits });
+  const walk = await collectHomeEntries(options.home, {
+    excludePaths: options.excludePaths, limits, ...(options.only ? { only: options.only } : {}),
+  });
   if (!walk.entries.some((entry) => entry.type !== "directory")) throw new NothingToArchiveError(options.home);
   options.beforeWrite?.({ bytes: walk.bytes + walk.entries.length * UNCOMPRESSED_OVERHEAD_PER_ENTRY });
 

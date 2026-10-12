@@ -87,6 +87,16 @@ describe("docs/backup.md", () => {
     expect(doc()).not.toMatch(/で元に戻せます/);
   });
 
+  it("says the snapshot a restore takes first holds what it overwrites, not the whole home", () => {
+    expect(doc()).toMatch(/退避するのはそのファイルだけ/);
+    expect(doc()).toMatch(/作成だけ[^。]*退避は作られません/);
+    // So a home that has outgrown the limits can still be restored into - and what to do when even that is too much.
+    expect(doc()).toMatch(/ホーム全体が上限を超えていても復元できます/);
+    expect(doc()).toMatch(/上書きするファイルだけで上限を超える[^。]*`--only`/);
+    // The snapshot no longer lists the rest of the home, so its dry run is not the way to find what a restore created.
+    expect(doc()).not.toMatch(/手を付けないファイル」で確かめ/);
+  });
+
   it("says the commands belong where the gateway runs, and that a database is never opened to check", () => {
     expect(doc()).toMatch(/`ryoko backup` は、gateway が動いている場所で実行/);
     expect(doc()).toMatch(/DB を開いて確かめることはしません/);

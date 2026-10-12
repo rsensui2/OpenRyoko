@@ -303,13 +303,35 @@ async function visitTopLevelFiles(state: WalkState, pattern: RegExp): Promise<vo
 }
 
 /**
+ * Takes one path as it stands - a file or a link, with the directories above
+ * it - and nothing around it. A directory there is recorded and not entered:
+ * this is for the paths a restore is about to replace, each named on its own.
+ */
+async function visitPath(state: WalkState, wanted: string): Promise<void> {
+  // Looked for first, so that a path that is not there leaves no trace of the directories above it.
+  if (!(await inspect(state, wanted))) return;
+  if (await enterParents(state, wanted)) await visit(state, wanted);
+}
+
+export interface CollectOptions {
+  excludePaths?: string[];
+  limits: ArchiveLimits;
+  /**
+   * Home-relative paths to take instead of everything under the archive
+   * targets. Nothing else in the home is so much as listed, so a home that as
+   * a whole is far past `limits` can still have a few of its files collected.
+   */
+  only?: readonly string[];
+}
+
+/**
  * Lists everything under the archive targets of `home`, without following a
  * single symlink, and gives up with {@link ArchiveTooLargeError} as soon as it
  * has seen more than `limits` allow. Asynchronous throughout: this runs inside
  * the gateway once a day, and a home with a great many files must not stall it
  * while they are counted.
  */
-export async function collectHomeEntries(home: string, options: { excludePaths?: string[]; limits: ArchiveLimits }): Promise<HomeWalk> {
+export async function collectHomeEntries(home: string, options: CollectOptions): Promise<HomeWalk> {
   const state: WalkState = {
     home,
     limits: options.limits,
@@ -322,11 +344,15 @@ export async function collectHomeEntries(home: string, options: { excludePaths?:
     unopened: 0,
     warnings: [],
   };
-  for (const target of HOME_ARCHIVE_TARGETS) {
-    for (const root of target.paths) await visitTarget(state, root);
+  if (options.only) {
+    for (const wanted of options.only) await visitPath(state, wanted);
+  } else {
+    for (const target of HOME_ARCHIVE_TARGETS) {
+      for (const root of target.paths) await visitTarget(state, root);
+    }
+    // After the named paths, so a file one of them already claimed (MEMORY.md) is not taken twice.
+    for (const { pattern } of TOP_LEVEL_FILE_TARGETS) await visitTopLevelFiles(state, pattern);
   }
-  // After the named paths, so a file one of them already claimed (MEMORY.md) is not taken twice.
-  for (const { pattern } of TOP_LEVEL_FILE_TARGETS) await visitTopLevelFiles(state, pattern);
   if (state.unopened > 0) {
     const one = state.unopened === 1;
     state.warnings.push(

@@ -167,10 +167,13 @@ describe("restoreHomeArchive", () => {
     expect(snapshotTree(target.home)).toEqual(before);
   });
 
-  it("saves the state it is about to overwrite, and that snapshot restores it again", async () => {
+  it("saves what it is about to overwrite, and only that", async () => {
+    // Not the whole home. The snapshot is the way back from this restore, and
+    // a restore of one file must not have to archive everything else first.
     const target = await scene();
     fs.writeFileSync(path.join(target.home, "config.yaml"), "edited after the backup\n");
     fs.writeFileSync(path.join(target.home, "knowledge", "new.md"), "written after the backup\n");
+    fs.rmSync(path.join(target.home, "MEMORY.md"));
 
     const result = await restoreHomeArchive(optionsFor(target));
 
@@ -180,13 +183,88 @@ describe("restoreHomeArchive", () => {
     expectPosixMode(result.preRestore!.file, 0o600);
     const saved = await inspectHomeArchive(result.preRestore!.file);
     expect(saved.ok).toBe(true);
-    expect(saved.manifest!.entries.map((entry) => entry.path)).toEqual(expect.arrayContaining(["config.yaml", "knowledge/new.md"]));
+    // config.yaml was replaced. MEMORY.md was created - there was nothing of it to save - and the rest was never touched.
+    expect(saved.manifest!.entries.map((entry) => entry.path)).toEqual(["config.yaml"]);
     expect(read(target.home, "config.yaml")).toBe(HOME_CONTENT["config.yaml"]);
+  });
 
-    await restoreHomeArchive(optionsFor(target, { archive: result.preRestore!.file, now: new Date(NOW.getTime() + 60_000) }));
+  it("goes back from that snapshot to everything it replaced: contents, permissions and links", async () => {
+    const target = await scene();
+    const script = path.join(target.home, "skills", "demo", "run.sh");
+    fs.writeFileSync(path.join(target.home, "config.yaml"), "edited after the backup\n");
+    fs.writeFileSync(path.join(target.home, "cron", "jobs.json"), "[]\n");
+    fs.chmodSync(script, 0o644);
+    fs.rmSync(path.join(target.home, "SOUL.md"));
+    fs.symlinkSync("IDENTITY.md", path.join(target.home, "SOUL.md"));
 
+    const result = await restoreHomeArchive(optionsFor(target));
+    expect(result.changes.map((change) => [change.path, change.action]).sort()).toEqual([
+      ["SOUL.md", "replace"], ["config.yaml", "replace"], ["cron/jobs.json", "replace"], ["skills/demo/run.sh", "mode"],
+    ]);
+    expect(read(target.home, "config.yaml")).toBe(HOME_CONTENT["config.yaml"]);
+    expect(fs.lstatSync(path.join(target.home, "SOUL.md")).isFile()).toBe(true);
+
+    const back = await restoreHomeArchive(optionsFor(target, { archive: result.preRestore!.file, now: new Date(NOW.getTime() + 60_000) }));
+
+    expect(back.changes.map((change) => change.path).sort()).toEqual(["SOUL.md", "config.yaml", "cron/jobs.json", "skills/demo/run.sh"]);
     expect(read(target.home, "config.yaml")).toBe("edited after the backup\n");
+    expect(read(target.home, "cron/jobs.json")).toBe("[]\n");
+    expect(fs.readlinkSync(path.join(target.home, "SOUL.md"))).toBe("IDENTITY.md");
+    if (POSIX_MODES_SUPPORTED) expect(fs.statSync(script).mode & 0o777).toBe(0o644);
     expect(listBackups(target.backups).filter((item) => item.preRestore)).toHaveLength(2);
+  });
+
+  it("takes no snapshot when it overwrites nothing: files it only creates leave nothing to go back to", async () => {
+    const target = await scene();
+    fs.rmSync(path.join(target.home, "MEMORY.md"));
+    fs.rmSync(path.join(target.home, "knowledge"), { recursive: true });
+
+    const result = await restoreHomeArchive(optionsFor(target));
+
+    expect(result.changes.every((change) => change.action === "create")).toBe(true);
+    expect(result.preRestore).toBeNull();
+    expect(listBackups(target.backups).filter((item) => item.preRestore)).toEqual([]);
+    expect(read(target.home, "MEMORY.md")).toBe(HOME_CONTENT["MEMORY.md"]);
+  });
+
+  it("restores one file out of a home that has outgrown the limits since the backup was taken", async () => {
+    // The snapshot used to be the whole home. A home that had grown past the
+    // limits could then restore nothing at all - not even its config.yaml.
+    const target = await scene();
+    const limits = { maxEntries: 60, maxBytes: 200_000 };
+    writeTree(target.home, {
+      "knowledge/grown.bin": "x".repeat(600_000),
+      ...Object.fromEntries(Array.from({ length: 300 }, (_, index) => [`knowledge/flood/empty-${index}`, ""])),
+    });
+    fs.writeFileSync(path.join(target.home, "config.yaml"), "broken\n");
+
+    const result = await restoreHomeArchive(optionsFor(target, { only: ["config"], limits }));
+
+    expect(read(target.home, "config.yaml")).toBe(HOME_CONTENT["config.yaml"]);
+    expect((await inspectHomeArchive(result.preRestore!.file)).manifest!.entries.map((entry) => entry.path)).toEqual(["config.yaml"]);
+    expect(fs.statSync(path.join(target.home, "knowledge", "grown.bin")).size).toBe(600_000);
+  });
+
+  it("says what to do when even the files it would replace are too much to save", async () => {
+    const target = await scene();
+    const notes = path.join(target.home, "knowledge", "議事録", "notes.md");
+    fs.writeFileSync(notes, "x".repeat(300_000));
+    fs.writeFileSync(path.join(target.home, "config.yaml"), "broken\n");
+
+    const refusal = await restoreHomeArchive(optionsFor(target, { limits: { maxEntries: 50_000, maxBytes: 200_000 } }))
+      .then(() => null, (error: Error) => error.message);
+
+    expect(refusal).toMatch(/too much to save first.*nothing was restored/s);
+    // The two ways out: restore less at once, or allow more.
+    expect(refusal).toContain("--only");
+    expect(refusal).toContain("backup.maxArchiveMb");
+    expect(fs.statSync(notes).size).toBe(300_000);
+    expect(read(target.home, "config.yaml")).toBe("broken\n");
+    expect(listBackups(target.backups).filter((item) => item.preRestore)).toEqual([]);
+
+    // And the first of them works: the config alone is small enough to save.
+    await restoreHomeArchive(optionsFor(target, { only: ["config"], limits: { maxEntries: 50_000, maxBytes: 200_000 } }));
+    expect(read(target.home, "config.yaml")).toBe(HOME_CONTENT["config.yaml"]);
   });
 
   it("deletes nothing: what was added since the backup stays, and is reported", async () => {
@@ -343,8 +421,8 @@ describe("restoreHomeArchive", () => {
     // 300 KB to stage in the home, 100 KB to spare there.
     await expect(restoreHomeArchive({ ...options, diskSpace: (directory) => (directory === backups ? ROOMY : tight) }))
       .rejects.toThrow(/not enough free disk space.*nothing was restored/s);
-    // Room in the home, none where the snapshot of the current state has to go.
-    await expect(restoreHomeArchive({ ...options, only: ["config"], diskSpace: (directory) => (directory === backups ? { ...tight, freeBytes: reserve + 1000 } : ROOMY) }))
+    // Room in the home, none where the snapshot of what is being replaced has to go - small as that snapshot is.
+    await expect(restoreHomeArchive({ ...options, only: ["config"], diskSpace: (directory) => (directory === backups ? { ...tight, freeBytes: reserve + 100 } : ROOMY) }))
       .rejects.toThrow(/current state could not be saved.*not enough free disk space/s);
 
     expect(snapshotTree(home)).toEqual(before);
@@ -425,20 +503,13 @@ describe("restoreHomeArchive, refusing what it must not trust", () => {
     expect(listBackups(target.backups).filter((item) => item.preRestore)).toEqual([]);
   });
 
-  it("refuses an archive that holds more than the limits allow, and one it would take more than the limits to save first", async () => {
+  it("refuses an archive that holds more than the limits allow", async () => {
     const target = await scene();
     fs.writeFileSync(path.join(target.home, "config.yaml"), "broken\n");
     const tight = { maxEntries: 10, maxBytes: 1024 ** 3 };
 
     // The archive itself is over the entry limit: refused while it is being read.
     await expect(restoreHomeArchive(optionsFor(target, { limits: tight }))).rejects.toThrow(/failed verification.*backup\.maxEntries/s);
-
-    // The archive is fine, but the home has since grown past the limit, so the
-    // state about to be overwritten cannot be saved. Nothing is restored.
-    writeTree(target.home, Object.fromEntries(Array.from({ length: 300 }, (_, index) => [`knowledge/flood/empty-${index}`, ""])));
-    const entries = (await inspectHomeArchive(target.archive)).manifest!.entries.length;
-    await expect(restoreHomeArchive(optionsFor(target, { limits: { maxEntries: entries + 20, maxBytes: 1024 ** 3 } })))
-      .rejects.toThrow(/current state could not be saved.*backup\.maxEntries/s);
 
     expect(read(target.home, "config.yaml")).toBe("broken\n");
     expect(listBackups(target.backups).filter((item) => item.preRestore)).toEqual([]);

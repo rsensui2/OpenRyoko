@@ -37,8 +37,8 @@ export interface RestoreOptions {
   backupDirectory: string;
   now: Date;
   /**
-   * What an archive may hold - the one being restored, and the snapshot of the
-   * current state taken first. Default: what an instance uses when its config says nothing.
+   * What an archive may hold - the one being restored, and the snapshot taken
+   * first of what it will overwrite. Default: what an instance uses when its config says nothing.
    */
   limits?: ArchiveLimits;
   /** The existing free-space judgement, replaceable in tests. */
@@ -287,24 +287,38 @@ function assertRoomToStage(options: RestoreOptions, home: string, staged: number
   if (reason) throw new Error(`${reason}; nothing was restored`);
 }
 
-/**
- * Archives the home as it stands, so whatever the restore overwrites can be had
- * back. It needs room too, and when it shares a disk with the home, room beside
- * the files about to be staged there.
- */
 interface Snapshot {
   id: string;
   file: string;
   manifest: BackupManifest;
 }
 
-async function snapshotCurrentState(options: RestoreOptions, home: string, staged: number): Promise<Snapshot | null> {
+/** The paths whose present contents or permissions the plan is about to do away with. */
+function pathsOverwritten(plan: PlanItem[]): string[] {
+  return plan.filter(({ action }) => action === "replace" || action === "mode").map(({ entry }) => entry.path);
+}
+
+/**
+ * Archives what the restore is about to overwrite, as it stands, so that it can
+ * be had back: the files the plan replaces and the ones whose permissions it
+ * changes. Not the rest of the home. A snapshot of everything made a restore
+ * of one file archive the whole home first, and a home that had grown past the
+ * limits since its last backup could then restore nothing at all.
+ *
+ * Null when the plan overwrites nothing: what a restore only creates leaves
+ * nothing to go back to. It needs room too, and when it shares a disk with the
+ * home, room beside the files about to be staged there.
+ */
+async function snapshotCurrentState(options: RestoreOptions, home: string, staged: number, plan: PlanItem[]): Promise<Snapshot | null> {
+  const overwritten = pathsOverwritten(plan);
+  if (overwritten.length === 0) return null;
   const { id, file } = reserveArchiveName(options.backupDirectory, "pre-restore", options.now);
   const alsoStaged = sameFilesystem(home, options.backupDirectory) ? staged : 0;
   try {
     const { manifest } = await createHomeArchive({
       home, destination: file, id, createdAt: options.now, excludePaths: [options.backupDirectory],
       limits: options.limits ?? DEFAULT_ARCHIVE_LIMITS,
+      only: overwritten,
       beforeWrite: ({ bytes }) => {
         const reason = insufficientSpace(options.backupDirectory, bytes + alsoStaged, options.diskSpace);
         if (reason) throw new Error(reason);
@@ -313,6 +327,14 @@ async function snapshotCurrentState(options: RestoreOptions, home: string, stage
     return { id, file, manifest };
   } catch (error) {
     if (error instanceof NothingToArchiveError) return null;
+    if (error instanceof ArchiveTooLargeError) {
+      // Not the home: only what this restore would replace. So the ways out are to replace less, or to allow more.
+      throw new Error(
+        `what this restore would replace is too much to save first, so nothing was restored: ${errorMessage(error)}. `
+        + "Only the files about to be replaced are saved. Restore fewer kinds at a time with --only, "
+        + "or raise backup.maxArchiveMb / backup.maxEntries in config.yaml, and run the restore again.",
+      );
+    }
     throw new Error(`the current state could not be saved first, so nothing was restored: ${errorMessage(error)}`);
   }
 }
@@ -328,12 +350,11 @@ async function snapshotCurrentState(options: RestoreOptions, home: string, stage
  * a list of skips that is only kept up to a point.
  */
 function refuseToReplaceUnsaved(plan: PlanItem[], snapshot: Snapshot | null): void {
-  const unsaved = plan
-    .filter(({ action }) => action === "replace" || action === "mode")
-    .filter(({ entry }) => !snapshot || !findManifestEntry(snapshot.manifest.entries, entry.path))
-    .map(({ entry }) => {
-      const why = snapshot?.manifest.skipped.find((skipped) => skipped.path === entry.path)?.reason;
-      return why ? `${entry.path} (${why})` : entry.path;
+  const unsaved = pathsOverwritten(plan)
+    .filter((entryPath) => !snapshot || !findManifestEntry(snapshot.manifest.entries, entryPath))
+    .map((entryPath) => {
+      const why = snapshot?.manifest.skipped.find((skipped) => skipped.path === entryPath)?.reason;
+      return why ? `${entryPath} (${why})` : entryPath;
     });
   if (unsaved.length === 0) return;
   // The snapshot is of a restore that is not going to happen.
@@ -510,9 +531,10 @@ async function writeIntoHome(options: RestoreOptions, home: string, plan: PlanIt
  * Restores files from a home archive into `home`.
  *
  * Nothing is written until the archive has been read end to end and checked
- * against its manifest, the plan has been worked out, and the current state of
- * the home has been archived as a pre-restore snapshot. Files are then
- * extracted into a staging directory, verified again, and moved into place.
+ * against its manifest, the plan has been worked out, and what the plan will
+ * overwrite has been archived as it stands, as a pre-restore snapshot. Files
+ * are then extracted into a staging directory, verified again, and moved into
+ * place.
  *
  * A restore brings back what the archive has. It deletes nothing: a file added
  * to the home since the backup stays where it is and is reported as untouched.
@@ -551,7 +573,7 @@ export async function restoreHomeArchive(options: RestoreOptions): Promise<Resto
   stagingParent(home);
   const staged = bytesToStage(plan);
   assertRoomToStage(options, home, staged);
-  const snapshot = await snapshotCurrentState(options, home, staged);
+  const snapshot = await snapshotCurrentState(options, home, staged, plan);
   refuseToReplaceUnsaved(plan, snapshot);
   const preRestore = snapshot ? { id: snapshot.id, file: snapshot.file } : null;
   await writeIntoHome(options, home, plan, preRestore);

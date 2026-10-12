@@ -413,6 +413,38 @@ describe("createHomeArchive", () => {
     expect(result.files).toBe(Object.keys(HOME_CONTENT).length);
   });
 
+  it("archives only the paths it is given, with the directories above them, and looks nowhere else", async () => {
+    // What a restore saves before it writes: the few files it is about to
+    // replace, out of a home that as a whole may be far past the limits.
+    const root = tempDir();
+    const home = makeHome(root);
+    writeTree(home, Object.fromEntries(Array.from({ length: 300 }, (_, index) => [`knowledge/flood/empty-${index}`, ""])));
+    fs.symlinkSync("../docs/overview.md", path.join(home, "knowledge", "overview-link.md"));
+
+    const result = await archiveInto(root, home, {
+      only: ["skills/demo/run.sh", "config.yaml", "knowledge/overview-link.md", "org/not-there.yaml"],
+      limits: { maxEntries: 20, maxBytes: 1024 ** 2 },
+    });
+
+    expect((await entriesOf(result.file)).map((entry) => [entry.path, entry.type])).toEqual([
+      ["config.yaml", "file"],
+      ["knowledge", "directory"],
+      ["knowledge/overview-link.md", "symlink"],
+      ["skills", "directory"],
+      ["skills/demo", "directory"],
+      ["skills/demo/run.sh", "file"],
+    ]);
+    expect(result.files).toBe(2);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("has nothing to archive when none of the paths it is given is there", async () => {
+    const root = tempDir();
+    const home = makeHome(root);
+
+    await expect(archiveInto(root, home, { only: ["org/not-there.yaml"] })).rejects.toThrow(/nothing to archive/);
+  });
+
   it("refuses a home that has nothing to archive", async () => {
     const root = tempDir();
     const home = path.join(root, "empty");

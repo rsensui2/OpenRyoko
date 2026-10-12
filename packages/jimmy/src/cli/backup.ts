@@ -281,16 +281,22 @@ function printPaths(io: BackupCliIo, label: string, paths: string[]): void {
 }
 
 /**
- * Where the previous state went, and what going back to it does and does not
+ * Where what was overwritten went, and what going back to it does and does not
  * do. Going back is itself a restore, and a restore only ever writes: what was
  * overwritten returns, and what this restore created - which was not there to
- * be saved - stays. Said here, at the moment someone might count on it.
+ * be saved - stays. Said here, at the moment someone might count on it. A
+ * restore that overwrote nothing saved nothing, and says how to undo it too.
  */
 function printWayBack(io: BackupCliIo, result: RestoreResult): void {
-  if (!result.preRestore) return;
-  const { id } = result.preRestore;
-  io.out(`復元前の状態は ${id} に退避しました。上書きした内容を戻すには: ryoko backup restore ${id}`);
   const created = result.changes.filter((change) => change.action === "create").length;
+  if (!result.preRestore) {
+    if (!result.dryRun && created > 0) {
+      io.out(`この復元は何も上書きしていないので、退避はありません。元に戻すには、上の「作成」の ${created} 件を消します。`);
+    }
+    return;
+  }
+  const { id } = result.preRestore;
+  io.out(`上書きする前の内容は ${id} に退避しました。上書きした内容を戻すには: ryoko backup restore ${id}`);
   if (created === 0) return;
   io.out(
     `この復元で新しく作成した ${created} 件は、${id} へ戻しても消えません（復元は上書きだけで、削除はしません）。`
