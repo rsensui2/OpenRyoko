@@ -115,4 +115,32 @@ describe("secret redaction — connector credentials", () => {
   ])("leaves ordinary log text alone: %s", (line) => {
     expect(redactText(line)).toBe(line);
   });
+
+  // Shapes that only resemble a token. Masking them costs the operator the
+  // one detail the log line was written for.
+  const hex = (length: number) => "0123456789abcdef".repeat(4).slice(0, length);
+
+  it.each([
+    ["a short id before a 35-character hash", `sha 1234567:${hex(35)}`],
+    ["a date before a 35-character hash", `build 20261012:${hex(35)}`],
+    ["a date before an upper-case hash", `build 20261012:${hex(35).toUpperCase()}`],
+    ["a bundle name before a hash", `Module_Federation_Runtime_X.bundle.${hex(40)}`],
+    ["a dotted handler path", "Notification_Wake_Delivery.handle.someVeryLongIdentifierNameGoesHere12"],
+    ["a long file name with two extensions", `/var/log/Maintenance-Report-2026-10-12.backup.${hex(32)}`],
+  ])("does not mistake %s for a token", (_label, line) => {
+    expect(redactText(line)).toBe(line);
+  });
+
+  it.each([8, 9, 10])("still masks a Telegram bot token whose bot id has %i digits", (digits) => {
+    const token = `${"1234567890".slice(0, digits)}:` + "AAE" + "abcdefghijklmnopqrstuvwxyz012345";
+
+    expect(redactText(`Unauthorized (token ${token})`)).toBe("Unauthorized (token [REDACTED])");
+  });
+
+  it.each([17, 18, 19, 20])("still masks a Discord bot token whose bot id has %i digits", (digits) => {
+    const id = Buffer.from("12345678901234567890".slice(0, digits)).toString("base64").replace(/=+$/, "");
+    const token = `${id}.GAbCdE.` + "abcdefghijklmnopqrstuvwxyz_";
+
+    expect(redactText(`login failed with ${token}.`)).toBe("login failed with [REDACTED].");
+  });
 });
