@@ -123,6 +123,10 @@ function buildAvailableServers(config: McpGlobalConfig, sessionContext?: McpSess
       args: [scriptPath],
       env: {
         JINN_GATEWAY_URL: resolveGatewayMcpUrl(),
+        // The server reads the gateway's bearer token from this home on each
+        // request. The token itself is not passed: this config is written to
+        // disk for Claude Code to read.
+        JINN_HOME,
         ...(sessionContext?.connector ? { JINN_CURRENT_CONNECTOR: sessionContext.connector } : {}),
         ...(sessionContext?.channel ? { JINN_CURRENT_CHANNEL: sessionContext.channel } : {}),
         ...(sessionContext?.thread ? { JINN_CURRENT_THREAD: sessionContext.thread } : {}),
