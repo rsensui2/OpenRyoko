@@ -65,11 +65,12 @@ const SAYS_LOGGED_OUT = /"loggedIn"\s*:\s*false/;
  *   - A zero exit is not enough either. A CLI version that exits 0 while
  *     logged out would otherwise be shown as a successful login.
  *   - JSON that parses is taken at its word.
- *   - The JSON cannot be relied on to parse: the CLI draws it through
- *     Ink, which wraps at 80 columns when its output is piped, so a long value —
- *     an e-mail address, an organization name — is broken across lines. Output
- *     that does not parse counts only if it still literally says
- *     `"loggedIn": true`, and nowhere says false.
+ *   - The JSON cannot be relied on to parse: the output may be wrapped when
+ *     it is piped, and a long value — an e-mail address, an organization
+ *     name — then ends up broken across lines. (Suspected of the CLI's
+ *     terminal renderer; not confirmed.) Output that does not parse counts
+ *     only if it still literally says `"loggedIn": true`, and nowhere says
+ *     false.
  *
  * Anything else is "could not be confirmed" — reported to the operator as
  * exactly that, neither as a login nor as a failed one.

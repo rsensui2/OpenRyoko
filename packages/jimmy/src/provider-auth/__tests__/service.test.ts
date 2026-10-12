@@ -444,18 +444,18 @@ describe("ProviderAuthService — verification", () => {
     expect(clean.outcomes).toEqual([{ status: "succeeded" }]);
   });
 
-  // `claude auth status --json` exits `loggedIn ? 0 : 1`. Its JSON is drawn
-  // through Ink, which wraps at 80 columns when piped: a long value is broken
-  // across lines and the output stops being JSON.
-  const wrappedByInk = (loggedIn: boolean) => [
+  // `claude auth status --json` exits `loggedIn ? 0 : 1`. Its JSON may be
+  // wrapped when piped: a long value is then broken across lines and the
+  // output stops being JSON.
+  const brokenAcrossLines = (loggedIn: boolean) => [
     "{",
     `  "loggedIn": ${loggedIn},`,
     '  "authMethod": "claude.ai",',
     '  "apiProvider": "firstParty",',
     '  "email": "an-operator-with-a-rather-long-mailbox-name@a-company-with-a-long-nam',
     'e.example.com",',
-    '  "orgName": "An Organization Whose Name Is Longer Than The Eighty Columns Ink Wr',
-    'aps At When Its Output Is Piped",',
+    '  "orgName": "An Organization Whose Name Is Long Enough To Be Broken Across Two L',
+    'ines When The Output Is Wrapped",',
     '  "subscriptionType": "max"',
     "}",
   ].join("\n");
@@ -469,8 +469,8 @@ describe("ProviderAuthService — verification", () => {
     // A clean exit alone proves nothing: a CLI version that exits 0 while
     // logged out must not be shown as a successful login.
     ["a plain 'Not logged in' with a clean exit", { stdout: "Not logged in\n", exitCode: 0 }],
-    ["wrapped JSON that says loggedIn false", { stdout: wrappedByInk(false), exitCode: 0 }],
-    ["wrapped JSON that says both", { stdout: `${wrappedByInk(false)}\n${wrappedByInk(true)}`, exitCode: 0 }],
+    ["wrapped JSON that says loggedIn false", { stdout: brokenAcrossLines(false), exitCode: 0 }],
+    ["wrapped JSON that says both", { stdout: `${brokenAcrossLines(false)}\n${brokenAcrossLines(true)}`, exitCode: 0 }],
     ["output that is not JSON", { stdout: "Logged in", exitCode: 0 }],
     ["an answer of an unexpected shape", { stdout: JSON.stringify({ loggedIn: "yes" }), exitCode: 0 }],
     ["no output at all", { stdout: "", exitCode: 0 }],
@@ -484,7 +484,7 @@ describe("ProviderAuthService — verification", () => {
   });
 
   it.each([
-    ["JSON broken by line wrapping", wrappedByInk(true)],
+    ["JSON broken by line wrapping", brokenAcrossLines(true)],
     ["compact JSON broken inside a value", '{"loggedIn":true,"email":"someone@exam\nple.com"}'],
     ["JSON followed by something else", `${JSON.stringify({ loggedIn: true })}\n(node:1) Warning: something\n`],
   ])("accepts a clean exit whose unreadable answer still says loggedIn true: %s (Claude)", async (_name, stdout) => {
