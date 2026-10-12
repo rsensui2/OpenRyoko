@@ -272,10 +272,35 @@ describe("TelegramConnector", () => {
     });
 
     it("does not duplicate a send after a transient or ambiguous failure", async () => {
-      mockSendMessage.mockRejectedValueOnce({ errorCode: 429, description: "Too Many Requests" });
-      const result = await connector.sendMessage({ channel: "12345" }, "Hello");
+      const failure = { errorCode: 429, description: "Too Many Requests" };
+      mockSendMessage.mockRejectedValueOnce(failure);
+      // The send is not retried here, and the failure reaches the caller: it
+      // used to resolve undefined, which every caller read as "sent".
+      await expect(connector.sendMessage({ channel: "12345" }, "Hello")).rejects.toBe(failure);
       expect(mockSendMessage).toHaveBeenCalledOnce();
-      expect(result).toBeUndefined();
+    });
+
+    it("rejects when the plain-text retry also fails", async () => {
+      mockSendMessage
+        .mockRejectedValueOnce({ errorCode: 400, description: "Bad Request: can't parse entities" })
+        .mockRejectedValueOnce(new Error("chat not found"));
+      await expect(connector.sendMessage({ channel: "12345" }, "**bad markdown")).rejects.toThrow("chat not found");
+      expect(mockSendMessage).toHaveBeenCalledTimes(2);
+    });
+
+    it("rejects a partly delivered message as a partial delivery, never as sent", async () => {
+      mockSendMessage
+        .mockResolvedValueOnce({ message_id: 7 })
+        .mockRejectedValueOnce(new Error("flood control"));
+      // Typed, so a caller that retries knows not to start over from the top.
+      await expect(connector.sendMessage({ channel: "12345" }, "A".repeat(5000))).rejects.toMatchObject({
+        name: "PartialDeliveryError",
+        delivered: 1,
+        total: 2,
+        lastId: "7",
+        message: "[telegram] sendMessage: only 1 of 2 chunks were delivered (flood control)",
+      });
+      expect(mockSendMessage).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -292,6 +317,13 @@ describe("TelegramConnector", () => {
         parse_mode: "Markdown",
         reply_parameters: { message_id: 42 },
       });
+    });
+
+    it("rejects when the reply was not delivered", async () => {
+      mockSendMessage.mockRejectedValueOnce(new Error("bot was blocked by the user"));
+      await expect(
+        connector.replyMessage({ channel: "12345", replyContext: { chatId: 12345, messageId: 42 } }, "Reply!"),
+      ).rejects.toThrow("bot was blocked by the user");
     });
   });
 

@@ -20,6 +20,7 @@ import type {
   Target,
 } from "../../shared/types.js";
 import { logger } from "../../shared/logger.js";
+import { PartialDeliveryError } from "../../shared/partial-delivery.js";
 import { TMP_DIR } from "../../shared/paths.js";
 import { formatResponse, downloadAttachment } from "./format.js";
 import {
@@ -239,29 +240,23 @@ export class DiscordConnector implements Connector {
     };
   }
 
+  // sendMessage / replyMessage follow the Connector delivery contract: they
+  // reject when nothing reached Discord, so callers can retry, record the
+  // conversation as unanswered, or report the failure — never "sent".
   async sendMessage(target: Target, text: string): Promise<string | undefined> {
     try {
-      const channel = await this.client.channels.fetch(target.channel);
-      if (!channel || !channel.isTextBased()) return;
-      const result = await this.sendChunks(
-        { channel: channel as TextChannel | DMChannel | ThreadChannel },
-        text,
-      );
-      if (result.error !== undefined) throw result.error;
-      return result.lastId;
+      const channel = await this.fetchSendableChannel(target.channel);
+      return this.settleChunks("sendMessage", await this.sendChunks({ channel }, text));
     } catch (err) {
       logger.error(`Discord sendMessage error: ${err instanceof Error ? err.message : err}`);
+      throw err;
     }
   }
 
   async replyMessage(target: Target, text: string): Promise<string | undefined> {
     try {
-      const channel = await this.client.channels.fetch(target.thread ?? target.channel);
-      if (!channel || !channel.isTextBased()) return;
-      const destination = await this.resolveReplyDestination(
-        channel as TextChannel | DMChannel | ThreadChannel,
-        target,
-      );
+      const channel = await this.fetchSendableChannel(target.thread ?? target.channel);
+      const destination = await this.resolveReplyDestination(channel, target);
       const result = await this.sendChunks(destination, text);
       // A thread that accepts nothing (locked archive, missing
       // SEND_MESSAGES_IN_THREADS, private-thread access) must not swallow
@@ -303,21 +298,39 @@ export class DiscordConnector implements Connector {
             { channel: parent as TextChannel | DMChannel, replyTo: destination.channel.id },
             text,
           );
-          if (retry.error !== undefined) throw retry.error;
-          return retry.lastId;
+          return this.settleChunks("replyMessage", retry);
         }
         throw result.error;
       }
-      if (result.error !== undefined && result.sentCount === 0) throw result.error;
-      if (result.error !== undefined) {
-        logger.error(
-          `Discord replyMessage partial send (${result.sentCount} chunk(s) delivered): ${result.error instanceof Error ? result.error.message : result.error}`,
-        );
-      }
-      return result.lastId;
+      return this.settleChunks("replyMessage", result);
     } catch (err) {
       logger.error(`Discord replyMessage error: ${err instanceof Error ? err.message : err}`);
+      throw err;
     }
+  }
+
+  /** A destination that can take messages, or a rejection — never a silent no-op. */
+  private async fetchSendableChannel(id: string): Promise<TextChannel | DMChannel | ThreadChannel> {
+    const channel = await this.client.channels.fetch(id);
+    if (!channel || !channel.isTextBased()) {
+      throw new Error(`Discord channel ${id || "(none)"} was not found or cannot receive messages`);
+    }
+    return channel as TextChannel | DMChannel | ThreadChannel;
+  }
+
+  /**
+   * Turn a chunked send into the outcome the caller sees. Nothing delivered
+   * rejects with Discord's error. A send that stopped part-way rejects too —
+   * the message is not all there — but as a PartialDeliveryError, which tells
+   * a caller that retries not to post the delivered chunks a second time.
+   */
+  private settleChunks(
+    op: string,
+    result: { lastId?: string; sentCount: number; total: number; error?: unknown },
+  ): string | undefined {
+    if (result.error === undefined) return result.lastId;
+    if (result.sentCount === 0) throw result.error;
+    throw new PartialDeliveryError(`Discord ${op}`, result.sentCount, result.total, result.lastId, result.error);
   }
 
   /**
@@ -330,8 +343,9 @@ export class DiscordConnector implements Connector {
   private async sendChunks(
     destination: { channel: TextChannel | DMChannel | ThreadChannel; replyTo?: string },
     text: string,
-  ): Promise<{ lastId?: string; sentCount: number; error?: unknown }> {
+  ): Promise<{ lastId?: string; sentCount: number; total: number; error?: unknown }> {
     const chunks = formatResponse(text);
+    const total = chunks.length;
     let lastId: string | undefined;
     let sentCount = 0;
     for (const [index, chunk] of chunks.entries()) {
@@ -347,10 +361,10 @@ export class DiscordConnector implements Connector {
         sentCount += 1;
         this.recordEngagement(destination.channel, sent.id);
       } catch (error) {
-        return { lastId, sentCount, error };
+        return { lastId, sentCount, total, error };
       }
     }
-    return { lastId, sentCount };
+    return { lastId, sentCount, total };
   }
 
   /**

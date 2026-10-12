@@ -20,6 +20,7 @@ import type {
 import { logger } from "../../shared/logger.js";
 import { JINN_HOME } from "../../shared/paths.js";
 import { formatResponse } from "./format.js";
+import { deliverChunks } from "../chunked-send.js";
 import path from "node:path";
 import fs from "node:fs";
 
@@ -185,17 +186,23 @@ export class WhatsAppConnector implements Connector {
     return this.replyMessage(target, text);
   }
 
+  // Follows the Connector delivery contract: rejects when nothing reached
+  // WhatsApp — including while there is no live socket, which used to drop the
+  // message without a trace (see deliverChunks for partial sends).
   async replyMessage(target: Target, text: string): Promise<string | undefined> {
-    if (!this.sock || this.connectionStatus !== "running") return;
     try {
-      const chunks = formatResponse(text);
-      for (const chunk of chunks) {
-        await this.sock.sendMessage(target.channel, { text: chunk });
+      const sock = this.sock;
+      if (!sock || this.connectionStatus !== "running") {
+        throw new Error("WhatsApp connector is not connected");
       }
+      return await deliverChunks("WhatsApp replyMessage", formatResponse(text), async (chunk) => {
+        const sent = await sock.sendMessage(target.channel, { text: chunk });
+        return sent?.key?.id ?? undefined;
+      });
     } catch (err) {
       logger.error(`WhatsApp replyMessage error: ${err instanceof Error ? err.message : err}`);
+      throw err;
     }
-    return undefined;
   }
 
   async editMessage(_target: Target, _text: string): Promise<void> {

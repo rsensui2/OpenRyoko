@@ -394,8 +394,12 @@ describe("thread style failure state transitions", () => {
     channel._thread.send.mockResolvedValueOnce({ id: "S1" }).mockRejectedValue(new Error("boom"));
     const connector = connectorWith({ replyStyle: "thread" }, { C1: channel });
     const long = "a".repeat(1900) + "\n" + "b".repeat(500);
-    const result = await connector.replyMessage({ channel: "C1", messageTs: "M0" }, long);
+    const outcome = await connector
+      .replyMessage({ channel: "C1", messageTs: "M0" }, long)
+      .catch((err: unknown) => err);
     expect(channel.send).not.toHaveBeenCalled();
-    expect(result).toBe("S1");
+    // The chunk that landed stays in the thread, and the missing rest is
+    // reported as a partial delivery instead of being passed off as sent.
+    expect(outcome).toMatchObject({ name: "PartialDeliveryError", delivered: 1, total: 2, lastId: "S1" });
   });
 });

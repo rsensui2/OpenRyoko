@@ -2,6 +2,7 @@ import type { Connector, Session } from "../shared/types.js";
 import { normalizeDelivery, deliverPublic, type DeliveryContext } from "./reply-disposition.js";
 import { insertMessage, updateSession } from "./registry.js";
 import { logger } from "../shared/logger.js";
+import { isPartialDelivery } from "../shared/partial-delivery.js";
 
 /**
  * Deliver an engine result back to the conversation a session originated from
@@ -64,6 +65,9 @@ export async function deliverToOriginConnector(
       return "delivered";
     } catch (err) {
       lastErr = err;
+      // Part of the reply is already in the conversation: starting over would
+      // post that part again. It is still a failure for the caller to record.
+      if (isPartialDelivery(err)) break;
       if (attempt < retryDelaysMs.length) {
         await new Promise((r) => setTimeout(r, retryDelaysMs[attempt]));
       }
@@ -91,9 +95,13 @@ export function isUndeliveredToOrigin(result: OriginDeliveryResult, session: Ses
 }
 
 /**
- * A turn computed its reply but it never reached the origin conversation.
- * Persist that fact into the session (message + lastError) so the next turn
- * (or the operator) sees it instead of the failure vanishing into a log line.
+ * A turn computed its reply but it never reached the origin conversation, or
+ * reached it only in part. Persist that fact into the session (message +
+ * lastError) so the next turn (or the operator) sees it instead of the
+ * failure vanishing into a log line.
+ *
+ * The note covers both cases on purpose: after a partial delivery, "repost it"
+ * would put the part that landed into the conversation a second time.
  */
 export function recordFailedOriginDelivery(
   session: Session,
@@ -101,7 +109,8 @@ export function recordFailedOriginDelivery(
 ): void {
   const note =
     `⚠️ Your reply above was NOT delivered to the original conversation (connector "${session.connector}" failed or the reply target is unreachable). ` +
-    `The customer has not seen it — repost it (send_message / reply) as soon as the connector recovers.`;
+    `The customer has seen none of it, or only the beginning — check the conversation, then send what is missing (send_message / reply) as soon as the connector recovers. ` +
+    `Do not repost a part that is already there.`;
   try {
     insertMessage(session.id, "notification", note);
     updateSession(session.id, { lastError: "origin delivery failed — reply not posted to the original conversation" });

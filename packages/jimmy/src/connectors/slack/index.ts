@@ -21,6 +21,8 @@ import {
   formatResponse,
   resolveSlackFileAttachment,
 } from "./format.js";
+import { sendChunksInOrder } from "../chunked-send.js";
+import { rememberAuthTest } from "./auth-test-cache.js";
 import { normalizeSpeakerInfo, type SpeakerInfo } from "./speaker.js";
 import { runTriage } from "./triage.js";
 import { readTriageHistory } from "./triage-context.js";
@@ -151,7 +153,13 @@ export class SlackConnector implements Connector {
       token: config.botToken,
       appToken: config.appToken,
       socketMode: true,
+      // Bolt's default fires auth.test from this constructor and never awaits
+      // it, so a bad token or an unreachable API is an unhandled rejection.
+      // start() resolves the bot user ID with its own awaited auth.test.
+      tokenVerificationEnabled: false,
     });
+    // Without this, Bolt would call auth.test before every incoming event.
+    rememberAuthTest(this.app.client.auth);
     if (context.getModelManagement && context.getOperatorSlackId) this.modelControls = new SlackModelControls(context.getModelManagement, context.getOperatorSlackId, (config as { id?: string }).id || "slack");
     this.ignoreOldMessagesOnBoot = config.ignoreOldMessagesOnBoot !== false;
     const allowFrom = Array.isArray(config.allowFrom)
@@ -400,7 +408,9 @@ export class SlackConnector implements Connector {
         await respond({ text: error instanceof Error ? error.message : "設定を変更できませんでした。", response_type: "ephemeral", replace_original: false });
       }
     });
-    this.app.message(async ({ event }) => {
+    this.app.message(async ({ event, context }) => {
+      // start() may have failed to learn the bot's user ID; an authorized event carries it.
+      this.botUserId ??= context?.botUserId ?? null;
       logger.info(`[slack] Received message event: user=${(event as any).user} channel=${(event as any).channel} channel_type=${(event as any).channel_type ?? "-"} thread_ts=${(event as any).thread_ts ?? "-"} subtype=${(event as any).subtype ?? "-"} text="${((event as any).text || "").slice(0, 50)}"`);
       // Skip bot's own messages
       if ((event as any).bot_id) {
@@ -700,16 +710,17 @@ export class SlackConnector implements Connector {
       logger.warn(`[slack] Failed to get bot user ID: ${err}`);
     }
     // Fail closed: without our own user ID, mention detection is impossible,
-    // so mention-gated scopes will drop everything (except engaged threads).
-    // That honors "never barge in un-mentioned" at the cost of missed
-    // mentions until the next successful start — surface it loudly.
+    // so mention-gated scopes would drop everything (except engaged threads).
+    // The listeners therefore take the ID from the first event Bolt
+    // authorizes; this only says that the start-up lookup did not provide it.
     if (!this.botUserId && hasMentionScope(this.respondTo)) {
       logger.warn(
-        "[slack] respondTo mention gate is configured but the bot user ID could not be resolved — un-mentioned messages in mention scopes will be dropped",
+        "[slack] respondTo mention gate is configured but the bot user ID could not be resolved at start — it will be taken from the first incoming event",
       );
     }
 
-    this.app.event("reaction_added", async ({ event }) => {
+    this.app.event("reaction_added", async ({ event, context }) => {
+      this.botUserId ??= context?.botUserId ?? null;
       // Only handle reactions on messages (not files, etc.)
       if (event.item.type !== "message") return;
 
@@ -932,38 +943,36 @@ export class SlackConnector implements Connector {
     if (thread) {
       return this.replyMessage({ ...target, thread }, text);
     }
-    const chunks = formatResponse(text);
-    let lastTs: string | undefined;
-    for (const chunk of chunks) {
-      if (!chunk.trim()) continue;
+    const chunks = formatResponse(text).filter((chunk) => chunk.trim());
+    const { lastId: lastTs, partial } = await sendChunksInOrder("Slack sendMessage", chunks, async (chunk) => {
       const res = await this.app.client.chat.postMessage({
         channel: target.channel,
         text: chunk,
       });
-      lastTs = res.ts;
-    }
+      return res.ts;
+    });
     // A newly-posted root message will be the thread_ts for any follow-up replies,
     // so mark its future thread as bot-engaged. Only relevant when tracking is on.
     if (lastTs && this.conversationTrackingEnabled()) {
       this.conversations.recordBotInitiatedThread(target.channel, lastTs, { messageTs: lastTs });
     }
+    // What was posted is tracked above; the missing rest is still a failure.
+    if (partial) throw partial;
     return lastTs;
   }
 
   async replyMessage(target: Target, text: string): Promise<string | undefined> {
     if (!text || !text.trim()) return undefined;
     const threadTs = target.thread || target.messageTs;
-    const chunks = formatResponse(text);
-    let lastTs: string | undefined;
-    for (const chunk of chunks) {
-      if (!chunk.trim()) continue;
+    const chunks = formatResponse(text).filter((chunk) => chunk.trim());
+    const { lastId: lastTs, partial } = await sendChunksInOrder("Slack replyMessage", chunks, async (chunk) => {
       const res = await this.app.client.chat.postMessage({
         channel: target.channel,
         thread_ts: threadTs,
         text: chunk,
       });
-      lastTs = res.ts;
-    }
+      return res.ts;
+    });
     // Record the thread the bot just replied in. Subsequent user replies in
     // this same thread will carry thread_ts === threadTs and bypass triage
     // and the respondTo mention gate. Only relevant when tracking is on.
@@ -987,6 +996,8 @@ export class SlackConnector implements Connector {
         this.conversations.recordBotThreadReply(target.channel, threadTs, { messageTs: lastTs });
       }
     }
+    // What was posted is tracked above; the missing rest is still a failure.
+    if (partial) throw partial;
     return lastTs;
   }
 

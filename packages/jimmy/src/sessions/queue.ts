@@ -120,11 +120,15 @@ export class SessionQueue {
     };
     const next = prev.then(runTask, runTask);
     this.queues.set(sessionKey, next);
-    void next.finally(() => {
+    // then(f, f), not finally(f): finally() hands back a promise that rejects
+    // along with the task, and nothing would be listening to it — an unhandled
+    // rejection on top of the one the caller of enqueue() receives.
+    const forget = () => {
       if (this.queues.get(sessionKey) === next) {
         this.queues.delete(sessionKey);
       }
-    });
+    };
+    void next.then(forget, forget);
     return next;
   }
 
