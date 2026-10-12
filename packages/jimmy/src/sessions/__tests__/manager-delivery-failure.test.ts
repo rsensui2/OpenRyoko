@@ -110,6 +110,32 @@ describe("SessionManager — the reply cannot be delivered", () => {
     expect(replyMessage.mock.calls.map(([, text]) => text)).toEqual(["調査が終わりました。"]);
   });
 
+  it("keeps the transport error, and any credential in it, out of the session", async () => {
+    // Synthetic value in the shape of a Telegram bot token inside an API URL.
+    const botToken = "1234567890:" + "AAE" + "abcdefghijklmnopqrstuvwxyz012345";
+    const { manager, connector, replyMessage, msg, sessionKey } = setup();
+    replyMessage.mockRejectedValue(new Error(`request to https://api.telegram.org/bot${botToken}/sendMessage failed`));
+    const lines: string[] = [];
+    const print = vi.spyOn(console, "log").mockImplementation((line: unknown) => { lines.push(String(line)); });
+
+    try {
+      await manager.route(msg, connector);
+    } finally {
+      print.mockRestore();
+    }
+
+    // The undelivered record is fixed text: the reason is not stored at all.
+    const session = getSessionBySessionKey(sessionKey)!;
+    const stored = JSON.stringify([session, getMessages(session.id)]);
+    expect(session.lastError).toContain("origin delivery failed");
+    expect(stored).not.toContain(botToken);
+    expect(stored).not.toContain("api.telegram.org");
+    // The reason goes to the log, through the logger's redaction.
+    const reason = lines.find((line) => line.includes("reply was not delivered"));
+    expect(reason).toContain("https://api.telegram.org/bot[REDACTED]/sendMessage");
+    expect(lines.join("\n")).not.toContain(botToken);
+  });
+
   it("stops at the first turn that fails to land and records the rest as undelivered", async () => {
     const { manager, connector, replyMessage, msg, sessionKey } = setup({
       result: "三つ目の報告",
