@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { damageDatabase } from "../../backup/__tests__/fixture.js";
+import { damageDatabase, sha256 } from "../../backup/__tests__/fixture.js";
 import { createDailyDatabaseBackup, DatabaseCopyDamagedError } from "../backup.js";
 import { findDatabaseProblems } from "../backup-integrity.js";
 
@@ -158,6 +158,31 @@ describe("daily database backup", () => {
     sound.close();
     expect(result.created).toBe(true);
     expect(fs.readdirSync(backups)).toEqual(["sessions-2026-08-17.db"]);
+  });
+
+  it("leaves every earlier copy where it is on a day the check fails", async () => {
+    // The day a copy comes out damaged is the day the earlier ones matter most.
+    // Trimming is for after a copy has been kept, and to the number asked for.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ryoko-backup-damaged-"));
+    roots.push(root);
+    const backups = path.join(root, "backups");
+    const sound = new Database(":memory:");
+    sound.exec("CREATE TABLE sessions (id INTEGER PRIMARY KEY, label TEXT); INSERT INTO sessions (label) VALUES ('safe')");
+    for (const day of ["2026-08-14", "2026-08-15", "2026-08-16"]) {
+      await createDailyDatabaseBackup(sound, { directory: backups, now: new Date(`${day}T12:00:00.000Z`) });
+    }
+    sound.close();
+    const earlier = (): Record<string, string> =>
+      Object.fromEntries(fs.readdirSync(backups).sort().map((name) => [name, sha256(fs.readFileSync(path.join(backups, name)))]));
+    const before = earlier();
+    expect(Object.keys(before)).toEqual(["sessions-2026-08-14.db", "sessions-2026-08-15.db", "sessions-2026-08-16.db"]);
+    const damaged = registryOnDisk(root, { damaged: true });
+
+    // Asked to keep only two, which a copy that passed would have trimmed the three to.
+    await expect(createDailyDatabaseBackup(damaged, { directory: backups, now: DAY, retention: 2 })).rejects.toThrow(/integrity check/);
+    damaged.close();
+
+    expect(earlier()).toEqual(before);
   });
 
   it("says what SQLite found, and that the database itself may be the damaged one", async () => {

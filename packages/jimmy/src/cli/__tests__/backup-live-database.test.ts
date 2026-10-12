@@ -14,10 +14,21 @@ import { runBackupList, runBackupRestore, runBackupRun, runBackupVerify, type Ba
  * not about damage: no command opens a database in the home, except `run`
  * when asked for the databases and nothing suggests a gateway.
  *
- * Every connection made in this process is recorded, whoever makes it, and the
- * databases' own files are compared before and after down to the -shm. */
+ * Two measures, and what each can and cannot see:
+ *
+ * - What is recorded: every connection the driver is asked for on this thread
+ *   by code that imports it, and every file handed to a worker thread - which
+ *   is where a database copy is checked, on a connection this thread never
+ *   makes. That is not every way a process can open a database. A connection
+ *   made inside a worker for some other file, or through a driver loaded with
+ *   `require`, would not be in these lists.
+ * - What is compared: the databases' own files before and after, bytes and
+ *   timestamps, down to the -shm that any SQLite connection rewrites. This one
+ *   does not depend on how a database was opened, and is what catches a
+ *   connection the recording could not have seen. */
 
 const opened = vi.hoisted(() => [] as { file: string; readonly: boolean }[]);
+const handedToWorkers = vi.hoisted(() => [] as string[]);
 
 /** The driver itself, with every connection it is asked for noted down first. Nothing about what it does is changed. */
 vi.mock("better-sqlite3", async (importOriginal) => {
@@ -30,6 +41,19 @@ vi.mock("better-sqlite3", async (importOriginal) => {
     }
   }
   return { default: Recording };
+});
+
+/** Worker threads as they are, with the file each is handed noted down first. */
+vi.mock("node:worker_threads", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:worker_threads")>();
+  class Recording extends actual.Worker {
+    constructor(source: string | URL, options?: import("node:worker_threads").WorkerOptions) {
+      const file = (options?.workerData as { file?: unknown } | undefined)?.file;
+      if (typeof file === "string") handedToWorkers.push(file);
+      super(source, options);
+    }
+  }
+  return { ...actual, Worker: Recording, default: { ...actual, Worker: Recording } };
 });
 
 const START = new Date("2026-10-12T03:00:00.000Z");
@@ -73,8 +97,9 @@ function leaveInUse(scene: Scene): void {
 }
 
 const fingerprints = (scene: Scene): Record<string, string>[] => scene.live.map(databaseFingerprint);
+/** Whatever was opened here, or handed to a worker to open, that is not a file in the backup directory. */
 const openedInHome = (scene: Scene): string[] =>
-  opened.map((entry) => entry.file).filter((file) => !file.startsWith(`${scene.backups}${path.sep}`));
+  [...opened.map((entry) => entry.file), ...handedToWorkers].filter((file) => !file.startsWith(`${scene.backups}${path.sep}`));
 const gatewayRunning = (scene: Scene): void => {
   fs.writeFileSync(path.join(scene.home, "gateway.json"), JSON.stringify({ port: 7901, pid: process.pid, secret: "s" }));
 };
@@ -84,9 +109,15 @@ beforeEach(() => {
   process.exitCode = undefined;
 });
 
+/** Forgets what has been recorded so far, so that only what follows is looked at. */
+function forget(): void {
+  opened.length = 0;
+  handedToWorkers.length = 0;
+}
+
 afterEach(() => {
   process.exitCode = previousExitCode;
-  opened.length = 0;
+  forget();
   removeTempDirs();
 });
 
@@ -95,11 +126,12 @@ describe("ryoko backup run", () => {
     const scene = sceneOver(makeHome(tempDir()));
     leaveInUse(scene);
     const before = fingerprints(scene);
-    opened.length = 0;
+    forget();
 
     await runBackupRun({ json: true }, scene.deps);
 
     expect(opened).toEqual([]);
+    expect(handedToWorkers).toEqual([]);
     expect(fingerprints(scene)).toEqual(before);
     expect(process.exitCode).toBeUndefined();
   });
@@ -109,11 +141,12 @@ describe("ryoko backup run", () => {
     leaveInUse(scene);
     gatewayRunning(scene);
     const before = fingerprints(scene);
-    opened.length = 0;
+    forget();
 
     await runBackupRun({ json: true, includeDatabases: true }, scene.deps);
 
     expect(opened).toEqual([]);
+    expect(handedToWorkers).toEqual([]);
     expect(fingerprints(scene)).toEqual(before);
     expect(process.exitCode).toBe(1);
   });
@@ -121,13 +154,18 @@ describe("ryoko backup run", () => {
   it("opens them read-only, and only them, when it is asked and nothing suggests a gateway", async () => {
     const scene = sceneOver(makeHome(tempDir()));
     leaveInUse(scene);
-    opened.length = 0;
+    forget();
 
     await runBackupRun({ json: true, includeDatabases: true }, scene.deps);
 
     // The one place a command opens a database in the home.
     expect(opened.filter((entry) => !entry.file.startsWith(`${scene.backups}${path.sep}`)))
       .toEqual(scene.live.map((file) => ({ file, readonly: true })));
+    // What a worker was given to check is each copy, still under its temporary name - never the database it was made from.
+    expect(handedToWorkers.map((file) => path.dirname(file))).toEqual([scene.backups, scene.backups]);
+    expect(handedToWorkers.map((file) => path.basename(file))).toEqual([
+      expect.stringMatching(/^sessions-2026-10-12\.db\.tmp-/), expect.stringMatching(/^workflows-2026-10-12\.db\.tmp-/),
+    ]);
     expect(process.exitCode).toBeUndefined();
   });
 });
@@ -142,7 +180,7 @@ describe("ryoko backup list, verify and restore", () => {
     scene.clock.now = new Date(START.getTime() + HOUR_MS / 2);
     leaveInUse(scene);
     scene.out.length = 0;
-    opened.length = 0;
+    forget();
     return scene;
   }
 
@@ -171,6 +209,8 @@ describe("ryoko backup list, verify and restore", () => {
     // The copies were read: this is not a test that passes because nothing ran.
     expect(opened.map((entry) => path.basename(entry.file))).toEqual(expect.arrayContaining(["sessions-2026-10-12.db", "workflows-2026-10-12.db"]));
     expect(opened.every((entry) => entry.readonly)).toBe(true);
+    // None of these hands a database to a worker: that is how a copy is checked as it is made, not how one is verified.
+    expect(handedToWorkers).toEqual([]);
     expect(fingerprints(scene)).toEqual(before);
   });
 
@@ -182,8 +222,9 @@ describe("ryoko backup list, verify and restore", () => {
     expect(process.exitCode).toBeUndefined();
     expect(openedInHome(scene)).toEqual([]);
     expect(opened.every((entry) => entry.readonly)).toBe(true);
+    expect(handedToWorkers).toEqual([]);
     // Replaced all the same: the four rows of the backup, not the seven that were in use.
-    opened.length = 0;
+    forget();
     expect(rowCount(scene.live[0]!, "sessions")).toBe(4);
   });
 });

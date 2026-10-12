@@ -354,6 +354,21 @@ describe("runBackup", () => {
     expect(fs.readdirSync(path.join(home, "backups")).filter((name) => name.includes("workflows"))).toEqual([]);
   });
 
+  it("does not trim the earlier copies of a database on the day its copy fails the check", async () => {
+    const home = makeHome(tempDir(), "home", { workflowRows: 2000 });
+    const directory = path.join(home, "backups");
+    const earlier = Array.from({ length: 9 }, (_, index) => `workflows-2026-10-${String(index + 1).padStart(2, "0")}.db`);
+    writeTree(directory, Object.fromEntries(earlier.map((name) => [name, `the copy named ${name}`])));
+    damageDatabase(path.join(home, "workflows", "workflows.db"));
+
+    const report = await runBackup(optionsFor(home));
+
+    expect(byName(report).workflows).toMatchObject({ status: "failed", persistent: true });
+    // Nine, where seven are kept: more than a run that succeeded would leave, and all of them still here.
+    expect(fs.readdirSync(directory).filter((name) => name.startsWith("workflows-")).sort()).toEqual(earlier);
+    expect(report.pruned.filter((file) => path.basename(file).startsWith("workflows-"))).toEqual([]);
+  });
+
   it("keeps a copy it could not check, and says so as a warning rather than a failure", async () => {
     const home = makeHome(tempDir(), "home", { sessionRows: 4 });
 
