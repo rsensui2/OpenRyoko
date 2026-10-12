@@ -37,12 +37,12 @@ export async function deliverTurn(
 /**
  * The turn is saved, but its reply never reached the conversation. Persist
  * that on the session — the same record an undelivered background reply
- * leaves — and log why. Call it after the turn's own state update: it sets
- * lastError.
+ * leaves, with the transport's reason added — and log why. Call it after the
+ * turn's own state update: it sets lastError.
  */
 export function recordUndeliveredTurn(session: Session, failure: string): void {
   logger.error(
     `Session ${session.id}: reply was not delivered to ${session.connector ?? session.source} — ${failure}`,
   );
-  recordFailedOriginDelivery(session);
+  recordFailedOriginDelivery(session, undefined, failure);
 }
