@@ -102,6 +102,7 @@ import { collectClaudeUsage } from "../shared/claude-usage.js";
 import { PairingAttemptLimiter, pairingAttemptKey } from "./pairing-rate-limit.js";
 import { applyLanguageSection, personalizeInstructionMd, personalizeIdentityMd, resolveEffectiveName } from "./onboarding-personalize.js";
 import { savePortalBlock, writeFileAtomic } from "./portal-config.js";
+import { restoreBeforeSlackConnect, slackBlockOf, snapshotStillHoldingSlackTokens } from "./slack-connect-rollback.js";
 
 /** Max bytes accepted on /api/internal/hook (loopback-only relay payloads are tiny). */
 const HOOK_BODY_MAX_BYTES = 64 * 1024;
@@ -3382,12 +3383,19 @@ interface ConfigPatchOutcome {
 
 /** Merge a patch into config.yaml and reload connectors — the same steps
  *  PUT /api/config performs, callable from a server-side flow that has to
- *  read the outcome and possibly undo the write. */
-async function writeConfigPatchAndReload(context: ApiContext, patch: Record<string, unknown>): Promise<ConfigPatchOutcome> {
+ *  read the outcome and possibly undo the write. `revision` identifies the
+ *  file as this write left it. */
+async function writeConfigPatchAndReload(context: ApiContext, patch: Record<string, unknown>): Promise<ConfigPatchOutcome & { revision: string }> {
   const snapshot = readConfigSnapshot();
   const merged = deepMerge(snapshot.document, patch);
   context.suppressNextConnectorReload?.();
-  writeConfigDocument(snapshot, merged);
+  const revision = writeConfigDocument(snapshot, merged);
+  return { ...(await reloadAfterConfigWrite(context)), revision };
+}
+
+/** config.yaml was just written (with the watcher's connector reload
+ *  suppressed): drop the caches built from it and reload the connectors. */
+async function reloadAfterConfigWrite(context: ApiContext): Promise<ConfigPatchOutcome> {
   invalidateModelRegistry();
   _resetEngineProbeCache();
   if (!context.reloadAllConnectors) return { status: "ok" };
@@ -3440,15 +3448,6 @@ function slackFailure(outcome: ConfigPatchOutcome): string | null {
   return null;
 }
 
-function readSlackBlock(): Record<string, unknown> | null {
-  try {
-    const current = (yaml.load(fs.readFileSync(CONFIG_PATH, "utf-8")) as { connectors?: { slack?: Record<string, unknown> } }) || {};
-    return current.connectors?.slack ?? null;
-  } catch {
-    return null;
-  }
-}
-
 async function connectSlack(context: ApiContext, botToken: string, appToken: string): Promise<SlackConnectResult> {
   const verified = await verifySlackTokens(botToken, appToken);
   if (!verified.ok) return { ok: false, stage: "verify", error: "token verification failed", bot: verified.bot, app: verified.app };
@@ -3457,18 +3456,19 @@ async function connectSlack(context: ApiContext, botToken: string, appToken: str
   // /api/config or a second connect waits for it, so the snapshot we would
   // restore can never be older than what a concurrent writer put down.
   return withConfigLock(async () => {
-    const previousSlack = readSlackBlock();
-    const previous = previousSlack ? ("config" as const) : ("none" as const);
+    // The file exactly as it is before this attempt: what a rollback puts back.
+    const before = readConfigSnapshot();
+    const previous = slackBlockOf(before.document) ? ("config" as const) : ("none" as const);
     const outcome = await writeConfigPatchAndReload(context, { connectors: { slack: { botToken, appToken } } });
     const failure = slackFailure(outcome);
     if (!failure) return { ok: true, team: verified.bot.team, user: verified.bot.user };
 
     // The connector did not come up on tokens Slack itself accepted. Put the
-    // previous configuration back (or remove the block if there was none) —
-    // but only if the block on disk is still OURS: an out-of-band editor may
-    // have written something else meanwhile, and that is theirs to keep.
-    const onDisk = readSlackBlock();
-    if (onDisk?.botToken !== botToken || onDisk?.appToken !== appToken) {
+    // file back as it was before the attempt — but only if the block on disk
+    // is still OURS: an out-of-band editor may have written something else
+    // meanwhile, and that is theirs to keep.
+    const current = snapshotStillHoldingSlackTokens(botToken, appToken);
+    if (!current) {
       logger.warn(`[onboarding] Slack connect failed (${failure}) but the Slack config changed concurrently — leaving it as is`);
       return { ok: false, stage: "reload", error: failure, previous, rolledBack: false,
         restored: { disk: false, running: false }, rollbackSkipped: "config changed concurrently" };
@@ -3476,8 +3476,11 @@ async function connectSlack(context: ApiContext, botToken: string, appToken: str
     logger.warn(`[onboarding] Slack connect failed after save (${failure}) — ${previous === "config" ? "restoring previous Slack config" : "removing the Slack block again"}`);
     let rollback: ConfigPatchOutcome;
     try {
-      rollback = await writeConfigPatchAndReload(context, { connectors: { slack: previousSlack ?? null } });
+      context.suppressNextConnectorReload?.();
+      restoreBeforeSlackConnect(before, current, outcome.revision);
+      rollback = await reloadAfterConfigWrite(context);
     } catch (err) {
+      context.clearSuppressNextConnectorReload?.(); // nothing was written for the watcher to skip
       const rollbackError = err instanceof Error ? err.message : String(err);
       logger.error(`[onboarding] Slack rollback write failed: ${rollbackError}`);
       return { ok: false, stage: "reload", error: failure, previous, rolledBack: false,

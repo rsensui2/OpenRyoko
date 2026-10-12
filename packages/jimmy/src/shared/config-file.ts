@@ -23,8 +23,10 @@ export class ConfigFileUnreadableError extends Error {
 
 /** config.yaml as one read saw it: the text, and the mapping parsed from it. */
 export interface ConfigSnapshot {
-  /** Exact file contents; null when config.yaml does not exist yet. */
+  /** The file's text; null when config.yaml does not exist yet. */
   raw: string | null;
+  /** The file's exact bytes, for putting this very version back; null like `raw`. */
+  bytes: Buffer | null;
   /** Permission bits of the file that was read; null when it does not exist yet. */
   mode: number | null;
   document: Record<string, unknown>;
@@ -75,21 +77,21 @@ export function readConfigSnapshot(configPath: string = CONFIG_PATH): ConfigSnap
     }
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") return { raw: null, mode: null, document: {}, revision: "" };
+    if (code === "ENOENT") return { raw: null, bytes: null, mode: null, document: {}, revision: "" };
     throw new ConfigFileUnreadableError(`exists but could not be read (${code ?? "unknown error"})`);
   }
   const raw = bytes.toString("utf-8");
-  return { raw, mode, document: parseConfigMapping(raw), revision: revisionOf(bytes) };
+  return { raw, bytes, mode, document: parseConfigMapping(raw), revision: revisionOf(bytes) };
 }
 
 /**
  * Replace config.yaml with `text` exactly as given — for a writer that edits
  * the text itself (the onboarding portal block) or puts an earlier version of
- * the file back. Staged and renamed into place like writeConfigDocument, with
- * the permission bits and owner of the file `snapshot` was read from. Returns
- * the revision of what was written.
+ * the file back (pass that snapshot's `bytes`). Staged and renamed into place
+ * like writeConfigDocument, with the permission bits and owner of the file
+ * `snapshot` was read from. Returns the revision of what was written.
  */
-export function writeConfigText(snapshot: ConfigSnapshot, text: string, configPath: string = CONFIG_PATH): string {
+export function writeConfigText(snapshot: ConfigSnapshot, text: string | Buffer, configPath: string = CONFIG_PATH): string {
   replaceFile(configPath, text, snapshot.mode ?? 0o600);
   return revisionOf(text);
 }
@@ -139,7 +141,7 @@ function matchOwner(fd: number, target: string): void {
   fs.fchownSync(fd, previous.uid, previous.gid);
 }
 
-function stageFile(temporary: string, data: string, mode: number, target: string): void {
+function stageFile(temporary: string, data: string | Buffer, mode: number, target: string): void {
   const fd = fs.openSync(temporary, "wx", mode);
   try {
     fs.writeFileSync(fd, data, "utf-8");
@@ -158,7 +160,7 @@ function stageFile(temporary: string, data: string, mode: number, target: string
 const IN_PLACE_FALLBACK_CODES = new Set(["EBUSY", "EXDEV", "EACCES", "EPERM", "EROFS"]);
 let warnedInPlaceWrite = false;
 
-function replaceFile(filePath: string, data: string, mode: number): void {
+function replaceFile(filePath: string, data: string | Buffer, mode: number): void {
   const target = resolveWriteTarget(filePath);
   const temporary = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}-${randomUUID()}.tmp`);
   try {
