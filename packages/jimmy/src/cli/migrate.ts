@@ -55,6 +55,33 @@ function copyDirRecursive(src: string, dest: string): void {
 }
 
 /**
+ * Is anything at this path — including a symlink that leads nowhere? `existsSync`
+ * follows links and answers "no" for such a one, and a write to the path then goes
+ * through it and creates its target, wherever that is. Anything that cannot be
+ * looked at counts as taken: the cautious answer is not to write there.
+ */
+function isTaken(file: string): boolean {
+  try {
+    fs.lstatSync(file);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ENOENT";
+  }
+}
+
+/**
+ * Does a link that leads nowhere sit on the way to this path, inside the home? A
+ * directory the user links elsewhere is their arrangement and is used as it always
+ * was; a link whose target is missing is one nothing can be placed under.
+ */
+function isBehindDanglingLink(file: string): boolean {
+  for (let current = path.dirname(file); current.startsWith(JINN_HOME + path.sep); current = path.dirname(current)) {
+    if (isTaken(current) && !fs.existsSync(current)) return true;
+  }
+  return false;
+}
+
+/**
  * Ensure symlinks exist for a skill directory in .claude/skills/ and .agents/skills/.
  */
 function ensureSkillSymlinks(skillName: string): void {
@@ -403,7 +430,7 @@ export async function runMigrate(opts: {
   const migrateSkillDest = path.join(SKILLS_DIR, "migrate");
   const migrateSkillDeleted = skills.deleted.has("migrate");
   const readPackagedMigrateSkill = migrateSkillDeleted || (!skills.available && !fs.existsSync(migrateSkillDest));
-  if (skills.available && !migrateSkillDeleted && fs.existsSync(migrateSkillSrc) && !fs.existsSync(migrateSkillDest)) {
+  if (skills.available && !migrateSkillDeleted && fs.existsSync(migrateSkillSrc) && !isTaken(migrateSkillDest)) {
     copyDirRecursive(migrateSkillSrc, migrateSkillDest);
     ensureSkillSymlinks("migrate");
     console.log(`  ${GREEN}[staged]${RESET} migrate スキル`);
@@ -499,8 +526,16 @@ async function applyAutoMigrations(
         continue;
       }
 
+      if (isBehindDanglingLink(destPath)) {
+        if (entry.type === "file") {
+          console.log(`  ${YELLOW}[skip]${RESET} ${entry.relPath} (a link that leads nowhere is in the way — needs AI merge)`);
+          skippedExisting++;
+        }
+        continue;
+      }
+
       if (entry.type === "dir") {
-        if (!fs.existsSync(destPath)) {
+        if (!isTaken(destPath)) {
           fs.mkdirSync(destPath, { recursive: true });
           console.log(`  ${GREEN}[new]${RESET} ${entry.relPath}/`);
           applied++;
@@ -508,7 +543,7 @@ async function applyAutoMigrations(
         continue;
       }
 
-      if (!fs.existsSync(destPath)) {
+      if (!isTaken(destPath)) {
         fs.mkdirSync(path.dirname(destPath), { recursive: true });
         const srcPath = path.join(filesDir, entry.relPath);
         if (isTemplateFile(entry.relPath)) {
