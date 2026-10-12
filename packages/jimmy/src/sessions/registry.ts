@@ -258,7 +258,8 @@ export function initDb(): Database.Database {
       created_at TEXT NOT NULL,
       started_at TEXT,
       completed_at TEXT,
-      internal INTEGER NOT NULL DEFAULT 0
+      internal INTEGER NOT NULL DEFAULT 0,
+      batch TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_queue_session
       ON queue_items (session_key, status, position);
@@ -355,6 +356,14 @@ export function migrateSessionsSchema(database: Database.Database): void {
   if (queueCols.length > 0 && !queueCols.some((c) => c.name === 'internal')) {
     try {
       database.exec('ALTER TABLE queue_items ADD COLUMN internal INTEGER NOT NULL DEFAULT 0');
+    } catch (error) {
+      if (!String(error).includes('duplicate column name')) throw error;
+    }
+  }
+  // `batch` — the notifications folded into one row (sessions/completion-batching.ts).
+  if (queueCols.length > 0 && !queueCols.some((c) => c.name === 'batch')) {
+    try {
+      database.exec('ALTER TABLE queue_items ADD COLUMN batch TEXT');
     } catch (error) {
       if (!String(error).includes('duplicate column name')) throw error;
     }

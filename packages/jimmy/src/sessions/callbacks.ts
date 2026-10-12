@@ -24,7 +24,7 @@ export function notifyParentSession(
   }
 
   // Run asynchronously — do not await in the caller
-  _sendNotification(childSession, result).catch((err) => {
+  _sendNotification(childSession, result, { completion: true }).catch((err) => {
     logger.warn(`[callbacks] Failed to notify parent session ${childSession.parentSessionId}: ${err instanceof Error ? err.message : String(err)}`);
   });
 }
@@ -65,6 +65,8 @@ export function notifyRateLimitResumed(
 async function _sendNotification(
   childSession: Session,
   result: { result?: string | null; error?: string | null; cost?: number; durationMs?: number },
+  /** `completion`: this reports the child's turn ending (not a status notice). */
+  opts: { completion?: boolean } = {},
 ): Promise<void> {
   const parent = getSession(childSession.parentSessionId!);
   if (!parent) {
@@ -88,7 +90,10 @@ async function _sendNotification(
     message = `📩 Employee "${employeeName}" replied in session ${childId}.\nRead the latest messages: GET /api/sessions/${childId}?last=N\n\nPreview: ${preview}`;
   }
 
-  await _sendRaw(childSession.parentSessionId!, message);
+  // A successful completion names its child so the gateway can fold the ones
+  // that pile up behind a busy parent into one turn (completion-batching.ts).
+  // A failure is left unmarked: it keeps a turn of its own.
+  await _sendRaw(childSession.parentSessionId!, message, opts.completion && !result.error ? childId : undefined);
 }
 
 /**
@@ -124,7 +129,7 @@ async function _sendDiscordNotification(message: string): Promise<void> {
   await _postToGateway(port, `/api/connectors/${connector}/send`, { channel, text: message }, `sending a ${connector} notification`);
 }
 
-async function _sendRaw(parentSessionId: string, message: string): Promise<void> {
+async function _sendRaw(parentSessionId: string, message: string, completionOf?: string): Promise<void> {
   let port = 7777;
   try {
     const config = loadConfig();
@@ -133,7 +138,12 @@ async function _sendRaw(parentSessionId: string, message: string): Promise<void>
     // Use default port if config is unavailable
   }
 
-  await _postToGateway(port, `/api/sessions/${parentSessionId}/message`, { message, role: "notification" }, `notifying parent ${parentSessionId}`);
+  await _postToGateway(
+    port,
+    `/api/sessions/${parentSessionId}/message`,
+    { message, role: "notification", ...(completionOf ? { completionOf } : {}) },
+    `notifying parent ${parentSessionId}`,
+  );
 }
 
 /**
