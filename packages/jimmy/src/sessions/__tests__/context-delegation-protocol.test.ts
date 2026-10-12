@@ -1,5 +1,8 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+import { notifyParentSession } from "../callbacks.js";
+import { COMPLETION_BATCH_MAX_ITEMS } from "../completion-batching.js";
 import { buildContext } from "../context.js";
+import { createSession, getMessages, getSession, updateSession } from "../registry.js";
 
 // Sibling of context-process-lifetime.test.ts (issue #38): the same failure shape, one level
 // up. The delegation protocol used to promise unconditionally that the onComplete callback
@@ -66,12 +69,41 @@ describe("buildContext — employee delegation protocol", () => {
     expect(ctx).not.toContain("NEVER poll or wait for child sessions");
   });
 
-  it("names the three conditions under which the notification is skipped", () => {
+  it("names the two conditions under which the notification is skipped", () => {
     const ctx = cooContext();
-    expect(ctx).toContain("skipped silently when any of these hold");
+    expect(ctx).toContain("skipped silently when either of these holds");
     expect(ctx).toContain("spawned without your `parentSessionId`");
     expect(ctx).toContain("the employee sets `alwaysNotify: false`");
-    expect(ctx).toContain("your session is already in `error`");
+  });
+
+  // A parent in error used to be the third "skipped silently" case, and the protocol said
+  // so. The completion is now written into the parent's transcript instead. An orchestrator
+  // still told it is dropped never looks for it there.
+  it("says a completion that finds the parent in error is kept in its transcript, in the words the record carries", async () => {
+    const ctx = cooContext();
+    expect(ctx).not.toContain("your session is already in `error`");
+    expect(ctx).toContain("If your session is in `error` when a child finishes");
+    expect(ctx).toContain("you are not woken: the notification is written into your transcript, marked \"Not acted on\"");
+    expect(ctx).toContain("ryoko api GET /api/sessions/<your-session-id>?last=20");
+
+    const key = `web:delegation-protocol-${Date.now()}`;
+    const parent = createSession({ engine: "claude", source: "web", sourceRef: key, connector: "web", sessionKey: key, prompt: "Delegate this" });
+    updateSession(parent.id, { status: "error", lastError: "Usage limit reached" });
+    const child = createSession({ engine: "claude", source: "web", sourceRef: `${key}:child`, connector: "web", sessionKey: `${key}:child`, prompt: "Do the work", parentSessionId: parent.id, employee: "writer" });
+
+    notifyParentSession(child, { result: "Done." });
+
+    await vi.waitFor(() => expect(getMessages(parent.id).at(-1)?.content).toContain("Not acted on"));
+    expect(getMessages(parent.id).at(-1)).toMatchObject({ role: "notification" });
+    expect(getSession(parent.id)?.status).toBe("error"); // recorded, and no turn started
+  });
+
+  it("says a parent whose engine process died is woken all the same", () => {
+    expect(cooContext()).toMatch(/failed because the engine process died does not count: you are woken as usual/);
+  });
+
+  it("says completions that pile up behind a busy parent arrive as one turn, with the limit the gateway uses", () => {
+    expect(cooContext()).toContain(`reach you together as one turn (up to ${COMPLETION_BATCH_MAX_ITEMS} at a time)`);
   });
 
   it("says a failed POST only reaches the gateway log", () => {
