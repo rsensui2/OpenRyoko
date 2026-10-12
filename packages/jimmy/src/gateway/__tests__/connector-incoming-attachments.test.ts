@@ -28,10 +28,10 @@ function remoteConnector(): Connector {
 /** The connector the route finds under "discord"; the stand-in above unless a test puts the real one there. */
 let connector: Connector;
 
-async function postIncoming(body: unknown) {
+async function postIncoming(body: unknown, headers: Record<string, string> = {}) {
   const raw = JSON.stringify(body);
   const req = Readable.from([Buffer.from(raw)]) as unknown as HttpRequest;
-  req.headers = { host: "127.0.0.1", "content-type": "application/json" };
+  req.headers = { host: "127.0.0.1", "content-type": "application/json", ...headers };
   req.method = "POST";
   req.url = "/api/connectors/discord/incoming";
   let status = 0;
@@ -262,5 +262,70 @@ describe("POST /api/connectors/:id/incoming and messages the connector stays sil
     await postIncoming(routed({ isDM: false }));
     expect(outbound).toHaveBeenCalledTimes(1);
     expect(delivered).toHaveLength(1);
+  });
+});
+
+describe("POST /api/connectors/:id/incoming limits", () => {
+  /* What a Discord message can carry is bounded by Discord: ten attachments,
+   * a few thousand characters. A request to this route is bounded by nothing
+   * but these checks — a body of any size was read into memory, and a list of
+   * any length was fetched, every entry at the same time. */
+  const attachmentsNumbered = (count: number) =>
+    Array.from({ length: count }, (_, n) => ({ name: `file-${n}.png`, url: `https://cdn.discordapp.com/attachments/1/${n}/file.png`, mimeType: "image/png" }));
+
+  it("fetches at most ten attachments of a message — Discord's own limit — and drops the rest", async () => {
+    await postIncoming(message(attachmentsNumbered(25)));
+
+    expect(outbound).toHaveBeenCalledTimes(10);
+    expect(delivered[0].attachments.map((attachment) => attachment.name)).toEqual(attachmentsNumbered(10).map((attachment) => attachment.name));
+    expect(savedAttachments()).toHaveLength(10);
+  });
+
+  it("does not let entries that are not attachments use up the ten", async () => {
+    await postIncoming(message([null, "text", 42, ...attachmentsNumbered(10)]));
+    expect(delivered[0].attachments).toHaveLength(10);
+    expect(outbound).toHaveBeenCalledTimes(10);
+  });
+
+  it("fetches them a few at a time, not all at once, and keeps them in the order they were sent", async () => {
+    let inFlight = 0;
+    let most = 0;
+    outbound.mockImplementation(async (url) => {
+      inFlight++;
+      most = Math.max(most, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight--;
+      return new Response(`contents of ${String(url)}`);
+    });
+
+    await postIncoming(message(attachmentsNumbered(10)));
+
+    expect(most).toBeLessThanOrEqual(3);
+    expect(most).toBeGreaterThan(1); // still in parallel, just not ten wide
+    delivered[0].attachments.forEach((attachment, n) => {
+      expect(attachment.name).toBe(`file-${n}.png`);
+      expect(fs.readFileSync(attachment.localPath!, "utf-8")).toBe(`contents of https://cdn.discordapp.com/attachments/1/${n}/file.png`);
+    });
+  });
+
+  it("refuses a body larger than a forwarded message can be, and fetches nothing for it", async () => {
+    const answer = await postIncoming({ ...message(attachmentsNumbered(1)), text: "x".repeat(300 * 1024) });
+    expect(answer.status).toBe(413);
+    expect(delivered).toEqual([]);
+    expect(outbound).not.toHaveBeenCalled();
+  });
+
+  it("refuses it by its announced size, before reading it", async () => {
+    const answer = await postIncoming(message([]), { "content-length": String(10 * 1024 * 1024) });
+    expect(answer.status).toBe(413);
+    expect(delivered).toEqual([]);
+  });
+
+  it("accepts the largest message Discord sends: 4,000 characters and ten attachments with long signed URLs", async () => {
+    const signed = attachmentsNumbered(10).map((attachment) => ({ ...attachment, name: "n".repeat(255), url: `${attachment.url}?ex=${"a".repeat(400)}` }));
+    const answer = await postIncoming({ ...message(signed), text: "漢".repeat(4000) });
+    expect(answer.status).toBe(200);
+    expect(delivered[0].text).toHaveLength(4000);
+    expect(delivered[0].attachments).toHaveLength(10);
   });
 });

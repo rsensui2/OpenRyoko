@@ -109,6 +109,10 @@ import { newAttachmentDir } from "../shared/attachments.js";
 /** Max bytes accepted on /api/internal/hook (loopback-only relay payloads are tiny). */
 const HOOK_BODY_MAX_BYTES = 64 * 1024;
 const PAIR_BODY_MAX_BYTES = 1024;
+/** Max bytes accepted on /api/connectors/:id/incoming. A forwarded Discord
+ *  message is a few thousand characters, ten attachment URLs and some
+ *  metadata: tens of kilobytes at the very most. */
+const INCOMING_BODY_MAX_BYTES = 256 * 1024;
 const PAIR_ATTEMPT_WINDOW_MS = 5 * 60_000;
 const pairingAttempts = new PairingAttemptLimiter(10, PAIR_ATTEMPT_WINDOW_MS);
 const pairingGlobalAttempts = new PairingAttemptLimiter(1_000, PAIR_ATTEMPT_WINDOW_MS, 1);
@@ -2138,7 +2142,7 @@ Handle this as a priority request from a colleague.`;
         return json(res, { error: "Discord connector is not in remote mode" }, 400);
       }
 
-      const _parsed = await readJsonBody(req, res);
+      const _parsed = await readJsonBody(req, res, INCOMING_BODY_MAX_BYTES);
       if (!_parsed.ok) return;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const body = _parsed.body as any;

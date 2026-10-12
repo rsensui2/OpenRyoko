@@ -9,6 +9,7 @@ import type {
 } from "../../shared/types.js";
 import { attachmentSlot } from "../../shared/attachments.js";
 import { logger } from "../../shared/logger.js";
+import { mapLimited } from "../../shared/map-limited.js";
 import { downloadAttachment } from "./format.js";
 import {
   evaluateRespondPolicy,
@@ -63,6 +64,11 @@ export function sanitizeIncomingDiscordMeta(meta: unknown): Record<string, unkno
 const DISCORD_CDN_HOSTS = ["cdn.discordapp.com", "media.discordapp.net"];
 /** Largest routed attachment kept — the gateway's own upload limit. */
 const MAX_INCOMING_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+/** A Discord message carries at most ten attachments; a request listing more
+ *  did not come from one. */
+const MAX_INCOMING_ATTACHMENTS = 10;
+/** How many of a routed message's attachments are fetched at the same time. */
+const INCOMING_DOWNLOADS_AT_ONCE = 3;
 
 /**
  * What a routed attachment may say about itself: the three fields a Discord
@@ -87,25 +93,28 @@ function incomingAttachmentMeta(att: Record<string, unknown>): Attachment {
  * is fetched: an https URL on Discord's CDN, up to a size limit. Anything else
  * stays as metadata without a local file — what a failed download has always
  * looked like — and is never requested.
+ *
+ * The list is the request's too: only its first ten entries are looked at
+ * (Discord's own limit per message), and they are fetched a few at a time.
  */
 export async function downloadIncomingAttachments(attachments: unknown, destDir: string): Promise<Attachment[]> {
   if (!Array.isArray(attachments)) return [];
-  const listed = attachments.filter((att): att is Record<string, unknown> => Boolean(att) && typeof att === "object");
-  return Promise.all(
-    listed.map(async (att, slot) => {
-      const meta = incomingAttachmentMeta(att);
-      if (!meta.url) return meta;
-      try {
-        const localPath = await downloadAttachment(meta.url, attachmentSlot(destDir, slot), meta.name, {
-          allowedHosts: DISCORD_CDN_HOSTS,
-          maxBytes: MAX_INCOMING_ATTACHMENT_BYTES,
-        });
-        return { ...meta, localPath };
-      } catch {
-        return meta;
-      }
-    }),
-  );
+  const listed = attachments
+    .filter((att): att is Record<string, unknown> => Boolean(att) && typeof att === "object")
+    .slice(0, MAX_INCOMING_ATTACHMENTS);
+  return mapLimited(listed, INCOMING_DOWNLOADS_AT_ONCE, async (att, slot) => {
+    const meta = incomingAttachmentMeta(att);
+    if (!meta.url) return meta;
+    try {
+      const localPath = await downloadAttachment(meta.url, attachmentSlot(destDir, slot), meta.name, {
+        allowedHosts: DISCORD_CDN_HOSTS,
+        maxBytes: MAX_INCOMING_ATTACHMENT_BYTES,
+      });
+      return { ...meta, localPath };
+    } catch {
+      return meta;
+    }
+  });
 }
 
 /**
