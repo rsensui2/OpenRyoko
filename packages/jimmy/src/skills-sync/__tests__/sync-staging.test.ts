@@ -228,6 +228,101 @@ describe("bundled skill sync: what is moved into skills/ is what was staged, fro
   });
 });
 
+describe("bundled skill sync: the staging directory is looked at again each time it is about to be used", () => {
+  it("writes nothing through a staging directory that became a link before the skill was staged", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1", "references/a.md": "a1" });
+    const elsewhere = path.join(f.root, "elsewhere");
+    fs.mkdirSync(elsewhere);
+    const mkdtemp = fs.mkdtempSync;
+    let staging = "";
+    // Made when the run begins, and swapped before anything is staged in it: with
+    // several skills to do, that is a long time.
+    vi.spyOn(fs, "mkdtempSync").mockImplementation(((prefix: string) => {
+      staging = mkdtemp(prefix);
+      fs.rmdirSync(staging);
+      fs.symlinkSync(elsewhere, staging);
+      return staging;
+    }) as typeof fs.mkdtempSync);
+    const made = vi.spyOn(fs, "mkdirSync");
+
+    const result = f.sync();
+
+    // The skill would be written out as a new directory wherever the link leads, and stay there.
+    expect(fs.readdirSync(elsewhere)).toEqual([]);
+    expect(made.mock.calls.map((call) => String(call[0])).filter((dir) => dir.startsWith(staging + path.sep))).toEqual([]);
+    expect(result.added).toEqual([]);
+    expect(result.failed).toEqual([{ name: "example", error: expect.stringContaining("is not a plain directory") }]);
+    expect(fs.existsSync(path.join(f.skills, "example"))).toBe(false);
+  });
+
+  it("writes nothing through one that becomes a link in the instant the skill's directory is made", () => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1", "references/a.md": "a1" });
+    const elsewhere = path.join(f.root, "elsewhere");
+    fs.mkdirSync(elsewhere);
+    const mkdir = fs.mkdirSync;
+    let swapped = false;
+    vi.spyOn(fs, "mkdirSync").mockImplementation(((dir: fs.PathLike, ...rest: unknown[]) => {
+      if (!swapped && isStaged(dir, "example")) {
+        swapped = true;
+        const staging = path.dirname(String(dir));
+        fs.rmdirSync(staging);
+        fs.symlinkSync(elsewhere, staging);
+      }
+      return (mkdir as (...args: unknown[]) => string | undefined)(dir, ...rest);
+    }) as typeof fs.mkdirSync);
+
+    const result = f.sync();
+
+    expect(swapped).toBe(true);
+    // The directory landed behind the link. Found out at once, nothing is written into
+    // it, and it is taken away again while it is still empty.
+    expect(fs.readdirSync(elsewhere)).toEqual([]);
+    expect(result.added).toEqual([]);
+    expect(result.failed).toEqual([{ name: "example", error: expect.stringContaining("is not a plain directory") }]);
+  });
+
+  it.each<[string, (home: string, root: string, elsewhere: string) => void]>([
+    ["the staging directory", (home, root, elsewhere) => {
+      const [staging] = stagingOf(home);
+      fs.renameSync(staging, path.join(root, "real-staging"));
+      fs.symlinkSync(elsewhere, staging);
+    }],
+    ["the staged copy", (home, root, elsewhere) => {
+      const staged = path.join(stagingOf(home)[0], "example");
+      fs.renameSync(staged, path.join(root, "real-staged"));
+      fs.symlinkSync(path.join(elsewhere, "example"), staged);
+    }],
+  ])("does not move a skill in when %s becomes a link after its content was checked", (_label, swap) => {
+    const f = fixture();
+    f.ship("example", { "SKILL.md": "v1" });
+    const elsewhere = path.join(f.root, "elsewhere");
+    writeTree(path.join(elsewhere, "example"), { "SKILL.md": "the user's own" });
+    const realpath = fs.realpathSync;
+    let swapped = false;
+    // skills/ is resolved once the staged copy has been read and found right. That
+    // takes a moment, and the move must not go by what was true before it.
+    vi.spyOn(fs, "realpathSync").mockImplementation(((target: fs.PathLike, ...rest: unknown[]) => {
+      if (!swapped && String(target) === f.skills) {
+        swapped = true;
+        swap(f.home, f.root, elsewhere);
+      }
+      return (realpath as (...args: unknown[]) => string)(target, ...rest);
+    }) as typeof fs.realpathSync);
+
+    const result = f.sync();
+
+    expect(swapped).toBe(true);
+    // Moved in and reported as installed, it would be a directory from outside the home, or a link to one.
+    expect(fs.readFileSync(path.join(elsewhere, "example", "SKILL.md"), "utf8")).toBe("the user's own");
+    expect(result.added).toEqual([]);
+    expect(result.failed).toEqual([{ name: "example", error: expect.stringContaining("is not a plain directory") }]);
+    expect(fs.existsSync(path.join(f.skills, "example"))).toBe(false);
+    expect(f.receipt().skills).toEqual({});
+  });
+});
+
 describe("bundled skill sync: skills/ is the last thing checked before a skill leaves it", () => {
   it("does not move a skill in through skills/ when it is swapped while the staged copy is being checked", () => {
     const f = fixture();

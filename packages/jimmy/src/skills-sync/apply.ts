@@ -101,11 +101,15 @@ function applyChange(plan: Change, context: ApplyContext, staging: string | null
   assertWritable(context.skillsRoot, "skills/");
   if (plan.action === "update") assertWritable(destination, "its directory");
   const staged = stageSkill(staging, plan.skill);
-  // Both ends of the move in. skills/ is checked last: the user's own directories
-  // are reachable through it, and nothing comes between that check and the rename.
+  // Both ends of the move in. Reading the staged copy and resolving skills/ take a
+  // moment, and either end can be swapped for a link during it. So every directory the
+  // rename goes through gets one more look, of the cheapest kind, back to back, with
+  // nothing after it but the rename. skills/ comes last: the user's own directories
+  // are reachable through it.
   const moveIn = (): void => {
     assertStagedIntact(staged, plan.skill);
     assertPlainDirectory(context.skillsRoot);
+    assertStillDirectories(staging, staged, context.skillsRoot);
     fs.renameSync(staged, destination);
   };
   if (plan.action === "install") {
@@ -145,12 +149,26 @@ function assertWritable(directory: string, what: string): void {
  * `recursive` walks straight through a link left where a directory belongs, and files
  * with "wx", which refuses a link or a file at the path instead of writing through it.
  *
+ * The staging directory itself was made when the run began, and by the time a skill
+ * is staged it may be a link: the skill would be written out, as a new directory,
+ * wherever the link leads. It is looked at immediately before the skill's directory
+ * is made, and that directory immediately after, before anything is written into it.
+ *
  * The packaged mode is given at creation, which keeps a script executable. There is
  * no chmod afterwards: it fails on mounts without POSIX permissions (CIFS).
  */
 function stageSkill(staging: string, skill: BundledSkill): string {
   const staged = path.join(staging, skill.name);
+  assertPlainDirectory(staging);
   fs.mkdirSync(staged);
+  try {
+    assertPlainDirectory(staged);
+  } catch (error) {
+    // Swapped in between: the directory was made behind a link. It is still empty,
+    // and rmdir takes away nothing that is not.
+    try { fs.rmdirSync(staged); } catch { /* not ours to insist on */ }
+    throw error;
+  }
   for (const directory of skill.directories) fs.mkdirSync(path.join(staged, ...directory.split("/")));
   for (const [relative, file] of Object.entries(skill.files)) {
     fs.writeFileSync(path.join(staged, ...relative.split("/")), file.bytes, { mode: file.mode, flag: "wx" });
@@ -171,6 +189,14 @@ function assertStagedIntact(staged: string, skill: BundledSkill): void {
     assertUnchanged(staged, shippedHashes(skill));
   } catch (error) {
     throw new Error(`its staged copy was no longer what the sync wrote when it came to be moved into place, so it was not moved (${messageOf(error)})`);
+  }
+}
+
+/** Not a link, not a file, right now: lstat alone, which follows nothing and is the
+ *  quickest look there is. For the instant before a rename, after the slower checks. */
+function assertStillDirectories(...directories: string[]): void {
+  for (const directory of directories) {
+    if (!fs.lstatSync(directory).isDirectory()) throw new Error(`${directory} is not a plain directory inside the instance home`);
   }
 }
 
