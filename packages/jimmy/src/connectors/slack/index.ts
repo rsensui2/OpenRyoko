@@ -21,7 +21,7 @@ import {
   formatResponse,
   resolveSlackFileAttachment,
 } from "./format.js";
-import { deliverChunks } from "../chunked-send.js";
+import { sendChunksInOrder } from "../chunked-send.js";
 import { rememberAuthTest } from "./auth-test-cache.js";
 import { normalizeSpeakerInfo, type SpeakerInfo } from "./speaker.js";
 import { runTriage } from "./triage.js";
@@ -941,7 +941,7 @@ export class SlackConnector implements Connector {
       return this.replyMessage({ ...target, thread }, text);
     }
     const chunks = formatResponse(text).filter((chunk) => chunk.trim());
-    const lastTs = await deliverChunks("Slack sendMessage", chunks, async (chunk) => {
+    const { lastId: lastTs, partial } = await sendChunksInOrder("Slack sendMessage", chunks, async (chunk) => {
       const res = await this.app.client.chat.postMessage({
         channel: target.channel,
         text: chunk,
@@ -953,6 +953,8 @@ export class SlackConnector implements Connector {
     if (lastTs && this.conversationTrackingEnabled()) {
       this.conversations.recordBotInitiatedThread(target.channel, lastTs, { messageTs: lastTs });
     }
+    // What was posted is tracked above; the missing rest is still a failure.
+    if (partial) throw partial;
     return lastTs;
   }
 
@@ -960,7 +962,7 @@ export class SlackConnector implements Connector {
     if (!text || !text.trim()) return undefined;
     const threadTs = target.thread || target.messageTs;
     const chunks = formatResponse(text).filter((chunk) => chunk.trim());
-    const lastTs = await deliverChunks("Slack replyMessage", chunks, async (chunk) => {
+    const { lastId: lastTs, partial } = await sendChunksInOrder("Slack replyMessage", chunks, async (chunk) => {
       const res = await this.app.client.chat.postMessage({
         channel: target.channel,
         thread_ts: threadTs,
@@ -991,6 +993,8 @@ export class SlackConnector implements Connector {
         this.conversations.recordBotThreadReply(target.channel, threadTs, { messageTs: lastTs });
       }
     }
+    // What was posted is tracked above; the missing rest is still a failure.
+    if (partial) throw partial;
     return lastTs;
   }
 

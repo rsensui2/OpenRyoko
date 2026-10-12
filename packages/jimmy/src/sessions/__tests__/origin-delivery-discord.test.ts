@@ -85,41 +85,61 @@ describe("origin delivery through the Discord connector", () => {
     await expect(deliverToOriginConnector(discordSession(), "完成しました", connectors, [1])).resolves.toBe("failed");
   });
 
-  it("does not resend a reply that was partly delivered", async () => {
+  it("reports a partly delivered reply as failed, without sending it again", async () => {
     const channel = discordChannel();
     channel.send.mockResolvedValueOnce({ id: "S1" }).mockRejectedValue(new Error("rate limited"));
     const connectors = new Map([["discord", discordWith({ C1: channel })]]);
 
-    await expect(deliverToOriginConnector(discordSession(), TWO_CHUNKS, connectors, [1, 1])).resolves.toBe("delivered");
+    // Not "delivered": the conversation is missing the rest of the reply.
+    await expect(deliverToOriginConnector(discordSession(), TWO_CHUNKS, connectors, [1, 1])).resolves.toBe("failed");
 
     // Both chunks were attempted exactly once: no retry repeated the first.
     expect(channel.send).toHaveBeenCalledTimes(2);
   });
 
-  it("persists an undelivered background reply on the session", async () => {
-    const channel = discordChannel();
-    channel.send.mockRejectedValue(new Error("Missing Permissions"));
-    const config = {
-      gateway: { port: 0, host: "127.0.0.1" },
-      engines: { default: "claude", claude: { bin: "claude", model: "" }, codex: { bin: "codex", model: "" } },
-      connectors: {},
-      sessions: {},
-      logging: { level: "error", stdout: false },
-    } as unknown as JinnConfig;
-    const manager = new SessionManager(config, new Map<string, Engine>(), ["discord"]);
+  const CONFIG = {
+    gateway: { port: 0, host: "127.0.0.1" },
+    engines: { default: "claude", claude: { bin: "claude", model: "" }, codex: { bin: "codex", model: "" } },
+    connectors: {},
+    sessions: {},
+    logging: { level: "error", stdout: false },
+  } as unknown as JinnConfig;
+
+  async function deliverBackgroundReply(channel: ReturnType<typeof discordChannel>, text: string) {
+    const manager = new SessionManager(CONFIG, new Map<string, Engine>(), ["discord"]);
     manager.setConnectorProvider(() => new Map([["discord", discordWith({ C1: channel })]]));
     const session = discordSession();
 
     vi.useFakeTimers();
-    const handled = manager.handleOrphanHook(session.id, {
-      hook_event_name: "Stop",
-      last_assistant_message: "遅れましたが完成しました",
-    });
+    const handled = manager.handleOrphanHook(session.id, { hook_event_name: "Stop", last_assistant_message: text });
     await vi.advanceTimersByTimeAsync(10_000);
     await handled;
+    return {
+      lastError: getSession(session.id)?.lastError,
+      notes: getMessages(session.id).filter((m) => m.role === "notification").map((m) => m.content),
+    };
+  }
 
-    expect(getSession(session.id)?.lastError).toContain("origin delivery failed");
-    const notes = getMessages(session.id).filter((m) => m.role === "notification");
-    expect(notes.some((m) => m.content.includes("NOT delivered to the original conversation"))).toBe(true);
+  it("persists an undelivered background reply on the session", async () => {
+    const channel = discordChannel();
+    channel.send.mockRejectedValue(new Error("Missing Permissions"));
+
+    const recorded = await deliverBackgroundReply(channel, "遅れましたが完成しました");
+
+    expect(recorded.lastError).toContain("origin delivery failed");
+    expect(recorded.notes.some((note) => note.includes("NOT delivered to the original conversation"))).toBe(true);
+  });
+
+  it("persists a partly delivered background reply too, and warns against reposting what landed", async () => {
+    const channel = discordChannel();
+    channel.send.mockResolvedValueOnce({ id: "S1" }).mockRejectedValue(new Error("rate limited"));
+
+    const recorded = await deliverBackgroundReply(channel, TWO_CHUNKS);
+
+    expect(channel.send).toHaveBeenCalledTimes(2);
+    expect(recorded.lastError).toContain("origin delivery failed");
+    expect(recorded.notes).toHaveLength(1);
+    expect(recorded.notes[0]).toContain("NOT delivered to the original conversation");
+    expect(recorded.notes[0]).toContain("only the beginning");
   });
 });

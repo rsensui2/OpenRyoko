@@ -126,4 +126,17 @@ describe("POST /api/connectors/:name/send", () => {
     expect(failed.status).toBe(500);
     expect(failed.body).toEqual({ error: "Thread is locked" });
   });
+
+  it("answers an error, not \"sent\", when only part of the message was delivered", async () => {
+    const channel = discordChannel("C1");
+    channel.send.mockResolvedValueOnce({ id: "S1" }).mockRejectedValue(new Error("rate limited"));
+    connectors.set("discord", discordWith({ C1: channel }));
+
+    const failed = await send({ channel: "C1", text: "a".repeat(1900) + "\n" + "b".repeat(500) });
+
+    expect(failed.status).toBe(500);
+    // The caller is told that part of it is already there, so it does not
+    // simply send the whole message again.
+    expect(failed.body).toEqual({ error: "Discord sendMessage: only 1 of 2 chunks were delivered (rate limited)" });
+  });
 });

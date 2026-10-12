@@ -69,14 +69,19 @@ describe("WhatsAppConnector delivery outcome", () => {
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("Connection Closed"));
   });
 
-  it("keeps a partly delivered message instead of rejecting", async () => {
+  it("rejects a partly delivered message as a partial delivery, never as sent", async () => {
     const { connector, sendMessage } = connectedConnector();
     sendMessage
       .mockResolvedValueOnce({ key: { id: "W1" } })
       .mockRejectedValue(new Error("Connection Closed"));
 
-    // A rejection would make the caller resend the chunk that already landed.
-    await expect(connector.replyMessage({ channel: JID }, "A".repeat(5000))).resolves.toBe("W1");
+    // Typed, so a caller that retries knows not to start over from the top.
+    await expect(connector.replyMessage({ channel: JID }, "A".repeat(5000))).rejects.toMatchObject({
+      name: "PartialDeliveryError",
+      delivered: 1,
+      total: 2,
+      lastId: "W1",
+    });
 
     expect(sendMessage).toHaveBeenCalledTimes(2);
   });

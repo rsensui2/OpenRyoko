@@ -7,6 +7,7 @@ import type {
   Target,
 } from "../../shared/types.js";
 import { logger } from "../../shared/logger.js";
+import { partialDeliveryFromText, type PartialDeliveryError } from "../../shared/partial-delivery.js";
 import {
   evaluateRespondPolicy,
   parseForwardedAddressing,
@@ -193,6 +194,7 @@ export class RemoteDiscordConnector implements Connector {
     mustDeliver = false,
   ): Promise<string | undefined> {
     let failure: string;
+    let partial: PartialDeliveryError | undefined;
     try {
       const res = await fetch(`${this.baseUrl}/api/connectors/discord/proxy`, {
         method: "POST",
@@ -209,11 +211,25 @@ export class RemoteDiscordConnector implements Connector {
         return data.messageId;
       }
       failure = `Remote Discord proxy ${action} failed: ${res.status}`;
+      // A send the primary delivered only in part must stay recognisable here:
+      // otherwise this instance's retry makes the primary post the chunks that
+      // already landed a second time.
+      if (mustDeliver) partial = partialDeliveryFromText(await proxyErrorText(res));
     } catch (err) {
       failure = `Remote Discord proxy ${action} error: ${err instanceof Error ? err.message : err}`;
     }
-    logger.error(failure);
-    if (mustDeliver) throw new Error(failure);
+    logger.error(partial ? `${failure} (${partial.message})` : failure);
+    if (mustDeliver) throw partial ?? new Error(failure);
     return undefined;
+  }
+}
+
+/** The `error` text the primary answers a failed proxy call with, or "". */
+async function proxyErrorText(res: { json(): Promise<unknown> }): Promise<string> {
+  try {
+    const body = (await res.json()) as { error?: unknown } | null;
+    return typeof body?.error === "string" ? body.error : "";
+  } catch {
+    return "";
   }
 }

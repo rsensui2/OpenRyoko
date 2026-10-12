@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RemoteDiscordConnector } from "../remote.js";
 import { logger } from "../../../shared/logger.js";
+import { PartialDeliveryError, isPartialDelivery } from "../../../shared/partial-delivery.js";
 
 // A secondary instance sends through the primary's proxy endpoint. A proxy
 // call that failed used to resolve undefined — indistinguishable from "sent,
@@ -40,6 +41,19 @@ describe("RemoteDiscordConnector delivery outcome", () => {
 
     await expect(connector().sendMessage(target, "hi")).rejects.toThrow("sendMessage failed: 500");
     await expect(connector().replyMessage(target, "hi")).rejects.toThrow("replyMessage failed: 500");
+  });
+
+  it("keeps a partial delivery on the primary a partial delivery here", async () => {
+    // The proxy answers { error: <message> }; only the message crosses over.
+    const primaryError = new PartialDeliveryError("Discord replyMessage", 1, 2, "S1", new Error("rate limited"));
+    stubProxy({ ok: false, status: 500, body: { error: primaryError.message } });
+
+    const outcome = await connector().replyMessage(target, "hi").catch((err: unknown) => err);
+
+    // Typed, so this instance's retry does not make the primary post the
+    // delivered chunk a second time.
+    expect(isPartialDelivery(outcome)).toBe(true);
+    expect(outcome).toMatchObject({ delivered: 1, total: 2 });
   });
 
   it("rejects a send when the primary cannot be reached", async () => {

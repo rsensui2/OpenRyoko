@@ -20,6 +20,7 @@ import type {
   Target,
 } from "../../shared/types.js";
 import { logger } from "../../shared/logger.js";
+import { PartialDeliveryError } from "../../shared/partial-delivery.js";
 import { TMP_DIR } from "../../shared/paths.js";
 import { formatResponse, downloadAttachment } from "./format.js";
 import {
@@ -319,20 +320,17 @@ export class DiscordConnector implements Connector {
 
   /**
    * Turn a chunked send into the outcome the caller sees. Nothing delivered
-   * is a failure. A send that stopped part-way keeps what landed and is only
-   * logged: callers retry a rejected send from the top, which would post the
-   * delivered chunks a second time.
+   * rejects with Discord's error. A send that stopped part-way rejects too —
+   * the message is not all there — but as a PartialDeliveryError, which tells
+   * a caller that retries not to post the delivered chunks a second time.
    */
   private settleChunks(
     op: string,
-    result: { lastId?: string; sentCount: number; error?: unknown },
+    result: { lastId?: string; sentCount: number; total: number; error?: unknown },
   ): string | undefined {
     if (result.error === undefined) return result.lastId;
     if (result.sentCount === 0) throw result.error;
-    logger.error(
-      `Discord ${op} partial send (${result.sentCount} chunk(s) delivered): ${result.error instanceof Error ? result.error.message : result.error}`,
-    );
-    return result.lastId;
+    throw new PartialDeliveryError(`Discord ${op}`, result.sentCount, result.total, result.lastId, result.error);
   }
 
   /**
@@ -345,8 +343,9 @@ export class DiscordConnector implements Connector {
   private async sendChunks(
     destination: { channel: TextChannel | DMChannel | ThreadChannel; replyTo?: string },
     text: string,
-  ): Promise<{ lastId?: string; sentCount: number; error?: unknown }> {
+  ): Promise<{ lastId?: string; sentCount: number; total: number; error?: unknown }> {
     const chunks = formatResponse(text);
+    const total = chunks.length;
     let lastId: string | undefined;
     let sentCount = 0;
     for (const [index, chunk] of chunks.entries()) {
@@ -362,10 +361,10 @@ export class DiscordConnector implements Connector {
         sentCount += 1;
         this.recordEngagement(destination.channel, sent.id);
       } catch (error) {
-        return { lastId, sentCount, error };
+        return { lastId, sentCount, total, error };
       }
     }
-    return { lastId, sentCount };
+    return { lastId, sentCount, total };
   }
 
   /**

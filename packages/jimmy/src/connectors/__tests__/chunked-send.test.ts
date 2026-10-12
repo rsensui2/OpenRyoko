@@ -1,29 +1,19 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { deliverChunks } from "../chunked-send.js";
-import { logger } from "../../shared/logger.js";
+import { describe, expect, it, vi } from "vitest";
+import { deliverChunks, sendChunksInOrder } from "../chunked-send.js";
+import { PartialDeliveryError } from "../../shared/partial-delivery.js";
 
 // The Connector contract (shared/types.ts): a send resolves when the message
-// reached the platform and rejects when nothing did. A response split into
-// chunks adds a third case, and callers retry a rejected send from the top.
+// reached the platform and rejects when it did not. A response split into
+// chunks adds a third outcome — some of it landed — which is a failure, but
+// one that must not be retried from the top.
 
 describe("deliverChunks", () => {
-  let logged: ReturnType<typeof vi.spyOn>;
-
-  beforeEach(() => {
-    logged = vi.spyOn(logger, "error").mockImplementation(() => {});
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
   it("sends every chunk in order and resolves with the last message id", async () => {
     const send = vi.fn(async (chunk: string) => `id-${chunk}`);
 
     await expect(deliverChunks("test send", ["a", "b", "c"], send)).resolves.toBe("id-c");
 
     expect(send.mock.calls.map(([chunk]) => chunk)).toEqual(["a", "b", "c"]);
-    expect(logged).not.toHaveBeenCalled();
   });
 
   it("rejects with the platform's error when not even the first chunk landed", async () => {
@@ -35,20 +25,20 @@ describe("deliverChunks", () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps a partly delivered response instead of rejecting, and logs how far it got", async () => {
+  it("rejects a send that stopped part-way as a partial delivery, never as sent", async () => {
+    const failure = new Error("flood control");
     const send = vi.fn()
       .mockResolvedValueOnce("id-1")
       .mockResolvedValueOnce("id-2")
-      .mockRejectedValueOnce(new Error("flood control"));
+      .mockRejectedValueOnce(failure);
 
-    // A rejection would make the caller resend chunks 1 and 2.
-    await expect(deliverChunks("test send", ["a", "b", "c", "d"], send)).resolves.toBe("id-2");
+    const outcome = await deliverChunks("test send", ["a", "b", "c", "d"], send).catch((err: unknown) => err);
 
+    expect(outcome).toBeInstanceOf(PartialDeliveryError);
+    expect(outcome).toMatchObject({ delivered: 2, total: 4, lastId: "id-2", cause: failure });
+    expect((outcome as Error).message).toBe("test send: only 2 of 4 chunks were delivered (flood control)");
+    // It stops at the failure: the chunks after it are not attempted.
     expect(send).toHaveBeenCalledTimes(3);
-    expect(logged).toHaveBeenCalledTimes(1);
-    expect(logged.mock.calls[0][0]).toContain("test send");
-    expect(logged.mock.calls[0][0]).toContain("2 of 4");
-    expect(logged.mock.calls[0][0]).toContain("flood control");
   });
 
   it("carries the last known id past a chunk the platform gave no id for", async () => {
@@ -63,5 +53,31 @@ describe("deliverChunks", () => {
     await expect(deliverChunks("test send", [], send)).resolves.toBeUndefined();
 
     expect(send).not.toHaveBeenCalled();
+  });
+});
+
+// For a connector that has bookkeeping to do for the chunks that did land
+// before it reports the failure.
+describe("sendChunksInOrder", () => {
+  it("reports a complete send without a partial outcome", async () => {
+    const send = vi.fn(async (chunk: string) => `id-${chunk}`);
+
+    await expect(sendChunksInOrder("test send", ["a", "b"], send)).resolves.toEqual({ lastId: "id-b" });
+  });
+
+  it("hands back what landed together with the partial delivery", async () => {
+    const send = vi.fn().mockResolvedValueOnce("id-1").mockRejectedValueOnce(new Error("flood control"));
+
+    const outcome = await sendChunksInOrder("test send", ["a", "b"], send);
+
+    expect(outcome.lastId).toBe("id-1");
+    expect(outcome.partial).toBeInstanceOf(PartialDeliveryError);
+    expect(outcome.partial).toMatchObject({ delivered: 1, total: 2 });
+  });
+
+  it("still rejects when nothing landed", async () => {
+    const send = vi.fn(async () => { throw new Error("chat not found"); });
+
+    await expect(sendChunksInOrder("test send", ["a", "b"], send)).rejects.toThrow("chat not found");
   });
 });

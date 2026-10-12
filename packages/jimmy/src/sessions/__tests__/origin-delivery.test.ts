@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { deliverToOriginConnector } from "../origin-delivery.js";
+import { PartialDeliveryError } from "../../shared/partial-delivery.js";
 import type { Connector, Session } from "../../shared/types.js";
 
 // Issue #38 follow-up: a turn triggered outside the connector route (detached
@@ -131,5 +132,15 @@ describe("deliverToOriginConnector", () => {
 
     expect(delivered).toBe("failed");
     expect(replyMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry a partial delivery — the part that landed would be posted twice", async () => {
+    const { connector, replyMessage } = makeConnector();
+    replyMessage.mockRejectedValue(new PartialDeliveryError("Slack replyMessage", 1, 3, "ts-1", new Error("slack down")));
+    const delivered = await deliverToOriginConnector(makeSession(), "answer", new Map([["slack", connector]]), [1, 1]);
+
+    // Still a failure for the caller to record: the reply is not all there.
+    expect(delivered).toBe("failed");
+    expect(replyMessage).toHaveBeenCalledTimes(1);
   });
 });

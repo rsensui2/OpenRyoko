@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChannelType } from "discord.js";
 import { DiscordConnector } from "../index.js";
 import { logger } from "../../../shared/logger.js";
+import { isPartialDelivery } from "../../../shared/partial-delivery.js";
 
 // The send promise is the delivery outcome. The connector used to catch its
 // own failures and resolve, so /api/connectors/:name/send answered "sent" for
@@ -89,15 +90,18 @@ describe("DiscordConnector delivery outcome", () => {
       await expect(connector.sendMessage({ channel: "C1" }, "hi")).rejects.toThrow(/C1.*cannot receive messages/);
     });
 
-    it("keeps a partly delivered message instead of rejecting", async () => {
+    it("rejects a partly delivered message as a partial delivery, never as sent", async () => {
       const channel = flatChannel();
       channel.send.mockResolvedValueOnce({ id: "S1" }).mockRejectedValue(new Error("rate limited"));
       const connector = connectorWith({ C1: channel });
 
-      // A rejection would make the caller resend the chunk that already landed.
-      await expect(connector.sendMessage({ channel: "C1" }, TWO_CHUNKS)).resolves.toBe("S1");
+      const outcome = await connector.sendMessage({ channel: "C1" }, TWO_CHUNKS).catch((err: unknown) => err);
 
-      expect(logged).toHaveBeenCalledWith(expect.stringContaining("partial send (1 chunk(s) delivered)"));
+      // Typed, so a caller that retries knows not to start over from the top.
+      expect(isPartialDelivery(outcome)).toBe(true);
+      expect(outcome).toMatchObject({ delivered: 1, total: 2, lastId: "S1" });
+      expect((outcome as Error).message).toBe("Discord sendMessage: only 1 of 2 chunks were delivered (rate limited)");
+      expect(logged).toHaveBeenCalledWith(expect.stringContaining("only 1 of 2 chunks were delivered"));
     });
   });
 
@@ -142,16 +146,29 @@ describe("DiscordConnector delivery outcome", () => {
       await expect(connector.replyMessage({ channel: "C1", thread: "T1" }, "hi")).rejects.toThrow("Thread is locked");
     });
 
-    it("keeps a parent-channel fallback that was only partly delivered", async () => {
+    it("rejects a reply that stopped part-way as a partial delivery", async () => {
+      const channel = flatChannel();
+      channel.send.mockResolvedValueOnce({ id: "S1" }).mockRejectedValue(new Error("rate limited"));
+      const connector = connectorWith({ C1: channel });
+
+      const outcome = await connector.replyMessage({ channel: "C1", messageTs: "M0" }, TWO_CHUNKS).catch((err: unknown) => err);
+
+      expect(isPartialDelivery(outcome)).toBe(true);
+      expect(outcome).toMatchObject({ delivered: 1, total: 2, lastId: "S1" });
+      expect(channel.send).toHaveBeenCalledTimes(2);
+    });
+
+    it("rejects a parent-channel fallback that was only partly delivered", async () => {
       const parent = flatChannel("C1");
       parent.send.mockResolvedValueOnce({ id: "P1" }).mockRejectedValue(new Error("rate limited"));
       const thread = threadChannel("T1", "C1");
       thread.send.mockRejectedValue(new Error("Thread is locked"));
       const connector = connectorWith({ T1: thread, C1: parent });
 
-      await expect(connector.replyMessage({ channel: "C1", thread: "T1" }, TWO_CHUNKS)).resolves.toBe("P1");
+      const outcome = await connector.replyMessage({ channel: "C1", thread: "T1" }, TWO_CHUNKS).catch((err: unknown) => err);
 
-      expect(logged).toHaveBeenCalledWith(expect.stringContaining("partial send (1 chunk(s) delivered)"));
+      expect(isPartialDelivery(outcome)).toBe(true);
+      expect(outcome).toMatchObject({ delivered: 1, total: 2, lastId: "P1" });
     });
   });
 

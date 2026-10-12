@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionManager } from "../manager.js";
 import { notifyParentSession } from "../callbacks.js";
 import { getMessages, getSession, getSessionBySessionKey } from "../registry.js";
+import { PartialDeliveryError } from "../../shared/partial-delivery.js";
 import type { Connector, Engine, EngineResult, IncomingMessage, JinnConfig } from "../../shared/types.js";
 
 // The reply used to be delivered BEFORE the turn's state was saved. A connector
@@ -134,6 +135,33 @@ describe("SessionManager — the reply cannot be delivered", () => {
     const reason = lines.find((line) => line.includes("reply was not delivered"));
     expect(reason).toContain("https://api.telegram.org/bot[REDACTED]/sendMessage");
     expect(lines.join("\n")).not.toContain(botToken);
+  });
+
+  it("records a reply that was only partly delivered, and warns against reposting what landed", async () => {
+    const { manager, connector, replyMessage, msg, sessionKey } = setup();
+    replyMessage.mockRejectedValue(
+      new PartialDeliveryError("Discord replyMessage", 1, 2, "S1", new Error("rate limited")),
+    );
+    const lines: string[] = [];
+    const print = vi.spyOn(console, "log").mockImplementation((line: unknown) => { lines.push(String(line)); });
+
+    try {
+      await manager.route(msg, connector);
+    } finally {
+      print.mockRestore();
+    }
+
+    const session = getSessionBySessionKey(sessionKey)!;
+    expect(session.status).toBe("idle");
+    expect(session.engineSessionId).toBe("engine-session-1");
+    // A reply the conversation only half received is not a delivered reply.
+    expect(session.lastError).toContain("origin delivery failed");
+    const notes = getMessages(session.id).filter((m) => m.role === "notification").map((m) => m.content);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("NOT delivered to the original conversation");
+    expect(notes[0]).toContain("only the beginning");
+    expect(lines.some((line) => line.includes("only 1 of 2 chunks were delivered"))).toBe(true);
+    expect(replyMessage).toHaveBeenCalledTimes(1);
   });
 
   it("stops at the first turn that fails to land and records the rest as undelivered", async () => {

@@ -288,12 +288,18 @@ describe("TelegramConnector", () => {
       expect(mockSendMessage).toHaveBeenCalledTimes(2);
     });
 
-    it("keeps a partly delivered message instead of rejecting", async () => {
+    it("rejects a partly delivered message as a partial delivery, never as sent", async () => {
       mockSendMessage
         .mockResolvedValueOnce({ message_id: 7 })
         .mockRejectedValueOnce(new Error("flood control"));
-      // A rejection would make the caller resend the chunk that already landed.
-      await expect(connector.sendMessage({ channel: "12345" }, "A".repeat(5000))).resolves.toBe("7");
+      // Typed, so a caller that retries knows not to start over from the top.
+      await expect(connector.sendMessage({ channel: "12345" }, "A".repeat(5000))).rejects.toMatchObject({
+        name: "PartialDeliveryError",
+        delivered: 1,
+        total: 2,
+        lastId: "7",
+        message: "[telegram] sendMessage: only 1 of 2 chunks were delivered (flood control)",
+      });
       expect(mockSendMessage).toHaveBeenCalledTimes(2);
     });
   });
