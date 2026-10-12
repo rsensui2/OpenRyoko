@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   databaseFingerprint,
   HOME_CONTENT,
@@ -655,6 +655,33 @@ describe("ryoko backup restore", () => {
 
     expect(take(state.err)).toMatch(/secrets.*config.*cron.*persona.*memory/s);
     expect(process.exitCode).toBe(1);
+  });
+
+  it("passes on what the restore could not clear away, and leaves it where it is", async () => {
+    // Something that is not the restore's turns up in its working directory:
+    // it is not deleted along with the rest, and the operator is told where it is.
+    const state = await backedUp();
+    fs.writeFileSync(path.join(state.home, "config.yaml"), "broken\n");
+    const realRename = fs.renameSync;
+    let staging = "";
+    const rename = vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (!staging && String(from).includes(`${path.sep}tmp${path.sep}restore-`)) {
+        staging = path.dirname(String(from));
+        writeTree(staging, { "left-here/keep.txt": "not the restore's to remove\n" });
+      }
+      realRename(from, to);
+    });
+    try {
+      await runBackupRestore("home-20261012T030000Z", {}, state.deps);
+    } finally {
+      rename.mockRestore();
+    }
+
+    const printed = take(state.out);
+    expect(printed).toMatch(/置換\s+config\.yaml/);
+    expect(printed).toMatch(new RegExp(`警告: ${staging.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} .*was left as it is`));
+    expect(read(staging, "left-here/keep.txt")).toBe("not the restore's to remove\n");
+    expect(process.exitCode).toBeUndefined();
   });
 
   it("refuses a damaged archive and leaves the home as it was", async () => {
