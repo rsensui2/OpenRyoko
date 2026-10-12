@@ -1,4 +1,4 @@
-import { resolveSubstituteModel } from "../shared/engine-fallback.js";
+import { resolveSubstituteModel, warnEngineFallbackConfigProblems } from "../shared/engine-fallback.js";
 import { ModelManagement } from "../models/service.js";
 import http from "node:http";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -27,6 +27,7 @@ import { attachPtyWebSocket } from "./pty-ws.js";
 import { HookRegistry } from "./hook-registry.js";
 import { startStatusReconciler } from "./status-reconciler.js";
 import { interruptRunningSessionsForShutdown, prepareRestartResume, resumeRestartInterruptedSessions } from "../sessions/restart-resume.js";
+import { startEngineHealth } from "./engine-health-monitor.js";
 import { writeGatewayInfo } from "./gateway-info.js";
 import { cleanupSessionSettings, seedTrust } from "../shared/claude-settings.js";
 import { GATEWAY_INFO_FILE, HOOK_RELAY_SCRIPT, CLAUDE_SETTINGS_DIR, JINN_HOME } from "../shared/paths.js";
@@ -188,6 +189,9 @@ export async function startGateway(
 
   const gatewayName = config.portal?.portalName || "Ryoko";
   logger.info(`Starting ${gatewayName} gateway (boot ${bootId}, pid ${process.pid})...`);
+  // A fallback chain or model map that cannot work as written is worth a line
+  // in the startup log. It is never a reason not to start.
+  warnEngineFallbackConfigProblems(config);
 
   // Initialize database and recover any sessions stuck from a previous run
   const database = initDb();
@@ -984,6 +988,11 @@ export async function startGateway(
     alwaysNotifyFor: (session) => (session.employee ? employeeRegistry.get(session.employee)?.alwaysNotify : undefined),
   });
 
+  // Re-check an engine known to be out of allowance on its own clock (no timer
+  // exists while every engine is healthy), and let the session layer see which
+  // engine binaries this machine actually has.
+  const stopEngineHealth = startEngineHealth();
+
   // --- Workflow engine (upstream port). Opt-in via config.workflows.enabled;
   // absent flag = no workflow DB, no trigger arming, no /api/workflows routes.
   // Constructed AFTER the server is listening (see below): the WorkflowService
@@ -1254,6 +1263,7 @@ export async function startGateway(
         // even when the connectors block didn't change.
         sessionManager.setConfig(currentConfig);
         configureClaudeAutoMemory(currentConfig.engines?.claude?.autoMemory);
+        warnEngineFallbackConfigProblems(currentConfig); // each problem is reported once
         logger.info("Config reloaded successfully");
         emit("config:reloaded", {});
 
@@ -1452,6 +1462,7 @@ export async function startGateway(
     // in progress (its CLI killed, its chat message blanked). Bounded and brief.
     await stopProviderAuth();
     clearInterval(modelRefreshTimer);
+    stopEngineHealth();
     modelManagement?.stop();
     stopScheduler();
     await stopCommandJobs();

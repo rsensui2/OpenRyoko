@@ -13,7 +13,7 @@ import cron from "node-cron";
 import type { CronJob, Engine, EngineRunOpts, IncomingMessage, JinnConfig, Session, Target } from "../shared/types.js";
 import { isInterruptibleEngine } from "../shared/types.js";
 import { runWithSessionGoal, sessionGoalOptions } from "../sessions/goal-execution.js";
-import { buildEngineSyncPrompt, clearEngineSyncMarker, engineSyncSince, maybeRevertEngineOverride, runEngineWithResponseTimeout, runFallbackAttempts, waitForEngineRetry } from "../sessions/engine-fallback.js";
+import { buildEngineSyncPrompt, clearEngineSyncMarker, engineOverrideAfterReset, engineSyncSince, failLimitThatOutlastsTheWait, maybeRevertEngineOverride, runEngineWithResponseTimeout, runFallbackAttempts, waitForEngineRetry } from "../sessions/engine-fallback.js";
 import { cleanupMcpConfigFile, resolveMcpServers, writeMcpConfigFile } from "../mcp/resolver.js";
 import type { SessionManager } from "../sessions/manager.js";
 import { buildContext } from "../sessions/context.js";
@@ -61,7 +61,7 @@ import { handleHookPost, LOOPBACK as HOOK_LOOPBACK } from "./hook-endpoint.js";
 import { resolveEffort } from "../shared/effort.js";
 import { explicitThread } from "../shared/threading.js";
 import { effortLevelsForModel, invalidateModelRegistry } from "../shared/models.js";
-import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit } from "../shared/rateLimit.js";
+import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit, MAX_USAGE_LIMIT_WAIT_MS } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt, recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { CronJobsReadError, loadJobs, readRunLog, runLogPath, saveJobs } from "../cron/jobs.js";
 import { getCronJobScheduleStatus, getSchedulerSnapshot, reloadScheduler } from "../cron/scheduler.js";
@@ -711,6 +711,10 @@ export async function handleApiRequest(
         Array.from(context.connectors.values()).map((connector) => [connector.name, connector.getHealth()]),
       );
       res.setHeader("Cache-Control", "no-store");
+      // `health` sits beside the fields below and changes none of them:
+      // `available` stays what it always was for whoever already reads it.
+      const { engineHealthForStatus } = await import("../sessions/engine-health-gate.js");
+      const health = engineHealthForStatus();
       return json(res, {
         status: "ok",
         uptime: Math.floor((Date.now() - context.startTime) / 1000),
@@ -720,9 +724,9 @@ export async function handleApiRequest(
           // `interactive` tells the web UI the Claude engine runs as a live PTY
           // (cc_entrypoint=cli, Max-subsidized) — so the CLI view can attach the
           // live xterm (/ws/pty) instead of the poll-based transcript.
-          claude: { model: config.engines.claude.model, available: true, interactive: config.engines.claude.interactive === true },
-          codex: { model: config.engines.codex.model, available: true },
-          ...(config.engines.gemini ? { gemini: { model: config.engines.gemini.model, available: true } } : {}),
+          claude: { model: config.engines.claude.model, available: true, interactive: config.engines.claude.interactive === true, health: health("claude") },
+          codex: { model: config.engines.codex.model, available: true, health: health("codex") },
+          ...(config.engines.gemini ? { gemini: { model: config.engines.gemini.model, available: true, health: health("gemini") } } : {}),
         },
         sessions: { total: sessions.length, running, active: running },
         connectors,
@@ -1032,7 +1036,11 @@ export async function handleApiRequest(
       context.sessionManager.getQueue().clearQueue(session.sessionKey || session.sourceRef || session.id);
       const meta = { ...(session.transportMeta || {}) } as Record<string, unknown>;
       delete meta["engineSessions"];
-      delete meta["engineOverride"];
+      // The override is kept: it is the session's way back to the engine it was
+      // moved off, and deleting it left the session on its fallback for good.
+      const override = engineOverrideAfterReset(meta["engineOverride"]);
+      if (override) meta["engineOverride"] = override;
+      else delete meta["engineOverride"];
       delete meta["engineSyncSince"];
       delete meta["claudeSyncSince"];
       updateSession(params.id, {
@@ -1043,7 +1051,7 @@ export async function handleApiRequest(
         transportMeta: meta as any,
       });
       ptySnapshotStore.deleteSync(params.id);
-      logger.info(`Session ${params.id} reset via API (cleared engineSessions, engineOverride, engineSessionId, lastError)`);
+      logger.info(`Session ${params.id} reset via API (cleared engineSessions, engineSessionId, lastError)`);
       context.emit("session:updated", { sessionId: params.id });
       return json(res, { status: "reset", sessionId: params.id });
     }
@@ -2979,7 +2987,7 @@ async function runWebSession(
       },
     });
     if (shouldStop()) return;
-    const result = fallback.result;
+    const result = failLimitThatOutlastsTheWait(fallback);
     const wasInterrupted = result.error?.startsWith("Interrupted");
     const rateLimit = !wasInterrupted ? detectRateLimit(result) : { limited: false as const };
 
@@ -2991,7 +2999,7 @@ async function runWebSession(
       const { delayMs, resumeAt } = computeNextRetryDelayMs(rateLimit.resetsAt);
       const deadlineMs = computeRateLimitDeadlineMs(
         rateLimit.resetsAt,
-        rateLimit.resetsAt ? 30 * 60_000 : 6 * 60 * 60_000,
+        rateLimit.resetsAt ? 30 * 60_000 : MAX_USAGE_LIMIT_WAIT_MS,
       );
 
       const resumeText = resumeAt
@@ -3058,10 +3066,15 @@ async function runWebSession(
 
           logger.info(`Web session ${currentSession.id} retrying after usage limit (attempt ${attempt})`);
 
-          const retryResult = await runTurn(engine, { ...initialOpts, prompt,
+          const retried = await runTurn(engine, { ...initialOpts, prompt,
             resumeSessionId: current.engineSessionId ?? undefined,
           });
           if (shouldStop()) return;
+          // Told that the next reset is further off than a turn waits for, the
+          // wait ends the way a turn that starts on such a limit does: failed
+          // now, with the reset time for its error — not slept through.
+          const retryResult = failLimitThatOutlastsTheWait({ result: retried, engine, attempted: false, session: currentSession });
+          const gaveUp = retryResult !== retried;
           const retryInterrupted = retryResult.error?.startsWith("Interrupted");
           const retryRateLimit = !retryInterrupted ? detectRateLimit(retryResult) : { limited: false as const };
 
@@ -3100,9 +3113,11 @@ async function runWebSession(
           });
 
           if (completedAfterRetry) {
-            notifyRateLimitResumed(completedAfterRetry);
-            notifyDiscordChannel(
-              `✅ ${engineLabel} usage limit cleared. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} resumed.`,
+            // A wait that was given up did not end with the limit clearing.
+            if (!gaveUp) notifyRateLimitResumed(completedAfterRetry);
+            notifyDiscordChannel(gaveUp
+              ? `❌ ${engineLabel} usage limit did not clear in time. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} has been stopped.`
+              : `✅ ${engineLabel} usage limit cleared. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} resumed.`,
             );
             notifyParentSession(completedAfterRetry, { result: retryResult.result, error: retryResult.error ?? null, cost: retryResult.cost, durationMs: retryResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
             if (deliverToConnector && retryResult.result && (!retryResult.error || retryResult.retryable === false)) {
@@ -3121,7 +3136,7 @@ async function runWebSession(
             durationMs: retryResult.durationMs,
           });
 
-          logger.info(`Web session ${currentSession.id} resumed after usage reset`);
+          logger.info(`Web session ${currentSession.id} ${gaveUp ? "stopped waiting: the next usage reset is too far off" : "resumed after usage reset"}`);
           return;
         }
 

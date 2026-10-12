@@ -37,7 +37,8 @@ import { workflowAttemptInterruptionCause } from "./workflow-interruptions.js";
 import { recordTurnAccounting } from "./accounting.js";
 import { runWithSessionGoal, sessionGoalOptions } from "./goal-execution.js";
 import { conversationOutcome } from "./conversation-outcome.js";
-import { buildEngineSyncPrompt, clearEngineSyncMarker, engineFallbackFailure, engineSyncSince, maybeRevertEngineOverride, runEngineWithResponseTimeout, runFallbackAttempts, waitForEngineRetry } from "./engine-fallback.js";
+import { buildEngineSyncPrompt, clearEngineSyncMarker, engineFallbackFailure, engineSyncSince, failLimitThatOutlastsTheWait, isAwayFromEngine, maybeRevertEngineOverride, runEngineWithResponseTimeout, runFallbackAttempts, waitForEngineRetry } from "./engine-fallback.js";
+import { startOnHealthyEngine } from "./new-session-engine.js";
 import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "./callbacks.js";
 import { buildContext } from "./context.js";
 import { normalizeDelivery, normalizeTurns, type DeliveryContext } from "./reply-disposition.js";
@@ -48,7 +49,7 @@ import { JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 import { resolveEffort } from "../shared/effort.js";
 import { effortLevelsForModel } from "../shared/models.js";
-import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit, isDeadSessionError, isPoisonedTranscriptError, isTransientServerError } from "../shared/rateLimit.js";
+import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit, isDeadSessionError, isPoisonedTranscriptError, isTransientServerError, MAX_USAGE_LIMIT_WAIT_MS, withEarlierProgress } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt, isLikelyNearClaudeUsageLimit, recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { buildSpeakerPrefix, type SpeakerPrefixMeta } from "./speaker-prefix.js";
 import { loadJobs } from "../cron/jobs.js";
@@ -356,6 +357,7 @@ export class SessionManager {
     if (await this.handleCommand(msg, connector)) return;
 
     let session = getSessionBySessionKey(msg.sessionKey);
+    let healthyStartNotice: string | undefined;
     if (!session) {
       session = createSession({
         engine: opts.engine ?? opts.employee?.engine ?? this.config.engines.default,
@@ -377,6 +379,10 @@ export class SessionManager {
         `Created new session ${session.id} for ${msg.sessionKey}` +
         (opts.employee ? ` (employee: ${opts.employee.name})` : ""),
       );
+      // An engine already known to be out of allowance is not worth a failed
+      // turn to rediscover: start on its fallback, under the same temporary
+      // override a mid-turn switch records.
+      ({ session, notice: healthyStartNotice } = startOnHealthyEngine(this.config, (name) => this.engines.get(name), session, opts));
     } else {
       const mergedMeta = mergeTransportMeta(session.transportMeta, msg.transportMeta);
       session = updateSession(session.id, {
@@ -391,6 +397,7 @@ export class SessionManager {
 
     const target = connector.reconstructTarget(msg.replyContext);
     target.messageTs ??= msg.messageId;
+    if (healthyStartNotice) await connector.replyMessage(target, healthyStartNotice).catch(() => {});
 
     const attachmentPaths = msg.attachments
       .map((attachment) => attachment.localPath)
@@ -475,6 +482,17 @@ export class SessionManager {
       if (this.config.sessions?.backgroundDelivery === false) return;
       const session = getSession(sessionId);
       if (!session) return;
+      // Hooks come from the interactive Claude PTY alone. While a Claude
+      // session is held on its fallback engine, that PTY was left behind by the
+      // switch: the fallback engine is answering the turn Claude failed, and
+      // whatever the PTY still reports would be a second answer to it, or the
+      // failure of a turn nobody waits on. Only that case is ignored — a
+      // conversation that merely borrowed Claude and has gone back to its own
+      // engine still gets what Claude finishes for it in the background.
+      if (isAwayFromEngine(session, "claude")) {
+        logger.info(`Ignoring a late ${hook.hook_event_name} hook for session ${sessionId}: it was moved to ${session.engine} and has not returned`);
+        return;
+      }
 
       if (hook.hook_event_name === "StopFailure") {
         // Background continuation failed — record it for operators, but don't
@@ -784,8 +802,9 @@ export class SessionManager {
       if (isPoisoned) {
         logger.warn(`Poisoned transcript for ${session.id} — clearing engine session id; not auto-retrying to avoid duplicate side effects`);
         const meta = { ...(session.transportMeta || {}) } as Record<string, unknown>;
+        // engineOverride stays: it is the session's way back to the engine it
+        // was moved off, and dropping it left the session on the substitute.
         delete meta["engineSessions"];
-        delete meta["engineOverride"];
         updateSession(session.id, { engineSessionId: null, transportMeta: meta as any });
         session = { ...session, engineSessionId: null, transportMeta: meta as any };
         // Blank the returned sessionId so the post-run persistence below does not
@@ -813,8 +832,7 @@ export class SessionManager {
       if (isDead) {
         logger.warn(`Dead session detected for ${session.id} — clearing stale engine IDs`);
         const meta = { ...(session.transportMeta || {}) } as Record<string, unknown>;
-        delete meta["engineSessions"];
-        delete meta["engineOverride"];
+        delete meta["engineSessions"]; // engineOverride stays, as above
         updateSession(session.id, {
           engineSessionId: null,
           transportMeta: meta as any,
@@ -879,7 +897,9 @@ export class SessionManager {
             await new Promise((r) => setTimeout(r, Math.min(20_000, delayMs - waited)));
           }
           const resumeId = result.sessionId?.trim() || session.engineSessionId || undefined;
-          result = await runEngine(engine, {
+          // Still the same turn: the continuation's result carries what the
+          // run it continues was seen doing, for whoever judges or takes over.
+          result = withEarlierProgress(result, await runEngine(engine, {
             prompt:
               "The previous response was interrupted by a temporary Anthropic API server error. " +
               "The conversation history up to that point is intact. Continue and complete the original request now. " +
@@ -895,7 +915,7 @@ export class SessionManager {
             remoteCwd: employee?.remoteCwd,
             mcpConfigPath,
             sessionId: session.id,
-          });
+          }));
           wasInterrupted = result.error?.startsWith("Interrupted");
           if (wasInterrupted || !isTransientServerError(result)) break;
         }
@@ -923,7 +943,7 @@ export class SessionManager {
             mcpConfigPath: targetEngine.name === "claude" ? mcpConfigPath : undefined };
         },
       });
-      result = fallback.result;
+      result = failLimitThatOutlastsTheWait(fallback);
       session = fallback.session;
       engine = fallback.engine;
       if (!getSession(session.id)) {
@@ -943,7 +963,7 @@ export class SessionManager {
         const { delayMs, resumeAt } = computeNextRetryDelayMs(rateLimit.resetsAt);
         const deadlineMs = computeRateLimitDeadlineMs(
           rateLimit.resetsAt,
-          rateLimit.resetsAt ? 30 * 60_000 : 6 * 60 * 60_000,
+          rateLimit.resetsAt ? 30 * 60_000 : MAX_USAGE_LIMIT_WAIT_MS,
         );
 
         const resumeText = resumeAt
@@ -1019,7 +1039,7 @@ export class SessionManager {
             }
 
             logger.info(`Session ${session.id} retrying after usage limit (attempt ${attempt})`);
-            const retryResult = await runEngine(engine, {
+            const retried = await runEngine(engine, {
               prompt: msg.text,
               resumeSessionId: currentSession.engineSessionId ?? undefined,
               systemPrompt,
@@ -1034,6 +1054,11 @@ export class SessionManager {
               attachments: attachments.length > 0 ? attachments : undefined,
               sessionId: session.id,
             });
+            // Told that the next reset is further off than a turn waits for, the
+            // wait ends the way a turn that starts on such a limit does: failed
+            // now, with the reset time for its answer — not slept through.
+            const retryResult = failLimitThatOutlastsTheWait({ result: retried, engine, attempted: false, session });
+            const gaveUp = retryResult !== retried;
 
             const retryInterrupted = retryResult.error?.startsWith("Interrupted");
             const retryRateLimit = !retryInterrupted ? detectRateLimit(retryResult) : { limited: false as const };
@@ -1094,20 +1119,25 @@ export class SessionManager {
               status: retryResult.error ? "error" : "idle",
               replyContext: msg.replyContext,
               messageId: msg.messageId ?? null,
-              transportMeta: msg.transportMeta ?? null,
+              // Merge like the normal completion below: replacing the stored
+              // meta here dropped an active engine override, and the session
+              // then never went back to the engine it was moved off.
+              transportMeta: mergeTransportMeta(getSession(session.id)?.transportMeta ?? session.transportMeta, msg.transportMeta),
               lastActivity: new Date().toISOString(),
               lastError: retryResult.error ?? null,
               ...(typeof retryResult.contextTokens === "number" ? { lastContextTokens: retryResult.contextTokens } : {}),
             });
             if (retryUpdated) {
               if (retryDelivery.failure !== undefined) recordUndeliveredTurn(retryUpdated, retryDelivery.failure);
-              notifyRateLimitResumed(retryUpdated);
-              notifyDiscordChannel(
-                `✅ ${session.engine} usage limit cleared. Session ${session.id}${session.employee ? ` (${session.employee})` : ""} resumed.`,
+              // A wait that was given up did not end with the limit clearing.
+              if (!gaveUp) notifyRateLimitResumed(retryUpdated);
+              notifyDiscordChannel(gaveUp
+                ? `❌ ${session.engine} usage limit did not clear in time. Session ${session.id}${session.employee ? ` (${session.employee})` : ""} has been stopped.`
+                : `✅ ${session.engine} usage limit cleared. Session ${session.id}${session.employee ? ` (${session.employee})` : ""} resumed.`,
               );
               notifyParentSession(retryUpdated, { result: retryResult.result, error: retryResult.error ?? null, cost: retryResult.cost, durationMs: retryResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
             }
-            logger.info(`Session ${session.id} resumed after usage reset`);
+            logger.info(`Session ${session.id} ${gaveUp ? "stopped waiting: the next usage reset is too far off" : "resumed after usage reset"}`);
             return;
           }
 

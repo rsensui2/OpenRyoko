@@ -179,7 +179,10 @@ describe("Web session engine fallback", () => {
     const reset = registry.getSession(fixture.session.id)!;
     expect(reset).toMatchObject({ status: "idle", engineSessionId: null, lastError: null });
     expect(reset.transportMeta?.engineSessions).toBeUndefined();
-    expect(reset.transportMeta?.engineOverride).toBeUndefined();
+    // The override is not an engine identifier but the session's way back to
+    // Codex. Asserting it gone pinned the session to Claude for good; a reset
+    // keeps it, without the Codex session it remembered.
+    expect(reset.transportMeta?.engineOverride).toMatchObject({ originalEngine: "codex", originalEngineSessionId: null });
     expect(registry.getMessages(fixture.session.id).some((item) => item.role === "assistant")).toBe(false);
   });
 
