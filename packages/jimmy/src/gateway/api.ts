@@ -2144,22 +2144,10 @@ Handle this as a priority request from a colleague.`;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const body = _parsed.body as any;
 
-      // Download attachments from Discord CDN URLs to local temp
-      const { downloadAttachment } = await import("../connectors/discord/format.js");
-      const { sanitizeIncomingDiscordMeta } = await import("../connectors/discord/remote.js");
-      const attachments = await Promise.all(
-        (body.attachments || []).map(async (att: { name: string; url: string; mimeType: string }) => {
-          if (att.url) {
-            try {
-              const localPath = await downloadAttachment(att.url, TMP_DIR, att.name);
-              return { name: att.name, url: att.url, mimeType: att.mimeType, localPath };
-            } catch {
-              return { name: att.name, url: att.url, mimeType: att.mimeType };
-            }
-          }
-          return att;
-        }),
-      );
+      // Download attachments from Discord CDN URLs to local temp. The names
+      // and URLs are the caller's: only https Discord CDN URLs are fetched.
+      const { downloadIncomingAttachments, sanitizeIncomingDiscordMeta } = await import("../connectors/discord/remote.js");
+      const attachments = await downloadIncomingAttachments(body.attachments, TMP_DIR);
 
       const incomingMsg: IncomingMessage = {
         connector: params.id,

@@ -1,4 +1,5 @@
 import type {
+  Attachment,
   Connector,
   ConnectorCapabilities,
   ConnectorHealth,
@@ -7,6 +8,7 @@ import type {
   Target,
 } from "../../shared/types.js";
 import { logger } from "../../shared/logger.js";
+import { downloadAttachment } from "./format.js";
 import {
   evaluateRespondPolicy,
   parseForwardedAddressing,
@@ -53,6 +55,37 @@ export function sanitizeIncomingDiscordMeta(meta: unknown): Record<string, unkno
   const raw = (meta && typeof meta === "object" ? meta : {}) as Record<string, unknown>;
   return Object.fromEntries(
     INCOMING_DISCORD_META_ALLOWLIST.flatMap((key) => (key in raw ? [[key, raw[key]] as const] : [])),
+  );
+}
+
+/** Discord serves attachment files from these hosts and no others. */
+const DISCORD_CDN_HOSTS = ["cdn.discordapp.com", "media.discordapp.net"];
+/** Largest routed attachment kept — the gateway's own upload limit. */
+const MAX_INCOMING_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+
+/**
+ * Fetch a routed message's attachments to `destDir`. Their names and URLs come
+ * straight from the request body, so only what a Discord primary really sends
+ * is fetched: an https URL on Discord's CDN, up to a size limit. Anything else
+ * stays as metadata without a local file — what a failed download has always
+ * looked like — and is never requested.
+ */
+export async function downloadIncomingAttachments(attachments: unknown, destDir: string): Promise<Attachment[]> {
+  if (!Array.isArray(attachments)) return [];
+  const listed = attachments.filter((att): att is Attachment => Boolean(att) && typeof att === "object");
+  return Promise.all(
+    listed.map(async (att) => {
+      if (!att.url) return att;
+      try {
+        const localPath = await downloadAttachment(att.url, destDir, att.name, {
+          allowedHosts: DISCORD_CDN_HOSTS,
+          maxBytes: MAX_INCOMING_ATTACHMENT_BYTES,
+        });
+        return { name: att.name, url: att.url, mimeType: att.mimeType, localPath };
+      } catch {
+        return { name: att.name, url: att.url, mimeType: att.mimeType };
+      }
+    }),
   );
 }
 
