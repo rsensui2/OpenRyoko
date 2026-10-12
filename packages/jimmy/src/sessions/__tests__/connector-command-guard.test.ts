@@ -118,6 +118,16 @@ describe("a message from somebody who is not the operator", () => {
     expect(delivered(message("1行目\r\n2行目\t(タブはそのまま)"))).toBe("1行目\n2行目\t(タブはそのまま)");
   });
 
+  it("is not turned into a blank prompt when it was nothing but control characters", () => {
+    // A blank prompt is one the CLI never submits: the turn would wait for an answer that cannot come.
+    for (const text of ["\u001b", "\u0000\u0007", "\u001b\u001b\r\n", " \u009b "]) {
+      const out = delivered(message(text));
+      expect(out.trim(), JSON.stringify(text)).toMatch(/^\[Chat message, delivered as plain text: .+\]$/);
+    }
+    const blank = message("   ");
+    expect(guardConnectorMessage(blank, CONFIG)).toBe(blank); // already blank on arrival: not this rule's to change
+  });
+
   it("is found behind a control character the terminal would have dropped", () => {
     for (const text of ["\u0001/logout", "\u0000\u0000/logout", "\u001b/logout", "\r/logout", "\u0001--resume", "\u0007exit"]) {
       const out = delivered(message(text));

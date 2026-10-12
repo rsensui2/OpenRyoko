@@ -128,6 +128,9 @@ function sentByOperator(msg: IncomingMessage, config: JinnConfig): boolean {
 export function guardConnectorMessage(msg: IncomingMessage, config: JinnConfig): IncomingMessage {
   if (GATEWAY_SOURCES.has(msg.source)) return msg;
   const text = withoutTerminalControls(msg.text);
+  // Nothing but control characters: a blank prompt is one the CLI never
+  // submits, and the turn would wait for an answer that cannot come.
+  if (!text.trim() && msg.text.trim()) return { ...msg, text: `${AS_TEXT}\n${text}` };
   const passedOn = text === msg.text ? msg : { ...msg, text };
   const seen = asSeen(text);
   if (!readsAsCliInput(seen)) return passedOn;
