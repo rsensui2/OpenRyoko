@@ -18,7 +18,7 @@ Update `jinn.version` in `config.yaml` from the previous migration version to `"
 - Gateway runs `caffeinate` to prevent macOS from sleeping while active
 
 ### v0.4.0 — Gateway-to-Gateway File Transfer
-- `POST /api/files/transfer` endpoint for remote file sharing between Jinn instances
+- `POST /api/files/transfer` endpoint for remote file sharing between Jinn instances (since removed, together with the `remotes` config key: do not use or configure it)
 - Claude crash recovery with retry and session resume on restart
 
 ### v0.5.0–v0.5.2 — Stability & Notifications
