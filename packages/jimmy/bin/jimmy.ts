@@ -444,4 +444,10 @@ program
     await runChromeAllow(opts);
   });
 
-program.parse();
+// Every command runs through here: a config.yaml that cannot be loaded ends the
+// CLI with two lines and exit code 1 instead of a stack trace (see
+// src/cli/config-failure.ts). Any other failure is thrown on as before.
+program.parseAsync().catch(async (error: unknown) => {
+  const { exitOnConfigFailure } = await import("../src/cli/config-failure.js");
+  exitOnConfigFailure(error);
+});

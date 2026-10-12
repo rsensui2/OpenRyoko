@@ -26,3 +26,11 @@ export class ConfigSyntaxError extends Error {
     this.name = "ConfigSyntaxError";
   }
 }
+
+/** There is no config.yaml where one is expected: the instance was never set up. */
+export class ConfigNotFoundError extends Error {
+  constructor(configPath: string) {
+    super(`Ryoko config not found at ${configPath}. Run "ryoko setup" first.`);
+    this.name = "ConfigNotFoundError";
+  }
+}
