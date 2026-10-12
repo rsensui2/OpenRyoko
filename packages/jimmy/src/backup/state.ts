@@ -5,7 +5,12 @@ import { BACKUP_TARGETS, type BackupRunReport, type BackupTargetName } from "./r
 
 /** A target is due once its last success is this old. */
 export const BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
-/** A target that failed is tried again after this long, rather than on every check. */
+/**
+ * A target that failed is tried again after this long, rather than on every
+ * check. That is for a failure that may have passed: a full disk, a database
+ * that could not be read. One that trying again cannot change waits a whole
+ * BACKUP_INTERVAL_MS, the next daily run, like a success would.
+ */
 export const RETRY_AFTER_FAILURE_MS = 60 * 60 * 1000;
 export const BACKUP_STATE_FILE = "backup-state.json";
 
@@ -14,6 +19,8 @@ export interface TargetState {
   lastSuccessAt?: string;
   /** Present while the latest attempt is a failure. */
   lastError?: string;
+  /** Beside `lastError`, when that failure is one trying again cannot change. */
+  lastErrorPersistent?: true;
 }
 
 /**
@@ -35,6 +42,7 @@ function parseTarget(value: unknown): TargetState | null {
   for (const key of ["lastAttemptAt", "lastSuccessAt", "lastError"] as const) {
     if (typeof raw[key] === "string") target[key] = raw[key];
   }
+  if (target.lastError !== undefined && raw.lastErrorPersistent === true) target.lastErrorPersistent = true;
   return target;
 }
 
@@ -82,6 +90,7 @@ export function applyRunReport(state: BackupState, report: BackupRunReport): Bac
         lastAttemptAt: report.startedAt,
         ...(previous?.lastSuccessAt ? { lastSuccessAt: previous.lastSuccessAt } : {}),
         lastError: target.error ?? "failed",
+        ...(target.persistent ? { lastErrorPersistent: true as const } : {}),
       }
       : { lastAttemptAt: report.startedAt, lastSuccessAt: report.startedAt };
   }
@@ -114,8 +123,9 @@ export function dueTargets(state: BackupState, now: Date): BackupTargetName[] {
     const target = state.targets[name] ?? {};
     const sinceSuccess = elapsedSince(target.lastSuccessAt, now);
     if (sinceSuccess !== null && sinceSuccess < BACKUP_INTERVAL_MS) return false;
+    if (target.lastError === undefined) return true;
     const sinceAttempt = elapsedSince(target.lastAttemptAt, now);
-    const backingOff = target.lastError !== undefined && sinceAttempt !== null && sinceAttempt < RETRY_AFTER_FAILURE_MS;
-    return !backingOff;
+    const wait = target.lastErrorPersistent ? BACKUP_INTERVAL_MS : RETRY_AFTER_FAILURE_MS;
+    return sinceAttempt === null || sinceAttempt >= wait;
   });
 }

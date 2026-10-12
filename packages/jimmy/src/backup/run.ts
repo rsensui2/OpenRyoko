@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { createDailyDatabaseBackup, type DatabaseBackupName } from "../sessions/backup.js";
 import { ensureOwnerOnlyDirectory } from "../shared/owner-only.js";
 import { getDiskSpaceStatus, type DiskSpaceStatus } from "../shared/storage-health.js";
-import { createHomeArchive } from "./archive.js";
+import { ArchiveTooLargeError, createHomeArchive, NothingToArchiveError } from "./archive.js";
 import { pruneBackups, reserveArchiveName } from "./catalog.js";
 import { errorMessage } from "./format.js";
 import { databasePath } from "./layout.js";
@@ -22,6 +22,13 @@ export interface BackupTargetReport {
   /** Why a skipped target wrote nothing. */
   detail?: string;
   error?: string;
+  /**
+   * Set on a failure that trying again cannot change: a home over the size cap
+   * is over it an hour later too, and stays so until the operator raises the
+   * cap or moves the bulk out. The scheduler leaves these for the next daily
+   * run instead of retrying every hour.
+   */
+  persistent?: true;
   warnings: string[];
 }
 
@@ -115,12 +122,20 @@ async function backupDatabase(name: DatabaseBackupName, options: BackupRunOption
   }
 }
 
+/** True for a failure that follows from what the home holds, not from what happened to go wrong this time. */
+function failsTheSameWayAgain(error: unknown): boolean {
+  return error instanceof ArchiveTooLargeError || error instanceof NothingToArchiveError;
+}
+
 /** One target, with whatever it throws turned into its own failed report. */
 async function runTarget(name: BackupTargetName, options: BackupRunOptions): Promise<BackupTargetReport> {
   try {
     return name === "home" ? await backupHome(options) : await backupDatabase(name, options);
   } catch (error) {
-    return { name, status: "failed", error: errorMessage(error), warnings: [] };
+    return {
+      name, status: "failed", error: errorMessage(error), warnings: [],
+      ...(failsTheSameWayAgain(error) ? { persistent: true as const } : {}),
+    };
   }
 }
 

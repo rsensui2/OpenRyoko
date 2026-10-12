@@ -78,7 +78,13 @@ function statusOf(settings: BackupSettings, state: BackupState): BackupStatus {
 
 function logReport(report: BackupRunReport): void {
   for (const target of report.targets) {
-    if (target.status === "failed") logger.error(`Backup failed (${target.name}): ${target.error ?? "unknown error"}`);
+    if (target.status === "failed") {
+      // Said in the log because it is otherwise invisible: after this line there is a day of silence.
+      const next = target.persistent
+        ? ' This will not be retried until the next daily backup; once the cause is fixed, "ryoko backup run" takes one straight away.'
+        : "";
+      logger.error(`Backup failed (${target.name}): ${target.error ?? "unknown error"}${next}`);
+    }
     if (target.status === "ok") {
       const size = target.bytes === undefined ? "" : ` (${formatBytes(target.bytes)})`;
       logger.info(`Backup written (${target.name})${target.file ? `: ${target.file}` : ""}${size}`);

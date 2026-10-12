@@ -27,8 +27,11 @@ interface Harness {
   calls: BackupRunOptions[];
   scheduler: BackupScheduler;
   database: Database.Database;
-  /** What the next runs report, by target. Anything not named succeeds. */
-  outcomes: Partial<Record<BackupTargetName, "ok" | "skipped" | "failed">>;
+  /**
+   * What the next runs report, by target. Anything not named succeeds.
+   * "failed for good" is a failure trying again cannot change, like a home over the size cap.
+   */
+  outcomes: Partial<Record<BackupTargetName, "ok" | "skipped" | "failed" | "failed for good">>;
   config: BackupConfig;
 }
 
@@ -37,8 +40,11 @@ const databases: Database.Database[] = [];
 
 function reportFor(options: BackupRunOptions, outcomes: Harness["outcomes"]): BackupRunReport {
   const targets = (options.targets ?? ["home", "sessions", "workflows"]).map((name) => {
-    const status = outcomes[name] ?? "ok";
-    return { name, status, warnings: [], ...(status === "failed" ? { error: `${name} could not be written` } : {}) };
+    const outcome = outcomes[name] ?? "ok";
+    if (outcome === "failed for good") {
+      return { name, status: "failed" as const, warnings: [], error: `${name} is over the limit`, persistent: true as const };
+    }
+    return { name, status: outcome, warnings: [], ...(outcome === "failed" ? { error: `${name} could not be written` } : {}) };
   });
   return {
     directory: options.settings.directory,
@@ -158,6 +164,28 @@ describe("startBackupScheduler", () => {
     harness.outcomes = {};
     await vi.advanceTimersByTimeAsync(30 * MINUTE_MS);
     expect(targetsOf(harness)).toEqual([["home", "sessions", "workflows"], ["workflows"]]);
+  });
+
+  it("leaves a failure that trying again cannot change until the next daily run, and logs it once a day", async () => {
+    const harness = start();
+    harness.outcomes = { home: "failed for good" };
+
+    await vi.advanceTimersByTimeAsync(23 * HOUR_MS + 45 * MINUTE_MS);
+
+    // One attempt in the day, so one error line in the log - not twenty-four of each.
+    expect(targetsOf(harness)).toEqual([["home", "sessions", "workflows"]]);
+    const errors = vi.mocked(logger.error).mock.calls.map(([line]) => line);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("Backup failed (home): home is over the limit");
+    expect(errors[0]).toMatch(/not be retried until the next daily backup/);
+    expect(getBackupStatus()).toMatchObject({ level: "warning", targets: { home: { error: "home is over the limit" } } });
+
+    // The next day it is tried again with everything else, and can succeed once the cause is gone.
+    harness.outcomes = {};
+    await vi.advanceTimersByTimeAsync(30 * MINUTE_MS);
+
+    expect(targetsOf(harness)).toEqual([["home", "sessions", "workflows"], ["home", "sessions", "workflows"]]);
+    expect(getBackupStatus().level).toBe("ok");
   });
 
   it("logs a failed target as an error and a written one as info", async () => {

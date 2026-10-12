@@ -94,6 +94,28 @@ describe("runBackup", () => {
     expect(listBackups(path.join(home, "backups")).map((item) => item.kind).sort()).toEqual(["sessions", "workflows"]);
   });
 
+  it("marks a failure that trying again cannot change, and only that kind", async () => {
+    const root = tempDir();
+    const tooLarge = makeHome(root, "too-large", { sessionRows: 1 });
+    writeTree(tooLarge, { "knowledge/dump.bin": "x".repeat(3 * 1024 * 1024), "workflows/workflows.db": "this is not a database" });
+    const empty = path.join(root, "empty");
+    writeTree(empty, { "logs/gateway.log": "nothing here is an archive target\n" });
+
+    const overCap = byName(await runBackup(optionsFor(tooLarge, { maxArchiveMb: 1 })));
+    const nothing = byName(await runBackup(optionsFor(empty)));
+    const diskFull = byName(await runBackup(optionsFor(makeHome(root, "full"), {}, { diskSpace: () => FULL })));
+
+    // The home will be just as large an hour from now, and just as empty.
+    expect(overCap.home).toMatchObject({ status: "failed", persistent: true });
+    expect(nothing.home).toMatchObject({ status: "failed", persistent: true, error: expect.stringMatching(/nothing to archive/) });
+    // A database that cannot be read, or a disk that is full, may well be fine by then.
+    expect(overCap.workflows!.status).toBe("failed");
+    expect(overCap.workflows!.persistent).toBeUndefined();
+    expect(diskFull.home!.status).toBe("failed");
+    expect(diskFull.home!.persistent).toBeUndefined();
+    expect(overCap.sessions!.persistent).toBeUndefined();
+  });
+
   it("writes nothing when the disk is nearly full, and still trims what has expired", async () => {
     const home = makeHome(tempDir(), "home", { sessionRows: 4 });
     const directory = path.join(home, "backups");

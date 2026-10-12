@@ -20,12 +20,16 @@ const NOW = new Date("2026-10-12T03:00:00.000Z");
 const ago = (ms: number): string => new Date(NOW.getTime() - ms).toISOString();
 const HOUR_MS = 60 * 60 * 1000;
 
-function report(statuses: Record<string, "ok" | "skipped" | "failed">, startedAt = NOW): BackupRunReport {
-  const targets = Object.entries(statuses).map(([name, status]) => ({
+/** "failed for good" is a failure that trying again cannot change, like a home over the size cap. */
+type Outcome = "ok" | "skipped" | "failed" | "failed for good";
+
+function report(statuses: Record<string, Outcome>, startedAt = NOW): BackupRunReport {
+  const targets = Object.entries(statuses).map(([name, outcome]) => ({
     name: name as "home",
-    status,
+    status: outcome === "failed for good" ? "failed" as const : outcome,
     warnings: [],
-    ...(status === "failed" ? { error: `${name} broke` } : {}),
+    ...(outcome === "failed" || outcome === "failed for good" ? { error: `${name} broke` } : {}),
+    ...(outcome === "failed for good" ? { persistent: true as const } : {}),
   }));
   return {
     directory: "/backups",
@@ -86,6 +90,24 @@ describe("dueTargets", () => {
     expect(RETRY_AFTER_FAILURE_MS).toBe(HOUR_MS);
   });
 
+  it("waits for the next daily run after a failure that trying again cannot change", () => {
+    // A home over the size cap is over it an hour later too. Retrying hourly
+    // only repeats the same error twenty-four times a day.
+    const failedForGood = (elapsed: number): BackupState => ({
+      version: 1,
+      targets: {
+        home: { lastAttemptAt: ago(elapsed), lastSuccessAt: ago(72 * HOUR_MS), lastError: "over the limit", lastErrorPersistent: true },
+        sessions: { lastAttemptAt: ago(elapsed), lastSuccessAt: ago(elapsed) },
+        workflows: { lastAttemptAt: ago(elapsed), lastSuccessAt: ago(elapsed) },
+      },
+    });
+
+    expect(dueTargets(failedForGood(RETRY_AFTER_FAILURE_MS), NOW)).toEqual([]);
+    expect(dueTargets(failedForGood(23 * HOUR_MS), NOW)).toEqual([]);
+    expect(dueTargets(failedForGood(BACKUP_INTERVAL_MS - 1), NOW)).toEqual([]);
+    expect(dueTargets(failedForGood(BACKUP_INTERVAL_MS), NOW)).toEqual(["home", "sessions", "workflows"]);
+  });
+
   it("does not let a timestamp from the future hold a backup off", () => {
     const tomorrow = new Date(NOW.getTime() + 24 * HOUR_MS).toISOString();
     const state: BackupState = {
@@ -121,11 +143,23 @@ describe("applyRunReport", () => {
   });
 
   it("clears the recorded error once the target succeeds again", () => {
-    const before: BackupState = { version: 1, targets: { home: { lastAttemptAt: ago(HOUR_MS), lastError: "disk full" } } };
+    const before: BackupState = {
+      version: 1,
+      targets: { home: { lastAttemptAt: ago(HOUR_MS), lastError: "over the limit", lastErrorPersistent: true } },
+    };
 
     expect(applyRunReport(before, report({ home: "ok" })).targets.home).toEqual({
       lastAttemptAt: NOW.toISOString(), lastSuccessAt: NOW.toISOString(),
     });
+  });
+
+  it("remembers whether a failure is one that trying again cannot change", () => {
+    const next = applyRunReport({ version: 1, targets: {} }, report({ home: "failed for good", sessions: "failed" }));
+
+    expect(next.targets.home).toEqual({ lastAttemptAt: NOW.toISOString(), lastError: "home broke", lastErrorPersistent: true });
+    expect(next.targets.sessions).toEqual({ lastAttemptAt: NOW.toISOString(), lastError: "sessions broke" });
+    // The same target failing for an ordinary reason next time goes back to the hourly retry.
+    expect(applyRunReport(next, report({ home: "failed" })).targets.home).toEqual({ lastAttemptAt: NOW.toISOString(), lastError: "home broke" });
   });
 
   it("leaves targets the run did not touch as they were", () => {
@@ -164,7 +198,8 @@ describe("mergeStates", () => {
 describe("backup state file", () => {
   it("round-trips through an owner-only file", () => {
     const directory = tempDir();
-    const state = applyRunReport({ version: 1, targets: {} }, report({ home: "ok", sessions: "failed" }));
+    const state = applyRunReport({ version: 1, targets: {} }, report({ home: "failed for good", sessions: "failed", workflows: "ok" }));
+    expect(state.targets.home!.lastErrorPersistent).toBe(true);
 
     writeBackupState(directory, state);
 
@@ -189,7 +224,7 @@ describe("backup state file", () => {
     fs.writeFileSync(path.join(directory, BACKUP_STATE_FILE), JSON.stringify({
       version: 1,
       targets: {
-        home: { lastAttemptAt: NOW.toISOString(), lastSuccessAt: 12345, lastError: { nested: true } },
+        home: { lastAttemptAt: NOW.toISOString(), lastSuccessAt: 12345, lastError: { nested: true }, lastErrorPersistent: "yes" },
         registry: { lastAttemptAt: NOW.toISOString() },
       },
     }));
