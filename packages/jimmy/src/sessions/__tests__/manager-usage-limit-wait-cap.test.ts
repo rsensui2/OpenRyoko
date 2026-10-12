@@ -129,11 +129,15 @@ describe("a usage limit with nowhere to switch to", () => {
   // The 5h window reopens, the parked turn is tried again, and the engine now
   // names the weekly window: a reset no longer worth waiting for either. The
   // wait ends the way a turn that starts on such a limit does.
+  //
+  // (The first reset is five minutes off rather than hours: every half-second
+  // of a simulated wait is a timer and a registry read, and hours of them made
+  // this test time out on a loaded machine.)
   it("stops waiting when the retry after the reset is told the next reset is days away, and says when that is", async () => {
     vi.useFakeTimers();
     const f = setup();
     let nextReset = 0;
-    f.claudeRun.mockImplementationOnce(async () => limitedUntil(2 * HOUR)).mockImplementationOnce(async () => {
+    f.claudeRun.mockImplementationOnce(async () => limitedUntil(5 * 60_000)).mockImplementationOnce(async () => {
       const weekly = limitedUntil(5 * 24 * HOUR);
       nextReset = weekly.rateLimit!.resetsAt!;
       return weekly;
@@ -143,7 +147,7 @@ describe("a usage limit with nowhere to switch to", () => {
     try {
       await vi.waitFor(() => expect(getSessionBySessionKey(msg.sessionKey)?.status).toBe("waiting"));
 
-      await vi.advanceTimersByTimeAsync(2 * HOUR + 60_000);
+      await vi.advanceTimersByTimeAsync(6 * 60_000);
 
       expect(f.claudeRun).toHaveBeenCalledTimes(2);
       const session = getSessionBySessionKey(msg.sessionKey)!;
@@ -176,7 +180,18 @@ describe("a usage limit with nowhere to switch to", () => {
     try {
       await vi.waitFor(() => expect(getSessionBySessionKey(msg.sessionKey)?.status).toBe("waiting"));
 
-      await vi.advanceTimersByTimeAsync(6 * HOUR + 2 * 60_000);
+      // A few of the minute-by-minute retries, each told the same thing …
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+      expect(getSessionBySessionKey(msg.sessionKey)?.status).toBe("waiting");
+      expect(f.claudeRun.mock.calls.length).toBeGreaterThanOrEqual(3);
+      // … then most of the six hours in one step. The wait is bounded by the
+      // clock, so moving the clock is enough; running every half-second of six
+      // hours made this test time out on a loaded machine.
+      vi.setSystemTime(Date.now() + 5 * HOUR + 50 * 60_000);
+      await vi.advanceTimersByTimeAsync(2 * 60_000);
+      expect(getSessionBySessionKey(msg.sessionKey)?.status).toBe("waiting"); // five minutes short of six hours
+      vi.setSystemTime(Date.now() + 10 * 60_000);
+      await vi.advanceTimersByTimeAsync(2 * 60_000);
       await pending;
 
       expect(getSessionBySessionKey(msg.sessionKey)).toMatchObject({ status: "error", lastError: "claude usage limit did not clear in time" });
