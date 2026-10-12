@@ -783,8 +783,9 @@ export class SessionManager {
       if (isPoisoned) {
         logger.warn(`Poisoned transcript for ${session.id} — clearing engine session id; not auto-retrying to avoid duplicate side effects`);
         const meta = { ...(session.transportMeta || {}) } as Record<string, unknown>;
+        // engineOverride stays: it is the session's way back to the engine it
+        // was moved off, and dropping it left the session on the substitute.
         delete meta["engineSessions"];
-        delete meta["engineOverride"];
         updateSession(session.id, { engineSessionId: null, transportMeta: meta as any });
         session = { ...session, engineSessionId: null, transportMeta: meta as any };
         // Blank the returned sessionId so the post-run persistence below does not
@@ -812,8 +813,7 @@ export class SessionManager {
       if (isDead) {
         logger.warn(`Dead session detected for ${session.id} — clearing stale engine IDs`);
         const meta = { ...(session.transportMeta || {}) } as Record<string, unknown>;
-        delete meta["engineSessions"];
-        delete meta["engineOverride"];
+        delete meta["engineSessions"]; // engineOverride stays, as above
         updateSession(session.id, {
           engineSessionId: null,
           transportMeta: meta as any,
@@ -1094,7 +1094,10 @@ export class SessionManager {
               status: retryResult.error ? "error" : "idle",
               replyContext: msg.replyContext,
               messageId: msg.messageId ?? null,
-              transportMeta: msg.transportMeta ?? null,
+              // Merge like the normal completion below: replacing the stored
+              // meta here dropped an active engine override, and the session
+              // then never went back to the engine it was moved off.
+              transportMeta: mergeTransportMeta(getSession(session.id)?.transportMeta ?? session.transportMeta, msg.transportMeta),
               lastActivity: new Date().toISOString(),
               lastError: retryResult.error ?? null,
               ...(typeof retryResult.contextTokens === "number" ? { lastContextTokens: retryResult.contextTokens } : {}),
