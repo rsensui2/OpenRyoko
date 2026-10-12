@@ -385,6 +385,7 @@ export async function startGateway(
             triage: cfg.connectors.slack.triage,
             goalExtraction: cfg.connectors.slack.goalExtraction,
             agentsCanvas: cfg.connectors.slack.agentsCanvas,
+            providerAuth: cfg.connectors.slack.providerAuth,
           },
           {
             getModelManagement: () => modelManagement,

@@ -552,6 +552,14 @@ export interface SlackConnectorConfig {
     /** Max sessions rendered per status group. Default 10. */
     maxPerGroup?: number;
   };
+  /**
+   * Re-login to Claude / Codex from the operator's own Slack DM, for hosts
+   * with no shell to log in from. Off unless `enabled` is exactly true, and
+   * inert until `portal.operatorSlackId` is set. See docs/connectors.md.
+   */
+  providerAuth?: {
+    enabled?: boolean;
+  };
 }
 
 /** Response mode for one Discord conversation scope. */
