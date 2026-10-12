@@ -6,7 +6,8 @@ import type { IncomingMessage as HttpRequest, ServerResponse } from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ATTACHMENTS_DIR } from "../../shared/attachments.js";
 import { JINN_HOME, TMP_DIR } from "../../shared/paths.js";
-import type { Connector, IncomingMessage } from "../../shared/types.js";
+import { RemoteDiscordConnector } from "../../connectors/discord/remote.js";
+import type { Connector, DiscordRespondToConfig, IncomingMessage } from "../../shared/types.js";
 import { handleApiRequest, type ApiContext } from "../api.js";
 
 /* POST /api/connectors/:id/incoming takes a routed Discord message from a
@@ -24,6 +25,9 @@ function remoteConnector(): Connector {
   return { name: "discord", deliverMessage: (msg: IncomingMessage) => { delivered.push(msg); } } as unknown as Connector;
 }
 
+/** The connector the route finds under "discord"; the stand-in above unless a test puts the real one there. */
+let connector: Connector;
+
 async function postIncoming(body: unknown) {
   const raw = JSON.stringify(body);
   const req = Readable.from([Buffer.from(raw)]) as unknown as HttpRequest;
@@ -40,7 +44,7 @@ async function postIncoming(body: unknown) {
   } as unknown as ServerResponse;
   const context = {
     getConfig: () => ({ gateway: {}, connectors: {}, engines: { default: "claude" } }),
-    connectors: new Map([["discord", remoteConnector()]]), sessionManager: {}, emit: () => {}, startTime: Date.now(),
+    connectors: new Map([["discord", connector]]), sessionManager: {}, emit: () => {}, startTime: Date.now(),
   } as unknown as ApiContext;
   await handleApiRequest(req, res, context);
   return { status, body: chunks.length ? JSON.parse(chunks.join("")) : null };
@@ -62,6 +66,7 @@ beforeEach(() => {
   fs.mkdirSync(TMP_DIR, { recursive: true });
   created = [];
   delivered.length = 0;
+  connector = remoteConnector();
   outbound.mockReset().mockImplementation(async () => new Response("file-bytes"));
   vi.stubGlobal("fetch", outbound);
 });
@@ -204,5 +209,58 @@ describe("POST /api/connectors/:id/incoming attachments", () => {
     await postIncoming(message([{ name: { toString: "x" }, mimeType: 42, url: ["http://a"], extra: "field", size: 10 }, "not-an-object", null]));
     expect(outbound).not.toHaveBeenCalled();
     expect(delivered[0].attachments).toEqual([{}]);
+  });
+});
+
+describe("POST /api/connectors/:id/incoming and messages the connector stays silent on", () => {
+  /* The route used to fetch and save a routed message's attachments first and
+   * hand the message to the connector afterwards — which then dropped it when
+   * its respondTo setting said so, files and all. Every message in a channel
+   * the primary routes here left its attachments on this instance's disk,
+   * answered or not. */
+  function realConnector(respondTo: DiscordRespondToConfig) {
+    const remote = new RemoteDiscordConnector({ proxyVia: "http://primary.invalid:7777", respondTo });
+    remote.onMessage((msg) => { delivered.push(msg); });
+    return remote as unknown as Connector;
+  }
+  const routed = (transportMeta: Record<string, unknown>) => ({
+    ...message([{ name: "photo.png", url: CDN, mimeType: "image/png" }]),
+    transportMeta,
+  });
+
+  it("does not fetch the attachments of a message it will not answer", async () => {
+    connector = realConnector({ channel: "mention" });
+
+    const answer = await postIncoming(routed({ isDM: false, wasBotAddressed: false, isEngagedThread: false }));
+
+    expect(answer.status).toBe(200);
+    expect(delivered).toEqual([]);
+    expect(outbound).not.toHaveBeenCalled();
+    expect(fs.existsSync(ATTACHMENTS_DIR) ? fs.readdirSync(ATTACHMENTS_DIR) : []).toEqual([]);
+  });
+
+  it("does not fetch them for a message addressed to somebody else either", async () => {
+    connector = realConnector({ channel: "always" });
+
+    await postIncoming(routed({ isDM: false, wasBotAddressed: false, isEngagedThread: false, addressesOnlyOthers: true }));
+
+    expect(delivered).toEqual([]);
+    expect(outbound).not.toHaveBeenCalled();
+  });
+
+  it("fetches them for a message it answers, and hands them over with it", async () => {
+    connector = realConnector({ channel: "mention" });
+
+    await postIncoming(routed({ isDM: false, wasBotAddressed: true, isEngagedThread: false }));
+
+    expect(outbound).toHaveBeenCalledTimes(1);
+    expect(delivered).toHaveLength(1);
+    expect(fs.readFileSync(delivered[0].attachments[0].localPath!, "utf-8")).toBe("file-bytes");
+  });
+
+  it("still fetches for a connector that cannot say beforehand (an older build)", async () => {
+    await postIncoming(routed({ isDM: false }));
+    expect(outbound).toHaveBeenCalledTimes(1);
+    expect(delivered).toHaveLength(1);
   });
 });

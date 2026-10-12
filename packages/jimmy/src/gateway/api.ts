@@ -2146,7 +2146,11 @@ Handle this as a priority request from a colleague.`;
       // Download attachments from Discord CDN URLs to local temp. The names
       // and URLs are the caller's: only https Discord CDN URLs are fetched.
       const { downloadIncomingAttachments, sanitizeIncomingDiscordMeta } = await import("../connectors/discord/remote.js");
-      const attachments = await downloadIncomingAttachments(body.attachments, newAttachmentDir());
+      // Only for a message the connector is going to hand on: one it stays
+      // silent on (respondTo, addressed to somebody else) is not fetched first.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const wanted: boolean = (connector as any).willDeliver?.(sanitizeIncomingDiscordMeta(body.transportMeta)) ?? true;
+      const attachments = wanted ? await downloadIncomingAttachments(body.attachments, newAttachmentDir()) : [];
 
       const incomingMsg: IncomingMessage = {
         connector: params.id,

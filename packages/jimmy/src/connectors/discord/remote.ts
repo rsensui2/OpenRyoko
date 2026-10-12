@@ -143,7 +143,7 @@ export class RemoteDiscordConnector implements Connector {
     // (never drop an "always" message on missing metadata). Warn once, and
     // only when a message actually lands in a mention-gated scope, so the
     // required upgrade order is visible instead of a silent blackhole.
-    const { present, flags } = parseForwardedAddressing(meta);
+    const { present } = parseForwardedAddressing(meta);
     if (
       !present &&
       resolveRespondMode(this.respondTo, scopeForChannel(isDM)) === "mention" &&
@@ -154,27 +154,43 @@ export class RemoteDiscordConnector implements Connector {
         "[discord-remote] primary instance does not forward addressing metadata (its version predates respondTo) — routed messages in mention scopes are dropped until the primary is upgraded",
       );
     }
+    const silence = this.silenceReason(meta);
+    if (silence) {
+      logger.info(`[discord-remote] ${silence} for message ${msg.messageId}`);
+      return;
+    }
+    if (this.handler) {
+      this.handler(msg);
+    }
+  }
+
+  /**
+   * Why a routed message with this transportMeta is dropped instead of handed
+   * on, or null when it is handed on. Decided from what the primary says about
+   * the message and from this connector's respondTo alone.
+   */
+  private silenceReason(meta: Record<string, unknown>): string | null {
+    const isDM = meta.isDM === true;
+    const { flags } = parseForwardedAddressing(meta);
     const respondDecision = evaluateRespondPolicy({
       config: this.respondTo,
       isDM,
       wasMentioned: flags.wasBotAddressed,
       isEngagedThread: flags.isEngagedThread,
     });
-    if (!respondDecision.allow) {
-      logger.info(
-        `[discord-remote] respondTo gate → silent (${respondDecision.reason}) for message ${msg.messageId}`,
-      );
-      return;
-    }
-    if (!isDM && flags.addressesOnlyOthers) {
-      logger.info(
-        `[discord-remote] message addresses other user(s) — staying silent for message ${msg.messageId}`,
-      );
-      return;
-    }
-    if (this.handler) {
-      this.handler(msg);
-    }
+    if (!respondDecision.allow) return `respondTo gate → silent (${respondDecision.reason})`;
+    if (!isDM && flags.addressesOnlyOthers) return "message addresses other user(s) — staying silent";
+    return null;
+  }
+
+  /**
+   * Whether {@link deliverMessage} will hand on a message with this
+   * transportMeta. The /incoming route asks before it fetches the message's
+   * attachments: what is going to be dropped is not downloaded first.
+   */
+  willDeliver(transportMeta: unknown): boolean {
+    const meta = (transportMeta && typeof transportMeta === "object" ? transportMeta : {}) as Record<string, unknown>;
+    return this.handler !== null && this.silenceReason(meta) === null;
   }
 
   async start(): Promise<void> {
