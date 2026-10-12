@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { expectPosixMode, POSIX_MODES_SUPPORTED } from "../../shared/test-support/posix-mode.js";
 import type { DiskSpaceStatus } from "../../shared/storage-health.js";
 import { createHomeArchive, inspectHomeArchive } from "../archive.js";
@@ -23,6 +23,7 @@ const TAKEN = new Date("2026-10-12T03:00:00.000Z");
 const NOW = new Date("2026-10-12T09:30:00.000Z");
 const ROOMY: DiskSpaceStatus = { level: "ok", freeBytes: 50 * 1024 ** 3, totalBytes: 100 * 1024 ** 3, freePercent: 50 };
 const FULL: DiskSpaceStatus = { level: "critical", freeBytes: 12 * 1024 ** 2, totalBytes: 100 * 1024 ** 3, freePercent: 0.01 };
+const IS_ROOT = typeof process.getuid === "function" && process.getuid() === 0;
 
 interface Scene {
   root: string;
@@ -214,6 +215,54 @@ describe("restoreHomeArchive", () => {
     expectPosixMode(path.join(target.home, "config.yaml"), 0o600);
   });
 
+  it("still restores when the staging directory is on another filesystem than the destination", async () => {
+    // rename(2) cannot cross a mount. A home whose tmp/ is its own mount gets
+    // EXDEV for every staged file, and has to be served by copying instead.
+    const target = await scene();
+    fs.writeFileSync(path.join(target.home, "config.yaml"), "broken\n");
+    fs.rmSync(path.join(target.home, "skills", "demo", "run.sh"));
+    const realRename = fs.renameSync;
+    const crossings: string[] = [];
+    const rename = vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (String(from).includes(`${path.sep}tmp${path.sep}restore-`)) {
+        crossings.push(String(to));
+        throw Object.assign(new Error("EXDEV: cross-device link not permitted"), { code: "EXDEV" });
+      }
+      realRename(from, to);
+    });
+    try {
+      await restoreHomeArchive(optionsFor(target));
+    } finally {
+      rename.mockRestore();
+    }
+
+    expect(crossings.map((file) => path.basename(file)).sort()).toEqual(["config.yaml", "run.sh"]);
+    expect(read(target.home, "config.yaml")).toBe(HOME_CONTENT["config.yaml"]);
+    expect(read(target.home, "skills/demo/run.sh")).toBe(HOME_CONTENT["skills/demo/run.sh"]);
+    if (POSIX_MODES_SUPPORTED) expect(fs.statSync(path.join(target.home, "skills", "demo", "run.sh")).mode & 0o111).not.toBe(0);
+    expect(fs.readdirSync(path.join(target.home, "skills", "demo")).filter((name) => name.includes(".restore-"))).toEqual([]);
+  });
+
+  it.skipIf(!POSIX_MODES_SUPPORTED || IS_ROOT)("says where the previous state is when it has to stop partway", async () => {
+    const target = await scene();
+    fs.writeFileSync(path.join(target.home, "config.yaml"), "broken\n");
+    fs.rmSync(path.join(target.home, "knowledge", "議事録", "notes.md"));
+    const locked = path.join(target.home, "knowledge", "議事録");
+    fs.chmodSync(locked, 0o555);
+    try {
+      await expect(restoreHomeArchive(optionsFor(target)))
+        .rejects.toThrow(/stopped partway.*saved as pre-restore-20261012T093000Z.*restore that to go back/s);
+    } finally {
+      fs.chmodSync(locked, 0o755);
+    }
+
+    // What was reached before the failure is restored; the snapshot holds the state from before any of it.
+    expect(read(target.home, "config.yaml")).toBe(HOME_CONTENT["config.yaml"]);
+    const saved = await inspectHomeArchive(path.join(target.backups, "pre-restore-20261012T093000Z.tar.gz"));
+    expect(saved.ok).toBe(true);
+    expect(fs.readdirSync(path.join(target.home, "tmp")).filter((name) => name.startsWith("restore-"))).toEqual([]);
+  });
+
   it("refuses when there is no room to work in, before touching anything", async () => {
     const target = await scene();
     fs.writeFileSync(path.join(target.home, "config.yaml"), "broken\n");
@@ -320,6 +369,27 @@ describe("restoreHomeArchive, refusing what it must not trust", () => {
     })).rejects.toThrow(/unsafe path/);
 
     expect(fs.existsSync(path.join(root, "escaped.txt"))).toBe(false);
+  });
+
+  it("writes nothing when the archive is swapped between being verified and being read", async () => {
+    const target = await scene();
+    fs.writeFileSync(path.join(target.home, "config.yaml"), "broken\n");
+    fs.rmSync(path.join(target.home, "MEMORY.md"));
+    const verified = (await inspectHomeArchive(target.archive)).manifest!;
+    // What gets read afterwards is a different file under the same name.
+    const swapped = writeRawArchive(path.join(target.root, "swapped.tar.gz"), [
+      rawFile("config.yaml", "attacker: true\n"),
+    ]);
+    const stale: RestoreOptions["inspect"] = async () => ({ ok: true, problems: [], manifest: verified });
+
+    await expect(restoreHomeArchive(optionsFor(target, { archive: swapped, inspect: stale, only: ["config"] })))
+      .rejects.toThrow(/config\.yaml no longer matches the manifest that was verified/);
+    await expect(restoreHomeArchive(optionsFor(target, { archive: swapped, inspect: stale, only: ["memory"], now: new Date(NOW.getTime() + 60_000) })))
+      .rejects.toThrow(/no longer holds MEMORY\.md/);
+
+    expect(read(target.home, "config.yaml")).toBe("broken\n");
+    expect(fs.existsSync(path.join(target.home, "MEMORY.md"))).toBe(false);
+    expect(fs.readdirSync(path.join(target.home, "tmp")).filter((name) => name.startsWith("restore-"))).toEqual([]);
   });
 
   it("refuses an archive that plants a symlink and then writes through it", async () => {
