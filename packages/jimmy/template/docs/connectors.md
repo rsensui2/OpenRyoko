@@ -292,6 +292,38 @@ connectors:
 - With `channelRouting`, the *primary* instance's `replyStyle` applies —
   it renders every proxied send.
 
+## Commands in Chat
+
+A message that starts with `/` is one of three things. This applies to every
+connector (Slack, Discord, Telegram, WhatsApp).
+
+- **A gateway command** — `/new`, `/status`, `/model <name>`, `/doctor`,
+  `/cron …`, `/goal …`. Answered by the gateway, for anyone the connector
+  lets in.
+- **A Claude Code command the operator may run from chat** —
+  `/compact [instructions]`, `/clear`, `/usage`, `/cost`. Passed to the CLI
+  only when the sender's platform ID equals `portal.operatorSlackId` (Slack)
+  or `portal.operatorDiscordId` (Discord). A display name never counts. If
+  neither ID is configured nobody is the operator, and Telegram and WhatsApp
+  have no operator at all — so set the ID if you want these from chat.
+- **Anything else** — delivered to the assistant as an ordinary message, with
+  a one-line note that it was not run. That includes `/logout`, `/login`,
+  `/permissions`, `/resume`, `/config`, `/mcp`, `/hooks`, `/agents`,
+  `/add-dir`, `/exit` and every other CLI command, from the operator too, and
+  any command a later CLI version adds: only the four above are let through.
+  Run the others in a terminal on the machine.
+
+`/<skill-name>` still works: the assistant reads it and uses the skill.
+
+The same holds for a message that starts with `-` or `!`, or that is only
+`exit` or `quit`: it reaches the assistant as text, never the CLI as an
+option, a shell command or a quit. Control characters are removed from chat
+messages.
+
+The gateway does not answer "that command is not allowed" — the sender gets
+the assistant's reply to the message. Prompts from the web UI, the API and
+cron jobs are yours and are not affected.
+
 ## Future Connectors
 
 The connector interface is designed for additional platforms:

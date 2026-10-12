@@ -1,5 +1,8 @@
+import fs from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { guardConnectorMessage, OPERATOR_NATIVE_COMMANDS } from "../connector-command-guard.js";
+import { TEMPLATE_DIR } from "../../shared/paths.js";
 import type { IncomingMessage, JinnConfig } from "../../shared/types.js";
 import { claudeReads, strictestClaudeReads } from "./claude-cli-reading.js";
 
@@ -217,6 +220,30 @@ describe("a prompt the gateway wrote itself", () => {
     const msg = message(text, { source: "cron", connector: "cron", user: "system", userId: "system", transportMeta: undefined });
 
     expect(guardConnectorMessage(msg, CONFIG)).toBe(msg);
+  });
+});
+
+// The operator learns what works from chat from these shipped files. Nothing
+// generates them from the list, so this keeps the two saying the same thing.
+describe("shipped documentation", () => {
+  const read = (rel: string) => fs.readFileSync(path.join(TEMPLATE_DIR, rel), "utf-8");
+  const allowed = [...OPERATOR_NATIVE_COMMANDS.keys()];
+
+  it("names the commands the operator may run from chat — the ones on the list and no other", () => {
+    const section = read("docs/connectors.md").split("\n## Commands in Chat\n")[1]?.split("\n## ")[0] ?? "";
+    const entry = /may run from chat\*\* —([\s\S]*?)Passed to the CLI/.exec(section)?.[1] ?? "";
+
+    expect([...entry.matchAll(/`(\/[a-z-]+)[^`]*`/g)].map((match) => match[1])).toEqual(allowed);
+    for (const refused of ["/logout", "/login", "/permissions", "/resume", "/config"]) expect(section).toContain(`\`${refused}\``);
+    expect(section).toMatch(/portal\.operatorSlackId/);
+    expect(section).toMatch(/portal\.operatorDiscordId/);
+  });
+
+  it("says next to the operator IDs in the default config that they decide who may run them", () => {
+    const config = read("config.default.yaml");
+
+    expect(config).toContain(allowed.join("・"));
+    expect(config).toMatch(/未設定なら誰も実行できない/);
   });
 });
 
