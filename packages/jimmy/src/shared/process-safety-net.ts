@@ -28,7 +28,44 @@ export interface ProcessSafetyNetOptions {
   now?: () => number;
 }
 
-const guarded = new WeakSet<object>();
+/**
+ * What the net has caught since it was installed. Keeping the process alive
+ * has a cost — a connection that a crash-and-restart used to re-establish can
+ * stay broken — so this has to be visible from outside, not only in the log.
+ * Counts and a time, never what was caught.
+ */
+export interface ProcessSafetyNetStats {
+  unhandledRejections: number;
+  uncaughtExceptions: number;
+  /** ISO time of the most recent fault of either kind; null when none was caught. */
+  lastCaughtAt: string | null;
+}
+
+interface Tally {
+  unhandledRejections: number;
+  uncaughtExceptions: number;
+  lastCaughtAtMs: number | null;
+}
+
+const NOTHING_CAUGHT: Tally = { unhandledRejections: 0, uncaughtExceptions: 0, lastCaughtAtMs: null };
+
+/** One entry per target the net is installed on. Entries are replaced, never mutated. */
+const tallies = new WeakMap<object, Tally>();
+
+function tally(target: object, kind: "unhandledRejections" | "uncaughtExceptions", at: number): void {
+  const before = tallies.get(target) ?? NOTHING_CAUGHT;
+  tallies.set(target, { ...before, [kind]: before[kind] + 1, lastCaughtAtMs: at });
+}
+
+/** A snapshot for `target` (the real process by default); zeros when the net is not installed. */
+export function getProcessSafetyNetStats(target: object = process): ProcessSafetyNetStats {
+  const { unhandledRejections, uncaughtExceptions, lastCaughtAtMs } = tallies.get(target) ?? NOTHING_CAUGHT;
+  return {
+    unhandledRejections,
+    uncaughtExceptions,
+    lastCaughtAt: lastCaughtAtMs === null ? null : new Date(lastCaughtAtMs).toISOString(),
+  };
+}
 
 /**
  * The stack for an Error, and only the stack: `cause`, and whatever an SDK
@@ -59,23 +96,25 @@ function report(message: string): void {
  */
 export function installProcessSafetyNet(options: ProcessSafetyNetOptions = {}): boolean {
   const target = options.target ?? process;
-  if (guarded.has(target)) return false;
-  guarded.add(target);
+  if (tallies.has(target)) return false;
+  tallies.set(target, NOTHING_CAUGHT);
 
   const exit = options.exit ?? ((code: number) => process.exit(code));
   const now = options.now ?? Date.now;
   let recent: number[] = [];
 
   target.on("unhandledRejection", (reason) => {
+    tally(target, "unhandledRejections", now());
     report(`Unhandled promise rejection: ${describeFault(reason)}`);
   });
 
   target.on("uncaughtException", (error) => {
+    const at = now();
+    tally(target, "uncaughtExceptions", at);
     report(`Uncaught exception: ${describeFault(error)}`);
     // State after an uncaught exception is not guaranteed. One fault is worth
     // surviving; a stream of them means the gateway is no longer working and
     // would only fill the log, so hand control back to whatever supervises it.
-    const at = now();
     recent = [...recent.filter((seen) => at - seen < UNCAUGHT_EXCEPTION_BURST_WINDOW_MS), at];
     if (recent.length < UNCAUGHT_EXCEPTION_BURST_LIMIT) return;
     report(

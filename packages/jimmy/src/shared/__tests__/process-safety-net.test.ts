@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   UNCAUGHT_EXCEPTION_BURST_LIMIT,
   UNCAUGHT_EXCEPTION_BURST_WINDOW_MS,
+  getProcessSafetyNetStats,
   installProcessSafetyNet,
 } from "../process-safety-net.js";
 
@@ -151,5 +152,94 @@ describe("installProcessSafetyNet", () => {
     expect(f.target.listenerCount("uncaughtException")).toBe(1);
     f.target.emit("unhandledRejection", new Error("logged once"));
     expect(lines).toHaveLength(1);
+  });
+});
+
+// Keeping the process alive has a cost: a connection that a crash-and-restart
+// used to re-establish can now stay broken. What the net caught has to be
+// visible from outside, not only in the log.
+describe("getProcessSafetyNetStats", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("reports nothing caught for a target the net was never installed on", () => {
+    expect(getProcessSafetyNetStats(new EventEmitter())).toEqual({
+      unhandledRejections: 0,
+      uncaughtExceptions: 0,
+      lastCaughtAt: null,
+    });
+  });
+
+  it("reports nothing caught right after the net is installed", () => {
+    const f = fixture();
+
+    expect(getProcessSafetyNetStats(f.target)).toEqual({
+      unhandledRejections: 0,
+      uncaughtExceptions: 0,
+      lastCaughtAt: null,
+    });
+  });
+
+  it("counts each kind of fault and remembers when the last one was caught", () => {
+    const f = fixture();
+
+    f.target.emit("unhandledRejection", new Error("first"));
+    f.advance(5_000);
+    f.target.emit("unhandledRejection", "second");
+    f.advance(5_000);
+    f.target.emit("uncaughtException", new Error("third"));
+
+    expect(getProcessSafetyNetStats(f.target)).toEqual({
+      unhandledRejections: 2,
+      uncaughtExceptions: 1,
+      lastCaughtAt: new Date(1_000_000 + 10_000).toISOString(),
+    });
+  });
+
+  it("never carries what was caught, only how many and when", () => {
+    const f = fixture();
+    const secret = "xoxb-" + "1234567890-abcdefghijklmnop";
+
+    f.target.emit("unhandledRejection", new Error(`invalid_auth for ${secret}`));
+    f.target.emit("uncaughtException", new Error(`boom ${secret}`));
+
+    const stats = getProcessSafetyNetStats(f.target);
+    expect(Object.keys(stats).sort()).toEqual(["lastCaughtAt", "uncaughtExceptions", "unhandledRejections"]);
+    expect(JSON.stringify(stats)).not.toContain(secret);
+    expect(JSON.stringify(stats)).not.toContain("invalid_auth");
+  });
+
+  it("hands out a snapshot that later faults do not change", () => {
+    const f = fixture();
+    f.target.emit("unhandledRejection", new Error("first"));
+    const before = getProcessSafetyNetStats(f.target);
+
+    f.target.emit("unhandledRejection", new Error("second"));
+
+    expect(before.unhandledRejections).toBe(1);
+    expect(getProcessSafetyNetStats(f.target).unhandledRejections).toBe(2);
+  });
+
+  it("keeps separate counts for separate targets", () => {
+    const first = fixture();
+    const second = fixture();
+
+    first.target.emit("uncaughtException", new Error("only here"));
+
+    expect(getProcessSafetyNetStats(first.target).uncaughtExceptions).toBe(1);
+    expect(getProcessSafetyNetStats(second.target).uncaughtExceptions).toBe(0);
+  });
+
+  it("reads the real process by default, which no test installs the net on", () => {
+    expect(getProcessSafetyNetStats()).toEqual({
+      unhandledRejections: 0,
+      uncaughtExceptions: 0,
+      lastCaughtAt: null,
+    });
   });
 });
