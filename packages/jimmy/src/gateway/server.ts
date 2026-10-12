@@ -15,7 +15,7 @@ import { resolveAssistantName } from "../shared/assistant-identity.js";
 import { getTriageCapabilities, invalidateTriageCapabilities } from "../shared/triage-capabilities.js";
 import { invalidateModelRegistry } from "../shared/models.js";
 import { configureLogger, logger } from "../shared/logger.js";
-import { initDb, scheduleFtsBackfill, recoverStaleSessions, recoverStaleWorkflowAttemptSessions, recoverStaleQueueItems, getInterruptedSessions, listSessions, updateSession, getSession } from "../sessions/registry.js";
+import { initDb, scheduleFtsBackfill, recoverStaleSessions, recoverStaleWorkflowAttemptSessions, recoverStaleQueueItems, getInterruptedSessions, getSession } from "../sessions/registry.js";
 import { SessionManager, type RouteOptions } from "../sessions/manager.js";
 import { ClaudeEngine } from "../engines/claude.js";
 import { CodexEngine } from "../engines/codex.js";
