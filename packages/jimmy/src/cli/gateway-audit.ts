@@ -6,6 +6,8 @@ const SKIP_DIRECTORIES = new Set([
   ".git", "node_modules", "dist", "sessions", "logs", "tmp", "jobs",
   "files", "models", "backups", "src", "updates", "runs", "migrations",
   "knowledge", "memory",
+  // Skill copies the bundled skill sync moved aside: archives, not live references.
+  ".migration-backups",
 ]);
 const TEXT_EXTENSIONS = new Set([
   ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".js", ".mjs",

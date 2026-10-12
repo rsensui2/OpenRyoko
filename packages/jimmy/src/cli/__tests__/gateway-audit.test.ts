@@ -56,6 +56,22 @@ describe("auditGatewayReferences", () => {
     finally { fs.rmSync(outside, { force: true }); }
   });
 
+  it("leaves the skill copies the bundled skill sync moved aside as they were", () => {
+    const home = makeHome();
+    const backup = path.join(home, ".migration-backups", "2026.10.11-2026-10-12T03-04-05-678Z", "skills", "demo");
+    fs.mkdirSync(backup, { recursive: true });
+    const original = "curl http://0.0.0.0:7777/api/sessions\n";
+    fs.writeFileSync(path.join(backup, "SKILL.md"), original);
+
+    const report = auditGatewayReferences(home, { fix: true });
+
+    // An archive is not a live reference: rewriting it would alter the only copy of what was replaced.
+    expect(report.legacyOccurrences).toBe(0);
+    expect(report.unauthenticatedCurlCandidates).toEqual([]);
+    expect(report.backupDir).toBeUndefined();
+    expect(fs.readFileSync(path.join(backup, "SKILL.md"), "utf8")).toBe(original);
+  });
+
   it("flags direct API curl candidates without auth but ignores health and ryoko api", () => {
     const home = makeHome();
     fs.mkdirSync(path.join(home, "scripts"), { recursive: true });
