@@ -89,12 +89,23 @@ describe("engine and model a cron fire runs on", () => {
 });
 
 describe("what a cron fire states to route()", () => {
-  async function routeOptions(cronJob: CronJob, staff?: Employee): Promise<Record<string, unknown>> {
+  /** A session manager that has the two configured engines and records route(). */
+  function manager() {
+    const route = vi.fn().mockResolvedValue(undefined);
+    const getEngine = vi.fn((name: string) => (name === "claude" || name === "codex" ? { name } : undefined));
+    return { route, getEngine };
+  }
+
+  async function fireInto(cronJob: CronJob, staff?: Employee) {
     registry.clear();
     if (staff) registry.set(staff.name, staff);
-    const route = vi.fn().mockResolvedValue(undefined);
-    await runCronJob(staff ? { ...cronJob, employee: staff.name } : cronJob, { route } as never, config, connectors);
-    return route.mock.calls[0]![2] as Record<string, unknown>;
+    const sessionManager = manager();
+    await runCronJob(staff ? { ...cronJob, employee: staff.name } : cronJob, sessionManager as never, config, connectors);
+    return sessionManager;
+  }
+
+  async function routeOptions(cronJob: CronJob, staff?: Employee): Promise<Record<string, unknown>> {
+    return (await fireInto(cronJob, staff)).route.mock.calls[0]![2] as Record<string, unknown>;
   }
 
   // route() resolves the employee and config defaults itself; a default the
@@ -117,5 +128,19 @@ describe("what a cron fire states to route()", () => {
     expect((await fire(job())).session.model).toBeNull();
     expect((await fire(job({ engine: "codex" }))).session.model).toBeNull();
     expect((await fire(job({ model: "claude-job" }))).session.model).toBe("claude-job");
+  });
+
+  // route() would create a session, post "engine not available" into the
+  // delivery channel and return as if the turn had run.
+  it("does not route a job that names an engine the gateway does not have", async () => {
+    const sessionManager = await fireInto(job({ engine: "gemini" }));
+    expect(sessionManager.getEngine).toHaveBeenCalledWith("gemini");
+    expect(sessionManager.route).not.toHaveBeenCalled();
+  });
+
+  it("leaves an engine the job did not name to route(), registered or not", async () => {
+    const sessionManager = await fireInto(job(), employee({ engine: "gemini" }));
+    expect(sessionManager.route).toHaveBeenCalledOnce();
+    expect(sessionManager.getEngine).not.toHaveBeenCalled();
   });
 });

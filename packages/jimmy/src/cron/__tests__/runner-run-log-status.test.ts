@@ -143,6 +143,34 @@ describe("cron run log reflects how the session actually ended", () => {
     expect(f.alert).toHaveBeenCalledExactlyOnceWith({ channel: "C-alerts" }, expect.stringContaining('"slack"'));
   });
 
+  // The session manager answers an unknown engine with a chat message and
+  // returns without marking the session, so such a run was logged as a success.
+  it("fails a job that names an engine the gateway does not have, before any session starts", async () => {
+    const f = setup();
+    f.job.engine = "gemini";
+    await f.run();
+
+    const [entry, ...rest] = runs(f.job.id);
+    expect(rest).toEqual([]);
+    expect(entry).toMatchObject({ status: "error" });
+    expect(entry!.error).toContain('"gemini"');
+    expect(entry).not.toHaveProperty("sessionId");
+    expect(f.claudeRun).not.toHaveBeenCalled();
+    expect(f.codexRun).not.toHaveBeenCalled();
+    expect(f.deliver).not.toHaveBeenCalled();
+    expect(f.alert).toHaveBeenCalledExactlyOnceWith({ channel: "C-alerts" }, expect.stringContaining('"gemini"'));
+  });
+
+  it("still runs a job that names an engine the gateway has", async () => {
+    const f = setup();
+    f.job.engine = "codex";
+    await f.run();
+
+    expect(f.codexRun).toHaveBeenCalledTimes(1);
+    expect(runs(f.job.id)).toEqual([expect.objectContaining({ status: "success", error: null })]);
+    expect(f.alert).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["nothing", undefined],
     ["the dashboard", { connector: "web", channel: "general" }],

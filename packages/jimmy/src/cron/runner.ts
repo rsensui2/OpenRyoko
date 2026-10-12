@@ -156,6 +156,13 @@ export async function runCronJob(
     let sessionId: string | null = null;
 
     try {
+      // route() would start a session, post "engine not available" into the
+      // delivery channel and return as if the turn had run. Only an engine the
+      // job itself names is checked; defaults remain route()'s to resolve.
+      if (job.engine && !sessionManager.getEngine(job.engine)) {
+        throw new Error(`Engine "${job.engine}" named by the job is not available`);
+      }
+
       const routeResult = await sessionManager.route(
         {
           connector: connector.name,
