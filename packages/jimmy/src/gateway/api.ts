@@ -1964,6 +1964,7 @@ Handle this as a priority request from a colleague.`;
         "connectors",
         "logging",
         "mcp",
+        "budgets", // written by PUT /api/budgets — without it the Settings save 400s once a limit exists
         "sessions",
         "cron",
         "workflows",

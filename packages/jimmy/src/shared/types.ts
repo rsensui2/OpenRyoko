@@ -828,6 +828,8 @@ export interface JinnConfig {
   };
   logging: { file: boolean; stdout: boolean; level: string };
   mcp?: McpGlobalConfig;
+  /** Monthly spend limit (USD) per employee name; written by PUT /api/budgets. */
+  budgets?: { employees?: Record<string, number> };
   sessions?: {
     /** Engine inactivity deadline in milliseconds, reset by streamed activity. Default: 300000; 0 disables. */
     engineNoResponseTimeoutMs?: number;
