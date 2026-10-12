@@ -38,6 +38,7 @@ import { recordTurnAccounting } from "./accounting.js";
 import { runWithSessionGoal, sessionGoalOptions } from "./goal-execution.js";
 import { conversationOutcome } from "./conversation-outcome.js";
 import { buildEngineSyncPrompt, clearEngineSyncMarker, engineFallbackFailure, engineSyncSince, maybeRevertEngineOverride, runEngineWithResponseTimeout, runFallbackAttempts, waitForEngineRetry } from "./engine-fallback.js";
+import { startOnHealthyEngine } from "./new-session-engine.js";
 import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "./callbacks.js";
 import { buildContext } from "./context.js";
 import { normalizeDelivery, normalizeTurns, deliverPublic, type DeliveryContext } from "./reply-disposition.js";
@@ -355,6 +356,7 @@ export class SessionManager {
     if (await this.handleCommand(msg, connector)) return;
 
     let session = getSessionBySessionKey(msg.sessionKey);
+    let healthyStartNotice: string | undefined;
     if (!session) {
       session = createSession({
         engine: opts.engine ?? opts.employee?.engine ?? this.config.engines.default,
@@ -376,6 +378,10 @@ export class SessionManager {
         `Created new session ${session.id} for ${msg.sessionKey}` +
         (opts.employee ? ` (employee: ${opts.employee.name})` : ""),
       );
+      // An engine already known to be out of allowance is not worth a failed
+      // turn to rediscover: start on its fallback, under the same temporary
+      // override a mid-turn switch records.
+      ({ session, notice: healthyStartNotice } = startOnHealthyEngine(this.config, (name) => this.engines.get(name), session, opts));
     } else {
       const mergedMeta = mergeTransportMeta(session.transportMeta, msg.transportMeta);
       session = updateSession(session.id, {
@@ -390,6 +396,7 @@ export class SessionManager {
 
     const target = connector.reconstructTarget(msg.replyContext);
     target.messageTs ??= msg.messageId;
+    if (healthyStartNotice) await connector.replyMessage(target, healthyStartNotice).catch(() => {});
 
     const attachmentPaths = msg.attachments
       .map((attachment) => attachment.localPath)

@@ -8,6 +8,7 @@ import { recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { redactText } from "../shared/redact.js";
 import { getMessages, getSession, updateSession, type UpdateSessionFields } from "./registry.js";
 import { recordTurnAccounting } from "./accounting.js";
+import { claimUsageLimitAnnouncement, healthOverrideReleased, isUsableFallbackTarget, noteEngineTurnOutcome } from "./engine-health-gate.js";
 
 export type EngineFallbackReason = "rate_limit" | "no_response" | "timeout";
 const object = (value: unknown): Record<string, any> => value && typeof value === "object" && !Array.isArray(value) ? { ...value } : {};
@@ -25,19 +26,21 @@ export function engineFallbackFailure(result: EngineResult): EngineFallbackReaso
 }
 
 /** Default to either provider, but an explicit chain (including []) always wins. */
-function fallbackConfig(config: JinnConfig): JinnConfig {
+export function fallbackConfig(config: JinnConfig): JinnConfig {
   return { ...config, engines: { ...config.engines,
     claude: { ...config.engines.claude, fallback: config.engines.claude?.fallback ?? [config.sessions?.fallbackEngine ?? "codex"] },
     codex: { ...config.engines.codex, fallback: config.engines.codex?.fallback ?? ["claude"] },
   } };
 }
 
-export function computeEngineOverrideRevert(session: Session, nowMs = Date.now()): UpdateSessionFields | null {
+/** `released` ends an override ahead of its `until`: the reason it was put in
+ *  place no longer holds (see healthOverrideReleased). */
+export function computeEngineOverrideRevert(session: Session, nowMs = Date.now(), released = false): UpdateSessionFields | null {
   const meta = object(session.transportMeta);
   const override = object(meta.engineOverride);
   if (typeof override.originalEngine !== "string" || typeof override.until !== "string") return null;
   const until = Date.parse(override.until);
-  if (!Number.isFinite(until) || until > nowMs) return null;
+  if (!Number.isFinite(until) || (until > nowMs && !released)) return null;
   const originalEngine = override.originalEngine;
   const engineSessions = object(meta.engineSessions);
   if (session.engineSessionId) engineSessions[session.engine] = session.engineSessionId;
@@ -57,7 +60,8 @@ export function computeEngineOverrideRevert(session: Session, nowMs = Date.now()
 }
 
 export function maybeRevertEngineOverride(session: Session): Session {
-  const updates = computeEngineOverrideRevert(session);
+  const released = healthOverrideReleased(object(object(session.transportMeta).engineOverride));
+  const updates = computeEngineOverrideRevert(session, Date.now(), released);
   return updates ? updateSession(session.id, updates) ?? session : session;
 }
 
@@ -153,7 +157,14 @@ export async function runEngineWithResponseTimeout(
   };
   try {
     const first = await Promise.race([running, timeout]);
-    if (typeof first !== "string") return withProgress(first);
+    if (typeof first !== "string") {
+      const result = withProgress(first);
+      // Every attempt on the local account is evidence about its allowance: a
+      // stated limit is remembered for the next session, a served turn forgets
+      // it. A run over SSH used the remote machine's account and says nothing.
+      if (!opts.sshHost) noteEngineTurnOutcome(engine.name, result, opts.model);
+      return result;
+    }
     stopped = true;
     const cancelled = first === "cancel" || shouldStop?.();
     const reason = cancelled ? "Interrupted: stopped" : "Engine response timeout";
@@ -198,12 +209,21 @@ export async function runFallbackAttempts(options: EngineFallbackOptions): Promi
     const reason = engineFallbackFailure(result);
     if (!reason || options.shouldStop?.() || !getSession(session.id)) break;
     if (reason === "rate_limit" && engine.name === "claude") recordClaudeRateLimit(detectRateLimit(result).resetsAt);
-    const targetName = resolveFallbackEngine(plan, engine.name, (name) => !visited.has(name) && !!options.getEngine(name) && !!config.engines[name]);
+    // A candidate known to be out of allowance, or known to be missing from
+    // this machine, cannot take the turn: the walk moves on to the next member
+    // and, with none left, the failure is returned as it was before.
+    let model: string | undefined;
+    const targetName = resolveFallbackEngine(plan, engine.name, (name) => {
+      if (visited.has(name) || !options.getEngine(name) || !config.engines[name]) return false;
+      const candidateModel = resolveSubstituteModel(config, getModelRegistry(config), { from: engine.name, to: name, model: session.model }) ?? config.engines[name]!.model;
+      if (!isUsableFallbackTarget(config, name, candidateModel)) return false;
+      model = candidateModel;
+      return true;
+    });
     if (!targetName) break;
     visited.add(targetName);
     const target = options.getEngine(targetName)!;
     const targetConfig = config.engines[targetName]!;
-    const model = resolveSubstituteModel(config, getModelRegistry(config), { from: engine.name, to: targetName, model: session.model }) ?? targetConfig.model;
     const levels = effortLevelsForModel(config, targetName, model);
     const childOverride = session.parentSessionId && session.source !== "cron" ? targetConfig.childEffortOverride : undefined;
     const effort = compatibleEffort(childOverride ?? session.effortLevel ?? employee?.effortLevel ?? config.engines[engine.name as "codex" | "claude"]?.effortLevel, levels);
@@ -223,7 +243,17 @@ export async function runFallbackAttempts(options: EngineFallbackOptions): Promi
     // Claude's native goal handoff clears the gateway goal. If that attempt
     // failed, a Codex substitute still needs the original tracked condition.
     if (targetName === "codex" && options.session.goal && !getSession(session.id)?.goal) updateSession(session.id, { goal: options.session.goal });
-    await Promise.resolve(options.onSwitch?.(engine.name, targetName, reason)).catch(() => {});
+    // A limit period — the engine and the reset it stated — is announced once.
+    // A conversation whose own turn just failed is still told every time; a
+    // cron firing has nobody waiting on it, so it only ever carries the first
+    // notice of a period, and sessions that later start away from the engine
+    // (see new-session-engine.ts) do not repeat it either.
+    const period = options.onSwitch && reason === "rate_limit" && reset && reset * 1000 > Date.now()
+      ? new Date(reset * 1000).toISOString() : undefined;
+    const firstOfPeriod = period === undefined || claimUsageLimitAnnouncement(engine.name, period);
+    if (firstOfPeriod || session.source !== "cron") {
+      await Promise.resolve(options.onSwitch?.(engine.name, targetName, reason)).catch(() => {});
+    }
     if (options.shouldStop?.() || !getSession(session.id)) {
       result = { sessionId: resume ?? "", result: "", error: "Interrupted: stopped before fallback", retryable: false };
       break;

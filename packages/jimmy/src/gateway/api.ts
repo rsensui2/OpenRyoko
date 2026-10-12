@@ -709,6 +709,10 @@ export async function handleApiRequest(
         Array.from(context.connectors.values()).map((connector) => [connector.name, connector.getHealth()]),
       );
       res.setHeader("Cache-Control", "no-store");
+      // `health` sits beside the fields below and changes none of them:
+      // `available` stays what it always was for whoever already reads it.
+      const { engineHealthForStatus } = await import("../sessions/engine-health-gate.js");
+      const health = engineHealthForStatus();
       return json(res, {
         status: "ok",
         uptime: Math.floor((Date.now() - context.startTime) / 1000),
@@ -718,9 +722,9 @@ export async function handleApiRequest(
           // `interactive` tells the web UI the Claude engine runs as a live PTY
           // (cc_entrypoint=cli, Max-subsidized) — so the CLI view can attach the
           // live xterm (/ws/pty) instead of the poll-based transcript.
-          claude: { model: config.engines.claude.model, available: true, interactive: config.engines.claude.interactive === true },
-          codex: { model: config.engines.codex.model, available: true },
-          ...(config.engines.gemini ? { gemini: { model: config.engines.gemini.model, available: true } } : {}),
+          claude: { model: config.engines.claude.model, available: true, interactive: config.engines.claude.interactive === true, health: health("claude") },
+          codex: { model: config.engines.codex.model, available: true, health: health("codex") },
+          ...(config.engines.gemini ? { gemini: { model: config.engines.gemini.model, available: true, health: health("gemini") } } : {}),
         },
         sessions: { total: sessions.length, running, active: running },
         connectors,

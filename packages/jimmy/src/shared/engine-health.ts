@@ -71,6 +71,7 @@ function writeStore(store: EngineHealthReading): void {
     const tmp = `${STATE_PATH}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(store, null, 2), "utf-8");
     fs.renameSync(tmp, STATE_PATH);
+    notifyChange();
   } catch {
     // best-effort only
   }
@@ -236,4 +237,37 @@ export function withEngineHealth(
     name,
     { ...entry, health: health[name] ?? { state: "ok" as const } },
   ]));
+}
+
+// --- Fork additions --------------------------------------------------------
+// Upstream lets a record lapse only against the clock. The session layer here
+// also forgets one on evidence, and the re-check timer follows the store
+// instead of polling it, so both need a way in that upstream does not have.
+
+const changeListeners = new Set<() => void>();
+
+/** Called after every write that reached the store. A listener that throws is
+ *  ignored: an observer must never be the reason a record was not kept. */
+export function onEngineHealthChange(listener: () => void): () => void {
+  changeListeners.add(listener);
+  return () => { changeListeners.delete(listener); };
+}
+
+function notifyChange(): void {
+  for (const listener of [...changeListeners]) {
+    try { listener(); } catch { /* observers are advisory too */ }
+  }
+}
+
+/**
+ * Forget what was observed about an engine: it has just served a turn, or a
+ * re-check found its window open again. Reports whether there was a record to
+ * forget, and writes nothing when there was not.
+ */
+export function clearEngineHealth(engine: string): boolean {
+  const store = readStore();
+  if (!(engine in store)) return false;
+  const { [engine]: _forgotten, ...rest } = store;
+  writeStore(rest);
+  return true;
 }

@@ -43,25 +43,52 @@ export function limitWindowBindsModel(window: string | undefined, model: string 
   return families.some((family) => id.includes(family));
 }
 
-/**
- * The spent window a turn on `model` is waiting for. When several are spent the
- * model is back only once the last of them reopens, so that is the one named.
- * A window without a reset still ahead of `nowMs` states nothing to wait for.
- */
-export function spentClaudeWindow(
+/** The last of the spent windows `applies` accepts to reopen. A window without
+ *  a reset still ahead of `nowMs` states nothing to wait for. */
+function lastSpentWindow(
   windows: readonly ClaudeUsageWindow[],
-  model: string | null | undefined,
-  nowMs: number = Date.now(),
+  applies: (window: string) => boolean,
+  nowMs: number,
 ): ClaudeUsageWindow | undefined {
   let binding: ClaudeUsageWindow | undefined;
   for (const window of windows) {
-    if (window.usedPercent < 100 || !limitWindowBindsModel(window.name, model)) continue;
+    if (window.usedPercent < 100 || !applies(window.name)) continue;
     const resetsAt = window.resetsAt;
     if (resetsAt === undefined || resetsAt * 1000 <= nowMs) continue;
     if (binding?.resetsAt !== undefined && resetsAt <= binding.resetsAt) continue;
     binding = window;
   }
   return binding;
+}
+
+/**
+ * The spent window a turn on `model` is waiting for. When several are spent the
+ * model is back only once the last of them reopens, so that is the one named.
+ */
+export function spentClaudeWindow(
+  windows: readonly ClaudeUsageWindow[],
+  model: string | null | undefined,
+  nowMs: number = Date.now(),
+): ClaudeUsageWindow | undefined {
+  return lastSpentWindow(windows, (window) => limitWindowBindsModel(window, model), nowMs);
+}
+
+/**
+ * Whether `window` could be what holds a health record held on `recordWindow`.
+ * A record names the scoped window it was held on, if any, and no model: only
+ * that window and the shared ones can still be holding it.
+ */
+export function windowCanHoldRecord(window: string, recordWindow: string | undefined): boolean {
+  return SHARED_WINDOWS.includes(window) || window === recordWindow;
+}
+
+/** `spentClaudeWindow`, asked on behalf of a health record rather than a turn. */
+export function spentClaudeWindowFor(
+  windows: readonly ClaudeUsageWindow[],
+  recordWindow: string | undefined,
+  nowMs: number = Date.now(),
+): ClaudeUsageWindow | undefined {
+  return lastSpentWindow(windows, (window) => windowCanHoldRecord(window, recordWindow), nowMs);
 }
 
 export interface ClaudeLimitResetOptions {

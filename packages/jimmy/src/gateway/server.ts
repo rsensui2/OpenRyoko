@@ -26,6 +26,7 @@ import type { PtyViewEngine } from "../engines/pty-view-engine.js";
 import { attachPtyWebSocket } from "./pty-ws.js";
 import { HookRegistry } from "./hook-registry.js";
 import { startStatusReconciler } from "./status-reconciler.js";
+import { startEngineHealth } from "./engine-health-monitor.js";
 import { writeGatewayInfo } from "./gateway-info.js";
 import { cleanupSessionSettings, seedTrust } from "../shared/claude-settings.js";
 import { GATEWAY_INFO_FILE, HOOK_RELAY_SCRIPT, CLAUDE_SETTINGS_DIR, JINN_HOME } from "../shared/paths.js";
@@ -966,6 +967,11 @@ export async function startGateway(
   // status:"running" with no live turn (see status-reconciler.ts).
   const stopStatusReconciler = startStatusReconciler({ engines, emit });
 
+  // Re-check an engine known to be out of allowance on its own clock (no timer
+  // exists while every engine is healthy), and let the session layer see which
+  // engine binaries this machine actually has.
+  const stopEngineHealth = startEngineHealth();
+
   // --- Workflow engine (upstream port). Opt-in via config.workflows.enabled;
   // absent flag = no workflow DB, no trigger arming, no /api/workflows routes.
   // Constructed AFTER the server is listening (see below): the WorkflowService
@@ -1421,6 +1427,7 @@ export async function startGateway(
   return async () => {
     logger.info("Gateway cleanup starting...");
     clearInterval(modelRefreshTimer);
+    stopEngineHealth();
     modelManagement?.stop();
     stopScheduler();
     await stopCommandJobs();
