@@ -69,6 +69,7 @@ bundled skill it placed.
 | Missing, and the sync has no record of placing it | Installs it |
 | Missing, but the sync placed it earlier (you deleted it) | Leaves it out and says so once per release. Only `ryoko migrate --restore-deleted-skills [name...]` puts it back |
 | Unedited since the sync placed it, and a newer version ships | Replaces it and keeps the previous copy |
+| Unedited, beside files that are exactly the shipped version's (what restoring `skills` from an older backup leaves when the shipped version has gained files) | Replaces it and keeps the previous copy |
 | Edited, or holding files you added | Leaves it alone; tells you once per release when a newer version ships |
 | A symlink, or holding a symlink | Leaves it alone |
 | Unreadable, or larger than any bundled skill is (a file over 1 MiB, over 2 MiB in all, or over 500 files and directories) | Leaves it alone, unread, and tells you once per release |
@@ -88,6 +89,12 @@ bundled skill it placed.
   `"deleted": true` mark for it. `ryoko migrate --restore-deleted-skills <name>...`
   reinstalls the skills you name and leaves the other deleted ones deleted. Without a
   name it reinstalls every bundled skill you deleted.
+- **Restoring `skills` from a backup does not turn a bundled skill into an edited one.**
+  `ryoko backup restore` writes back the files its archive holds and removes none, so a
+  skill that was replaced since the backup can come out as its old files plus the newer
+  version's extra ones. As long as every one of those extra files is exactly the file
+  the package ships, the skill still counts as unedited and is brought up to date at
+  the next start. A file of your own among them makes it an edited skill, as always.
 - **Nothing is deleted.** A replaced or retired skill is moved to
   `~/.ryoko/.migration-backups/<version>-<time>/skills/<name>/`. Remove old backups by
   hand when you no longer need them.

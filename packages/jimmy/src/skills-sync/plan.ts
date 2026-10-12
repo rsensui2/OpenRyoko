@@ -1,9 +1,9 @@
 import path from "node:path";
-import type { BundledFile, BundledSkill } from "./bundled.js";
+import { isShippedFile, type BundledSkill } from "./bundled.js";
 import { TooLargeError } from "./bounded-read.js";
 import { matchShippedVersion, type ShippedHistory } from "./history.js";
 import { hashFiles, inspectHomeSkill } from "./home-skill.js";
-import { assertSkillName, own, sameList } from "./names.js";
+import { assertSkillName, own, pathsBeyond, sameList } from "./names.js";
 import type { Receipt, ReceiptSkill } from "./receipt.js";
 import type { KeepReason } from "./types.js";
 
@@ -73,23 +73,52 @@ function planShipped(input: PlanInput, skill: BundledSkill, entry: ReceiptSkill 
   if (home.kind !== "directory") return { action: "keep", name, reason: home.kind };
 
   const shippedPaths = Object.keys(skill.files).sort();
-  const recordedPaths = entry ? Object.keys(entry.files).sort() : null;
   const likeShipped = sameList(home.paths, shippedPaths);
-  const likeRecorded = recordedPaths !== null && sameList(home.paths, recordedPaths);
+  // What the home holds beyond the files the receipt records; null without a record,
+  // or when one of the recorded files is gone.
+  const beyondRecord = entry ? pathsBeyond(home.paths, Object.keys(entry.files)) : null;
+  const likeRecorded = beyondRecord !== null && beyondRecord.length === 0;
+  // Every file beyond the record sits at a path the package ships today: possibly what
+  // a restore from an older backup left. A file anywhere else is the user's, and that
+  // is settled without reading anything.
+  const maybeRestored = beyondRecord !== null && beyondRecord.length > 0 && beyondRecord.every((file) => own(skill.files, file) !== undefined);
   // A different set of files is already an answer; hash only when content decides.
-  const observed = likeShipped || likeRecorded ? readHashes(directory, home.paths) : null;
+  const observed = likeShipped || likeRecorded || maybeRestored ? readHashes(directory, home.paths) : null;
   if (typeof observed === "string") return { action: "keep", name, reason: observed };
 
-  const current = observed !== null && likeShipped && home.paths.every((file) => isShipped(skill.files[file], observed[file]));
-  const pristine = observed !== null && entry !== undefined && likeRecorded && home.paths.every((file) => observed[file] === entry.files[file]);
+  const current = observed !== null && likeShipped && home.paths.every((file) => isShippedFile(skill.files[file], observed[file]));
+  const untouched = observed !== null && entry !== undefined && beyondRecord !== null
+    && isUntouched(skill, entry, beyondRecord, observed);
+  const pristine = untouched && likeRecorded;
   if (current) return pristine ? { action: "current", name } : { action: "adopt", name, observed };
-  if (pristine) return { action: "update", name, skill, observed };
+  if (untouched && observed !== null) return { action: "update", name, skill, observed };
   if (entry) return { action: "keep", name, reason: hasShippedChanged(skill, entry) ? "modified" : "customized" };
   // No receipt entry. The one thing that still proves the copy untouched is that it
-  // is, file for file, a version an earlier release installed.
-  const earlier = matchEarlierRelease(directory, home.paths, own(input.history.versions, name) ?? [], input.renderings);
+  // is, file for file, a version an earlier release installed — alone, or beside
+  // files that are exactly the ones the package ships today.
+  const earlier = matchEarlierRelease(directory, home.paths, own(input.history.versions, name) ?? [], input.renderings, skill.files);
   if (typeof earlier === "string") return { action: "keep", name, reason: earlier };
   return earlier ? { action: "update", name, skill, observed: earlier } : { action: "keep", name, reason: "unmanaged" };
+}
+
+/**
+ * Is the copy in the home one nobody has edited since the sync placed it? Every file
+ * the receipt records has to be there, unchanged. And if the home holds files beyond
+ * those, each has to be, byte for byte, the file the package ships today at that path.
+ *
+ * That second case is what restoring skills/ from a backup leaves behind. The restore
+ * writes back what its archive holds and removes nothing: a skill the sync replaced
+ * since the backup, with a version that has more files, comes out as the old files,
+ * the old receipt, and the newer version's extra files. No edit made that. A file of
+ * the user's own beyond the record, or one that is not exactly the shipped file, is
+ * still an edit, and the skill is then left alone as before.
+ */
+function isUntouched(skill: BundledSkill, entry: ReceiptSkill, beyondRecord: readonly string[], observed: Hashes): boolean {
+  return Object.keys(entry.files).every((file) => observed[file] === entry.files[file])
+    && beyondRecord.every((file) => {
+      const shipped = own(skill.files, file);
+      return shipped !== undefined && isShippedFile(shipped, observed[file]);
+    });
 }
 
 function planRetired(skillsRoot: string, name: string, entry: ReceiptSkill): SkillPlan {
@@ -110,16 +139,11 @@ function isRestoreRequested(restoreDeleted: boolean | readonly string[], name: s
   return restoreDeleted === true || (Array.isArray(restoreDeleted) && restoreDeleted.includes(name));
 }
 
-/** A file matches the shipped one as installed, or as packaged (placeholders unfilled). */
-function isShipped(file: BundledFile, hash: string): boolean {
-  return hash === file.sha256 || hash === file.rawSha256;
-}
-
 /** Has the package moved on from the content the receipt says we placed? */
 function hasShippedChanged(skill: BundledSkill, entry: ReceiptSkill): boolean {
   const shippedPaths = Object.keys(skill.files).sort();
   return !sameList(shippedPaths, Object.keys(entry.files).sort())
-    || !shippedPaths.every((file) => isShipped(skill.files[file], entry.files[file]));
+    || !shippedPaths.every((file) => isShippedFile(skill.files[file], entry.files[file]));
 }
 
 /** Why a skill's files could not be read: either way, the skill is left alone. */
