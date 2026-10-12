@@ -2,6 +2,7 @@ import type { ModelManagement } from "../models/service.js";
 import { withConfigLock } from "../shared/config-lock.js";
 import { readConfigSnapshot, writeConfigDocument } from "../shared/config-file.js";
 import { CONFIG_CONFLICT_BODY, CONFIG_REVISION_HEADER, configForApi, isStaleConfigRevision } from "./config-revision.js";
+import { redactMcpApiKeys } from "./config-redaction.js";
 import { validateCommandJob } from "../cron/command.js";
 import { validateCronSchedule } from "../cron/validation.js";
 import type { IncomingMessage as HttpRequest, ServerResponse } from "node:http";
@@ -367,7 +368,7 @@ function serverError(res: ServerResponse, message: string): void {
   json(res, { error: message }, 500);
 }
 
-const SANITIZED_KEYS = new Set(["token", "botToken", "signingSecret", "appToken", "proxyViaToken"]);
+const SANITIZED_KEYS = new Set(["token", "botToken", "signingSecret", "appToken", "proxyViaToken", "apiKey"]);
 
 /** Mask the per-route bearer tokens inside connectors.*.channelRouting for
  *  GET /api/config. deepMerge already restores "***" placeholders on PUT —
@@ -1942,6 +1943,7 @@ Handle this as a priority request from a colleague.`;
       const sanitized = {
         ...config,
         connectors: sanitizedConnectors,
+        ...(config.mcp ? { mcp: redactMcpApiKeys(config.mcp) } : {}),
       };
       return json(res, sanitized);
     }
