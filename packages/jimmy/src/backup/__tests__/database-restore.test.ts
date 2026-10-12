@@ -34,8 +34,12 @@ async function scene(name: "sessions" | "workflows" = "sessions"): Promise<Scene
   }
 }
 
+/** Options for an operator who has stopped the gateway and said so, unless a test takes that back. */
 function optionsFor(target: Scene, extra: Partial<DatabaseRestoreOptions> = {}): DatabaseRestoreOptions {
-  return { backup: target.backup, name: "sessions", home: target.home, backupDirectory: target.backups, now: NOW, ...extra };
+  return {
+    backup: target.backup, name: "sessions", home: target.home, backupDirectory: target.backups, now: NOW,
+    gatewayStopped: true, ...extra,
+  };
 }
 
 const held: Database.Database[] = [];
@@ -63,12 +67,34 @@ describe("restoreDatabase", () => {
     expectPosixMode(result.preRestore!.file, 0o600);
   });
 
-  it("refuses while the gateway is running, and tells the operator to stop it", async () => {
+  it("refuses without the operator's word that the gateway is stopped, and says why and what to do", async () => {
+    // Nothing is detected here, and that is the point: a gateway in a container
+    // is invisible to a command run on the host against the same bind-mounted
+    // home, so "nothing detected" cannot be what lets a database be replaced.
+    const target = await scene();
+
+    for (const gatewayStopped of [false, undefined]) {
+      const refusal = await restoreDatabase(optionsFor(target, { gatewayStopped })).then(() => null, (error: Error) => error.message);
+
+      expect(refusal).toContain("--gateway-stopped");
+      expect(refusal).toMatch(/container/);
+      expect(refusal).toContain("ryoko stop");
+    }
+    expect(rowCount(target.live, "sessions")).toBe(8);
+    expect(listBackups(target.backups).filter((item) => item.preRestore)).toEqual([]);
+  });
+
+  it("refuses while the gateway is running, whatever the operator says, and tells them to stop it", async () => {
     const target = await scene();
     fs.writeFileSync(path.join(target.home, "gateway.json"), JSON.stringify({ port: 7901, pid: process.pid, secret: "s" }));
 
-    await expect(restoreDatabase(optionsFor(target))).rejects.toThrow(/gateway.*is running.*ryoko stop/s);
+    const refusal = await restoreDatabase(optionsFor(target, { gatewayStopped: true })).then(() => null, (error: Error) => error.message);
 
+    expect(refusal).toMatch(/gateway for this home is running/);
+    expect(refusal).toContain(`pid ${process.pid}`);
+    // One message carries the whole procedure, so stopping it is the only round trip.
+    expect(refusal).toContain("ryoko stop");
+    expect(refusal).toContain("--gateway-stopped");
     expect(rowCount(target.live, "sessions")).toBe(8);
     expect(listBackups(target.backups).filter((item) => item.preRestore)).toEqual([]);
   });
@@ -92,11 +118,11 @@ describe("restoreDatabase", () => {
     await expect(restoreDatabase(optionsFor(target, { dryRun: true }))).rejects.toThrow(/is running/);
   });
 
-  it("changes nothing on a dry run", async () => {
+  it("changes nothing on a dry run, which needs no confirmation because it replaces nothing", async () => {
     const target = await scene();
     const before = fs.readdirSync(target.backups).sort();
 
-    const result = await restoreDatabase(optionsFor(target, { dryRun: true }));
+    const result = await restoreDatabase(optionsFor(target, { dryRun: true, gatewayStopped: false }));
 
     expect(result).toMatchObject({ dryRun: true, preRestore: null, destination: target.live });
     expect(rowCount(target.live, "sessions")).toBe(8);

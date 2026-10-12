@@ -424,8 +424,9 @@ program
     .option("--only <kinds>", "復元する種類をカンマ区切りで指定: config, cron, cron-history, persona, memory, org, skills, docs, knowledge, workflows")
     .option("--dry-run", "何が変わるかだけ表示し、何も書き込まない")
     .option("--allow-external-symlinks", "ホームの外を指す symlink も元どおりに作り直す（既定では拒否）")
+    .option("--gateway-stopped", "DB の復元に必須。gateway を止めたことの確認（コンテナ運用ではコンテナの中で実行する）")
     .option("--json", "JSON形式で出力")
-    .action(async (id: string, opts: { only?: string; dryRun?: boolean; allowExternalSymlinks?: boolean; json?: boolean }) => {
+    .action(async (id: string, opts: { only?: string; dryRun?: boolean; allowExternalSymlinks?: boolean; gatewayStopped?: boolean; json?: boolean }) => {
       const cli = await import("../src/cli/backup.js");
       await cli.runBackupRestore(id, opts);
     });

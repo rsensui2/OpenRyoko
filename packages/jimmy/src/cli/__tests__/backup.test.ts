@@ -377,14 +377,20 @@ describe("ryoko backup restore", () => {
     expect(read(state.home, "config.yaml")).toBe("broken\n");
   });
 
-  it("restores a database copy when no gateway is running", async () => {
+  /** A registry backed up at four rows that has since grown to five. */
+  async function grownRegistry(): Promise<{ state: Cli; live: string }> {
     const state = await backedUp({ sessionRows: 4 });
     const live = path.join(state.home, "sessions", "registry.db");
     const grow = new Database(live);
     grow.prepare("INSERT INTO sessions (label) VALUES (?)").run("after the backup");
     grow.close();
+    return { state, live };
+  }
 
-    await runBackupRestore("sessions-2026-10-12", { json: true }, state.deps);
+  it("restores a database copy once the operator confirms the gateway is stopped", async () => {
+    const { state, live } = await grownRegistry();
+
+    await runBackupRestore("sessions-2026-10-12", { gatewayStopped: true, json: true }, state.deps);
 
     expect(json<{ name: string; preRestore: { id: string } }>(state)).toMatchObject({
       name: "sessions", preRestore: { id: "pre-restore-20261012T033000Z-sessions" },
@@ -393,17 +399,57 @@ describe("ryoko backup restore", () => {
     expect(process.exitCode).toBeUndefined();
   });
 
-  it("refuses to restore a database while the gateway is running, and says to stop it", async () => {
+  it("will not replace a database without --gateway-stopped, and explains the container case", async () => {
+    const { state, live } = await grownRegistry();
+    const before = fs.readFileSync(live);
+
+    await runBackupRestore("sessions-2026-10-12", {}, state.deps);
+
+    const refusal = take(state.err);
+    expect(refusal).toContain("--gateway-stopped");
+    expect(refusal).toMatch(/container/);
+    expect(refusal).toContain("ryoko stop");
+    expect(process.exitCode).toBe(1);
+    expect(fs.readFileSync(live).equals(before)).toBe(true);
+    expect(listBackups(path.join(state.home, "backups")).filter((item) => item.preRestore)).toEqual([]);
+  });
+
+  it("previews a database restore without the flag, and says the real one needs it", async () => {
+    const { state, live } = await grownRegistry();
+
+    await runBackupRestore("sessions-2026-10-12", { dryRun: true }, state.deps);
+
+    const printed = take(state.out);
+    expect(printed).toMatch(/dry-run/);
+    expect(printed).toContain("--gateway-stopped");
+    expect(process.exitCode).toBeUndefined();
+    expect(rowCount(live, "sessions")).toBe(5);
+  });
+
+  it("refuses to restore a database while the gateway is running, even with the flag", async () => {
     const state = await backedUp({ sessionRows: 4 });
     fs.writeFileSync(path.join(state.home, "gateway.json"), JSON.stringify({ port: 7901, pid: process.pid, secret: "s" }));
     const live = path.join(state.home, "sessions", "registry.db");
     const before = fs.readFileSync(live);
 
-    await runBackupRestore("sessions-2026-10-12", {}, state.deps);
+    await runBackupRestore("sessions-2026-10-12", { gatewayStopped: true }, state.deps);
 
-    expect(take(state.err)).toMatch(/gateway.*is running.*ryoko stop/s);
+    const refusal = take(state.err);
+    expect(refusal).toMatch(/gateway for this home is running/);
+    expect(refusal).toContain("ryoko stop");
     expect(process.exitCode).toBe(1);
     expect(fs.readFileSync(live).equals(before)).toBe(true);
+  });
+
+  it("asks for no such confirmation to restore files", async () => {
+    const state = await backedUp({ sessionRows: 4 });
+    fs.writeFileSync(path.join(state.home, "cron", "jobs.json"), "[]\n");
+
+    await runBackupRestore("home-20261012T030000Z", { only: "cron", json: true }, state.deps);
+
+    expect(read(state.home, "cron/jobs.json")).toBe(HOME_CONTENT["cron/jobs.json"]);
+    expect(take(state.err)).toBe("");
+    expect(process.exitCode).toBeUndefined();
   });
 
   it("restores files while the gateway is running", async () => {

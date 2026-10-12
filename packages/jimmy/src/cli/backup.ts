@@ -5,13 +5,14 @@
  * gateway up or down: a backup reads files and copies databases through a
  * read-only connection, and a restore of files is safe under a running gateway
  * (its watchers reload what changed). Only a database restore needs the gateway
- * stopped, and it checks.
+ * stopped. It checks, and because that check cannot see into a container it
+ * also asks the operator to say so with `--gateway-stopped`.
  *
  * Every command takes `--json`, and reports failure through the exit code.
  */
 import { inspectHomeArchive } from "../backup/archive.js";
 import { findBackup, listBackups, pruneBackups, type BackupItem } from "../backup/catalog.js";
-import { inspectDatabaseBackup, restoreDatabase, type DatabaseRestoreResult } from "../backup/database-restore.js";
+import { GATEWAY_STOPPED_FLAG, inspectDatabaseBackup, restoreDatabase, type DatabaseRestoreResult } from "../backup/database-restore.js";
 import { errorMessage, formatBytes } from "../backup/format.js";
 import { restoreHomeArchive, type RestoreResult } from "../backup/restore.js";
 import { runBackup, type BackupRunReport, type BackupTargetReport } from "../backup/run.js";
@@ -220,10 +221,15 @@ function printFileRestore(io: BackupCliIo, result: RestoreResult): void {
 
 function printDatabaseRestore(io: BackupCliIo, result: DatabaseRestoreResult): void {
   io.out(`${result.dryRun ? "[dry-run] " : ""}${result.name} の DB を ${result.destination} へ復元${result.dryRun ? "できます" : "しました"}`);
-  if (result.preRestore) {
-    io.out(`置き換え前の DB は ${result.preRestore.id} に退避しました。元に戻すには: ryoko backup restore ${result.preRestore.id}`);
+  if (result.dryRun) {
+    io.out(`実際に復元するには、gateway を止めてから ${GATEWAY_STOPPED_FLAG} を付けて実行してください。`);
+    io.out("ホームをコンテナに bind mount している場合は、gateway が動いているコンテナの中で実行します（ホスト側からは稼働中の gateway を検知できません）。");
+    return;
   }
-  if (!result.dryRun) io.out("gateway を起動してください: ryoko start");
+  if (result.preRestore) {
+    io.out(`置き換え前の DB は ${result.preRestore.id} に退避しました。元に戻すには: ryoko backup restore ${result.preRestore.id} ${GATEWAY_STOPPED_FLAG}`);
+  }
+  io.out("gateway を起動してください: ryoko start");
 }
 
 export interface BackupRestoreCliOptions {
@@ -231,6 +237,8 @@ export interface BackupRestoreCliOptions {
   only?: string;
   dryRun?: boolean;
   allowExternalSymlinks?: boolean;
+  /** Database backups only: the operator's confirmation that the gateway is stopped. */
+  gatewayStopped?: boolean;
   json?: boolean;
 }
 
@@ -246,6 +254,7 @@ export async function runBackupRestore(reference: string, options: BackupRestore
       if (kinds) throw new Error("--only はホームのアーカイブにだけ使えます。DB のバックアップは丸ごと復元します。");
       const result = await restoreDatabase({
         backup: item.file, name: item.kind, home, backupDirectory: settings.directory, now, dryRun: options.dryRun,
+        gatewayStopped: options.gatewayStopped,
       });
       if (json) printJson(io, result);
       else printDatabaseRestore(io, result);

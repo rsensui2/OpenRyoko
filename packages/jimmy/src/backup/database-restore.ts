@@ -17,6 +17,12 @@ export interface DatabaseRestoreOptions {
   backupDirectory: string;
   now: Date;
   dryRun?: boolean;
+  /**
+   * The operator's own word that no gateway is running on this home. Required
+   * to replace a database, on top of the automatic check - which it never
+   * overrides. A dry run replaces nothing and does not need it.
+   */
+  gatewayStopped?: boolean;
   /** Replaces the check for a running gateway. `destination` is the database about to be replaced. */
   detectGateway?: (home: string, destination: string) => GatewayLiveness;
 }
@@ -115,14 +121,38 @@ async function installDatabase(backup: string, destination: string): Promise<voi
   }
 }
 
+/** The flag that carries the operator's confirmation. Named here because the refusals quote it. */
+export const GATEWAY_STOPPED_FLAG = "--gateway-stopped";
+
+/**
+ * Why "no gateway was detected" is not enough to replace a database.
+ *
+ * Both signs the detection reads - a live pid and a lock on the registry -
+ * stop at a container boundary. The usual deployment keeps the home on the
+ * host and bind-mounts it into a container where the gateway runs; a `ryoko`
+ * on the host sees the same files, a pid that means nothing in its own pid
+ * namespace, and no lock, because file locks do not cross the mount. It would
+ * swap the registry out from under a gateway that is very much running.
+ */
+function confirmationRequired(): Error {
+  return new Error(
+    `restoring a database needs ${GATEWAY_STOPPED_FLAG}, your confirmation that no gateway is running on this home. `
+    + "No running gateway was detected, but that check cannot see across a container boundary: when the home is bind-mounted "
+    + "into a container, a gateway running inside it is invisible to a command run on the host. "
+    + `Run this where the gateway runs (inside the container), stop the gateway first (ryoko stop), then repeat the command with ${GATEWAY_STOPPED_FLAG}. `
+    + "Nothing was changed.",
+  );
+}
+
 /**
  * Replaces a home's session registry or workflows store with a backup of it.
  *
  * Refused while a gateway is running on the home: its connection would keep
  * writing to a file that is no longer there, and a WAL from the old database
- * would be replayed into the new one. The backup has to pass SQLite's own
- * integrity check first, and the database it replaces is copied aside before
- * it is touched.
+ * would be replayed into the new one. Detecting one is necessary and not
+ * sufficient, so the operator has to confirm it is stopped as well. The backup
+ * has to pass SQLite's own integrity check first, and the database it replaces
+ * is copied aside before it is touched.
  */
 export async function restoreDatabase(options: DatabaseRestoreOptions): Promise<DatabaseRestoreResult> {
   const problems = inspectDatabaseBackup(options.backup);
@@ -134,13 +164,14 @@ export async function restoreDatabase(options: DatabaseRestoreOptions): Promise<
   if (liveness.running) {
     throw new Error(
       `the gateway for this home is running (${liveness.reason ?? "it was detected"}). A database cannot be replaced underneath it: `
-      + "stop the gateway (ryoko stop), run this command again, then start it.",
+      + `stop the gateway (ryoko stop), run this command again with ${GATEWAY_STOPPED_FLAG}, then start it.`,
     );
   }
   const result: DatabaseRestoreResult = {
     name: options.name, backup: options.backup, destination, dryRun: options.dryRun === true, preRestore: null,
   };
   if (result.dryRun) return result;
+  if (options.gatewayStopped !== true) throw confirmationRequired();
 
   const preRestore = keepCurrentDatabase(options, destination);
   await installDatabase(options.backup, destination);
