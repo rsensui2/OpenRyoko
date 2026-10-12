@@ -122,16 +122,19 @@ describe("cron run log reflects how the session actually ended", () => {
   // the session ends in error. Once the gateway keeps the engine result instead,
   // the session stays idle and only lastError records it. Both are failed runs.
   describe("a result that never reached its delivery channel", () => {
-    it("is recorded when the turn ends in error because of it", async () => {
+    // Driven through the real session manager, so this holds for whichever of
+    // the two ways the gateway settles such a turn. What must survive either
+    // way is the connector's own reason, in the run log and in the alert.
+    it("is recorded with the connector's reason, however the turn is settled", async () => {
       const f = setup();
       f.deliver.mockRejectedValue(new Error("channel_not_found"));
       await f.run();
 
       const [entry, ...rest] = runs(f.job.id);
       expect(rest).toEqual([]);
-      expect(getSession(entry!.sessionId!)?.status).toBe("error");
-      expect(entry).toMatchObject({ status: "error", error: "channel_not_found" });
+      expect(entry).toMatchObject({ status: "error", error: expect.stringContaining("channel_not_found") });
       expect(f.alert).toHaveBeenCalledExactlyOnceWith({ channel: "C-alerts" }, expect.stringContaining("channel_not_found"));
+      expect(f.alert.mock.calls[0]![1]).toContain(entry!.error as string);
     });
 
     it("is recorded when the session is left idle with the failure only in lastError", async () => {
