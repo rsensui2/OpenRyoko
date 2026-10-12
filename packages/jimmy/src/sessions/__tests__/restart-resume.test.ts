@@ -354,6 +354,46 @@ describe("selectRestartResumeCandidates", () => {
     expect(markOf(justNudged.id)).toEqual({ nudgedAt: [iso(RESTART_NUDGE_COOLDOWN_MS - MINUTE)] });
   });
 
+  it("does not hold the cooldown against a session cut off in a NEW turn after its nudge", () => {
+    // The loop guard is about the nudge turn itself being cut off again. A
+    // user turn that started after the nudge is a different interruption.
+    const nudged = { [RESTART_RESUME_META_KEY]: { nudgedAt: [iso(20 * MINUTE)] } };
+    const newUserTurn = interrupted(iso(MINUTE), { transportMeta: nudged });
+    message(newUserTurn.id, "user", 10 * MINUTE, "nudge のあとに来た新しい依頼");
+    // Child completions queued after the nudge are new work too: when the turn
+    // running them is cut off, their queue row is gone and the nudge is all that is left.
+    const completions = interrupted(iso(MINUTE), { transportMeta: nudged });
+    const row = enqueueQueueItem(completions.id, completions.sessionKey, "📬 2 child-session updates arrived while this session was busy.");
+    initDb().prepare("UPDATE queue_items SET status = 'completed', created_at = ? WHERE id = ?").run(iso(10 * MINUTE), row);
+
+    const { candidates, skipped } = select();
+
+    expect(candidates.map((s) => s.id).sort()).toEqual([newUserTurn.id, completions.id].sort());
+    expect(skipped).toEqual([]);
+  });
+
+  it("still holds the cooldown when the turn that was cut off is the nudge itself", () => {
+    // What a nudge turn that restarted the gateway leaves behind: its own queue
+    // row, its own notification, and the web runner's "interrupted" notice.
+    const looping = interrupted(iso(MINUTE), { transportMeta: { [RESTART_RESUME_META_KEY]: { nudgedAt: [iso(20 * MINUTE)] } } });
+    const nudge = restartResumeMessage(looping, iso(25 * MINUTE));
+    message(looping.id, "user", 40 * MINUTE, "アップデートして");
+    message(looping.id, "notification", 20 * MINUTE + 50, nudge);
+    message(looping.id, "notification", 2 * MINUTE, "🔄 新しいメッセージを踏まえて再検討");
+    const row = enqueueQueueItem(looping.id, looping.sessionKey, nudge);
+    initDb().prepare("UPDATE queue_items SET status = 'cancelled', created_at = ? WHERE id = ?").run(iso(20 * MINUTE + 50), row);
+
+    expect(select().skipped).toEqual([{ sessionId: looping.id, reason: "recently-nudged" }]);
+  });
+
+  it("holds the daily cap whatever arrived in between", () => {
+    const history = Array.from({ length: RESTART_NUDGE_WINDOW_LIMIT }, (_, i) => iso((i + 1) * 3 * 60 * MINUTE)).reverse();
+    const capped = interrupted(iso(MINUTE), { transportMeta: { [RESTART_RESUME_META_KEY]: { nudgedAt: history } } });
+    message(capped.id, "user", 10 * MINUTE, "a new request after the last nudge");
+
+    expect(select().skipped).toEqual([{ sessionId: capped.id, reason: "recently-nudged" }]);
+  });
+
   it("stops nudging a session that keeps getting interrupted within a day", () => {
     const history = Array.from({ length: RESTART_NUDGE_WINDOW_LIMIT }, (_, i) => iso((i + 1) * 3 * 60 * MINUTE)).reverse();
     const looping = interrupted(iso(MINUTE), { transportMeta: { [RESTART_RESUME_META_KEY]: { nudgedAt: history } } });

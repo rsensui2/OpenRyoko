@@ -17,9 +17,9 @@
  *
  * Restart loops. A session that restarted the gateway itself (`ryoko update
  * --restart`) must not be woken into doing it again. Three things bound that:
- * the nudge says so; a session is not nudged twice within the cooldown, nor
- * more than a few times a day; and a nudge turn that was itself cut off by a
- * restart is dropped from the queue rather than replayed.
+ * the nudge says so; a session whose nudge turn was itself cut off is not
+ * nudged again within the cooldown, and no session more than a few times a
+ * day; and such a nudge turn is dropped from the queue rather than replayed.
  */
 import type { JinnConfig, JsonObject, Session } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
@@ -39,7 +39,8 @@ export const MAX_RESTART_RESUMES = 10;
 export const RESTART_RESUME_STAGGER_MS = 15_000;
 /** An interruption older than this at boot is left for the operator. */
 export const DEFAULT_RESUME_MAX_AGE_MINUTES = 120;
-/** A session nudged less than this long ago is not nudged again. */
+/** A session nudged less than this long ago is not nudged again — unless new
+ *  work reached it since (see underLoopGuard). */
 export const RESTART_NUDGE_COOLDOWN_MS = 30 * 60_000;
 /** …and never more than this many times within the window. */
 export const RESTART_NUDGE_WINDOW_LIMIT = 3;
@@ -160,11 +161,11 @@ const newestMessage = (sessionId: string): SessionMessage | undefined => getMess
  * newer entry while the queued turn runs. A queue row that started running
  * after the reply says so: the reply belongs to the turn before it.
  */
-function turnAlreadyAnswered(sessionId: string, newest = newestMessage(sessionId)): boolean {
+function turnAlreadyAnswered(session: Session, newest = newestMessage(session.id)): boolean {
   if (newest?.role !== "assistant") return false;
   const running = initDb().prepare(
-    "SELECT started_at AS startedAt FROM queue_items WHERE session_id = ? AND status = 'running' ORDER BY started_at DESC LIMIT 1",
-  ).get(sessionId) as { startedAt: string | null } | undefined;
+    "SELECT started_at AS startedAt FROM queue_items WHERE session_key = ? AND status = 'running' AND session_id = ? ORDER BY started_at DESC LIMIT 1",
+  ).get(session.sessionKey, session.id) as { startedAt: string | null } | undefined;
   return !(running?.startedAt && Date.parse(running.startedAt) >= newest.timestamp);
 }
 
@@ -188,7 +189,7 @@ export function interruptRunningSessionsForShutdown(now = Date.now()): number {
       lastActivity: interruptedAt,
       lastError: "Interrupted: gateway shutting down gracefully",
       // The killed turn's completion overwrites the status; the mark is what the next boot reads.
-      ...(turnAlreadyAnswered(session.id) ? {} : { transportMeta: withRestartInterruptedMark(session.transportMeta, interruptedAt) }),
+      ...(turnAlreadyAnswered(session) ? {} : { transportMeta: withRestartInterruptedMark(session.transportMeta, interruptedAt) }),
     });
     logger.info(`Marked session ${session.id} as interrupted for resume`);
     interrupted++;
@@ -219,7 +220,7 @@ export function prepareRestartResume(now = Date.now()): { marked: number; cancel
       // Workflow attempts have their own restart recovery; a cron run has no conversation to answer in.
       if (session.workflowProvenance || session.source === "cron") continue;
       const newest = newestMessage(session.id);
-      if (turnAlreadyAnswered(session.id, newest)) continue;
+      if (turnAlreadyAnswered(session, newest)) continue;
       const heartbeat = Date.parse(session.lastActivity);
       const lastAlive = Math.max(Number.isFinite(heartbeat) ? heartbeat : 0, newest?.timestamp ?? 0);
       const at = new Date(lastAlive > 0 ? Math.min(lastAlive, now) : now).toISOString();
@@ -238,9 +239,35 @@ function listMarkedSessions(): Session[] {
     .filter((session): session is Session => !!session && !!readRestartResumeState(session.transportMeta).interruptedAt);
 }
 
-function recentlyNudged(nudgedAt: string[], now: number): boolean {
-  const ages = nudgedAt.map((at) => now - Date.parse(at)).filter((age) => age < RESTART_NUDGE_WINDOW_MS);
-  return ages.length >= RESTART_NUDGE_WINDOW_LIMIT || ages.some((age) => age < RESTART_NUDGE_COOLDOWN_MS);
+/** The user has said something in this session since `sinceMs`. */
+function hasUserMessageAfter(sessionId: string, sinceMs: number): boolean {
+  return !!initDb().prepare("SELECT 1 FROM messages WHERE session_id = ? AND role = 'user' AND timestamp > ? LIMIT 1").get(sessionId, sinceMs);
+}
+
+/** New work reached the session after `sinceIso`: something the user said, or
+ *  a turn queued for it (a web message, a child completion, a job wake-up).
+ *  A restart nudge's own queue row is not new work. */
+function hasNewInputSince(session: Session, sinceIso: string): boolean {
+  if (hasUserMessageAfter(session.id, Date.parse(sinceIso))) return true;
+  return !!initDb().prepare(
+    "SELECT 1 FROM queue_items WHERE session_key = ? AND session_id = ? AND created_at > ? AND substr(prompt, 1, ?) <> ? LIMIT 1",
+  ).get(session.sessionKey, session.id, sinceIso, RESTART_NUDGE_PREFIX.length, RESTART_NUDGE_PREFIX);
+}
+
+/**
+ * The restart-loop guard. The daily cap is absolute. The cooldown is not: it
+ * exists for the nudge turn itself being cut off again — the signature of a
+ * turn that restarts the gateway. When new work reached the session after its
+ * last nudge, the turn that was cut off is a different one, and withholding
+ * its nudge would strand that work (child completions whose queue row the
+ * dying process closed have no other way back).
+ */
+function underLoopGuard(session: Session, nudgedAt: string[], now: number): boolean {
+  const recent = nudgedAt.filter((at) => now - Date.parse(at) < RESTART_NUDGE_WINDOW_MS);
+  if (recent.length >= RESTART_NUDGE_WINDOW_LIMIT) return true;
+  const last = recent.reduce<string | undefined>((latest, at) => (!latest || Date.parse(at) > Date.parse(latest) ? at : latest), undefined);
+  if (!last || now - Date.parse(last) >= RESTART_NUDGE_COOLDOWN_MS) return false;
+  return !hasNewInputSince(session, last);
 }
 
 interface SelectInput {
@@ -254,11 +281,6 @@ function isActive(session: Session, isBusy?: (session: Session) => boolean): boo
   return session.status === "running" || session.status === "waiting" || isBusy?.(session) === true;
 }
 
-/** The user has said something in this session since `sinceMs`. */
-function hasUserMessageAfter(sessionId: string, sinceMs: number): boolean {
-  return !!initDb().prepare("SELECT 1 FROM messages WHERE session_id = ? AND role = 'user' AND timestamp > ? LIMIT 1").get(sessionId, sinceMs);
-}
-
 function skipReason(session: Session, input: SelectInput): RestartResumeSkip | null {
   const state = readRestartResumeState(session.transportMeta);
   const interruptedAt = Date.parse(state.interruptedAt ?? "");
@@ -268,7 +290,7 @@ function skipReason(session: Session, input: SelectInput): RestartResumeSkip | n
   // A mark can outlive its restart (the nudge could not be posted). Once the user has carried on, it is history.
   if (hasUserMessageAfter(session.id, interruptedAt)) return "moved-on";
   if (input.now - interruptedAt > input.maxAgeMs) return "too-old";
-  if (recentlyNudged(state.nudgedAt, input.now)) return "recently-nudged";
+  if (underLoopGuard(session, state.nudgedAt, input.now)) return "recently-nudged";
   return null;
 }
 

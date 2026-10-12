@@ -41,7 +41,9 @@ describe("child completion notifications are batched for a busy parent", () => {
   let registry: typeof import("../../sessions/registry.js");
   let callbacks: typeof import("../../sessions/callbacks.js");
   let batching: typeof import("../../sessions/completion-batching.js");
+  let restartResume: typeof import("../../sessions/restart-resume.js");
   let api: typeof import("../api.js");
+  let port: number;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let context: any;
   let releaseBusyTurn: () => void = () => {};
@@ -96,6 +98,7 @@ describe("child completion notifications are batched for a busy parent", () => {
     registry = await import("../../sessions/registry.js");
     callbacks = await import("../../sessions/callbacks.js");
     batching = await import("../../sessions/completion-batching.js");
+    restartResume = await import("../../sessions/restart-resume.js");
     const { SessionManager } = await import("../../sessions/manager.js");
 
     engineRun = vi.fn(async (opts: { prompt: string }) => {
@@ -129,7 +132,7 @@ describe("child completion notifications are batched for a busy parent", () => {
     });
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
     const addr = server.address();
-    const port = typeof addr === "object" && addr ? addr.port : 0;
+    port = typeof addr === "object" && addr ? addr.port : 0;
     baseUrl = `http://127.0.0.1:${port}`;
 
     // callbacks.ts posts to this instance's own gateway port, read from config.yaml.
@@ -286,5 +289,53 @@ describe("child completion notifications are batched for a busy parent", () => {
     expect(engineRun).toHaveBeenCalledTimes(1);
     expect(prompts()[0]).toBe(batching.completionBatchPrompt(messages));
     expect(replyMessage.mock.calls[0][0]).toMatchObject({ channel: "C_TEAM", thread: parent.replyContext!.thread });
+  });
+
+  it("a batch cut off by a graceful restart is not lost — its parent is nudged, even shortly after an earlier nudge", async () => {
+    const parent = slackParent();
+    // An earlier restart already nudged this parent a few minutes ago.
+    registry.updateSession(parent.id, {
+      transportMeta: { channelExternal: false, [restartResume.RESTART_RESUME_META_KEY]: { nudgedAt: [new Date(Date.now() - 5 * 60_000).toISOString()] } },
+    });
+    await occupy(parent);
+    const children = [
+      await complete(parent, "researcher", { result: "調査が終わりました" }),
+      await complete(parent, "analyst", { result: "分析が終わりました" }),
+    ];
+    expect(pendingRows(parent)).toHaveLength(1);
+
+    // The busy turn ends and the batch turn starts — and is still in the engine when the gateway shuts down.
+    let killEngine!: (result: { sessionId: string; result: string; error: string }) => void;
+    engineRun.mockImplementationOnce(() => new Promise((resolve) => { killEngine = resolve; }));
+    releaseBusyTurn();
+    await vi.waitFor(() => expect(engineRun).toHaveBeenCalledTimes(2), { timeout: 10_000 });
+    expect(prompts()[1]).toContain("2 child-session updates");
+
+    // Graceful shutdown, as startGateway's cleanup does it: mark, then kill.
+    expect(restartResume.interruptRunningSessionsForShutdown()).toBe(1);
+    killEngine({ sessionId: "engine-parent", result: "", error: "Interrupted: gateway shutting down" });
+    // The dying runner closes the batch row: nothing is left in the queue to replay.
+    await vi.waitFor(() => expect(registry.getQueueItems(parent.sessionKey)).toHaveLength(0), { timeout: 10_000 });
+    expect(replyMessage).not.toHaveBeenCalled();
+
+    // The next boot, in startGateway's order.
+    restartResume.prepareRestartResume();
+    registry.recoverStaleSessions();
+    registry.recoverStaleQueueItems();
+    api.resumePendingWebQueueItems(context);
+    const summary = restartResume.resumeRestartInterruptedSessions({
+      config: STUB_CONFIG, port, queue: context.sessionManager.getQueue(), schedule: (run) => { void run(); },
+    });
+
+    // The two completions have no queue row any more, so the nudge is their only way back —
+    // and the cooldown from the earlier nudge must not withhold it.
+    expect(summary).toMatchObject({ planned: 1, skipped: 0 });
+    await vi.waitFor(() => expect(replyMessage).toHaveBeenCalledTimes(1), { timeout: 10_000 });
+    expect(engineRun).toHaveBeenCalledTimes(3);
+    expect(prompts()[2].startsWith(restartResume.RESTART_NUDGE_PREFIX)).toBe(true);
+    expect(replyMessage.mock.calls[0][0]).toMatchObject({ channel: "C_TEAM", thread: parent.replyContext!.thread });
+    // Both completions are still in the transcript the nudge sends the session back to.
+    const transcript = notifications(parent.id).map((m) => m.content);
+    for (const finished of children) expect(transcript.some((content) => content.includes(`replied in session ${finished.id}`))).toBe(true);
   });
 });
