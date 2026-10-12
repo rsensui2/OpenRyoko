@@ -324,6 +324,29 @@ describe("bundled skill sync: failures and odd states", () => {
     expect(f.receipt().skills).toEqual({});
   });
 
+  it("leaves a skill it cannot read alone, whether it still ships or was retired", () => {
+    const f = fixture();
+    f.ship("locked", { "SKILL.md": "v1" });
+    f.ship("locked-retired", { "SKILL.md": "v1" });
+    f.sync("2026.10.10");
+    f.ship("locked", { "SKILL.md": "v2" });
+    f.unship("locked-retired");
+    const read = fs.readFileSync;
+    vi.spyOn(fs, "readFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+      if (String(file).startsWith(path.join(f.skills, "locked"))) throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+      return (read as (...args: unknown[]) => unknown)(file, ...rest);
+    }) as typeof fs.readFileSync);
+
+    const result = f.sync("2026.10.11");
+
+    expect(result).toMatchObject({ updated: [], retired: [], notices: [], failed: [], backupDir: null });
+    expect(result.kept).toEqual([{ name: "locked", reason: "unreadable" }, { name: "locked-retired", reason: "unreadable" }]);
+    vi.restoreAllMocks();
+    expect(f.read("locked", "SKILL.md")).toBe("v1");
+    expect(f.read("locked-retired", "SKILL.md")).toBe("v1");
+    expect(Object.keys(f.receipt().skills)).toEqual(["locked", "locked-retired"]);
+  });
+
   it("retires nothing when the package ships no skills at all", () => {
     const f = fixture();
     f.ship("example", { "SKILL.md": "v1" });
