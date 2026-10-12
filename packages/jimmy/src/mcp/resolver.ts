@@ -3,6 +3,8 @@ import path from "node:path";
 import os from "node:os";
 import type { McpGlobalConfig, McpServerConfig, McpServerUrlConfig, Employee } from "../shared/types.js";
 import { JINN_HOME } from "../shared/paths.js";
+import { loadConfig } from "../shared/config.js";
+import { gatewayUrlFromConfig, localGatewayUrl } from "../shared/gateway-url.js";
 import { logger } from "../shared/logger.js";
 
 export interface ResolvedMcpConfig {
@@ -120,7 +122,7 @@ function buildAvailableServers(config: McpGlobalConfig, sessionContext?: McpSess
       command: "node",
       args: [scriptPath],
       env: {
-        JINN_GATEWAY_URL: `http://127.0.0.1:${process.env.JINN_PORT || "7777"}`,
+        JINN_GATEWAY_URL: resolveGatewayMcpUrl(),
         ...(sessionContext?.connector ? { JINN_CURRENT_CONNECTOR: sessionContext.connector } : {}),
         ...(sessionContext?.channel ? { JINN_CURRENT_CHANNEL: sessionContext.channel } : {}),
         ...(sessionContext?.thread ? { JINN_CURRENT_THREAD: sessionContext.thread } : {}),
@@ -152,6 +154,48 @@ function buildAvailableServers(config: McpGlobalConfig, sessionContext?: McpSess
   }
 
   return servers;
+}
+
+/**
+ * Where the built-in gateway MCP server calls back to: this instance's own
+ * gateway. The address used to be pinned to port 7777, so on an instance
+ * listening anywhere else the agent's tools reached whatever answered there —
+ * another instance, or nothing.
+ *
+ *  1. JINN_PORT — the legacy override, still honored when it holds a port.
+ *  2. RYOKO_GATEWAY_URL — published by the running gateway at boot: the
+ *     connectable URL for the port it actually listens on (`ryoko start -p`
+ *     included), with a wildcard bind already collapsed to loopback.
+ *  3. gateway.host / gateway.port from config.yaml, for the moment before
+ *     the gateway has published its URL.
+ */
+function resolveGatewayMcpUrl(): string {
+  const legacyPort = portOrUndefined(process.env.JINN_PORT);
+  if (legacyPort) return localGatewayUrl(undefined, legacyPort);
+  const published = httpUrlOrUndefined(process.env.RYOKO_GATEWAY_URL);
+  if (published) return published;
+  try {
+    return gatewayUrlFromConfig(loadConfig());
+  } catch {
+    return gatewayUrlFromConfig(undefined);
+  }
+}
+
+function portOrUndefined(value: string | undefined): number | undefined {
+  const text = value?.trim() ?? "";
+  const port = /^\d{1,5}$/.test(text) ? Number(text) : 0;
+  return port >= 1 && port <= 65535 ? port : undefined;
+}
+
+function httpUrlOrUndefined(value: string | undefined): string | undefined {
+  const candidate = value?.trim().replace(/\/+$/, "");
+  if (!candidate) return undefined;
+  try {
+    const { protocol } = new URL(candidate);
+    return protocol === "http:" || protocol === "https:" ? candidate : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
