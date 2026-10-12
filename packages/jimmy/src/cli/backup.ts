@@ -1,12 +1,19 @@
 /**
  * `ryoko backup run | list | verify <id> | restore <id>`.
  *
- * Works on the home the command resolves to and on nothing else, with the
- * gateway up or down: a backup reads files and copies databases through a
- * read-only connection, and a restore of files is safe under a running gateway
- * (its watchers reload what changed). Only a database restore needs the gateway
- * stopped. It checks, and because that check cannot see into a container it
- * also asks the operator to say so with `--gateway-stopped`.
+ * Works on the home the command resolves to and on nothing else. Run on the
+ * machine the gateway runs on, it is safe with the gateway up or down: a backup
+ * reads files and copies databases through a read-only connection, and a
+ * restore of files is safe under a running gateway (its watchers reload what
+ * changed). Only a database restore needs the gateway stopped. It looks for one
+ * without opening any database, and because pid files and timestamps cannot
+ * prove a gateway absent - least of all from the host side of a bind mount
+ * into a container - it also asks the operator to say so with
+ * `--gateway-stopped`.
+ *
+ * From the host side of such a mount, "up or down" does not hold for `backup
+ * run`: see `readOnlyDatabaseSource` for what a read-only connection still
+ * writes beside a database in use.
  *
  * Every command takes `--json`, and reports failure through the exit code.
  */
