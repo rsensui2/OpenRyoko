@@ -47,6 +47,11 @@ describe("docs/backup.md", () => {
     expect(doc()).toMatch(new RegExp(`ryoko backup restore sessions-\\S+ ${GATEWAY_STOPPED_FLAG}`));
   });
 
+  it("says a database is not restored through a symlink in the home, and how to keep backups elsewhere instead", () => {
+    expect(doc()).toMatch(/symlink になっていると[^。]*断ります/);
+    expect(doc()).toMatch(/symlink ではなく `backup\.directory`/);
+  });
+
   it("says what is not in a backup, so nobody counts on it being there", () => {
     for (const absent of [
       "credentials/", "connectors/", ".whatsapp-auth", "gateway-auth.json", "auth-devices.json",

@@ -76,6 +76,56 @@ function findRunningGateway(home: string, destination: string, now: Date): Gatew
   return detectRunningGateway(home, { now, databases: [destination] });
 }
 
+function lstatOrNull(file: string): fs.Stats | null {
+  try {
+    return fs.lstatSync(file);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+/**
+ * Holds a directory inside the home to being reached through real directories
+ * only, all the way down from the home. One that is not there yet is fine: it
+ * gets made, as a real directory. A place outside the home is not this
+ * function's business - the operator named it, and it is used as it is found.
+ */
+function assertRealDirectories(home: string, directory: string, consequence: string): void {
+  const relative = path.relative(home, directory);
+  if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return;
+  let current = home;
+  for (const segment of relative.split(path.sep)) {
+    current = path.join(current, segment);
+    const stat = lstatOrNull(current);
+    if (!stat) return;
+    const shown = path.relative(home, current).split(path.sep).join("/");
+    if (stat.isSymbolicLink()) throw new Error(`${shown} is a symlink (to ${fs.readlinkSync(current)}). ${consequence} Nothing was changed.`);
+    if (!stat.isDirectory()) throw new Error(`${shown} is not a directory. ${consequence} Nothing was changed.`);
+  }
+}
+
+/**
+ * Refuses a restore that would write outside the home by way of a symlink in
+ * it. Restoring files never writes through one; this is the same rule for the
+ * two things a database restore writes. The new database goes beside the old
+ * one, so with `sessions/` swapped for a link it would land wherever that
+ * points, and the gateway would go on using it there. And the database being
+ * replaced is copied into the backup directory first, which inside the home
+ * has to be the directory it looks like.
+ */
+function refuseToLeaveTheHome(options: DatabaseRestoreOptions, destination: string): void {
+  assertRealDirectories(
+    options.home, path.dirname(destination),
+    "A database is restored in place, and through that it would be written outside the home: put the real directory back and run the restore again.",
+  );
+  assertRealDirectories(
+    options.home, options.backupDirectory,
+    "The database being replaced is copied there first, and through that the copy would leave the home: "
+    + "put the real directory back, or name the place itself as backup.directory in config.yaml, and run the restore again.",
+  );
+}
+
 /**
  * Sets the live database aside before it is replaced. The files are copied as
  * they are, sidecars included, rather than through SQLite: a registry being
@@ -177,8 +227,11 @@ function confirmationRequired(): Error {
  *   whether it is in use, not on a dry run, not to copy it aside (that is a
  *   plain file copy, sidecars included), not to replace it (a rename).
  * - The operator's confirmation is checked first, before anything is looked
- *   at. Then the signs of a running gateway, which are pid files and file
- *   timestamps. A refusal at either point has read no database at all.
+ *   at. Then that the two places this writes - beside the database, and the
+ *   backup directory when it is in the home - are reached through real
+ *   directories and not through a symlink leading out of it. Then the signs of
+ *   a running gateway, which are pid files and file timestamps. A refusal at
+ *   any of these points has read no database at all.
  * - Only then is the backup opened, read-only: once for SQLite's integrity
  *   check (on a dry run too - it is a file in the backup directory, not the
  *   one in use), and once as the source of the copy that is written to a new
@@ -188,6 +241,7 @@ export async function restoreDatabase(options: DatabaseRestoreOptions): Promise<
   const destination = databasePath(options.home, options.name);
   const dryRun = options.dryRun === true;
   if (!dryRun && options.gatewayStopped !== true) throw confirmationRequired();
+  refuseToLeaveTheHome(options, destination);
 
   const liveness = (options.detectGateway ?? findRunningGateway)(options.home, destination, options.now);
   if (liveness.running) {

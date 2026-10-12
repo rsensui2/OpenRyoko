@@ -7,7 +7,7 @@ import type { DiskSpaceStatus } from "../../shared/storage-health.js";
 import { createDailyDatabaseBackup } from "../../sessions/backup.js";
 import { listBackups } from "../catalog.js";
 import { inspectDatabaseBackup, restoreDatabase, type DatabaseRestoreOptions } from "../database-restore.js";
-import { databaseFingerprint, leaveMidFlight, makeHome, removeTempDirs, rowCount, setDatabaseModified, tempDir } from "./fixture.js";
+import { databaseFingerprint, leaveMidFlight, makeHome, removeTempDirs, rowCount, setDatabaseModified, sha256, tempDir } from "./fixture.js";
 
 const TAKEN = new Date("2026-10-11T03:00:00.000Z");
 const NOW = new Date("2026-10-12T09:30:00.000Z");
@@ -332,6 +332,85 @@ describe("restoreDatabase and a database that may be in use", () => {
 
       expect(databaseFingerprint(target.live)).toEqual(before);
     }
+  });
+});
+
+describe("restoreDatabase in a home whose directories have been turned into symlinks", () => {
+  /** Moves one of the home's directories outside it and leaves a symlink in its place. */
+  function relocate(target: Scene, name: string): string {
+    const outside = path.join(path.dirname(target.home), `outside-${name}`);
+    fs.renameSync(path.join(target.home, name), outside);
+    fs.symlinkSync(outside, path.join(target.home, name));
+    return outside;
+  }
+
+  /** Every file in a directory with a hash of its bytes: what must come out of a refusal exactly as it went in. */
+  const contents = (directory: string): Record<string, string> =>
+    Object.fromEntries(fs.readdirSync(directory).sort().map((name) => [name, sha256(fs.readFileSync(path.join(directory, name)))]));
+
+  it.each(["sessions", "workflows"] as const)("will not replace the %s database through a directory that leads out of the home", async (name) => {
+    // Restoring files never writes through a symlink. Restoring a database
+    // did: the new registry was written wherever sessions/ pointed, and the
+    // gateway went on to use it there.
+    const target = await scene(name);
+    const outside = relocate(target, name);
+    const before = contents(outside);
+
+    for (const dryRun of [true, false]) {
+      const refusal = await refusalOf(optionsFor(target, { name, dryRun }));
+
+      expect(refusal, `dry run: ${dryRun}`).toMatch(new RegExp(`^${name} is a symlink \\(to .*outside-${name}\\)`));
+      expect(refusal).toContain("Nothing was changed.");
+    }
+
+    expect(contents(outside)).toEqual(before);
+    expect(listBackups(target.backups).filter((item) => item.preRestore)).toEqual([]);
+  });
+
+  it("will not put the copy of the database it replaces through a backups/ that leads out of the home", async () => {
+    const target = await scene();
+    const outside = relocate(target, "backups");
+    const before = contents(outside);
+    const live = databaseFingerprint(target.live);
+
+    const refusal = await refusalOf(optionsFor(target));
+
+    expect(refusal).toMatch(/^backups is a symlink \(to .*outside-backups\)/);
+    // What to do about it: a place outside the home is named in the config, not reached through a link.
+    expect(refusal).toContain("backup.directory");
+    expect(refusal).toContain("Nothing was changed.");
+    expect(contents(outside)).toEqual(before);
+    expect(databaseFingerprint(target.live)).toEqual(live);
+  });
+
+  it("refuses a file standing where one of those directories belongs, too", async () => {
+    const target = await scene();
+    fs.rmSync(target.backups, { recursive: true });
+    const elsewhere = path.join(path.dirname(target.home), "copied-out.db");
+    const source = new Database(target.live, { readonly: true });
+    await source.backup(elsewhere);
+    source.close();
+    setDatabaseModified(target.live, QUIET_SINCE);
+    fs.writeFileSync(target.backups, "a file sits where the backups should go\n");
+
+    expect(await refusalOf(optionsFor(target, { backup: elsewhere }))).toMatch(/^backups is not a directory/);
+    expect(fs.readFileSync(target.backups, "utf8")).toBe("a file sits where the backups should go\n");
+  });
+
+  it("uses a backup directory outside the home as it finds it, reached through a link or not", async () => {
+    // The operator named it. Only inside the home does this command insist on real directories.
+    const target = await scene();
+    const root = path.dirname(target.home);
+    const real = path.join(root, "external-disk");
+    const link = path.join(root, "external-link");
+    fs.renameSync(target.backups, real);
+    fs.symlinkSync(real, link);
+
+    const result = await restoreDatabase(optionsFor(target, { backup: path.join(link, path.basename(target.backup)), backupDirectory: link }));
+
+    expect(rowCount(target.live, "sessions")).toBe(5);
+    expect(result.preRestore!.file).toBe(path.join(link, "pre-restore-20261012T093000Z-sessions.db"));
+    expect(rowCount(path.join(real, "pre-restore-20261012T093000Z-sessions.db"), "sessions")).toBe(8);
   });
 });
 
