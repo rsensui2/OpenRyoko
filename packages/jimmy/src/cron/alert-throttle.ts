@@ -76,9 +76,44 @@ export function isAlertThrottled(jobId: string, reason: string, destination: str
 
 /** Call once the alert has actually gone out: one that could not be sent must not silence the next. */
 export function recordAlertSent(jobId: string, reason: string, destination: string, now = Date.now()): void {
-  const signature = signatureOf(reason, destination);
+  rememberSent(jobId, signatureOf(reason, destination), now);
+}
+
+function rememberSent(jobId: string, signature: string, now: number): void {
   const others = [...(sentAlerts.get(jobId) ?? [])].filter(([known]) => known !== signature);
   sentAlerts.set(jobId, new Map([...others.slice(-(MAX_REASONS_PER_JOB - 1)), [signature, now]]));
+}
+
+/** A usage limit that is not waited for: the engine, and the reset it stated (ISO). */
+export interface AlertedLimitPeriod {
+  engine: string;
+  resetsAt: string;
+}
+
+/** Told apart by the period itself, never by a reason's wording: the reset is
+ *  exactly the kind of detail a reason's signature leaves out. */
+function limitSignature(period: AlertedLimitPeriod, destination: string): string {
+  return `${destination}\nusage limit\n${period.engine}\n${period.resetsAt}`;
+}
+
+/**
+ * True when the job has already alerted this place of this limit period.
+ *
+ * A usage limit that is not waited for fails every fire until it resets, and
+ * that can be days: an hour between alerts is then twenty-four of them a day
+ * for one job. So this alert is held for as long as the period lasts — until
+ * the engine names another reset — rather than for a window. A success lifts
+ * it like any other, and `cron.alertThrottleMinutes: 0` still means every
+ * failure alerts.
+ */
+export function isLimitAlertThrottled(jobId: string, period: AlertedLimitPeriod, destination: string, configuredMinutes: unknown): boolean {
+  if (alertThrottleMinutes(configuredMinutes) === 0) return false;
+  return sentAlerts.get(jobId)?.has(limitSignature(period, destination)) === true;
+}
+
+/** The limit-period counterpart of recordAlertSent. */
+export function recordLimitAlertSent(jobId: string, period: AlertedLimitPeriod, destination: string, now = Date.now()): void {
+  rememberSent(jobId, limitSignature(period, destination), now);
 }
 
 /** A successful run ends the failure, whatever its reasons were: the next one alerts at once. */

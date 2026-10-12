@@ -23,10 +23,39 @@ export interface LimitPeriod {
 /** The failures made for a limit that is not waited for, with the period each is about. */
 const limitFailures = new WeakMap<EngineResult, LimitPeriod>();
 
-/** Mark `failed` as the answer of a turn that met `period` and will not wait for it. */
-export function noteLimitFailure(failed: EngineResult, period: LimitPeriod): EngineResult {
+/** The same, by the session whose turn it was, for whoever reports that turn's
+ *  failure onward (see limitFailureOf). The most recent sessions only: a cron
+ *  job makes a new session on every fire, for as long as a limit lasts. */
+const MAX_REMEMBERED_SESSIONS = 256;
+const failedSessions = new Map<string, { period: LimitPeriod; error: string }>();
+
+/** Mark `failed` as the answer of a turn — `sessionId`'s, when it is known —
+ *  that met `period` and will not wait for it. */
+export function noteLimitFailure(failed: EngineResult, period: LimitPeriod, sessionId?: string): EngineResult {
   limitFailures.set(failed, period);
+  if (sessionId && failed.error) {
+    failedSessions.delete(sessionId); // re-inserted below, as the most recent
+    failedSessions.set(sessionId, { period, error: failed.error });
+    for (const oldest of failedSessions.keys()) {
+      if (failedSessions.size <= MAX_REMEMBERED_SESSIONS) break;
+      failedSessions.delete(oldest);
+    }
+  }
   return failed;
+}
+
+/**
+ * The limit period a session's turn failed on, if that failure is still what
+ * the session records. For whoever reports the failure onward — the cron
+ * runner, for its alert — so that "was it a usage limit, and which" is not
+ * read back out of the wording of an error.
+ *
+ * A later turn, or a reply that could not be delivered, records something else
+ * on the session; then that is what failed, and this names nothing.
+ */
+export function limitFailureOf(session: Pick<Session, "id" | "lastError"> | undefined): LimitPeriod | undefined {
+  const noted = session ? failedSessions.get(session.id) : undefined;
+  return noted && session?.lastError === noted.error ? noted.period : undefined;
 }
 
 /**
