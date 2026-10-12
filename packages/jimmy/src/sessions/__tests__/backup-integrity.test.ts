@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { damageDatabase } from "../../backup/__tests__/fixture.js";
-import { findDatabaseProblems } from "../backup-integrity.js";
+import { findDatabaseProblems, integrityCheckTimeoutMs } from "../backup-integrity.js";
 
 /* The check a database copy has to pass before it is given its name.
  *
@@ -107,6 +107,60 @@ describe("findDatabaseProblems", () => {
     expect(problems).toEqual([]);
     // A check made inline would have returned an already-settled promise: not one turn in between.
     expect(turns).toBeGreaterThan(0);
+  });
+
+  /**
+   * A stand-in for the SQLite driver whose check never comes back. It leaves
+   * the sidecars a real one would, and keeps stamping a file so that whether it
+   * is still running can be seen from outside.
+   */
+  function hungDriver(directory: string): { driver: string; beat: string } {
+    const driver = path.join(directory, "hung-driver.cjs");
+    const beat = path.join(directory, "still-running");
+    fs.writeFileSync(driver, `
+      const fs = require("node:fs");
+      module.exports = class Hung {
+        constructor(file) { for (const suffix of ["-wal", "-shm"]) if (!fs.existsSync(file + suffix)) fs.writeFileSync(file + suffix, ""); }
+        pragma() { for (let turn = 0; ; turn += 1) fs.writeFileSync(${JSON.stringify(beat)}, String(turn)); }
+        close() {}
+      };
+    `);
+    return { driver, beat };
+  }
+
+  const pause = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms); });
+
+  it("stops a check that does not answer in time, and reports it as one that could not be run", async () => {
+    // With no limit, a check that hung held the backup that was waiting for it,
+    // and the scheduler behind that, until the gateway was restarted.
+    const file = seeded("delete");
+    const { driver, beat } = hungDriver(path.dirname(file));
+
+    await expect(findDatabaseProblems(file, { driver, timeoutMs: 300 })).rejects.toThrow(/integrity check could not be run.*did not answer within/s);
+
+    // Stopped, not abandoned: the thread is no longer running.
+    const afterwards = fs.readFileSync(beat, "utf8");
+    await pause(150);
+    expect(fs.readFileSync(beat, "utf8")).toBe(afterwards);
+  });
+
+  it("clears away what the stopped check had put beside the file, and nothing that was there before", async () => {
+    const file = seeded("delete");
+    const { driver } = hungDriver(path.dirname(file));
+    fs.writeFileSync(`${file}-wal`, "was here before the check");
+
+    await expect(findDatabaseProblems(file, { driver, timeoutMs: 300 })).rejects.toThrow(/did not answer within/);
+
+    expect(fs.existsSync(`${file}-shm`)).toBe(false);
+    expect(fs.readFileSync(`${file}-wal`, "utf8")).toBe("was here before the check");
+  });
+
+  it("allows a larger database more time, and none less than five minutes", () => {
+    const megabyte = 1024 * 1024;
+
+    expect(integrityCheckTimeoutMs(0)).toBe(5 * 60_000);
+    expect(integrityCheckTimeoutMs(400 * megabyte)).toBe(5 * 60_000 + 400 * 2_000);
+    expect(integrityCheckTimeoutMs(4000 * megabyte)).toBeGreaterThan(integrityCheckTimeoutMs(400 * megabyte));
   });
 
   it("rejects, rather than passing or failing the file, when the check itself cannot be run", async () => {

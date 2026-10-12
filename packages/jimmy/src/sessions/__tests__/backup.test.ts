@@ -5,6 +5,7 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { damageDatabase } from "../../backup/__tests__/fixture.js";
 import { createDailyDatabaseBackup, DatabaseCopyDamagedError } from "../backup.js";
+import { findDatabaseProblems } from "../backup-integrity.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -237,6 +238,27 @@ describe("daily database backup", () => {
     expect(result).toEqual({
       created: true, file: path.join(backups, "sessions-2026-08-17.db"),
       unchecked: expect.stringContaining("worker threads are not available"),
+    });
+    expect(fs.readdirSync(backups)).toEqual(["sessions-2026-08-17.db"]);
+  });
+
+  it("keeps the copy, unchecked and said to be, when the check does not answer in time", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ryoko-backup-hung-"));
+    roots.push(root);
+    const backups = path.join(root, "backups");
+    const source = registryOnDisk(root);
+    const driver = path.join(root, "hung-driver.cjs");
+    fs.writeFileSync(driver, "module.exports = class Hung { constructor() {} pragma() { for (;;) {} } close() {} };\n");
+
+    const result = await createDailyDatabaseBackup(source, {
+      directory: backups, now: DAY,
+      check: (file) => findDatabaseProblems(file, { driver, timeoutMs: 300 }),
+    });
+    source.close();
+
+    expect(result).toEqual({
+      created: true, file: path.join(backups, "sessions-2026-08-17.db"),
+      unchecked: expect.stringMatching(/could not be run.*did not answer within/s),
     });
     expect(fs.readdirSync(backups)).toEqual(["sessions-2026-08-17.db"]);
   });
