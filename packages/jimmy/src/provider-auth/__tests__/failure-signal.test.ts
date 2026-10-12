@@ -2,19 +2,34 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { detectProviderAuthFailure, onProviderAuthFailure, reportEngineAttempt } from "../failure-signal.js";
 
 describe("detectProviderAuthFailure", () => {
+  // What the engines report today.
   it.each([
+    // The interactive engine: the Stop hook's error enum, verbatim.
     ["claude", "Interactive turn failed: authentication_failed"],
-    ["claude", 'API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"OAuth token has expired."}}'],
-    ["claude", "OAuth token has expired. Please obtain a new token or refresh your existing token."],
-    ["claude", "Invalid API key · Please run /login"],
-    ["claude", "Not logged in · Please run /login"],
-    ["claude", "Claude exited with code 1: Invalid API key · Please run /login"],
+    // `claude -p` (Claude Code 2.1.x): every lost-login failure opens with "Failed to authenticate".
+    ["claude", "Failed to authenticate: OAuth session expired and could not be refreshed"],
+    ["claude", "Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator."],
+    ["claude", 'Failed to authenticate. API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"Invalid authentication credentials"}}'],
+    ["claude", "Failed to authenticate. API Error: 401 Invalid authentication credentials"],
+    ["claude", "Claude exited with code 1: Failed to authenticate: OAuth session expired and could not be refreshed"],
     ["codex", 'unexpected status 401 Unauthorized: {"error":{"message":"Provided authentication token is expired. Please try signing in again.","code":"token_expired"}}'],
     ["codex", "Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again."],
     ["codex", "Codex exited with code 1: Error: unexpected status 401 Unauthorized: Missing bearer or basic authentication in header"],
     ["codex", "Codex exited with code 1: Not logged in. Run `codex login` to sign in."],
   ] as const)("recognizes a %s login failure: %s", (engine, error) => {
     expect(detectProviderAuthFailure({ engine, error })).toBe(engine);
+  });
+
+  // Wordings of older Claude Code versions. Kept so that an instance whose CLI
+  // has not been updated still gets the notice; not what a current CLI prints.
+  it.each([
+    'API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"OAuth token has expired."}}',
+    "OAuth token has expired. Please obtain a new token or refresh your existing token.",
+    "Invalid API key · Please run /login",
+    "Not logged in · Please run /login",
+    "Claude exited with code 1: Invalid API key · Please run /login",
+  ])("still recognizes an older Claude CLI's wording: %s", (error) => {
+    expect(detectProviderAuthFailure({ engine: "claude", error })).toBe("claude");
   });
 
   it.each([
@@ -57,6 +72,9 @@ describe("detectProviderAuthFailure", () => {
     ["claude", "Unknown model: Please run /login"],
     ["claude", 'Model "Invalid API key" was not found'],
     ["claude", "Interactive turn failed: invalid_request (model: authentication_failed)"],
+    ["claude", 'Model "Failed to authenticate" was not found'],
+    ["claude", 'API Error: 404 {"type":"error","error":{"type":"not_found_error","message":"model: Failed to authenticate"}}'],
+    ["claude", "Unknown model: failed to authenticate. API Error: 401"],
     ["claude", "Claude exited with code 1: error: model 'OAuth token has expired' not found"],
   ] as const)("is not triggered by a %s failure that merely quotes a chosen string: %s", (engine, error) => {
     expect(detectProviderAuthFailure({ engine, error })).toBeNull();
@@ -70,6 +88,7 @@ describe("detectProviderAuthFailure", () => {
 
   it("does not answer a Claude signature for Codex, or the reverse", () => {
     expect(detectProviderAuthFailure({ engine: "codex", error: "Interactive turn failed: authentication_failed" })).toBeNull();
+    expect(detectProviderAuthFailure({ engine: "codex", error: "Failed to authenticate: OAuth session expired and could not be refreshed" })).toBeNull();
     expect(detectProviderAuthFailure({ engine: "claude", error: "unexpected status 401 Unauthorized" })).toBeNull();
   });
 });

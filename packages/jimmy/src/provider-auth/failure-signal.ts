@@ -28,6 +28,11 @@ const SIGNATURES: Record<AuthProvider, readonly RegExp[]> = {
   claude: [
     // The interactive engine surfaces the Stop hook's error enum verbatim, and nothing else.
     /^interactive turn failed: authentication_failed$/i,
+    // `claude -p`, Claude Code 2.1.x. Every lost-login failure opens this way:
+    // "Failed to authenticate: OAuth session expired and could not be refreshed",
+    // "Failed to authenticate: OAuth token revoked. …", "Failed to authenticate. API Error: 401 …".
+    /^failed to authenticate\b/i,
+    // Older Claude Code versions, kept for instances whose CLI has not been updated.
     /^api error: 401\b/i,
     /^invalid api key\b/i,
     /^not logged in\b/i,
