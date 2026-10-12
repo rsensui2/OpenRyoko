@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { JINN_HOME } from "../shared/paths.js";
 import { loadConfig } from "../shared/config.js";
 import { startForeground, startDaemon } from "../gateway/lifecycle.js";
+import { installProcessSafetyNet } from "../shared/process-safety-net.js";
 import { compareSemver, getPackageVersion, getInstanceVersion } from "../shared/version.js";
 
 const YELLOW = "\x1b[33m";
@@ -39,6 +40,15 @@ export async function runStart(opts: { daemon?: boolean; port?: number }): Promi
     console.log(
       `ゲートウェイを ${config.gateway.host}:${config.gateway.port} で起動中...`
     );
-    await startForeground(config);
+    // このプロセス自身がゲートウェイになる（Docker / systemd の起動経路）。
+    installProcessSafetyNet();
+    try {
+      await startForeground(config);
+    } catch (err) {
+      // 安全網は未処理の rejection でもプロセスを生かすので、起動の失敗は
+      // ここで明示的に終了させる（放置すると半端な状態で残り続ける）。
+      console.error("ゲートウェイの起動に失敗しました:", err);
+      process.exit(1);
+    }
   }
 }
