@@ -27,6 +27,7 @@ import {
 import { parseConfigPatch, applyPatchOps, type PatchOutcome } from "../shared/configPatch.js";
 import { stageMissingBundledSkills } from "./bundled-skills.js";
 import { auditGatewayReferences } from "./gateway-audit.js";
+import { placeTree } from "./home-copy.js";
 import { migrationNeedsSession } from "./migration-declarations.js";
 import { syncInstanceBundledSkills } from "../skills-sync/instance.js";
 import { printable } from "../skills-sync/names.js";
@@ -38,23 +39,6 @@ const YELLOW = "\x1b[33m";
 const RED = "\x1b[31m";
 const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
-
-/**
- * Recursively copy a directory tree, overwriting existing files.
- * Used to stage migration files into the instance home.
- */
-function copyDirRecursive(src: string, dest: string): void {
-  fs.mkdirSync(dest, { recursive: true });
-  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-    const srcPath = path.join(src, entry.name);
-    const destPath = path.join(dest, entry.name);
-    if (entry.isDirectory()) {
-      copyDirRecursive(srcPath, destPath);
-    } else if (entry.name !== ".gitkeep") {
-      fs.copyFileSync(srcPath, destPath);
-    }
-  }
-}
 
 /**
  * Is anything at this path — including a symlink that leads nowhere? `existsSync`
@@ -308,6 +292,26 @@ function settledSkillNote(relPath: string, skills: SyncedSkills): string | null 
 }
 
 /**
+ * Put the packaged migrate skill in the instance, where it has none. In a home whose
+ * skills/ is the user's own symlink, that store is theirs and is resolved as it
+ * stands; everywhere else skills/ has to be a real directory in the home. Below that,
+ * nothing is followed. Failing is reported and is not fatal: the AI run reads the
+ * packaged copy instead.
+ */
+function stageMigrateSkill(source: string, intoUserStore: boolean): boolean {
+  try {
+    if (intoUserStore) placeTree(source, SKILLS_DIR, "migrate");
+    else placeTree(source, JINN_HOME, "skills", "migrate");
+  } catch (err: any) {
+    console.log(`  ${YELLOW}[skills]${RESET} migrate スキルを配置できませんでした: ${printable(String(err?.message ?? err))}`);
+    return false;
+  }
+  ensureSkillSymlinks("migrate");
+  console.log(`  ${GREEN}[staged]${RESET} migrate スキル`);
+  return true;
+}
+
+/**
  * Stamp the jinn.version field in config.yaml.
  */
 function stampVersion(version: string): void {
@@ -488,15 +492,21 @@ export async function runMigrate(opts: {
     return;
   }
 
-  // Stage migration files into ~/.ryoko/migrations/
+  // Stage migration files into ~/.ryoko/migrations/, with the copy that follows no
+  // link in the home: a plain one writes each file over whatever a link left at its
+  // path points to. A migration that cannot be staged is not applied in part.
   console.log("マイグレーションファイルをステージング中...");
-  fs.mkdirSync(MIGRATIONS_DIR, { recursive: true });
-
-  for (const version of pending) {
-    const src = path.join(TEMPLATE_DIR, "migrations", version);
-    const dest = path.join(MIGRATIONS_DIR, version);
-    copyDirRecursive(src, dest);
-    console.log(`  ${GREEN}[staged]${RESET} ${version}`);
+  try {
+    for (const version of pending) {
+      placeTree(path.join(TEMPLATE_DIR, "migrations", version), JINN_HOME, "migrations", version);
+      console.log(`  ${GREEN}[staged]${RESET} ${version}`);
+    }
+  } catch (err: any) {
+    console.error(`${RED}エラー:${RESET} マイグレーションのファイルをステージングできませんでした: ${printable(String(err?.message ?? err))}`);
+    console.error(`${MIGRATIONS_DIR} にあるリンクや、ディレクトリでないものを取り除いてから、ryoko migrate を再実行してください。`);
+    console.error(`${DIM}マイグレーションは適用しておらず、バージョン情報も更新していません。${RESET}\n`);
+    process.exitCode = 1;
+    return;
   }
 
   // Also ensure the migrate skill is available in the instance — unless the
@@ -505,13 +515,9 @@ export async function runMigrate(opts: {
   // instance has none it can read, such as behind a link that leads nowhere.
   const migrateSkillSrc = path.join(TEMPLATE_DIR, "skills", "migrate");
   const migrateSkillDest = path.join(SKILLS_DIR, "migrate");
-  const stageMigrateSkill = skills.mode !== "blocked" && !skills.deleted.has("migrate") && fs.existsSync(migrateSkillSrc) && !isTaken(migrateSkillDest);
-  if (stageMigrateSkill) {
-    copyDirRecursive(migrateSkillSrc, migrateSkillDest);
-    ensureSkillSymlinks("migrate");
-    console.log(`  ${GREEN}[staged]${RESET} migrate スキル`);
-  }
-  const migrateSkillToRead = stageMigrateSkill || fs.existsSync(migrateSkillDest) ? migrateSkillDest : migrateSkillSrc;
+  const wantsMigrateSkill = skills.mode !== "blocked" && !skills.deleted.has("migrate") && fs.existsSync(migrateSkillSrc) && !isTaken(migrateSkillDest);
+  const stagedMigrateSkill = wantsMigrateSkill && stageMigrateSkill(migrateSkillSrc, skills.mode === "user-managed");
+  const migrateSkillToRead = stagedMigrateSkill || fs.existsSync(migrateSkillDest) ? migrateSkillDest : migrateSkillSrc;
 
   // --auto: apply safe changes deterministically without launching AI
   if (opts.auto) {
@@ -623,15 +629,7 @@ async function applyAutoMigrations(
         continue;
       }
 
-      if (!isTaken(destPath)) {
-        fs.mkdirSync(path.dirname(destPath), { recursive: true });
-        const srcPath = path.join(filesDir, entry.relPath);
-        if (isTemplateFile(entry.relPath)) {
-          const content = fs.readFileSync(srcPath, "utf-8");
-          fs.writeFileSync(destPath, applyTemplateReplacements(content, replacements), "utf-8");
-        } else {
-          fs.copyFileSync(srcPath, destPath);
-        }
+      if (!isTaken(destPath) && createNewFile(path.join(filesDir, entry.relPath), destPath, entry.relPath, replacements)) {
         console.log(`  ${GREEN}[new]${RESET} ${entry.relPath}`);
         applied++;
 
@@ -677,6 +675,28 @@ async function applyAutoMigrations(
   console.log(`\n${GREEN}Auto-migration complete.${RESET} ${applied} file(s) added, ${configChanges} config value(s) updated.`);
 
   fs.rmSync(MIGRATIONS_DIR, { recursive: true, force: true });
+}
+
+/**
+ * Create a file the home does not have from a migration's copy of it. Exclusively:
+ * the look that found nothing there came a moment earlier, and a link put at the path
+ * since would otherwise be written through. Returns false when something turned out
+ * to be there after all — which leaves the file to the AI merge, like any that exists.
+ */
+function createNewFile(source: string, destination: string, relPath: string, replacements: Record<string, string>): boolean {
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  try {
+    if (isTemplateFile(relPath)) {
+      const content = fs.readFileSync(source, "utf-8");
+      fs.writeFileSync(destination, applyTemplateReplacements(content, replacements), { encoding: "utf-8", flag: "wx" });
+    } else {
+      fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL);
+    }
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw error;
+  }
 }
 
 type FsEntry = { type: "file" | "dir"; relPath: string };

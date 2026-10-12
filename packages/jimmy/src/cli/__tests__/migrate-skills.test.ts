@@ -48,13 +48,19 @@ vi.mock("../../skills-sync/instance.js", () => ({
   syncInstanceBundledSkills: vi.fn(),
 }));
 
+// The copy of package files into the home has its own suite, on a real filesystem.
+// Here it only has to be asked for the right tree in the right place.
+vi.mock("../home-copy.js", () => ({
+  placeTree: vi.fn(),
+}));
+
 import fs from "node:fs";
 import path from "node:path";
 import type { BundledSkillSync } from "../../skills-sync/types.js";
 import { compareSemver } from "../../shared/version.js";
 import { JINN_HOME, MIGRATIONS_DIR, TEMPLATE_DIR } from "../../shared/paths.js";
 import {
-  dirent, mockExecFileSync, mockExistsSync, mockReaddirSync, mockRmSync, mockSync, mockWriteFileSync, output, rawOutput, resetMigrateMocks, stampedVersions, synced,
+  createdInHome, dirent, mockExecFileSync, mockExistsSync, mockReaddirSync, mockRmSync, mockSync, mockWriteFileSync, output, rawOutput, resetMigrateMocks, stampedVersions, synced,
 } from "./migrate-harness.js";
 
 describe("migrate: bundled skill sync", () => {
@@ -165,7 +171,8 @@ describe("migrate: bundled skill sync", () => {
 
   describe("when the operator deleted the migrate skill and a migration ships it", () => {
     const deletedSkill = path.join(JINN_HOME, "skills", "migrate");
-    const touched = (mock: { mock: { calls: unknown[][] } }) => mock.mock.calls.map((call) => String(call[0])).filter((file) => file.startsWith(deletedSkill));
+    /** Anything created at, or under, the deleted skill's path. */
+    const recreated = () => createdInHome().filter((file) => file.startsWith(deletedSkill));
     const prompt = () => (mockExecFileSync.mock.calls[0][1] as string[]).at(-1)!;
 
     beforeEach(() => {
@@ -179,9 +186,7 @@ describe("migrate: bundled skill sync", () => {
 
       await runMigrate({ auto: true });
 
-      expect(touched(vi.mocked(fs.mkdirSync))).toEqual([]);
-      expect(touched(vi.mocked(fs.copyFileSync))).toEqual([]);
-      expect(touched(mockWriteFileSync)).toEqual([]);
+      expect(recreated()).toEqual([]);
       expect(fs.symlinkSync).not.toHaveBeenCalled();
       expect(output()).not.toMatch(/needs AI merge|\[new\]|\[staged\] migrate/);
       // Nothing was skipped for the AI, so the update is complete.
@@ -193,8 +198,7 @@ describe("migrate: bundled skill sync", () => {
 
       await runMigrate({});
 
-      expect(touched(vi.mocked(fs.mkdirSync))).toEqual([]);
-      expect(touched(vi.mocked(fs.copyFileSync))).toEqual([]);
+      expect(recreated()).toEqual([]);
       expect(output()).not.toMatch(/\[staged\] migrate/);
       expect(mockExecFileSync).toHaveBeenCalledOnce();
       expect(prompt()).toContain(path.join(TEMPLATE_DIR, "skills", "migrate", "SKILL.md"));
@@ -215,11 +219,7 @@ describe("migrate: bundled skill sync", () => {
   describe("when a migration ships files for a skill the sync manages", () => {
     const skillsDir = path.join(JINN_HOME, "skills");
     /** Everything written under skills/, by any of the three ways migrate writes. */
-    const created = () => [
-      ...vi.mocked(fs.mkdirSync).mock.calls.map((call) => String(call[0])),
-      ...mockWriteFileSync.mock.calls.map((call) => String(call[0])),
-      ...vi.mocked(fs.copyFileSync).mock.calls.map((call) => String(call[1])),
-    ].filter((file) => file.startsWith(skillsDir));
+    const created = () => createdInHome().filter((file) => file.startsWith(skillsDir));
 
     /** Migration 1.1.0 ships these files; none of the listed paths exist in the home yet. */
     function shipInMigration(skill: string, fileNames: string[], missingInHome: string[]): void {
@@ -285,7 +285,7 @@ describe("migrate: bundled skill sync", () => {
 
     expect(output()).toMatch(/受領証.*保存できません.*EROFS/);
     // The deletion is still known, so the deleted skill is still not recreated.
-    expect(vi.mocked(fs.mkdirSync).mock.calls.map((call) => String(call[0])).filter((dir) => dir.startsWith(path.join(JINN_HOME, "skills", "migrate")))).toEqual([]);
+    expect(createdInHome().filter((dir) => dir.startsWith(path.join(JINN_HOME, "skills", "migrate")))).toEqual([]);
     expect(stampedVersions()).toEqual(["1.1.0"]);
   });
 

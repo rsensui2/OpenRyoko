@@ -48,6 +48,12 @@ vi.mock("../../skills-sync/instance.js", () => ({
   syncInstanceBundledSkills: vi.fn(),
 }));
 
+// The copy of package files into the home has its own suite, on a real filesystem.
+// Here it only has to be asked for the right tree in the right place.
+vi.mock("../home-copy.js", () => ({
+  placeTree: vi.fn(),
+}));
+
 // What the audit finds and fixes is its own suite's business. Here it only reports.
 vi.mock("../gateway-audit.js", () => ({
   auditGatewayReferences: vi.fn(),

@@ -48,6 +48,12 @@ vi.mock("../../skills-sync/instance.js", () => ({
   syncInstanceBundledSkills: vi.fn(),
 }));
 
+// The copy of package files into the home has its own suite, on a real filesystem.
+// Here it only has to be asked for the right tree in the right place.
+vi.mock("../home-copy.js", () => ({
+  placeTree: vi.fn(),
+}));
+
 // The home exactly as the environment gave it. RYOKO_HOME=/path/ ends in a slash and
 // nothing normalises it; every path joined from it is normalised, the home itself is not.
 const given = vi.hoisted(() => ({ suffix: "/" }));
@@ -60,7 +66,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { JINN_HOME, MIGRATIONS_DIR } from "../../shared/paths.js";
 import {
-  dirent, missing, mockExistsSync, mockLstatSync, mockReaddirSync, mockWriteFileSync, output, resetMigrateMocks, stampedVersions, stat,
+  createdInHome, dirent, missing, mockExistsSync, mockLstatSync, mockReaddirSync, mockWriteFileSync, output, resetMigrateMocks, stampedVersions, stat,
 } from "./migrate-harness.js";
 
 describe.each(["/", "//", "/."])("migrate: a home given as <home>%s", (suffix) => {
@@ -107,12 +113,7 @@ describe.each(["/", "//", "/."])("migrate: a home given as <home>%s", (suffix) =
 
     // Unseen, the link is created through: mkdir -p on such a path fails, and the
     // command dies half-way with the version not recorded and no word of why.
-    const written = [
-      ...vi.mocked(fs.mkdirSync).mock.calls.map((call) => String(call[0])),
-      ...mockWriteFileSync.mock.calls.map((call) => String(call[0])),
-      ...vi.mocked(fs.copyFileSync).mock.calls.map((call) => String(call[1])),
-    ].filter((file) => file.startsWith(dangling));
-    expect(written).toEqual([]);
+    expect(createdInHome().filter((file) => file.startsWith(dangling))).toEqual([]);
     expect(output()).toMatch(/\[skip\] docs.guides.a\.md \(a link that leads nowhere is in the way/);
     expect(stampedVersions()).toEqual([]);
   });

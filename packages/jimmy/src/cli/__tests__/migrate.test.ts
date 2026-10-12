@@ -48,6 +48,12 @@ vi.mock("../../skills-sync/instance.js", () => ({
   syncInstanceBundledSkills: vi.fn(),
 }));
 
+// The copy of package files into the home has its own suite, on a real filesystem.
+// Here it only has to be asked for the right tree in the right place.
+vi.mock("../home-copy.js", () => ({
+  placeTree: vi.fn(),
+}));
+
 import fs from "node:fs";
 import path from "node:path";
 import { syncInstanceBundledSkills } from "../../skills-sync/instance.js";

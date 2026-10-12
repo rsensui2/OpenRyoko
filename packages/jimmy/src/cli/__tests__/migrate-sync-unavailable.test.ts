@@ -48,6 +48,12 @@ vi.mock("../../skills-sync/instance.js", () => ({
   syncInstanceBundledSkills: vi.fn(),
 }));
 
+// The copy of package files into the home has its own suite, on a real filesystem.
+// Here it only has to be asked for the right tree in the right place.
+vi.mock("../home-copy.js", () => ({
+  placeTree: vi.fn(),
+}));
+
 // The add-only installer that releases before the sync ran from `ryoko migrate`. Its own
 // suite covers what it writes; here it only has to be called.
 vi.mock("../bundled-skills.js", () => ({
@@ -61,7 +67,7 @@ import { compareSemver } from "../../shared/version.js";
 import { CLAUDE_SKILLS_DIR, JINN_HOME, MIGRATIONS_DIR, TEMPLATE_DIR } from "../../shared/paths.js";
 import { buildTemplateReplacements } from "../../shared/templateReplacements.js";
 import {
-  dirent, mockExecFileSync, mockExistsSync, mockReaddirSync, mockSync, mockWriteFileSync, output, resetMigrateMocks, stampedVersions, synced,
+  createdInHome, dirent, mockExecFileSync, mockExistsSync, mockPlaceTree, mockReaddirSync, mockSync, mockWriteFileSync, output, resetMigrateMocks, stampedVersions, synced,
 } from "./migrate-harness.js";
 
 const mockStage = vi.mocked(stageMissingBundledSkills);
@@ -69,11 +75,7 @@ const skillsDir = path.join(JINN_HOME, "skills");
 const CONFIG = "jinn:\n  version: 1.0.0\nportal:\n  portalName: Hanako\n";
 
 /** Everything created under skills/, by any of the three ways migrate writes. */
-const createdUnderSkills = () => [
-  ...vi.mocked(fs.mkdirSync).mock.calls.map((call) => String(call[0])),
-  ...mockWriteFileSync.mock.calls.map((call) => String(call[0])),
-  ...vi.mocked(fs.copyFileSync).mock.calls.map((call) => String(call[1])),
-].filter((file) => file === skillsDir || file.startsWith(skillsDir + path.sep));
+const createdUnderSkills = () => createdInHome().filter((file) => file === skillsDir || file.startsWith(skillsDir + path.sep));
 
 /** Migration 1.1.0 ships these files, each a path under files/. `gone` is what the home
  *  lacks, relative to the home; everything else exists. */
@@ -183,7 +185,8 @@ describe("migrate: a home whose skills/ is the user's own symlink", () => {
 
     await runMigrate({});
 
-    expect(vi.mocked(fs.mkdirSync).mock.calls.map((call) => String(call[0]))).toContain(path.join(skillsDir, "migrate"));
+    // Into the user's own store, resolved once as theirs: nothing below it is followed.
+    expect(mockPlaceTree).toHaveBeenCalledWith(path.join(TEMPLATE_DIR, "skills", "migrate"), skillsDir, "migrate");
     expect(output()).toMatch(/\[staged\] migrate スキル/);
     expect(prompt()).toContain(path.join(skillsDir, "migrate", "SKILL.md"));
   });
@@ -293,9 +296,7 @@ describe.each([
 
     await runMigrate({});
 
-    expect(vi.mocked(fs.mkdirSync)).not.toHaveBeenCalled();
-    expect(vi.mocked(fs.copyFileSync)).not.toHaveBeenCalled();
-    expect(mockWriteFileSync).not.toHaveBeenCalled();
+    expect(createdInHome()).toEqual([]);
     expect(output()).not.toMatch(/\[staged\]/);
   });
 
