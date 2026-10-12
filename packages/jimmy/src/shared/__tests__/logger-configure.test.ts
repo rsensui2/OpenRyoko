@@ -65,15 +65,60 @@ describe("configureLogger, called again for the same log file", () => {
     shown.mockRestore();
   });
 
-  it("opens the file again once it has been told to stop writing to it", async () => {
-    configureLogger({ level: "info", stdout: false, file: true });
-    logger.info("first");
-    configureLogger({ file: false });
-    logger.info("while the file is off");
-    configureLogger({ level: "info", stdout: false, file: true });
-    logger.info("second");
+  const said = (lines: string[]) => lines.map((line) => line.replace(/^\S+ \[\w+\] /, ""));
 
-    const lines = await written(2);
-    expect(lines.map((line) => line.replace(/^\S+ \[INFO\] /, ""))).toEqual(["first", "second"]);
+  it("writes to the file again once it was told to stop, after everything it wrote before", async () => {
+    // The file is closed and opened again here, and the lines on either side of that
+    // must not change places. They used to, some of the time: hence the rounds.
+    for (let round = 0; round < 60; round++) {
+      fs.rmSync(LOG, { force: true });
+      configureLogger({ level: "info", stdout: false, file: true });
+      logger.info("first");
+      configureLogger({ file: false });
+      logger.info("while the file is off");
+      configureLogger({ level: "info", stdout: false, file: true });
+      logger.info("second");
+      logger.info("third");
+
+      expect(said(await written(3)), `round ${round}`).toEqual(["first", "second", "third"]);
+    }
+  });
+
+  it("writes what it accepted, and no more, when the file is turned off again at once", async () => {
+    for (let round = 0; round < 30; round++) {
+      fs.rmSync(LOG, { force: true });
+      configureLogger({ level: "info", stdout: false, file: true });
+      logger.info("first");
+      configureLogger({ file: false });
+      configureLogger({ level: "info", stdout: false, file: true });
+      logger.info("second");
+      configureLogger({ file: false });
+      logger.info("after the file was turned off for good");
+
+      expect(said(await written(2)), `round ${round}`).toEqual(["first", "second"]);
+    }
+  });
+
+  it("goes on without the file, and without bringing the process down, when the file cannot be opened", async () => {
+    const shown = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // Something that is not a file sits where the log goes.
+    fs.mkdirSync(LOG, { recursive: true });
+    try {
+      configureLogger({ level: "info", stdout: true, file: true });
+      logger.info("logged while the file is being opened");
+      await vi.waitFor(() => expect(warned).toHaveBeenCalled());
+      logger.info("logged after it failed");
+
+      expect(warned).toHaveBeenCalledTimes(1);
+      expect(String(warned.mock.calls[0][0])).toMatch(/gateway\.log/);
+      // Still said where it can be: the standard output.
+      expect(shown.mock.calls.map((call) => String(call[0])).filter((line) => /logged (while|after)/.test(line))).toHaveLength(2);
+    } finally {
+      configureLogger({ file: false });
+      fs.rmSync(LOG, { recursive: true, force: true });
+      shown.mockRestore();
+      warned.mockRestore();
+    }
   });
 });
