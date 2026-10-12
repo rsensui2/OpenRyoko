@@ -28,7 +28,7 @@ vi.mock("../../shared/logger.js", () => ({
   },
 }));
 
-import { notifyParentSession, notifyDiscordChannel } from "../callbacks.js";
+import { notifyParentSession, notifyDiscordChannel, notifyRateLimited } from "../callbacks.js";
 import { logger } from "../../shared/logger.js";
 import { readGatewayAuthToken } from "../../gateway/auth.js";
 import { getSession } from "../registry.js";
@@ -373,5 +373,55 @@ describe("notifyDiscordChannel — authenticated delivery", () => {
     await new Promise((r) => setTimeout(r, 50));
 
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+// A parent that is busy when several children finish should run ONE turn for
+// all of them. The gateway can only fold completions together if it can tell
+// them from every other notification, so a successful completion names the
+// child it reports. A failure never carries the flag: it stays its own turn.
+describe("notifyParentSession — completion batching flag", () => {
+  let fetchSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(readGatewayAuthToken).mockReturnValue("test-token");
+    vi.mocked(loadConfig).mockReturnValue({ gateway: { port: 7777 } } as never);
+    vi.mocked(getSession).mockReturnValue(makeSession({ id: "parent-001", parentSessionId: null, status: "running" }));
+    fetchSpy = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch as typeof fetch;
+  });
+
+  const sentBody = () => JSON.parse(fetchSpy.mock.calls[0][1].body) as Record<string, unknown>;
+
+  it("names the child on a successful completion", async () => {
+    notifyParentSession(makeSession({ id: "child-042" }), { result: "done" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(sentBody()).toMatchObject({ role: "notification", completionOf: "child-042" });
+    // The authenticated delivery is unchanged.
+    expect((fetchSpy.mock.calls[0][1].headers as Record<string, string>).Authorization).toBe("Bearer test-token");
+  });
+
+  it("leaves an error unmarked, so it is never folded into a batch", async () => {
+    notifyParentSession(makeSession({ id: "child-042" }), { error: "Something broke" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(sentBody()).toMatchObject({ role: "notification" });
+    expect(sentBody()).not.toHaveProperty("completionOf");
+  });
+
+  it("leaves a rate-limit notice unmarked — the child has not completed", async () => {
+    notifyRateLimited(makeSession({ id: "child-042" }), "12:30");
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(sentBody()).not.toHaveProperty("completionOf");
   });
 });

@@ -44,6 +44,7 @@ import {
 } from "../sessions/registry.js";
 import { forkEngineSession } from "../sessions/fork.js";
 import { deliverToOriginConnector, isUndeliveredToOrigin, recordFailedOriginDelivery } from "../sessions/origin-delivery.js";
+import { isCompletionBatchItem, queueChildCompletion, queuedPrompt } from "../sessions/completion-batching.js";
 import {
   CONFIG_PATH,
   CRON_JOBS,
@@ -176,7 +177,8 @@ export function resumePendingWebQueueItems(context: ApiContext): void {
     if (session.source !== "web") {
       const messages = getMessages(session.id);
       const match = [...messages].reverse().find((m) => m.content === item.prompt);
-      if (match?.role !== "notification") continue;
+      // A completion batch is a wake-up too, but its prompt is several notifications folded together.
+      if (match?.role !== "notification" && !isCompletionBatchItem(item.id)) continue;
       deliverToConnector = true;
     }
     session = maybeRevertEngineOverride(session);
@@ -226,7 +228,8 @@ function dispatchWebSessionRun(
   const run = async () => {
     await context.sessionManager.getQueue().enqueue(session.sessionKey || session.sourceRef, async () => {
       context.emit("session:started", { sessionId: session.id });
-      await runWebSession(session, prompt, engine, config, context, opts?.attachments, opts?.deliverToConnector);
+      // Run what the row holds now: a completion batch can grow while it waits its turn.
+      await runWebSession(session, queuedPrompt(opts?.queueItemId, prompt), engine, config, context, opts?.attachments, opts?.deliverToConnector);
     }, opts?.queueItemId);
   };
 
@@ -1382,13 +1385,19 @@ export async function handleApiRequest(
       const attachmentPaths = resolveAttachmentPaths(body.attachments);
 
       const sessionKey = session.sessionKey || session.sourceRef || session.id;
-      const queueItemId = dedupedNotification
+      // A child's completion joins the completion row already waiting behind a
+      // busy parent, so N children finishing cost the parent one turn, not N.
+      const completion = isNotification && !dedupedNotification
+        ? queueChildCompletion(session, sessionKey, body, prompt, context.sessionManager.getQueue())
+        : null;
+      const queueItemId = completion?.queueItemId ?? (dedupedNotification
         ? insertNotificationWithQueueItem(session.id, sessionKey, prompt)
-        : enqueueQueueItem(session.id, sessionKey, prompt);
+        : enqueueQueueItem(session.id, sessionKey, prompt));
       if (dedupedNotification) rememberDedupeKey(dedupeKey!);
       context.emit("queue:updated", { sessionId: session.id, sessionKey });
 
-      dispatchWebSessionRun(session, prompt, engine, config, context, {
+      // A joined row already has its dispatcher — unless a restart orphaned it.
+      if (completion?.needsDispatch !== false) dispatchWebSessionRun(session, prompt, engine, config, context, {
         queueItemId,
         attachments: attachmentPaths.length > 0 ? attachmentPaths : undefined,
         // A notification wake-up (detached job finished, child callback) runs

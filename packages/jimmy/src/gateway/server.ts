@@ -15,7 +15,7 @@ import { resolveAssistantName } from "../shared/assistant-identity.js";
 import { getTriageCapabilities, invalidateTriageCapabilities } from "../shared/triage-capabilities.js";
 import { invalidateModelRegistry } from "../shared/models.js";
 import { configureLogger, logger } from "../shared/logger.js";
-import { initDb, scheduleFtsBackfill, recoverStaleSessions, recoverStaleWorkflowAttemptSessions, recoverStaleQueueItems, getInterruptedSessions, listSessions, updateSession, getSession } from "../sessions/registry.js";
+import { initDb, scheduleFtsBackfill, recoverStaleSessions, recoverStaleWorkflowAttemptSessions, recoverStaleQueueItems, getInterruptedSessions, getSession } from "../sessions/registry.js";
 import { SessionManager, type RouteOptions } from "../sessions/manager.js";
 import { ClaudeEngine } from "../engines/claude.js";
 import { CodexEngine } from "../engines/codex.js";
@@ -26,6 +26,7 @@ import type { PtyViewEngine } from "../engines/pty-view-engine.js";
 import { attachPtyWebSocket } from "./pty-ws.js";
 import { HookRegistry } from "./hook-registry.js";
 import { startStatusReconciler } from "./status-reconciler.js";
+import { interruptRunningSessionsForShutdown, prepareRestartResume, resumeRestartInterruptedSessions } from "../sessions/restart-resume.js";
 import { writeGatewayInfo } from "./gateway-info.js";
 import { cleanupSessionSettings, seedTrust } from "../shared/claude-settings.js";
 import { GATEWAY_INFO_FILE, HOOK_RELAY_SCRIPT, CLAUDE_SETTINGS_DIR, JINN_HOME } from "../shared/paths.js";
@@ -203,6 +204,15 @@ export async function startGateway(
     logger.warn(`Database backup failed: ${error instanceof Error ? error.message : String(error)}`);
   }
   ensureFilesDir();
+  // Before the sweeps below: they erase what tells a turn was cut off mid-flight.
+  try {
+    const { cancelledNudges } = prepareRestartResume();
+    if (cancelledNudges > 0) {
+      logger.info(`Dropped ${cancelledNudges} restart nudge(s) that were themselves cut off by this restart — not replayed`);
+    }
+  } catch (err) {
+    logger.warn(`Restart resume preparation failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
   const recovered = recoverStaleSessions();
   if (recovered > 0) {
     logger.info(`Recovered ${recovered} stale session(s) — marked as "interrupted" for resume`);
@@ -967,7 +977,12 @@ export async function startGateway(
 
   // Backstop for lost completion events: unstick sessions stuck at
   // status:"running" with no live turn (see status-reconciler.ts).
-  const stopStatusReconciler = startStatusReconciler({ engines, emit });
+  const stopStatusReconciler = startStatusReconciler({
+    engines,
+    emit,
+    isOwned: (session) => sessionManager.getQueue().isRunning(session.sessionKey),
+    alwaysNotifyFor: (session) => (session.employee ? employeeRegistry.get(session.employee)?.alwaysNotify : undefined),
+  });
 
   // --- Workflow engine (upstream port). Opt-in via config.workflows.enabled;
   // absent flag = no workflow DB, no trigger arming, no /api/workflows routes.
@@ -1349,6 +1364,15 @@ export async function startGateway(
   // recovery turn spawns — so hook-relay.mjs can deliver its Stop hook.
   resumePendingWebQueueItems(apiContext);
 
+  // Nudge the sessions the restart cut off mid-turn to carry on. After the
+  // replay above, so a session it already re-dispatched is not resumed twice.
+  let cancelRestartNudges: () => void = () => {};
+  try {
+    cancelRestartNudges = resumeRestartInterruptedSessions({ config: currentConfig, port, queue: sessionManager.getQueue() }).cancel;
+  } catch (err) {
+    logger.warn(`Restart resume failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
   // Workflow engine start, deferred to gateway readiness: constructing the
   // service arms schedule triggers and its wake timer, and both recovery paths
   // below can spawn engine turns — including interactive PTY turns whose Stop
@@ -1423,7 +1447,8 @@ export async function startGateway(
   // Return cleanup function
   return async () => {
     logger.info("Gateway cleanup starting...");
-    // First, ahead of every step that can take time: end any provider login
+    cancelRestartNudges(); // before anything is awaited: a nudge accepted now starts a turn only to have it killed
+    // Then, ahead of every step that can take time: end any provider login
     // in progress (its CLI killed, its chat message blanked). Bounded and brief.
     await stopProviderAuth();
     clearInterval(modelRefreshTimer);
@@ -1449,16 +1474,7 @@ export async function startGateway(
     if (stoppedWorkflowAttempts > 0) {
       logger.info(`Marked ${stoppedWorkflowAttempts} workflow attempt(s) with gateway-restart receipts for replacement on next boot`);
     }
-    const runningSessions = listSessions({ status: "running" });
-    for (const session of runningSessions) {
-      if (session.workflowProvenance?.kind === "phase") continue; // handled by the sweep above
-      updateSession(session.id, {
-        status: "interrupted",
-        lastActivity: new Date().toISOString(),
-        lastError: "Interrupted: gateway shutting down gracefully",
-      });
-      logger.info(`Marked session ${session.id} as interrupted for resume`);
-    }
+    interruptRunningSessionsForShutdown(); // every other running session; the sweep above owns the attempts
 
     // Terminate live engine subprocesses after marking sessions. When interactive
     // is active, interactiveClaudeEngine.killAll() also kills its headless fallback
