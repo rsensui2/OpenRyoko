@@ -3,7 +3,7 @@ import type { EngineRateLimitInfo, InterruptibleEngine, EngineRunOpts, EngineRes
 import { logger } from "../shared/logger.js";
 import { isDeadSessionError } from "../shared/rateLimit.js";
 import { resolveBin, formatSpawnError } from "../shared/resolveBin.js";
-import { buildChildEnv } from "../shared/childEnv.js";
+import { buildChildEnv, CLAUDE_LOCAL_ENV } from "../shared/childEnv.js";
 import { claudeAutoMemoryEnvFor } from "../shared/claude-auto-memory.js";
 
 interface LiveProcess {
@@ -297,12 +297,10 @@ export class ClaudeEngine implements InterruptibleEngine {
       spawnBin = resolveBin(requestedBin);
       spawnArgs = args;
       spawnCwd = opts.cwd;
-      // Match the interactive engine: the gateway's own Claude never runs
-      // /logout (it signs the shared account out). Local only — a value set
-      // here is not forwarded to the remote process over the SSH branch above,
-      // and a /logout there would affect only that host's own CLI, which is not
-      // ours to manage. /login is deliberately left enabled.
-      spawnEnv = { ...buildChildEnv(), ...claudeAutoMemoryEnvFor(opts.cwd || process.cwd()), DISABLE_LOGOUT_COMMAND: "1" };
+      // Local only — a value set here is not forwarded to the remote process
+      // over the SSH branch above, and a /logout there is that host's own CLI
+      // (see CLAUDE_LOCAL_ENV).
+      spawnEnv = { ...buildChildEnv(), ...claudeAutoMemoryEnvFor(opts.cwd || process.cwd()), ...CLAUDE_LOCAL_ENV };
       logger.info(
         `Claude engine (one-shot) starting: ${spawnBin} -p --output-format ${streaming ? "stream-json" : "json"} --model ${opts.model || "default"} (resume: ${opts.resumeSessionId || "none"})`,
       );

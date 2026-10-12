@@ -2,6 +2,22 @@ import { logger } from "./logger.js";
 
 let warnedRoot = false;
 
+/**
+ * Environment the gateway adds to every LOCAL Claude CLI it launches, on top of
+ * the base child env. /logout in that CLI signs the shared account out from
+ * under every session and the next spawn, so it is turned off wherever the
+ * gateway or the CLI starts Claude locally — the interactive PTY, the headless
+ * `claude -p`, the one-shot classifier/extractor, a session fork, a migration
+ * run. /login is deliberately left on (web live-terminal recovery).
+ *
+ * NOT applied to a remote (sshHost) run: a value set here does not cross to the
+ * remote process, and a /logout there is that host's own CLI, not ours.
+ *
+ * One source of truth so the launch sites cannot drift apart; a test enumerates
+ * them (see claude-launch-env.test.ts).
+ */
+export const CLAUDE_LOCAL_ENV: Readonly<Record<string, string>> = { DISABLE_LOGOUT_COMMAND: "1" };
+
 export interface BuildChildEnvOptions {
   /** Strip env keys whose name starts with any of these prefixes. */
   stripPrefixes?: string[];

@@ -33,6 +33,7 @@ import { syncInstanceBundledSkills } from "../skills-sync/instance.js";
 import { printable } from "../skills-sync/names.js";
 import type { BundledSkillSync, KeepReason, KeptSkill } from "../skills-sync/types.js";
 import { claudeAutoMemoryEnvFor } from "../shared/claude-auto-memory.js";
+import { CLAUDE_LOCAL_ENV } from "../shared/childEnv.js";
 
 const GREEN = "\x1b[32m";
 const YELLOW = "\x1b[33m";
@@ -399,7 +400,7 @@ function buildMigrateArgs(engine: string, prompt: string): string[] {
  *  the instance directory like any gateway session, so it follows the same
  *  auto-memory policy; other engines get the environment untouched. */
 export function migrateChildEnv(engine: string, cwd: string): NodeJS.ProcessEnv {
-  return engine === "claude" ? { ...process.env, ...claudeAutoMemoryEnvFor(cwd) } : process.env;
+  return engine === "claude" ? { ...process.env, ...claudeAutoMemoryEnvFor(cwd), ...CLAUDE_LOCAL_ENV } : process.env;
 }
 
 export async function runMigrate(opts: {

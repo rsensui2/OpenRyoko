@@ -15,6 +15,7 @@ import type { HookRegistry, HookPayload } from "../gateway/hook-registry.js";
 import { SsePtyProxy, type SseDataEvent, type StreamCtx } from "./sse-pty-proxy.js";
 import { neutralizeForPaste } from "../shared/skill-commands.js";
 import { stripTerminalControlChars } from "../shared/terminal-safe-text.js";
+import { CLAUDE_LOCAL_ENV } from "../shared/childEnv.js";
 import { claudeAutoMemoryEnvFor } from "../shared/claude-auto-memory.js";
 import { claudeLimitReset } from "../shared/claude-limit-reset.js";
 
@@ -619,12 +620,9 @@ export function buildClaudePtyEnv(
   env.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN = "1";
   env.CLAUDE_CODE_RESUME_TOKEN_THRESHOLD = "999999999";
   env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = sourceEnv.CLAUDE_CODE_AUTO_COMPACT_WINDOW || "1000000";
-  // /logout in this CLI signs the shared account out from under every session
-  // and the next spawn. It is never something a chat turn should reach (the
-  // session guard already keeps it out), and there is no reason the gateway's
-  // own Claude should run it; turn it off at the source. /login is left alone
-  // on purpose: the operator uses it from the web live terminal to sign back in.
-  env.DISABLE_LOGOUT_COMMAND = "1";
+  // Turn off /logout (see CLAUDE_LOCAL_ENV): it signs the shared account out
+  // from under every session. /login stays on for web live-terminal recovery.
+  Object.assign(env, CLAUDE_LOCAL_ENV);
   if (proxyPort) {
     env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${proxyPort}`;
     env._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL = "1";
