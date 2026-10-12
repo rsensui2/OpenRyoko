@@ -205,6 +205,223 @@ describe("editYamlText: lists whose items carry notes", () => {
   });
 });
 
+describe("editYamlText: notes written above or under a list item", () => {
+  /* A note is as often on a line of its own as at the end of the item's line:
+   * above the item it is about, or indented under it. Lists used to be edited
+   * as if only the items' own lines existed, so a new first item landed between
+   * "# alice" and alice's ID, and a new item after one with a note under it
+   * took that note over. The lines directly above an item, and the lines
+   * indented under it, are part of that item: they go when it goes, and
+   * nothing is put between them and it. */
+  const NOTED = [
+    "allowFrom:",
+    "  # alice",
+    "  - U111",
+    "  # bob — two lines",
+    "  # of notes",
+    "  - U222",
+    "    # on call this week",
+    "  - U333   # carol",
+    "logging:",
+    "  level: info   # quiet",
+    "",
+  ].join("\n");
+
+  it("puts a new first item above the note on top of the old first item", () => {
+    expect(edited(NOTED, (doc) => { doc.allowFrom.unshift("U000"); }))
+      .toBe(NOTED.replace("  # alice\n", "  - U000\n  # alice\n"));
+  });
+
+  it("takes the note on top of an item away with the item, and leaves the next item's note on top of that one", () => {
+    expect(edited(NOTED, (doc) => { doc.allowFrom[0] = "U999"; }))
+      .toBe(NOTED.replace("  # alice\n  - U111\n", "  - U999\n"));
+  });
+
+  it("removes an item with every line of notes above it and under it", () => {
+    expect(edited(NOTED, (doc) => { doc.allowFrom.splice(1, 1); }))
+      .toBe(NOTED.replace("  # bob — two lines\n  # of notes\n  - U222\n    # on call this week\n", ""));
+  });
+
+  it("puts a new item after the note indented under the item before it", () => {
+    expect(edited(NOTED, (doc) => { doc.allowFrom.splice(2, 0, "U250"); }))
+      .toBe(NOTED.replace("    # on call this week\n", "    # on call this week\n  - U250\n"));
+  });
+
+  it("moves the last item to the front without coming between another item and its note", () => {
+    expect(edited(NOTED, (doc) => { doc.allowFrom = ["U333", "U111", "U222"]; }))
+      .toBe(NOTED.replace("  # alice\n", "  - U333\n  # alice\n").replace("  - U333   # carol\n", ""));
+  });
+
+  it("appends after the last item", () => {
+    expect(edited(NOTED, (doc) => { doc.allowFrom.push("U444"); }))
+      .toBe(NOTED.replace("  - U333   # carol\n", "  - U333   # carol\n  - U444\n"));
+  });
+
+  it("does the same for a list of mappings", () => {
+    const raw = [
+      "instances:",
+      "  # the sales workspace",
+      "  - id: sales",
+      "    type: slack",
+      "    # rotated in March",
+      "  # ops, on Discord",
+      "  - id: ops",
+      "    type: discord",
+      "",
+    ].join("\n");
+    expect(edited(raw, (doc) => { doc.instances.unshift({ id: "support", type: "slack" }); }))
+      .toBe(raw.replace("  # the sales workspace\n", "  - id: support\n    type: slack\n  # the sales workspace\n"));
+    expect(edited(raw, (doc) => { doc.instances.shift(); }))
+      .toBe("instances:\n  # ops, on Discord\n  - id: ops\n    type: discord\n");
+    expect(edited(raw, (doc) => { doc.instances.splice(1, 0, { id: "support", type: "slack" }); }))
+      .toBe(raw.replace("    # rotated in March\n", "    # rotated in March\n  - id: support\n    type: slack\n"));
+    expect(edited(raw, (doc) => { doc.instances[0].type = "discord"; }))
+      .toBe(raw.replace("    type: slack\n", "    type: discord\n"));
+  });
+
+  it("keeps a note with its item across blank lines that set groups apart", () => {
+    const raw = "list:\n  # group one\n  - a\n\n  # group two\n  - b\n  - c\nnext: 1\n";
+    expect(edited(raw, (doc) => { doc.list.splice(1, 0, "x"); }))
+      .toBe("list:\n  # group one\n  - a\n  - x\n\n  # group two\n  - b\n  - c\nnext: 1\n");
+    expect(edited(raw, (doc) => { doc.list.splice(1, 1); }))
+      .toBe("list:\n  # group one\n  - a\n\n  - c\nnext: 1\n");
+  });
+
+  it("works the same in a file with CRLF line endings, and one whose dashes sit under the key", () => {
+    const crlf = NOTED.replace(/\n/g, "\r\n");
+    expect(edited(crlf, (doc) => { doc.allowFrom.unshift("U000"); }))
+      .toBe(crlf.replace("  # alice\r\n", "  - U000\r\n  # alice\r\n"));
+    const flush = "allowFrom:\n# alice\n- U111\n# bob\n- U222\n  # on call\nother: 1\n";
+    expect(edited(flush, (doc) => { doc.allowFrom.unshift("U000"); }))
+      .toBe(flush.replace("# alice\n", "- U000\n# alice\n"));
+    expect(edited(flush, (doc) => { doc.allowFrom.push("U333"); }))
+      .toBe(flush.replace("  # on call\n", "  # on call\n- U333\n"));
+  });
+
+  /** "<note>" → the line it stands directly on top of, for every note written above an item. */
+  const notesOnTop = (text: string) => {
+    const lines = text.split("\n");
+    return new Map(lines.flatMap((line, at) => (line.startsWith("  # note on ") ? [[line.trim(), (lines[at + 1] ?? "").trim()] as const] : [])));
+  };
+  /** "<note>" → the line it is indented under, for every note written under an item. */
+  const notesUnder = (text: string) => {
+    const lines = text.split("\n");
+    return new Map(lines.flatMap((line, at) => (line.startsWith("    # under ") ? [[line.trim(), (lines[at - 1] ?? "").trim()] as const] : [])));
+  };
+
+  it("never leaves a note on top of an item it was not written above, whatever is added, removed or moved", () => {
+    let seed = 20261013;
+    const random = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    const pick = (count: number) => Math.floor(random() * count);
+    for (let round = 0; round < 600; round++) {
+      const items = Array.from({ length: 1 + pick(6) }, (_, n) => `item${round}x${n}`);
+      const raw = `before: 1   # kept\nlist:\n${items.map((item, n) => `${random() < 0.6 ? `  # note on ${item}\n` : ""}  - ${item}\n${random() < 0.3 ? `    # under ${item}\n` : ""}${n < items.length - 1 && random() < 0.2 ? "\n" : ""}`).join("")}after: 2   # kept too\n`;
+      const next = [...items];
+      for (let change = 0, changes = 1 + pick(3); change < changes; change++) {
+        const kind = pick(3);
+        if (kind === 0) next.splice(pick(next.length + 1), 0, `new${round}x${change}`);
+        else if (kind === 1 && next.length > 1) next.splice(pick(next.length), 1);
+        else if (next.length > 1) next.splice(pick(next.length), 0, next.splice(pick(next.length), 1)[0]);
+      }
+      const { out } = edit(raw, (doc) => { doc.list = next; });
+      expect(out).not.toBeNull();
+      // Every note that is still there stands where it stood: on top of, or under, the same item.
+      const onTop = notesOnTop(raw);
+      for (const [note, item] of notesOnTop(out as string)) expect(`${note} → ${item}`).toBe(`${note} → ${onTop.get(note)}`);
+      const under = notesUnder(raw);
+      for (const [note, item] of notesUnder(out as string)) expect(`${note} ← ${item}`).toBe(`${note} ← ${under.get(note)}`);
+      expect(out).toContain("before: 1   # kept\n");
+      expect(out).toContain("after: 2   # kept too\n");
+    }
+  });
+});
+
+describe("editYamlText: a note nobody can place", () => {
+  /* Some comments in a list cannot be said to belong to one item: one that a
+   * blank line separates from the item below it, or one at an indentation of
+   * its own. When the list changes right next to such a comment, guessing
+   * would put it next to the wrong thing — so that one list is written out
+   * again, without its comments, and the rest of the file is left alone. */
+  const FLOATING = [
+    "# who may talk to the bot",
+    "allowFrom:   # by Slack ID",
+    "  - U111",
+    "  # temporarily off:",
+    "",
+    "  - U222",
+    "  # carol",
+    "  - U333",
+    "logging:",
+    "  level: info   # quiet",
+    "",
+  ].join("\n");
+  const rewritten = (...ids: string[]) =>
+    `# who may talk to the bot\nallowFrom:\n${ids.map((id) => `  - ${id}\n`).join("")}logging:\n  level: info   # quiet\n`;
+
+  it("rewrites the list when an item is added next to it", () => {
+    expect(edited(FLOATING, (doc) => { doc.allowFrom.splice(1, 0, "U150"); })).toBe(rewritten("U111", "U150", "U222", "U333"));
+  });
+
+  it("rewrites the list when an item next to it is removed", () => {
+    expect(edited(FLOATING, (doc) => { doc.allowFrom.splice(0, 1); })).toBe(rewritten("U222", "U333"));
+    expect(edited(FLOATING, (doc) => { doc.allowFrom.splice(1, 1); })).toBe(rewritten("U111", "U333"));
+  });
+
+  it("still edits the list in place when the change is somewhere else in it", () => {
+    expect(edited(FLOATING, (doc) => { doc.allowFrom.push("U444"); })).toBe(FLOATING.replace("  - U333\n", "  - U333\n  - U444\n"));
+    expect(edited(FLOATING, (doc) => { doc.allowFrom.pop(); })).toBe(FLOATING.replace("  # carol\n  - U333\n", ""));
+  });
+
+  it.each([
+    ["a comment at the edge of the page", "list:\n# FIXME\n  - a\n  - b\nnext: 1\n"],
+    ["a comment indented under nothing", "list:\n      # odd\n  - a\n  - b\nnext: 1\n"],
+    ["a comment a blank line away from the first item", "list:\n  # the operators\n\n  - a\n  - b\nnext: 1\n"],
+  ])("rewrites the list for %s when an item is added in front", (_what, raw) => {
+    expect(edited(raw, (doc) => { doc.list.unshift("x"); })).toBe("list:\n  - x\n  - a\n  - b\nnext: 1\n");
+  });
+
+  it("leaves a comment after the last item where it is: it may be about what comes next", () => {
+    const raw = "list:\n  - a\n  - b\n  # - c (disabled)\n\n# Logging\nlogging:\n  level: info\n";
+    expect(edited(raw, (doc) => { doc.list.push("x"); })).toBe(raw.replace("  - b\n", "  - b\n  - x\n"));
+    expect(edited(raw, (doc) => { doc.list.pop(); })).toBe(raw.replace("  - b\n", ""));
+  });
+});
+
+describe("editYamlText: a list that is written out again or removed", () => {
+  /* The note indented under the last item of a list is about that item. When
+   * the whole list is replaced or removed, it goes with the list — left
+   * behind, it would be read as a note on whatever now stands above it. */
+  const raw = "before: 1\nlist:\n  - a\n  - b\n    # b is temporary\nnext: 1   # kept\n";
+
+  it("takes the note under the last item along when no item of the list survives", () => {
+    expect(edited(raw, (doc) => { doc.list = ["x1", "x2"]; })).toBe("before: 1\nlist:\n  - x1\n  - x2\nnext: 1   # kept\n");
+  });
+
+  it("takes it along when the list is removed", () => {
+    expect(edited(raw, (doc) => { delete doc.list; })).toBe("before: 1\nnext: 1   # kept\n");
+  });
+
+  it("takes it along when the list becomes something else", () => {
+    expect(edited(raw, (doc) => { doc.list = "none"; })).toBe("before: 1\nlist: none\nnext: 1   # kept\n");
+  });
+
+  it("takes it along when the entry that goes is further up: the list is the last thing inside it", () => {
+    const nested = "connectors:\n  slack:\n    token: t\n    allowFrom:\n      - U111\n      - U222\n        # leaving in May\n  discord:\n    token: d   # kept\n";
+    expect(edited(nested, (doc) => { delete doc.connectors.slack; })).toBe("connectors:\n  discord:\n    token: d   # kept\n");
+    expect(edited(nested, (doc) => { doc.connectors.slack = false; })).toBe("connectors:\n  slack: false\n  discord:\n    token: d   # kept\n");
+  });
+
+  it("takes it along for an item whose dash stands alone on the line above it", () => {
+    const fourSpaces = "outer:\n    -\n        - a\n        - b\n          # under b\nnext: 1   # kept\n";
+    expect(edited(fourSpaces, (doc) => { doc.outer = "none"; })).toBe("outer: none\nnext: 1   # kept\n");
+  });
+
+  it("leaves a comment at the list's own level, or shallower, where it is", () => {
+    const withExamples = "list:\n  - a\n  # - b (an example)\n# Next section\nnext: 1\n";
+    expect(edited(withExamples, (doc) => { doc.list = ["x"]; })).toBe("list:\n  - x\n  # - b (an example)\n# Next section\nnext: 1\n");
+  });
+});
+
 describe("editYamlText: keys added and removed", () => {
   it("adds a key after the last key of its mapping, ahead of the commented-out examples at that level", () => {
     expect(edited(CONFIG, (doc) => { doc.gateway.allowedHosts = ["a.example"]; }))

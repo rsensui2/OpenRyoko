@@ -148,10 +148,42 @@ function replaceScalar(node: Scalar, value: unknown): Edit[] | null {
   return text === null ? null : [{ start: range[0], end: range[1], text }];
 }
 
+/**
+ * The column of the dash of the list item `node` ends with — the outermost
+ * one, when its last lines are a list inside a list — or null when it does not
+ * end with a list item.
+ */
+function lastItemDash(raw: string, node: unknown): number | null {
+  if (isMap(node) && !node.flow && node.items.length > 0) {
+    const last = node.items[node.items.length - 1];
+    return lastItemDash(raw, last.value ?? last.key);
+  }
+  if (isSeq(node) && !node.flow && node.items.length > 0) {
+    const last = node.items[node.items.length - 1];
+    // An item whose dash stands alone on the line above it has no lines of its
+    // own to measure: the list item inside it, if it ends with one, will do.
+    return itemLines(raw, last)?.dash ?? lastItemDash(raw, last);
+  }
+  return null;
+}
+
+/**
+ * Offset just past an entry that goes as a whole — rewritten or removed. When
+ * its last lines are a list item, that is its own lines and the notes indented
+ * under that item: they are about the item, and left behind they would read as
+ * notes on whatever comes to stand above them. Comments at the list's own
+ * level, or shallower, stay: they may be about what follows.
+ */
+function wholeEntryEnd(raw: string, pair: Pair): number | null {
+  const end = entryEnd(raw, pair);
+  const dash = end === null ? null : lastItemDash(raw, pair.value);
+  return end === null || dash === null ? end : skipDeeperComments(raw, end, dash);
+}
+
 /** Replace a whole `key: value` entry — comments inside the old value go with it. */
 function rewriteEntry(source: Source, pair: Pair, key: string, value: unknown): Edit | null {
   const placement = keyPlacement(source.raw, pair);
-  const end = entryEnd(source.raw, pair);
+  const end = wholeEntryEnd(source.raw, pair);
   if (!placement || end === null || !BLOCK_LEAD.test(placement.lead)) return null;
   const indent = " ".repeat(placement.lead.length);
   const lines = dumpEntryLines(key, value).map((line, i) => (i === 0 ? line : indent + line));
@@ -161,7 +193,7 @@ function rewriteEntry(source: Source, pair: Pair, key: string, value: unknown): 
 
 function removeEntry(source: Source, pair: Pair): Edit | null {
   const placement = keyPlacement(source.raw, pair);
-  const end = entryEnd(source.raw, pair);
+  const end = wholeEntryEnd(source.raw, pair);
   // An entry that shares its line with a sequence dash cannot simply lose the line.
   if (!placement || end === null || !/^ *$/.test(placement.lead)) return null;
   return { start: placement.lineStart, end, text: "" };
@@ -240,15 +272,70 @@ function editMap(source: Source, map: YAMLMap, before: Data, after: Data): Edit[
   return edits;
 }
 
-/** The lines one item of a block sequence occupies, and the column of its dash. */
-function itemLines(raw: string, item: unknown): { lineStart: number; end: number; dash: number } | null {
+/**
+ * Where one item of a block sequence sits in the text. An item is more than
+ * its own lines: the comment lines directly above it, and the comment lines
+ * indented under it, are notes about it. They leave with it, and nothing is
+ * put between them and it.
+ */
+interface ItemLines {
+  /** Column of the item's dash. */
+  dash: number;
+  /** Start of the first line of notes on top of the item — of its own first line when it has none. */
+  blockStart: number;
+  /** Offset just past the last line of notes indented under the item — past its own last line when it has none. */
+  blockEnd: number;
+}
+
+/**
+ * Start of the notes on top of the item whose first line starts at
+ * `lineStart`: the comment lines at the column of its dash that stand directly
+ * above it, with no blank line between them and it. A comment at another
+ * column, or a blank line away, is not counted — nobody can say it is about
+ * this item.
+ */
+function notesOnTopStart(raw: string, lineStart: number, dash: number): number {
+  let start = lineStart;
+  while (start > 0) {
+    const above = raw.lastIndexOf("\n", start - 2) + 1;
+    if (above >= start) break;
+    const line = raw.slice(above, start - 1).replace(/\r$/, "");
+    const text = line.trimStart();
+    if (!text.startsWith("#") || line.length - text.length !== dash) break;
+    start = above;
+  }
+  return start;
+}
+
+/** Start of the run of blank and comment lines that ends at `offset` (a line start). */
+function blankOrCommentRunStart(raw: string, offset: number): number {
+  let start = offset;
+  while (start > 0) {
+    const above = raw.lastIndexOf("\n", start - 2) + 1;
+    if (above >= start) break;
+    const text = raw.slice(above, start - 1).trim();
+    if (text !== "" && !text.startsWith("#")) break;
+    start = above;
+  }
+  return start;
+}
+
+/** Whether the whole lines in [from, to) include a comment. */
+function holdsComment(raw: string, from: number, to: number): boolean {
+  return from < to && raw.slice(from, to).split("\n").some((line) => line.trimStart().startsWith("#"));
+}
+
+/** The lines one item of a block sequence occupies, its notes included. */
+function itemLines(raw: string, item: unknown): ItemLines | null {
   const node = item as { range?: [number, number, number] | null; anchor?: string; tag?: string } | null;
   const start = node?.range?.[0];
   const end = contentEnd(item);
   if (start === undefined || end === null || node?.anchor || node?.tag) return null;
   const lineStart = raw.lastIndexOf("\n", start - 1) + 1;
   const lead = raw.slice(lineStart, start);
-  return /^ *- +$/.test(lead) ? { lineStart, end: endOfLine(raw, end), dash: lead.indexOf("-") } : null;
+  if (!/^ *- +$/.test(lead)) return null;
+  const dash = lead.indexOf("-");
+  return { dash, blockStart: notesOnTopStart(raw, lineStart, dash), blockEnd: skipDeeperComments(raw, endOfLine(raw, end), dash) };
 }
 
 /** What tells one mapping in a list from the others: its `id`, or failing that
@@ -272,6 +359,13 @@ function itemIdentity(item: unknown): string | null {
  * "In both lists" is: equal, or two mappings with the same identifier. Never
  * "at the same position" — a list that was reordered has a different value at
  * every position, and the note written next to a value belongs to that value.
+ *
+ * An item's lines include its notes (see {@link ItemLines}): a removed item
+ * takes them along, a new item goes below the notes under the item before it,
+ * or — at the front — above the notes on top of the first one. Any other
+ * comment between two items is nobody's in particular. Where the list changes
+ * right next to one, this declines rather than guess which side it belongs
+ * on, and the caller writes that one list out again.
  */
 function editSequence(source: Source, seq: YAMLSeq, before: unknown[], after: unknown[]): Edit[] | null {
   if (seq.flow || seq.items.length !== before.length) return null;
@@ -287,13 +381,20 @@ function editSequence(source: Source, seq: YAMLSeq, before: unknown[], after: un
     return within !== null;
   });
   if (kept.length === 0) return null; // nothing stays: the caller rewrites the entry
-  const spans = seq.items.map((item) => itemLines(source.raw, item));
+  const raw = source.raw;
+  const blocks = seq.items.map((item) => itemLines(raw, item));
+  /** Nothing but blank lines between item `i` and the item (or, for the first, the key) above it. */
+  const clearAbove = (i: number): boolean => {
+    const block = blocks[i];
+    const from = i === 0 ? (block ? blankOrCommentRunStart(raw, block.blockStart) : undefined) : blocks[i - 1]?.blockEnd;
+    return block !== null && from !== undefined && from <= block.blockStart && !holdsComment(raw, from, block.blockStart);
+  };
   const stays = new Set(kept.map(([i]) => i));
   for (let i = 0; i < before.length; i++) {
     if (stays.has(i)) continue;
-    const span = spans[i];
-    if (!span) return null;
-    edits.push({ start: span.lineStart, end: span.end, text: "" });
+    const block = blocks[i];
+    if (!block || !clearAbove(i) || (i + 1 < before.length && !clearAbove(i + 1))) return null;
+    edits.push({ start: block.blockStart, end: block.blockEnd, text: "" });
   }
   let passed = 0; // kept items already behind position j
   for (let j = 0; j < after.length; j++) {
@@ -302,9 +403,12 @@ function editSequence(source: Source, seq: YAMLSeq, before: unknown[], after: un
       continue;
     }
     // A new item goes right after the kept item before it, or ahead of the first kept one.
-    const anchor = spans[kept[Math.max(passed - 1, 0)][0]];
-    if (!anchor) return null;
-    const at = passed === 0 ? anchor.lineStart : anchor.end;
+    const atFront = passed === 0;
+    const neighbour = kept[Math.max(passed - 1, 0)][0];
+    const anchor = blocks[neighbour];
+    const below = atFront ? neighbour : neighbour + 1; // the item whose gap above takes the new one
+    if (!anchor || (below < before.length && !clearAbove(below))) return null;
+    const at = atFront ? anchor.blockStart : anchor.blockEnd;
     const indent = " ".repeat(anchor.dash);
     const rendered = jsYaml.dump([after[j]], { lineWidth: -1 }).replace(/\n$/, "").split("\n");
     edits.push({ start: at, end: at, text: rendered.map((line) => indent + line).join(source.eol) + source.eol, ownLine: true });
