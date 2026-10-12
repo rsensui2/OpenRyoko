@@ -37,7 +37,7 @@ import { workflowAttemptInterruptionCause } from "./workflow-interruptions.js";
 import { recordTurnAccounting } from "./accounting.js";
 import { runWithSessionGoal, sessionGoalOptions } from "./goal-execution.js";
 import { conversationOutcome } from "./conversation-outcome.js";
-import { buildEngineSyncPrompt, clearEngineSyncMarker, engineFallbackFailure, engineSyncSince, maybeRevertEngineOverride, runEngineWithResponseTimeout, runFallbackAttempts, waitForEngineRetry } from "./engine-fallback.js";
+import { buildEngineSyncPrompt, clearEngineSyncMarker, engineFallbackFailure, engineSyncSince, isAwayFromEngine, maybeRevertEngineOverride, runEngineWithResponseTimeout, runFallbackAttempts, waitForEngineRetry } from "./engine-fallback.js";
 import { startOnHealthyEngine } from "./new-session-engine.js";
 import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "./callbacks.js";
 import { buildContext } from "./context.js";
@@ -481,12 +481,15 @@ export class SessionManager {
       if (this.config.sessions?.backgroundDelivery === false) return;
       const session = getSession(sessionId);
       if (!session) return;
-      // Hooks come from the interactive Claude PTY alone. A session that has
-      // since been moved to another engine left that PTY behind: the other
-      // engine owns the conversation now, and whatever the PTY still reports
-      // would be a second answer, or the failure of a turn nobody waits on.
-      if (session.engine !== "claude") {
-        logger.info(`Ignoring a late ${hook.hook_event_name} hook for session ${sessionId}: it is on ${session.engine} now`);
+      // Hooks come from the interactive Claude PTY alone. While a Claude
+      // session is held on its fallback engine, that PTY was left behind by the
+      // switch: the fallback engine is answering the turn Claude failed, and
+      // whatever the PTY still reports would be a second answer to it, or the
+      // failure of a turn nobody waits on. Only that case is ignored — a
+      // conversation that merely borrowed Claude and has gone back to its own
+      // engine still gets what Claude finishes for it in the background.
+      if (isAwayFromEngine(session, "claude")) {
+        logger.info(`Ignoring a late ${hook.hook_event_name} hook for session ${sessionId}: it was moved to ${session.engine} and has not returned`);
         return;
       }
 

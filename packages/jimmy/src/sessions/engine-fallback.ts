@@ -67,6 +67,12 @@ export function maybeRevertEngineOverride(session: Session): Session {
   return updates ? updateSession(session.id, updates) ?? session : session;
 }
 
+/** Whether `engine` is the session's own engine and the session is currently
+ *  held on another one — moved off it by a switch, and not yet back. */
+export function isAwayFromEngine(session: Session, engine: string): boolean {
+  return session.engine !== engine && object(object(session.transportMeta).engineOverride).originalEngine === engine;
+}
+
 export function engineSyncSince(session: Session): string | undefined {
   const meta = object(session.transportMeta);
   const value = object(meta.engineSyncSince)[session.engine] ?? (session.engine === "claude" ? meta.claudeSyncSince : undefined);

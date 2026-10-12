@@ -141,3 +141,46 @@ describe("late completions that are still the session's own", () => {
     expect(f.replies().at(-1)).toBe("Background task finished.");
   });
 });
+
+describe("a conversation that only borrowed Claude for a while", () => {
+  // Codex is this conversation's own engine. It returned nothing once, so the
+  // turn went to Claude for five minutes — and Claude's PTY is not stopped when
+  // the conversation goes back, so work it started in the background still
+  // finishes and still has to reach the conversation.
+  it("still receives what Claude finishes in the background after it has gone back to Codex", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const f = setup();
+    const codexRun = vi.fn<Engine["run"]>()
+      .mockResolvedValueOnce({ sessionId: "codex-thread", result: "" })
+      .mockResolvedValue({ sessionId: "codex-thread", result: "Answered by codex." });
+    const claudeRun = vi.fn<Engine["run"]>().mockResolvedValue({ sessionId: "claude-thread", result: "バックグラウンドで進めて、終わったら報告します。" });
+    const config = { engines: { default: "codex", claude: { bin: "claude-bin", model: "claude-model", interactive: true },
+      codex: { bin: "codex-bin", model: "codex-model" } }, sessions: {}, connectors: { slack: { goalExtraction: { enabled: false } } },
+      logging: { level: "error", stdout: false } } as unknown as JinnConfig;
+    const manager = new SessionManager(config, new Map<string, Engine>([
+      ["codex", { name: "codex", run: codexRun }],
+      ["claude", { name: "claude", run: claudeRun, kill: f.kill, killAll: vi.fn(), isAlive: () => true, isTurnRunning: () => false } as InterruptibleEngine],
+    ]));
+    const replyMessage = vi.fn(async (_target: unknown, _text: string) => undefined);
+    const connector = { name: "slack", replyMessage, sendMessage: replyMessage,
+      addReaction: vi.fn(async () => {}), removeReaction: vi.fn(async () => {}), setTypingStatus: vi.fn(async () => {}),
+      getCapabilities: () => ({ threading: true, reactions: true, attachments: false, messageEdits: false }),
+      reconstructTarget: (context: Record<string, unknown>) => ({ channel: String(context.channel), thread: String(context.thread) }),
+    } as unknown as Connector;
+    manager.setConnectorProvider(() => new Map([["slack", connector]]));
+    const msg = f.message("レポートを作ってください");
+
+    await manager.route(msg, connector);
+    expect(getSessionBySessionKey(msg.sessionKey)!.engine).toBe("claude"); // borrowed, for five minutes
+
+    vi.setSystemTime(Date.now() + 6 * 60_000);
+    await manager.route({ ...msg, text: "進み具合はどうですか" }, connector);
+    const back = getSessionBySessionKey(msg.sessionKey)!;
+    expect(back.engine).toBe("codex");
+
+    await manager.handleOrphanHook(back.id, { hook_event_name: "Stop", last_assistant_message: "レポートが完成しました。" });
+
+    expect(replyMessage).toHaveBeenLastCalledWith(expect.anything(), "レポートが完成しました。");
+    expect(getMessages(back.id).filter((entry) => entry.role === "assistant").map((entry) => entry.content)).toContain("レポートが完成しました。");
+  });
+});
