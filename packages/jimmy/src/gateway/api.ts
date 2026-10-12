@@ -1,5 +1,8 @@
 import type { ModelManagement } from "../models/service.js";
 import { withConfigLock } from "../shared/config-lock.js";
+import { readConfigSnapshot, writeConfigDocument } from "../shared/config-file.js";
+import { CONFIG_CONFLICT_BODY, CONFIG_REVISION_HEADER, configForApi, isStaleConfigRevision } from "./config-revision.js";
+import { redactMcpSecrets, restoreCustomMcpSecrets, storedItemWithSameId, withoutPlaceholders } from "./config-redaction.js";
 import { validateCommandJob } from "../cron/command.js";
 import { validateCronSchedule } from "../cron/validation.js";
 import type { IncomingMessage as HttpRequest, ServerResponse } from "node:http";
@@ -56,6 +59,7 @@ import {
 } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 import { getSttStatus, downloadModel, transcribe as sttTranscribe, resolveLanguages, WHISPER_LANGUAGES } from "../stt/stt.js";
+import { markSttModelInstalled, saveSttLanguages } from "../stt/config.js";
 import { JINN_HOME } from "../shared/paths.js";
 import { handleHookPost, LOOPBACK as HOOK_LOOPBACK } from "./hook-endpoint.js";
 import { resolveEffort } from "../shared/effort.js";
@@ -100,11 +104,21 @@ import { ptySnapshotStore } from "../engines/pty-snapshot.js";
 import { collectClaudeUsage } from "../shared/claude-usage.js";
 import { PairingAttemptLimiter, pairingAttemptKey } from "./pairing-rate-limit.js";
 import { applyLanguageSection, personalizeInstructionMd, personalizeIdentityMd, resolveEffectiveName } from "./onboarding-personalize.js";
-import { patchPortalSection, writeFileAtomic } from "./portal-config.js";
+import { savePortalBlock, writeFileAtomic } from "./portal-config.js";
+import { restoreBeforeSlackConnect, slackBlockOf, snapshotStillHoldingSlackTokens } from "./slack-connect-rollback.js";
+import { newAttachmentDir } from "../shared/attachments.js";
 
 /** Max bytes accepted on /api/internal/hook (loopback-only relay payloads are tiny). */
 const HOOK_BODY_MAX_BYTES = 64 * 1024;
 const PAIR_BODY_MAX_BYTES = 1024;
+/** Max bytes accepted on PUT /api/config. The body is merged into config.yaml,
+ *  and what a save costs grows with the size of that file: a megabyte is far
+ *  more than a configuration needs (the shipped one is tens of kilobytes). */
+const CONFIG_BODY_MAX_BYTES = 1024 * 1024;
+/** Max bytes accepted on /api/connectors/:id/incoming. A forwarded Discord
+ *  message is a few thousand characters, ten attachment URLs and some
+ *  metadata: tens of kilobytes at the very most. */
+const INCOMING_BODY_MAX_BYTES = 256 * 1024;
 const PAIR_ATTEMPT_WINDOW_MS = 5 * 60_000;
 const pairingAttempts = new PairingAttemptLimiter(10, PAIR_ATTEMPT_WINDOW_MS);
 const pairingGlobalAttempts = new PairingAttemptLimiter(1_000, PAIR_ATTEMPT_WINDOW_MS, 1);
@@ -366,7 +380,7 @@ function serverError(res: ServerResponse, message: string): void {
   json(res, { error: message }, 500);
 }
 
-const SANITIZED_KEYS = new Set(["token", "botToken", "signingSecret", "appToken", "proxyViaToken"]);
+const SANITIZED_KEYS = new Set(["token", "botToken", "signingSecret", "appToken", "proxyViaToken", "apiKey"]);
 
 /** Mask the per-route bearer tokens inside connectors.*.channelRouting for
  *  GET /api/config. deepMerge already restores "***" placeholders on PUT —
@@ -400,26 +414,18 @@ export function deepMerge(target: Record<string, unknown>, source: Record<string
       continue;
     }
     if (Array.isArray(sv)) {
-      // For arrays (e.g. instances), preserve secrets from matching items
-      if (Array.isArray(tv)) {
-        result[key] = sv.map((item: unknown) => {
-          if (item && typeof item === "object" && !Array.isArray(item)) {
-            const srcItem = item as Record<string, unknown>;
-            // Find matching target item by id
-            const matchTarget = (tv as unknown[]).find(
-              (t) => t && typeof t === "object" && (t as Record<string, unknown>).id === srcItem.id
-            ) as Record<string, unknown> | undefined;
-            if (matchTarget) return deepMerge(matchTarget, srcItem);
-          }
-          return item;
-        });
-      } else {
-        result[key] = sv;
-      }
+      // For arrays (e.g. instances), preserve secrets from matching items:
+      // the stored item with the same id. Any other item is stored as sent,
+      // minus the placeholders — there is nothing stored they could stand for.
+      result[key] = sv.map((item: unknown) => {
+        const matchTarget = storedItemWithSameId(tv, item);
+        return matchTarget ? deepMerge(matchTarget, item as Record<string, unknown>) : withoutPlaceholders(item, SANITIZED_KEYS);
+      });
     } else if (sv && typeof sv === "object" && !Array.isArray(sv) && tv && typeof tv === "object" && !Array.isArray(tv)) {
       result[key] = deepMerge(tv as Record<string, unknown>, sv as Record<string, unknown>);
     } else {
-      result[key] = sv;
+      // A block config.yaml does not have: same rule, no placeholder is written.
+      result[key] = withoutPlaceholders(sv, SANITIZED_KEYS);
     }
   }
   return result;
@@ -1918,7 +1924,9 @@ Handle this as a priority request from a colleague.`;
 
     // GET /api/config
     if (method === "GET" && pathname === "/api/config") {
-      const config = context.getConfig();
+      // The document on disk plus the revision of those bytes — see configForApi.
+      const { config, revision } = configForApi(context.getConfig());
+      res.setHeader(CONFIG_REVISION_HEADER, revision);
       // Sanitize: remove any secrets/tokens from connectors
       const rawConnectors = config.connectors || {};
       const sanitizedConnectors: Record<string, unknown> = {};
@@ -1950,13 +1958,14 @@ Handle this as a priority request from a colleague.`;
       const sanitized = {
         ...config,
         connectors: sanitizedConnectors,
+        ...(config.mcp ? { mcp: redactMcpSecrets(config.mcp) } : {}),
       };
       return json(res, sanitized);
     }
 
     // PUT /api/config
     if (method === "PUT" && pathname === "/api/config") {
-      const _parsed = await readJsonBody(req, res);
+      const _parsed = await readJsonBody(req, res, CONFIG_BODY_MAX_BYTES);
       if (!_parsed.ok) return;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const body = _parsed.body as any;
@@ -1966,6 +1975,8 @@ Handle this as a priority request from a colleague.`;
       }
       // Validate known top-level keys
       // Keep this aligned with `JinnConfig` in src/shared/types.ts
+      // (`remotes` is legacy: nothing reads it since /api/files/transfer was
+      // retired, but existing configs may still carry it.)
       const KNOWN_KEYS = [
         "jinn",
         "gateway",
@@ -1975,6 +1986,7 @@ Handle this as a priority request from a colleague.`;
         "connectors",
         "logging",
         "mcp",
+        "budgets", // written by PUT /api/budgets — without it the Settings save 400s once a limit exists
         "sessions",
         "cron",
         "backup",
@@ -2005,15 +2017,24 @@ Handle this as a priority request from a colleague.`;
       // Every read→merge→write→reload of config.yaml runs under one lock, so a
       // concurrent writer (another PUT, the onboarding Slack connect and its
       // rollback) can never interleave with — or be overwritten by — this one.
-      return withConfigLock(async () => {
+      // Awaited, so a refused or failed write reaches this handler's catch
+      // instead of escaping as an unhandled rejection.
+      return await withConfigLock(async () => {
       // Deep-merge incoming config with existing config to preserve
-      // fields not included in the update (e.g. connector tokens).
-      let existing: Record<string, unknown> = {};
-      try {
-        existing = yaml.load(fs.readFileSync(CONFIG_PATH, "utf-8")) as Record<string, unknown> || {};
-      } catch { /* start fresh if unreadable */ }
-      const merged = deepMerge(existing, body);
-      const yamlStr = yaml.dump(merged);
+      // fields not included in the update (e.g. connector tokens). A file
+      // that exists but cannot be read throws here: merging into an empty
+      // object would replace the whole config with this request body.
+      const snapshot = readConfigSnapshot();
+      // A caller that sends the revision it loaded (the Settings page saves
+      // the whole document) must not write over a file it has not seen.
+      // Checked here, under the lock, against the bytes the merge starts from.
+      if (isStaleConfigRevision(req.headers, snapshot.revision)) {
+        return json(res, CONFIG_CONFLICT_BODY, 409);
+      }
+      const existing = snapshot.document;
+      // A custom MCP server's env and headers come back from GET hidden value by
+      // value; the stored values are put back before the merge sees them.
+      const merged = deepMerge(existing, restoreCustomMcpSecrets(body, existing));
 
       // Compare AGAINST THE MERGED config, not the request body — partial
       // updates (e.g. saving only "portal.portalName") leave body.connectors
@@ -2043,7 +2064,9 @@ Handle this as a priority request from a colleague.`;
         context.suppressNextConnectorReload?.();
       }
 
-      fs.writeFileSync(CONFIG_PATH, yamlStr);
+      // The new revision travels back so the page that just saved is not stale
+      // against its own write.
+      res.setHeader(CONFIG_REVISION_HEADER, writeConfigDocument(snapshot, merged));
       invalidateModelRegistry(); // models/engines may have changed — rebuild on next read
       _resetEngineProbeCache(); // engine bins may have changed — the onboarding probe must re-run
       logger.info("Config updated via API");
@@ -2139,27 +2162,19 @@ Handle this as a priority request from a colleague.`;
         return json(res, { error: "Discord connector is not in remote mode" }, 400);
       }
 
-      const _parsed = await readJsonBody(req, res);
+      const _parsed = await readJsonBody(req, res, INCOMING_BODY_MAX_BYTES);
       if (!_parsed.ok) return;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const body = _parsed.body as any;
 
-      // Download attachments from Discord CDN URLs to local temp
-      const { downloadAttachment } = await import("../connectors/discord/format.js");
-      const { sanitizeIncomingDiscordMeta } = await import("../connectors/discord/remote.js");
-      const attachments = await Promise.all(
-        (body.attachments || []).map(async (att: { name: string; url: string; mimeType: string }) => {
-          if (att.url) {
-            try {
-              const localPath = await downloadAttachment(att.url, TMP_DIR, att.name);
-              return { name: att.name, url: att.url, mimeType: att.mimeType, localPath };
-            } catch {
-              return { name: att.name, url: att.url, mimeType: att.mimeType };
-            }
-          }
-          return att;
-        }),
-      );
+      // Download attachments from Discord CDN URLs to local temp. The names
+      // and URLs are the caller's: only https Discord CDN URLs are fetched.
+      const { downloadIncomingAttachments, routedMessageText, sanitizeIncomingDiscordMeta } = await import("../connectors/discord/remote.js");
+      // Only for a message the connector is going to hand on: one it stays
+      // silent on (respondTo, addressed to somebody else) is not fetched first.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const wanted: boolean = (connector as any).willDeliver?.(sanitizeIncomingDiscordMeta(body.transportMeta)) ?? true;
+      const fetched = wanted ? await downloadIncomingAttachments(body.attachments, newAttachmentDir()) : { attachments: [], failed: [] };
 
       const incomingMsg: IncomingMessage = {
         connector: params.id,
@@ -2169,9 +2184,9 @@ Handle this as a priority request from a colleague.`;
         thread: body.thread,
         user: body.user,
         userId: body.userId,
-        text: body.text,
+        text: routedMessageText(body.text, fetched.failed), // says which attachments were not fetched
         messageId: body.messageId,
-        attachments,
+        attachments: fetched.attachments,
         replyContext: body.replyContext || {},
         // Boundary scrub: this endpoint carries Discord traffic — drop
         // cross-platform identity fields a forged payload might smuggle in.
@@ -2354,19 +2369,16 @@ Handle this as a priority request from a colleague.`;
       // the portal to its defaults.
       const config = context.getConfig();
       const provided = (v: unknown): v is string => typeof v === "string" && v.trim() !== "";
-      const portalPatch: Record<string, unknown> = {
-        ...config.portal,
+      // Patch only the portal block — a whole-file yaml.dump would strip
+      // every comment the shipped config template carries. The block on disk
+      // is what gets patched, not the in-memory one: see savePortalBlock.
+      const portalPatch = savePortalBlock({
         onboarded: true,
         ...(provided(portalName) && { portalName }),
         ...(provided(operatorName) && { operatorName }),
         ...(provided(language) && { language }),
-      };
+      }, config.portal);
       const updated = { ...config, portal: portalPatch };
-
-      // Patch only the portal block — a whole-file yaml.dump would strip
-      // every comment the shipped config template carries.
-      const rawConfig = fs.existsSync(CONFIG_PATH) ? fs.readFileSync(CONFIG_PATH, "utf-8") : "";
-      writeFileAtomic(CONFIG_PATH, patchPortalSection(rawConfig, portalPatch));
       logger.info(`Onboarding: portal name="${portalName}", operator="${operatorName}", language="${language}"`);
 
       const effectiveName = resolveEffectiveName(portalName, config.portal?.portalName);
@@ -2414,14 +2426,7 @@ Handle this as a priority request from a colleague.`;
       }).then(() => {
         // Update config to mark STT as enabled
         try {
-          const raw = fs.readFileSync(CONFIG_PATH, "utf-8");
-          const cfg = yaml.load(raw) as Record<string, unknown>;
-          if (!cfg.stt || typeof cfg.stt !== "object") cfg.stt = {};
-          const sttCfg = cfg.stt as Record<string, unknown>;
-          sttCfg.enabled = true;
-          sttCfg.model = model;
-          if (!sttCfg.languages) sttCfg.languages = ["en"];
-          fs.writeFileSync(CONFIG_PATH, yaml.dump(cfg, { lineWidth: -1 }));
+          markSttModelInstalled(model);
         } catch (err) {
           logger.error(`Failed to update config after STT download: ${err}`);
         }
@@ -2486,14 +2491,7 @@ Handle this as a priority request from a colleague.`;
       }
 
       try {
-        const raw = fs.readFileSync(CONFIG_PATH, "utf-8");
-        const cfg = yaml.load(raw) as Record<string, unknown>;
-        if (!cfg.stt || typeof cfg.stt !== "object") cfg.stt = {};
-        const sttCfg = cfg.stt as Record<string, unknown>;
-        sttCfg.languages = langs;
-        // Remove deprecated language field if present
-        delete sttCfg.language;
-        fs.writeFileSync(CONFIG_PATH, yaml.dump(cfg, { lineWidth: -1 }));
+        saveSttLanguages(langs);
         return json(res, { status: "ok", languages: langs });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -2599,12 +2597,9 @@ Handle this as a priority request from a colleague.`;
       const _parsed = await readJsonBody(req, res);
       if (!_parsed.ok) return;
       const body = _parsed.body as Record<string, unknown>;
-      let existing: Record<string, unknown> = {};
-      try {
-        existing = yaml.load(fs.readFileSync(CONFIG_PATH, "utf-8")) as Record<string, unknown> || {};
-      } catch { /* start fresh if unreadable */ }
-      const merged = deepMerge(existing, { budgets: { employees: body } });
-      fs.writeFileSync(CONFIG_PATH, yaml.dump(merged));
+      const snapshot = readConfigSnapshot();
+      const merged = deepMerge(snapshot.document, { budgets: { employees: body } });
+      writeConfigDocument(snapshot, merged);
       logger.info("Budget limits updated via API");
       return json(res, { status: "ok" });
     }
@@ -3420,15 +3415,19 @@ interface ConfigPatchOutcome {
 
 /** Merge a patch into config.yaml and reload connectors — the same steps
  *  PUT /api/config performs, callable from a server-side flow that has to
- *  read the outcome and possibly undo the write. */
-async function writeConfigPatchAndReload(context: ApiContext, patch: Record<string, unknown>): Promise<ConfigPatchOutcome> {
-  let existing: Record<string, unknown> = {};
-  try {
-    existing = (yaml.load(fs.readFileSync(CONFIG_PATH, "utf-8")) as Record<string, unknown>) || {};
-  } catch { /* first write */ }
-  const merged = deepMerge(existing, patch);
+ *  read the outcome and possibly undo the write. `revision` identifies the
+ *  file as this write left it. */
+async function writeConfigPatchAndReload(context: ApiContext, patch: Record<string, unknown>): Promise<ConfigPatchOutcome & { revision: string }> {
+  const snapshot = readConfigSnapshot();
+  const merged = deepMerge(snapshot.document, patch);
   context.suppressNextConnectorReload?.();
-  fs.writeFileSync(CONFIG_PATH, yaml.dump(merged));
+  const revision = writeConfigDocument(snapshot, merged);
+  return { ...(await reloadAfterConfigWrite(context)), revision };
+}
+
+/** config.yaml was just written (with the watcher's connector reload
+ *  suppressed): drop the caches built from it and reload the connectors. */
+async function reloadAfterConfigWrite(context: ApiContext): Promise<ConfigPatchOutcome> {
   invalidateModelRegistry();
   _resetEngineProbeCache();
   if (!context.reloadAllConnectors) return { status: "ok" };
@@ -3481,15 +3480,6 @@ function slackFailure(outcome: ConfigPatchOutcome): string | null {
   return null;
 }
 
-function readSlackBlock(): Record<string, unknown> | null {
-  try {
-    const current = (yaml.load(fs.readFileSync(CONFIG_PATH, "utf-8")) as { connectors?: { slack?: Record<string, unknown> } }) || {};
-    return current.connectors?.slack ?? null;
-  } catch {
-    return null;
-  }
-}
-
 async function connectSlack(context: ApiContext, botToken: string, appToken: string): Promise<SlackConnectResult> {
   const verified = await verifySlackTokens(botToken, appToken);
   if (!verified.ok) return { ok: false, stage: "verify", error: "token verification failed", bot: verified.bot, app: verified.app };
@@ -3498,18 +3488,19 @@ async function connectSlack(context: ApiContext, botToken: string, appToken: str
   // /api/config or a second connect waits for it, so the snapshot we would
   // restore can never be older than what a concurrent writer put down.
   return withConfigLock(async () => {
-    const previousSlack = readSlackBlock();
-    const previous = previousSlack ? ("config" as const) : ("none" as const);
+    // The file exactly as it is before this attempt: what a rollback puts back.
+    const before = readConfigSnapshot();
+    const previous = slackBlockOf(before.document) ? ("config" as const) : ("none" as const);
     const outcome = await writeConfigPatchAndReload(context, { connectors: { slack: { botToken, appToken } } });
     const failure = slackFailure(outcome);
     if (!failure) return { ok: true, team: verified.bot.team, user: verified.bot.user };
 
     // The connector did not come up on tokens Slack itself accepted. Put the
-    // previous configuration back (or remove the block if there was none) —
-    // but only if the block on disk is still OURS: an out-of-band editor may
-    // have written something else meanwhile, and that is theirs to keep.
-    const onDisk = readSlackBlock();
-    if (onDisk?.botToken !== botToken || onDisk?.appToken !== appToken) {
+    // file back as it was before the attempt — but only if the block on disk
+    // is still OURS: an out-of-band editor may have written something else
+    // meanwhile, and that is theirs to keep.
+    const current = snapshotStillHoldingSlackTokens(botToken, appToken);
+    if (!current) {
       logger.warn(`[onboarding] Slack connect failed (${failure}) but the Slack config changed concurrently — leaving it as is`);
       return { ok: false, stage: "reload", error: failure, previous, rolledBack: false,
         restored: { disk: false, running: false }, rollbackSkipped: "config changed concurrently" };
@@ -3517,8 +3508,11 @@ async function connectSlack(context: ApiContext, botToken: string, appToken: str
     logger.warn(`[onboarding] Slack connect failed after save (${failure}) — ${previous === "config" ? "restoring previous Slack config" : "removing the Slack block again"}`);
     let rollback: ConfigPatchOutcome;
     try {
-      rollback = await writeConfigPatchAndReload(context, { connectors: { slack: previousSlack ?? null } });
+      context.suppressNextConnectorReload?.();
+      restoreBeforeSlackConnect(before, current, outcome.revision);
+      rollback = await reloadAfterConfigWrite(context);
     } catch (err) {
+      context.clearSuppressNextConnectorReload?.(); // nothing was written for the watcher to skip
       const rollbackError = err instanceof Error ? err.message : String(err);
       logger.error(`[onboarding] Slack rollback write failed: ${rollbackError}`);
       return { ok: false, stage: "reload", error: failure, previous, rolledBack: false,

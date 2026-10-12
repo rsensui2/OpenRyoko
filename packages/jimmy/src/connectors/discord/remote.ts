@@ -1,4 +1,5 @@
 import type {
+  Attachment,
   Connector,
   ConnectorCapabilities,
   ConnectorHealth,
@@ -6,8 +7,12 @@ import type {
   IncomingMessage,
   Target,
 } from "../../shared/types.js";
+import { failedAttachment, withAttachmentNotice } from "../../shared/attachment-notice.js";
+import { attachmentSlot } from "../../shared/attachments.js";
 import { logger } from "../../shared/logger.js";
 import { partialDeliveryFromText, type PartialDeliveryError } from "../../shared/partial-delivery.js";
+import { mapLimited } from "../../shared/map-limited.js";
+import { downloadAttachment } from "./format.js";
 import {
   evaluateRespondPolicy,
   parseForwardedAddressing,
@@ -57,6 +62,86 @@ export function sanitizeIncomingDiscordMeta(meta: unknown): Record<string, unkno
   );
 }
 
+/** Discord serves attachment files from these hosts and no others. */
+const DISCORD_CDN_HOSTS = ["cdn.discordapp.com", "media.discordapp.net"];
+/** Largest routed attachment kept — the gateway's own upload limit. */
+const MAX_INCOMING_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+/** A Discord message carries at most ten attachments; a request listing more
+ *  did not come from one. */
+const MAX_INCOMING_ATTACHMENTS = 10;
+/** How many of a routed message's attachments are fetched at the same time. */
+const INCOMING_DOWNLOADS_AT_ONCE = 3;
+
+/**
+ * What a routed attachment may say about itself: the three fields a Discord
+ * primary sends, each only as text. Everything else in the request is dropped
+ * — above all `localPath`. The session gives every attachment's localPath to
+ * the engine as a file to read and deletes it when the turn ends, so a routed
+ * message must never be able to name one; it is set here, by the download.
+ */
+function incomingAttachmentMeta(att: Record<string, unknown>): Attachment {
+  const meta: Partial<Attachment> = {};
+  for (const key of ["name", "url", "mimeType"] as const) {
+    const value = att[key];
+    if (typeof value === "string") meta[key] = value;
+  }
+  return meta as Attachment;
+}
+
+/**
+ * Fetch a routed message's attachments to `destDir` (the message's own
+ * directory; each attachment gets a slot in it). Their names and URLs come
+ * straight from the request body, so only what a Discord primary really sends
+ * is fetched: an https URL on Discord's CDN, up to a size limit. Anything else
+ * stays as metadata without a local file — what a failed download has always
+ * looked like — and is never requested.
+ *
+ * The list is the request's too: only its first ten entries are looked at
+ * (Discord's own limit per message), and they are fetched a few at a time.
+ *
+ * `failed` names each attachment that has a URL and was not fetched, by its
+ * position, with the reason when the reason is its size: see
+ * {@link routedMessageText}.
+ */
+export async function downloadIncomingAttachments(attachments: unknown, destDir: string): Promise<IncomingAttachments> {
+  if (!Array.isArray(attachments)) return { attachments: [], failed: [] };
+  const listed = attachments
+    .filter((att): att is Record<string, unknown> => Boolean(att) && typeof att === "object")
+    .slice(0, MAX_INCOMING_ATTACHMENTS);
+  const results = await mapLimited(listed, INCOMING_DOWNLOADS_AT_ONCE, async (att, slot) => {
+    const meta = incomingAttachmentMeta(att);
+    if (!meta.url) return { meta, failed: null };
+    try {
+      const localPath = await downloadAttachment(meta.url, attachmentSlot(destDir, slot), meta.name, {
+        allowedHosts: DISCORD_CDN_HOSTS,
+        maxBytes: MAX_INCOMING_ATTACHMENT_BYTES,
+      });
+      return { meta: { ...meta, localPath }, failed: null };
+    } catch (err) {
+      return { meta, failed: failedAttachment(`attachment ${slot + 1} of ${listed.length}`, err) };
+    }
+  });
+  return {
+    attachments: results.map((result) => result.meta),
+    failed: results.flatMap((result) => (result.failed === null ? [] : [result.failed])),
+  };
+}
+
+export interface IncomingAttachments {
+  attachments: Attachment[];
+  failed: string[];
+}
+
+/**
+ * The text of a routed message as the session gets it: what the primary sent,
+ * plus a notice for the attachments this instance did not fetch. Without it a
+ * file over the limit simply went missing, and the session answered as if
+ * nothing had been attached.
+ */
+export function routedMessageText<T>(text: T, failed: readonly string[]): T | string {
+  return withAttachmentNotice(text, "Discord", failed);
+}
+
 /**
  * A Discord connector that doesn't hold its own WebSocket connection.
  * Instead, it receives messages from the primary Jinn instance via HTTP
@@ -92,7 +177,7 @@ export class RemoteDiscordConnector implements Connector {
     // (never drop an "always" message on missing metadata). Warn once, and
     // only when a message actually lands in a mention-gated scope, so the
     // required upgrade order is visible instead of a silent blackhole.
-    const { present, flags } = parseForwardedAddressing(meta);
+    const { present } = parseForwardedAddressing(meta);
     if (
       !present &&
       resolveRespondMode(this.respondTo, scopeForChannel(isDM)) === "mention" &&
@@ -103,27 +188,43 @@ export class RemoteDiscordConnector implements Connector {
         "[discord-remote] primary instance does not forward addressing metadata (its version predates respondTo) — routed messages in mention scopes are dropped until the primary is upgraded",
       );
     }
+    const silence = this.silenceReason(meta);
+    if (silence) {
+      logger.info(`[discord-remote] ${silence} for message ${msg.messageId}`);
+      return;
+    }
+    if (this.handler) {
+      this.handler(msg);
+    }
+  }
+
+  /**
+   * Why a routed message with this transportMeta is dropped instead of handed
+   * on, or null when it is handed on. Decided from what the primary says about
+   * the message and from this connector's respondTo alone.
+   */
+  private silenceReason(meta: Record<string, unknown>): string | null {
+    const isDM = meta.isDM === true;
+    const { flags } = parseForwardedAddressing(meta);
     const respondDecision = evaluateRespondPolicy({
       config: this.respondTo,
       isDM,
       wasMentioned: flags.wasBotAddressed,
       isEngagedThread: flags.isEngagedThread,
     });
-    if (!respondDecision.allow) {
-      logger.info(
-        `[discord-remote] respondTo gate → silent (${respondDecision.reason}) for message ${msg.messageId}`,
-      );
-      return;
-    }
-    if (!isDM && flags.addressesOnlyOthers) {
-      logger.info(
-        `[discord-remote] message addresses other user(s) — staying silent for message ${msg.messageId}`,
-      );
-      return;
-    }
-    if (this.handler) {
-      this.handler(msg);
-    }
+    if (!respondDecision.allow) return `respondTo gate → silent (${respondDecision.reason})`;
+    if (!isDM && flags.addressesOnlyOthers) return "message addresses other user(s) — staying silent";
+    return null;
+  }
+
+  /**
+   * Whether {@link deliverMessage} will hand on a message with this
+   * transportMeta. The /incoming route asks before it fetches the message's
+   * attachments: what is going to be dropped is not downloaded first.
+   */
+  willDeliver(transportMeta: unknown): boolean {
+    const meta = (transportMeta && typeof transportMeta === "object" ? transportMeta : {}) as Record<string, unknown>;
+    return this.handler !== null && this.silenceReason(meta) === null;
   }
 
   async start(): Promise<void> {

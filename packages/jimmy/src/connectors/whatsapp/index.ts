@@ -19,6 +19,9 @@ import type {
 } from "../../shared/types.js";
 import { logger } from "../../shared/logger.js";
 import { JINN_HOME } from "../../shared/paths.js";
+import { newAttachmentDir } from "../../shared/attachments.js";
+import { AttachmentTooLargeError, attachmentLimitBytes, saveWithin } from "../../shared/attachment-download.js";
+import { failedAttachment, withAttachmentNotice } from "../../shared/attachment-notice.js";
 import { formatResponse } from "./format.js";
 import { deliverChunks } from "../chunked-send.js";
 import path from "node:path";
@@ -30,6 +33,9 @@ export interface WhatsAppConnectorConfig {
   /** Allowed phone numbers in JID format (e.g. "447700900000@s.whatsapp.net") — empty = allow all */
   allowFrom?: string[];
   ignoreOldMessagesOnBoot?: boolean;
+  /** Largest attachment downloaded, in MB (default 200). A larger one is not
+   *  fetched; the session is told so. */
+  maxAttachmentMb?: number;
 }
 
 // Minimal ILogger implementation that routes Baileys noise to silence
@@ -281,10 +287,16 @@ export class WhatsAppConnector implements Connector {
 
     // Download media attachment if present
     const attachments: Array<{ name: string; localPath: string; mimeType: string; url: string }> = [];
+    const failedAttachments: string[] = [];
     const hasMedia = message.message?.imageMessage || message.message?.documentMessage || message.message?.audioMessage;
     if (hasMedia && this.sock) {
+      const maxBytes = attachmentLimitBytes(this.config.maxAttachmentMb);
       try {
-        const buffer = await downloadMediaMessage(message, "buffer", {}, {
+        // The size is the sender's choice. Media announced as larger than the
+        // connector's limit is not fetched; the rest is read as a stream that
+        // stops there.
+        if (Number(String(hasMedia.fileLength ?? "")) > maxBytes) throw new AttachmentTooLargeError(maxBytes);
+        const stream = await downloadMediaMessage(message, "stream", {}, {
           logger: silentLogger as never,
           reuploadRequest: this.sock.updateMediaMessage,
         });
@@ -292,16 +304,19 @@ export class WhatsAppConnector implements Connector {
           : message.message?.audioMessage ? "ogg"
           : "bin";
         const filename = `wa-attachment-${message.key.id}.${ext}`;
-        const tmpDir = path.join(JINN_HOME, "tmp");
-        const localPath = path.join(tmpDir, filename);
-        fs.mkdirSync(tmpDir, { recursive: true });
-        fs.writeFileSync(localPath, buffer as Buffer);
+        // A directory of this message's own (see shared/attachments.ts). The
+        // message id is the sender's: it names the attachment, not the file.
+        const tmpDir = newAttachmentDir();
+        const localPath = path.join(tmpDir, `attachment.${ext}`);
+        await saveWithin(stream, localPath, maxBytes);
         const mimeType = ext === "jpg" ? "image/jpeg"
           : ext === "ogg" ? "audio/ogg"
           : "application/octet-stream";
         attachments.push({ name: filename, localPath, mimeType, url: localPath });
-      } catch {
-        // Non-fatal: continue without attachment
+      } catch (err) {
+        // Non-fatal: continue without the attachment — and say that it is
+        // missing, and why when it was too large, rather than drop it unseen.
+        failedAttachments.push(failedAttachment("the media attachment", err));
       }
     }
 
@@ -316,7 +331,7 @@ export class WhatsAppConnector implements Connector {
       thread: undefined,
       user: jid.replace("@s.whatsapp.net", ""),
       userId: jid,
-      text,
+      text: withAttachmentNotice(text, "WhatsApp", failedAttachments),
       attachments,
       replyContext,
       messageId: message.key.id ?? undefined,

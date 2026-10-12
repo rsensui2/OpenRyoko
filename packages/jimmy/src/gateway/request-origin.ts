@@ -1,4 +1,5 @@
 import { isLoopbackHost } from "./auth.js";
+import { CONFIG_REVISION_HEADER } from "./config-revision.js";
 
 function authorityFromHostHeader(host: string | undefined, protocol: string): { hostname: string; port: string } | null {
   if (!host) return null;
@@ -33,3 +34,13 @@ export function requestOriginAllowed(
   if (isLoopbackHost(origin.hostname) && isLoopbackHost(request.hostname)) return true;
   return false;
 }
+
+/**
+ * Request headers an allowed cross-origin browser client may send, and
+ * response headers it may read back. The config revision needs both
+ * directions: a page reads it off GET /api/config and returns it on the PUT.
+ * Left off the first list, the browser blocks the save; left off the second,
+ * it hides the revision, and the page saves without the check it exists for.
+ */
+export const CORS_ALLOWED_REQUEST_HEADERS = `Content-Type, Authorization, ${CONFIG_REVISION_HEADER}`;
+export const CORS_EXPOSED_RESPONSE_HEADERS = CONFIG_REVISION_HEADER;

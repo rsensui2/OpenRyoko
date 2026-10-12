@@ -2,10 +2,9 @@ import { initDb } from "../sessions/registry.js";
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import yaml from "js-yaml";
 import { z } from "zod";
-import { CONFIG_PATH, JINN_HOME } from "../shared/paths.js";
-import { loadConfig } from "../shared/config.js";
+import { JINN_HOME } from "../shared/paths.js";
+import { readConfigSnapshot, writeConfigDocument } from "../shared/config-file.js";
 import { withConfigLock } from "../shared/config-lock.js";
 import { getModelRegistry, invalidateModelRegistry, setDiscoveredModels } from "../shared/models.js";
 import { scanOrg, updateEmployeeYaml } from "../gateway/org.js";
@@ -105,9 +104,15 @@ export class ModelManagement {
   private save() { atomic(stateFile, JSON.stringify(this.state, null, 2) + "\n"); }
   private async editConfig(edit: (config: JinnConfig) => void | (() => void)): Promise<void> {
     await withConfigLock(async () => {
-      const config = loadConfig();
+      // Through the shared config writer: an unreadable file is refused (and
+      // never quoted in the error), the write is staged and renamed into
+      // place, and the permission bits and comments of config.yaml stay.
+      const snapshot = readConfigSnapshot();
+      if (snapshot.raw === null) throw new Error("config.yaml not found");
+      // edit() changes its argument in place; the snapshot keeps the document the file was read as.
+      const config = structuredClone(snapshot.document) as unknown as JinnConfig;
       const undo = edit(config);
-      try { atomic(CONFIG_PATH, yaml.dump(config, { lineWidth: -1 })); }
+      try { writeConfigDocument(snapshot, config as unknown as Record<string, unknown>); }
       catch (error) { undo?.(); throw error; }
       invalidateModelRegistry();
       this.options.onConfig(config);

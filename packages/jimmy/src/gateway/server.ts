@@ -10,6 +10,8 @@ import { randomUUID, randomBytes } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { JinnConfig, Connector, Employee } from "../shared/types.js";
 import { loadConfig } from "../shared/config.js";
+import { configErrorForLog } from "../shared/config-file.js";
+import { startAttachmentSweep } from "../shared/attachments.js";
 import { claudeAutoMemoryEnvFor, configureClaudeAutoMemory } from "../shared/claude-auto-memory.js";
 import { resolveAssistantName } from "../shared/assistant-identity.js";
 import { getTriageCapabilities, invalidateTriageCapabilities } from "../shared/triage-capabilities.js";
@@ -63,7 +65,7 @@ import { stopCommandJobs } from "../cron/command.js";
 import { scanOrg } from "./org.js";
 import { startBackupScheduler } from "../backup/scheduler.js";
 import { getDiskSpaceStatus } from "../shared/storage-health.js";
-import { requestOriginAllowed } from "./request-origin.js";
+import { CORS_ALLOWED_REQUEST_HEADERS, CORS_EXPOSED_RESPONSE_HEADERS, requestOriginAllowed } from "./request-origin.js";
 import { hostHeaderAllowed, localInterfaceHosts } from "./host-guard.js";
 import { isWildcardBindHost, localGatewayUrl } from "../shared/gateway-url.js";
 import { staticPathWithinRoot } from "./static-path.js";
@@ -1127,7 +1129,8 @@ export async function startGateway(
       res.setHeader("Vary", "Origin");
     }
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.setHeader("Access-Control-Allow-Headers", CORS_ALLOWED_REQUEST_HEADERS);
+    res.setHeader("Access-Control-Expose-Headers", CORS_EXPOSED_RESPONSE_HEADERS);
 
     if (req.method === "OPTIONS") {
       res.writeHead(204);
@@ -1231,6 +1234,9 @@ export async function startGateway(
     logger.warn(`STT init skipped: ${err instanceof Error ? err.message : err}`);
   }
 
+  // Attachments of messages that never got a turn: now, then hourly.
+  const stopAttachmentSweep = startAttachmentSweep();
+
   // Start file watchers
   startWatchers({
     onConfigReload: () => {
@@ -1312,7 +1318,7 @@ export async function startGateway(
         }
       } catch (err) {
         logger.error(
-          `Failed to reload config: ${err instanceof Error ? err.message : err}`,
+          `Failed to reload config: ${configErrorForLog(err)}`,
         );
       }
     },
@@ -1461,6 +1467,7 @@ export async function startGateway(
     clearInterval(modelRefreshTimer);
     stopEngineHealth();
     backupScheduler.stop();
+    stopAttachmentSweep();
     modelManagement?.stop();
     stopScheduler();
     await stopCommandJobs();

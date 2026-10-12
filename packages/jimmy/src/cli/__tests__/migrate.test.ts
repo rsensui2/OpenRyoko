@@ -45,9 +45,18 @@ vi.mock("../bundled-skills.js", () => ({
   stageMissingBundledSkills: vi.fn(() => []),
 }));
 
+// config.yaml is read and written through the shared config writer, not
+// through fs directly — the version stamp shows up as updateConfigDocument.
+vi.mock("../../shared/config-file.js", () => ({
+  readConfigSnapshot: vi.fn(() => ({ raw: null, bytes: null, mode: null, document: {}, revision: "" })),
+  writeConfigDocument: vi.fn(() => "revision"),
+  updateConfigDocument: vi.fn(() => "revision"),
+}));
+
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import { stageMissingBundledSkills } from "../bundled-skills.js";
+import { updateConfigDocument } from "../../shared/config-file.js";
 import { compareSemver, getPendingMigrations } from "../../shared/version.js";
 import { CLAUDE_SKILLS_DIR, AGENTS_SKILLS_DIR } from "../../shared/paths.js";
 import path from "node:path";
@@ -124,6 +133,7 @@ describe("migrate: AI session launcher", () => {
 
     expect(mockExecFileSync).not.toHaveBeenCalled();
     expect(mockWriteFileSync).not.toHaveBeenCalled();
+    expect(updateConfigDocument).not.toHaveBeenCalled();
     expect(mockRmSync).not.toHaveBeenCalled();
   });
 
@@ -134,6 +144,7 @@ describe("migrate: AI session launcher", () => {
     expect(stageMissingBundledSkills).toHaveBeenCalledOnce();
     expect(mockExecFileSync).not.toHaveBeenCalled();
     expect(mockWriteFileSync).not.toHaveBeenCalled();
+    expect(updateConfigDocument).not.toHaveBeenCalled();
   });
 
   it("adds newly bundled skills even without versioned migration scripts", async () => {
@@ -143,6 +154,7 @@ describe("migrate: AI session launcher", () => {
     await runMigrate({ auto: true });
     expect(stageMissingBundledSkills).toHaveBeenCalledOnce();
     expect(mockExecFileSync).not.toHaveBeenCalled();
+    expect(updateConfigDocument).toHaveBeenCalledOnce(); // the version stamp
   });
 
   it("keeps --check from installing bundled skills", async () => {
@@ -150,6 +162,7 @@ describe("migrate: AI session launcher", () => {
     await runMigrate({ check: true });
     expect(stageMissingBundledSkills).not.toHaveBeenCalled();
     expect(mockWriteFileSync).not.toHaveBeenCalled();
+    expect(updateConfigDocument).not.toHaveBeenCalled();
   });
 
   it("makes newly installed skills discoverable to Claude Code and Codex", async () => {

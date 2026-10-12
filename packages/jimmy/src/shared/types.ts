@@ -545,6 +545,9 @@ export interface SlackConnectorConfig {
   botToken: string;
   allowFrom?: string | string[];
   ignoreOldMessagesOnBoot?: boolean;
+  /** Largest attachment downloaded, in MB (default 200). A larger one is not
+   *  fetched; the session is told so. */
+  maxAttachmentMb?: number;
   /** Deterministic per-scope response gate (DM / group DM / channel). */
   respondTo?: SlackRespondToConfig;
   /** Air-reading triage: decide per-message whether to reply/react/stay silent */
@@ -618,6 +621,9 @@ export interface DiscordConnectorConfig {
   botToken?: string;       // Make optional — not needed in proxy mode
   allowFrom?: string | string[];
   ignoreOldMessagesOnBoot?: boolean;
+  /** Largest attachment downloaded, in MB (default 200). A larger one is not
+   *  fetched; the session is told so. */
+  maxAttachmentMb?: number;
   guildId?: string;
   /** Only respond to messages in this channel */
   channelId?: string;
@@ -655,6 +661,9 @@ export interface WhatsAppConnectorConfig {
   /** Allowed phone numbers in JID format (e.g. "447700900000@s.whatsapp.net") — empty = allow all */
   allowFrom?: string[];
   ignoreOldMessagesOnBoot?: boolean;
+  /** Largest attachment downloaded, in MB (default 200). A larger one is not
+   *  fetched; the session is told so. */
+  maxAttachmentMb?: number;
 }
 
 export interface ConnectorInstance {
@@ -848,6 +857,8 @@ export interface JinnConfig {
   };
   logging: { file: boolean; stdout: boolean; level: string };
   mcp?: McpGlobalConfig;
+  /** Monthly spend limit (USD) per employee name; written by PUT /api/budgets. */
+  budgets?: { employees?: Record<string, number> };
   sessions?: {
     /** Engine inactivity deadline in milliseconds, reset by streamed activity. Default: 300000; 0 disables. */
     engineNoResponseTimeoutMs?: number;
@@ -915,5 +926,4 @@ export interface JinnConfig {
     language?: string;
     languages?: string[];
   };
-  remotes?: Record<string, { url: string; label?: string }>;
 }

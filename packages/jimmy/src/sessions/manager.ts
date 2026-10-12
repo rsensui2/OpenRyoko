@@ -55,6 +55,7 @@ import { buildSpeakerPrefix, type SpeakerPrefixMeta } from "./speaker-prefix.js"
 import { loadJobs } from "../cron/jobs.js";
 import { setCronJobEnabled, triggerCronJob } from "../cron/scheduler.js";
 import { checkBudget } from "../gateway/budgets.js";
+import { holdAttachmentDirs, removeAttachmentDirs } from "../shared/attachments.js";
 import { resolveMcpServers, writeMcpConfigFile, cleanupMcpConfigFile } from "../mcp/resolver.js";
 
 const WORKFLOW_CAPABILITIES = { threading: false, messageEdits: false, reactions: false, attachments: false };
@@ -354,7 +355,11 @@ export class SessionManager {
   }
 
   async route(msg: IncomingMessage, connector: Connector, opts: RouteOptions = {}): Promise<{ sessionId: string } | void> {
-    if (await this.handleCommand(msg, connector)) return;
+    if (await this.handleCommand(msg, connector)) {
+      // A command is answered on the spot: nothing will read what came attached to it.
+      removeAttachmentDirs(msg.attachments.flatMap((attachment) => attachment.localPath ?? []));
+      return;
+    }
 
     let session = getSessionBySessionKey(msg.sessionKey);
     let healthyStartNotice: string | undefined;
@@ -402,6 +407,9 @@ export class SessionManager {
     const attachmentPaths = msg.attachments
       .map((attachment) => attachment.localPath)
       .filter((filePath): filePath is string => !!filePath);
+    // Until this message's turn is over — it may wait a long time for it — the
+    // hourly sweep of old attachments must leave these alone.
+    holdAttachmentDirs(attachmentPaths);
 
     if (session.status === "waiting") {
       const expectedResetAt = getClaudeExpectedResetAt();
@@ -430,6 +438,13 @@ export class SessionManager {
         return this.runSession(session!, msg, attachmentPaths, connector, target, opts.employee);
       });
     } finally {
+      // The turn is over, however it ended: it ran to its end, it was
+      // cancelled in the queue, or it stopped at one of runSession's early
+      // exits (engine not available, /goal on an engine that cannot take it,
+      // session gone). Its attachments — the message's own directory under
+      // tmp/attachments/, never any other path — are removed here, the one
+      // place every one of those ways out passes through.
+      removeAttachmentDirs(attachmentPaths);
       // A cancelled queue item never enters runSession's cleanup. Clear only
       // that item's pending indicators; a started session may have deliberately
       // delivered :eyes: as its final response and must retain that reaction.
@@ -1254,15 +1269,8 @@ export class SessionManager {
         await connector.removeReaction(target, "hourglass_flowing_sand").catch(() => {});
       }
     } finally {
-      // Clean up temp attachment files downloaded from Slack
-      for (const filePath of attachments) {
-        try {
-          fs.rmSync(filePath, { force: true });
-        } catch {
-          // Ignore cleanup errors — best effort
-        }
-      }
-
+      // (The attachments downloaded for this message are removed by route(),
+      // once the turn is over — whichever way it ended.)
       if (mcpConfigPath) cleanupMcpConfigFile(session.id);
     }
   }

@@ -15,11 +15,11 @@ import type {
   Target,
 } from "../../shared/types.js";
 import { buildReplyContext, deriveSessionKey, isOldSlackMessage } from "./threads.js";
+import { fetchSlackFiles } from "./attachments.js";
 import {
-  downloadAttachment,
   formatAttachmentFailureNotice,
   formatResponse,
-  resolveSlackFileAttachment,
+  type SlackFileLike,
 } from "./format.js";
 import { sendChunksInOrder } from "../chunked-send.js";
 import { rememberAuthTest } from "./auth-test-cache.js";
@@ -46,7 +46,9 @@ import { AgentsCanvasUpdater } from "./agents-canvas.js";
 import { createSlackProviderAuth, type SlackProviderAuth } from "./provider-auth.js";
 import { startsWithSlashCommand } from "../../sessions/manager.js";
 import type { SlackTriageConfig } from "../../shared/types.js";
-import { JINN_HOME, TMP_DIR } from "../../shared/paths.js";
+import { JINN_HOME } from "../../shared/paths.js";
+import { newAttachmentDir } from "../../shared/attachments.js";
+import { attachmentLimitBytes } from "../../shared/attachment-download.js";
 import { logger } from "../../shared/logger.js";
 
 export interface SlackConnectorContext {
@@ -71,6 +73,8 @@ export class SlackConnector implements Connector {
   private handler: ((msg: IncomingMessage) => void) | null = null;
   private readonly allowedUsers: Set<string> | null;
   private readonly ignoreOldMessagesOnBoot: boolean;
+  /** connectors.slack.maxAttachmentMb, as written in the config (see shared/attachment-download.ts). */
+  private readonly maxAttachmentMb: number | undefined;
   private readonly bootTimeMs = Date.now();
   private started = false;
   private lastError: string | null = null;
@@ -165,6 +169,7 @@ export class SlackConnector implements Connector {
     rememberAuthTest(this.app.client.auth);
     if (context.getModelManagement && context.getOperatorSlackId) this.modelControls = new SlackModelControls(context.getModelManagement, context.getOperatorSlackId, (config as { id?: string }).id || "slack");
     this.ignoreOldMessagesOnBoot = config.ignoreOldMessagesOnBoot !== false;
+    this.maxAttachmentMb = config.maxAttachmentMb;
     const allowFrom = Array.isArray(config.allowFrom)
       ? config.allowFrom
       : typeof config.allowFrom === "string"
@@ -550,36 +555,9 @@ export class SlackConnector implements Connector {
         }
       }
 
-      // Download attachments if present
-      const attachments = [];
-      const failedAttachments: string[] = [];
-      if ((event as any).files) {
-        for (const file of (event as any).files) {
-          try {
-            const resolved = await resolveSlackFileAttachment(
-              file,
-              (args) => this.app.client.files.info(args),
-            );
-            const localPath = await downloadAttachment(
-              resolved.url,
-              this.app.client.token!,
-              TMP_DIR,
-            );
-            attachments.push({
-              name: resolved.name,
-              url: resolved.url,
-              mimeType: resolved.mimeType,
-              localPath,
-            });
-          } catch (err) {
-            // File names are user-controlled. Keep the injected failure notice
-            // limited to Slack's opaque ID so it cannot become prompt content.
-            const label = file.id ? `Slack file ${file.id}` : "Slack attachment";
-            failedAttachments.push(label);
-            logger.warn(`[slack] Failed to retrieve attachment ${label}: ${err}`);
-          }
-        }
-      }
+      // The files are fetched further down, once the message is going to be
+      // answered — most messages in a channel are not (see ./attachments.ts).
+      const eventFiles: SlackFileLike[] = (event as any).files ?? [];
 
       const [channelInfo, speaker] = await Promise.all([
         this.resolveChannelInfo((event as any).channel),
@@ -595,10 +573,7 @@ export class SlackConnector implements Connector {
       // "[Thread context — …]" preamble below silently breaks that parsing,
       // so a command typed inside a Slack thread would never be intercepted.
       // Commands don't need conversation context anyway — pass them verbatim.
-      const attachmentFailureNotice = formatAttachmentFailureNotice(failedAttachments);
-      const text = startsWithSlashCommand(rawText)
-        ? rawText + attachmentFailureNotice
-        : parentContext + rawText + attachmentFailureNotice;
+      const text = startsWithSlashCommand(rawText) ? rawText : parentContext + rawText;
 
       const msg: IncomingMessage = {
         connector: this.name,
@@ -611,7 +586,7 @@ export class SlackConnector implements Connector {
         user: (event as any).user,
         userId: (event as any).user,
         text,
-        attachments,
+        attachments: [], // filled in below, once the message is accepted
         raw: event,
         transportMeta: {
           channelType,
@@ -646,7 +621,7 @@ export class SlackConnector implements Connector {
         channelType,
         isDmEquivalent,
         wasMentioned,
-        attachmentCount: attachments.length,
+        attachmentCount: eventFiles.length,
         text: rawText,
       });
       const skipTriage =
@@ -708,6 +683,15 @@ export class SlackConnector implements Connector {
       // the main engine starts. Pure reactions/silence never reach this point.
       if (!startsWithSlashCommand(rawText)) {
         await this.addReaction(this.reconstructTarget(replyContext), "eyes");
+      }
+      if (eventFiles.length > 0) {
+        const fetched = await fetchSlackFiles(
+          eventFiles,
+          { token: this.app.client.token!, filesInfo: (args) => this.app.client.files.info(args), maxBytes: attachmentLimitBytes(this.maxAttachmentMb) },
+          newAttachmentDir(), // this message's own (see shared/attachments.ts)
+        );
+        msg.attachments = fetched.attachments;
+        msg.text += formatAttachmentFailureNotice(fetched.failed);
       }
       // Completion tracking runs inside the session queue, after engine routing.
       this.handler(msg);

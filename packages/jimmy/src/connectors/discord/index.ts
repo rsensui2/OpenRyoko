@@ -21,8 +21,11 @@ import type {
 } from "../../shared/types.js";
 import { logger } from "../../shared/logger.js";
 import { PartialDeliveryError } from "../../shared/partial-delivery.js";
-import { TMP_DIR } from "../../shared/paths.js";
-import { formatResponse, downloadAttachment } from "./format.js";
+import { newAttachmentDir } from "../../shared/attachments.js";
+import { attachmentLimitBytes } from "../../shared/attachment-download.js";
+import { withAttachmentNotice } from "../../shared/attachment-notice.js";
+import { fetchDiscordFiles } from "./attachments.js";
+import { formatResponse } from "./format.js";
 import {
   deriveSessionKey,
   buildReplyContext,
@@ -89,6 +92,9 @@ export interface DiscordConnectorConfig {
   botToken?: string;
   allowFrom?: string | string[];
   ignoreOldMessagesOnBoot?: boolean;
+  /** Largest attachment downloaded, in MB (default 200). A larger one is not
+   *  fetched; the session is told so. */
+  maxAttachmentMb?: number;
   guildId?: string;
   /** Only respond to messages in this channel (right-click channel → Copy Channel ID) */
   channelId?: string;
@@ -576,17 +582,15 @@ export class DiscordConnector implements Connector {
     });
     const replyContext = buildReplyContext(message);
 
-    // Download attachments
-    const attachments = await Promise.all(
-      Array.from(message.attachments.values()).map(async (att) => {
-        try {
-          const localPath = await downloadAttachment(att.url, TMP_DIR, att.name);
-          return { name: att.name, localPath, mimeType: att.contentType ?? "application/octet-stream" };
-        } catch {
-          return null;
-        }
-      }),
-    ).then((results) => results.filter(Boolean) as Array<{ name: string; localPath: string; mimeType: string }>);
+    // Download attachments — into a directory of this message's own, each in
+    // its own slot: the names are the sender's (see shared/attachments.ts).
+    // One that is not fetched (too large, or the download failed) is reported
+    // in the message text instead of going missing (see ./attachments.ts).
+    const fetched = await fetchDiscordFiles(
+      Array.from(message.attachments.values()),
+      newAttachmentDir(),
+      attachmentLimitBytes(this.config.maxAttachmentMb),
+    );
 
     const incomingMessage: IncomingMessage = {
       connector: this.instanceId,
@@ -596,13 +600,8 @@ export class DiscordConnector implements Connector {
       thread: message.channel.isThread() ? message.channel.id : undefined,
       user: message.author.username,
       userId: message.author.id,
-      text: message.content,
-      attachments: attachments.map((a) => ({
-        name: a.name,
-        url: "",
-        mimeType: a.mimeType,
-        localPath: a.localPath,
-      })),
+      text: withAttachmentNotice(message.content, "Discord", fetched.failed),
+      attachments: fetched.attachments,
       replyContext,
       messageId: message.id,
       raw: message,

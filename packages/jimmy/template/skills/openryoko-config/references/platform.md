@@ -39,7 +39,7 @@ ryoko -i <name> api GET /api/connectors
 | どの会話に応答するか | `connectors.slack.respondTo`、`allowFrom`、`triage` | Slackは `im/mpim/channel: always/mention/never`、`engagedThreads`。Jevより前の入口で除外された会話をJevで救済できない |
 | Claude／Codexのログイン切れをSlackから復旧 | Slackの `providerAuth.enabled`、`portal.operatorSlackId` | 既定は無効。オペレータ本人の1:1のDMだけで動き、他の相手・場所には反応しない。SlackアプリのInteractivityが必要。手順・注意点は `docs/connectors.md` の「Provider Re-login」。`sshHost` の社員のログインは対象外 |
 | Discordの応答範囲・表示 | `connectors.discord.respondTo/replyStyle` | DiscordのDMキーは `dm`。Slackの `im` と混用しない。`replyStyle` の値はその版の型を確認 |
-| 別gatewayへ接続・転送 | `remotes`、Discordの `proxyVia/proxyViaToken/channelRouting` | 一覧上のリモート登録と実際の配送設定は別。接続元・接続先双方の認証を保持 |
+| 別gatewayへDiscordを中継 | Discordの `proxyVia/proxyViaToken/channelRouting` | 接続元・接続先双方の認証を保持。トップレベルの `remotes` と `/api/files/transfer` は廃止済み（`remotes:` が残っていても無視される） |
 | 空気読みをJevにする | Slackの `triage.backend/jev` | [Jev](jev.md)を読む。回答用 `engines.default` をJevにしない |
 | 名前・話し方・本人確認 | `portal.*`、`IDENTITY.md`、`SOUL.md` | `portalName/operatorName/operatorAliases/language`。本人確認は `operatorSlackId/operatorDiscordId` |
 | 信頼する相手に記憶を共有 | `portal.trustedSpeakers`、`MEMORY.md` | オペレータIDと記憶共有の許可は別。共有チャンネルではMEMORYを注入しない。Discord IDは文字列で保持 |
