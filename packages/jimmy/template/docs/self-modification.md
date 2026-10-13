@@ -7,7 +7,7 @@
 | File/Directory | Effect of Modification |
 |---|---|
 | `config.yaml` | File watcher reloads config; boot-time components may still need restart |
-| `cron/jobs.json` | File watcher triggers cron reschedule |
+| `cron/jobs.json` | File watcher reschedules the jobs that changed |
 | `org/**/*.yaml` | File watcher triggers employee registry rebuild |
 | `org/**/board.json` | Read on demand by employees; no watcher needed |
 | `skills/*/SKILL.md` | Read on demand by engines; no watcher needed |
@@ -18,7 +18,7 @@
 The gateway uses chokidar to watch for changes:
 
 - **config.yaml** → Parse YAML and reload the config reference used by session dispatch; reload changed connectors. Parsing does not guarantee full schema validation or application to already-constructed components.
-- **cron/jobs.json** → Cancel all scheduled jobs, parse JSON, validate schema, reschedule enabled jobs
+- **cron/jobs.json** → Parse JSON and validate it, then reschedule the jobs that changed and unschedule the ones that were removed or disabled. A file that cannot be read changes nothing: the jobs registered before stay scheduled
 - **org/\*\*/\*.yaml** → Rebuild the employee registry from all persona and department YAML files
 
 Ordinary session defaults, cron files, employees and skills reload at runtime. Changes
@@ -39,27 +39,28 @@ Engines have full file access within `~/.ryoko/`. To avoid breaking the gateway:
 - Use atomic writes (write to temp file, then rename) for critical files
 - Back up files before making destructive changes
 - Test cron expressions before adding them to `jobs.json`
+- If an edit breaks one of these files, restore yesterday's copy instead of rebuilding it by hand: `ryoko backup list`, then `ryoko backup restore <id> --only <kind> --dry-run`. See `docs/backup.md`
 
 ### Do Not
 
 - Break `config.yaml` structure — invalid YAML will prevent config reload
 - Corrupt `sessions/registry.db` — the SQLite database is managed by the gateway process
-- Write invalid JSON to `jobs.json` — this will cancel all cron jobs with nothing to replace them
+- Write an empty list `[]` to `jobs.json` to "reset" it — a valid empty list unschedules every job. Invalid JSON does not: the scheduler keeps the jobs it had and logs that the reload was skipped, so the broken file is easy to miss
 - Delete the `docs/` directory — these reference docs are needed for self-awareness
 - Modify files outside `~/.ryoko/` unless explicitly instructed by the user
 
 ## Example: Creating a Cron Job at Runtime
 
-An engine can create a new cron job by reading `cron/jobs.json`, appending a new entry, and writing it back:
+An engine creates a new cron job through the API, which validates the job, writes `cron/jobs.json` in one step and reloads the scheduler:
 
 ```
-1. Read ~/.ryoko/cron/jobs.json
-2. Parse the JSON array
-3. Append new job object with unique id, schedule, prompt, etc.
-4. Validate the full array
-5. Write back to ~/.ryoko/cron/jobs.json
-6. The file watcher automatically reschedules all jobs
+1. Read the current jobs: ryoko api GET /api/cron
+2. Build the new job object with a unique id, schedule, prompt, etc.
+3. Create it: ryoko api POST /api/cron --data '<the job as JSON>'
+4. Read it back with ryoko api GET /api/cron and check its `scheduler` state
 ```
+
+Edit `cron/jobs.json` directly only for offline recovery, when the gateway is not running. The `cron-manager` skill has the rules.
 
 ## Example: Adding a New Employee
 

@@ -1,6 +1,6 @@
 {
   "name": "openryoko",
-  "version": "2026.10.9",
+  "version": "2026.10.13",
   "description": "OpenRyoko — Slackで空気を読んで働くAIアシスタント・ゲートウェイ（Jinnベース、Claude Code/Codex/Gemini CLI対応）",
   "license": "MIT",
   "type": "module",
@@ -44,6 +44,7 @@
     "sharp": "^0.35.4",
     "uuid": "^11.1.1",
     "ws": "^8.21.3",
+    "yaml": "^2.9.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {

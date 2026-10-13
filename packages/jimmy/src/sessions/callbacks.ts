@@ -1,4 +1,6 @@
-import { getSession } from "./registry.js";
+import { turnFailureOf } from "./origin-delivery.js";
+import { getSession, insertMessage } from "./registry.js";
+import { failedByUnrequestedStop } from "./unrequested-stop.js";
 import { loadConfig } from "../shared/config.js";
 import { logger } from "../shared/logger.js";
 import { readGatewayAuthToken } from "../gateway/auth.js";
@@ -24,7 +26,7 @@ export function notifyParentSession(
   }
 
   // Run asynchronously — do not await in the caller
-  _sendNotification(childSession, result).catch((err) => {
+  _sendNotification(childSession, result, { completion: true }).catch((err) => {
     logger.warn(`[callbacks] Failed to notify parent session ${childSession.parentSessionId}: ${err instanceof Error ? err.message : String(err)}`);
   });
 }
@@ -62,18 +64,49 @@ export function notifyRateLimitResumed(
   });
 }
 
+/**
+ * Whether a notification should start a turn in this parent.
+ *
+ * A parent in error is not woken: one stopped by a usage limit or a lost login
+ * would fail again, once for every child that finishes. The exception is a
+ * parent whose engine stopped without being asked to — its process died. It
+ * can run again at once, and it is usually waiting on exactly these
+ * notifications: left out, the conversation it answers in just stops.
+ *
+ * What counts is what the parent's turn failed with. That is not always what
+ * lastError reads: when the message saying so could not be delivered either,
+ * lastError holds the record of that, and the turn's failure is kept beside it.
+ */
+function wakesForNotifications(parent: Session): boolean {
+  return parent.status !== "error" || failedByUnrequestedStop({ status: parent.status, lastError: turnFailureOf(parent) });
+}
+
+const NOT_ACTED_ON = "ℹ️ Not acted on: this session was in an error state when this arrived, so no turn was started for it.";
+
+/**
+ * Keep a notification for a parent that is not woken: write it into the
+ * parent's transcript, where the parent finds it when it runs again and the
+ * operator sees it in the meantime. It used to be dropped, and the parent had
+ * no trace that the child had finished at all.
+ *
+ * Written straight to the registry rather than through the gateway route: the
+ * route's job is to start a turn, and this must not depend on it.
+ */
+function recordWithoutWaking(parent: Session, childId: string, message: string): void {
+  insertMessage(parent.id, "notification", `${message}\n\n${NOT_ACTED_ON}`);
+  logger.info(`[callbacks] Parent ${parent.id} is in error — recorded the notification for child ${childId} in its transcript without waking it.`);
+}
+
 async function _sendNotification(
   childSession: Session,
   result: { result?: string | null; error?: string | null; cost?: number; durationMs?: number },
+  /** `completion`: this reports the child's turn ending (not a status notice). */
+  opts: { completion?: boolean } = {},
 ): Promise<void> {
   const parent = getSession(childSession.parentSessionId!);
   if (!parent) {
     logger.info(`[callbacks] Parent ${childSession.parentSessionId} not found for child ${childSession.id} — no notification sent.`);
     return; // Parent gone or expired
-  }
-  if (parent.status === "error") {
-    logger.info(`[callbacks] Parent ${parent.id} is in error — skipping notification for child ${childSession.id}. The child's result will not reach it.`);
-    return; // Parent already in error — skip
   }
 
   const employeeName = childSession.employee || "Unknown";
@@ -88,7 +121,15 @@ async function _sendNotification(
     message = `📩 Employee "${employeeName}" replied in session ${childId}.\nRead the latest messages: GET /api/sessions/${childId}?last=N\n\nPreview: ${preview}`;
   }
 
-  await _sendRaw(childSession.parentSessionId!, message);
+  if (!wakesForNotifications(parent)) {
+    recordWithoutWaking(parent, childId, message);
+    return;
+  }
+
+  // A successful completion names its child so the gateway can fold the ones
+  // that pile up behind a busy parent into one turn (completion-batching.ts).
+  // A failure is left unmarked: it keeps a turn of its own.
+  await _sendRaw(childSession.parentSessionId!, message, opts.completion && !result.error ? childId : undefined);
 }
 
 /**
@@ -124,7 +165,7 @@ async function _sendDiscordNotification(message: string): Promise<void> {
   await _postToGateway(port, `/api/connectors/${connector}/send`, { channel, text: message }, `sending a ${connector} notification`);
 }
 
-async function _sendRaw(parentSessionId: string, message: string): Promise<void> {
+async function _sendRaw(parentSessionId: string, message: string, completionOf?: string): Promise<void> {
   let port = 7777;
   try {
     const config = loadConfig();
@@ -133,7 +174,25 @@ async function _sendRaw(parentSessionId: string, message: string): Promise<void>
     // Use default port if config is unavailable
   }
 
-  await _postToGateway(port, `/api/sessions/${parentSessionId}/message`, { message, role: "notification" }, `notifying parent ${parentSessionId}`);
+  await _postToGateway(
+    port,
+    `/api/sessions/${parentSessionId}/message`,
+    { message, role: "notification", ...(completionOf ? { completionOf } : {}) },
+    `notifying parent ${parentSessionId}`,
+  );
+}
+
+/**
+ * Wake a session on this instance's own gateway with a notification turn: the
+ * message is persisted, queued and run, and a connector-origin session answers
+ * in the conversation it came from. Rejects when the gateway does not accept it.
+ */
+export function postSessionNotification(
+  port: number,
+  sessionId: string,
+  body: { message: string; dedupeKey?: string },
+): Promise<void> {
+  return _postToGateway(port, `/api/sessions/${sessionId}/message`, { ...body, role: "notification" }, `waking session ${sessionId}`);
 }
 
 /**

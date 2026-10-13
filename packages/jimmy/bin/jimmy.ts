@@ -243,6 +243,7 @@ program
   .option("--check", "未適用のマイグレーションをチェックのみ（適用はしない）")
   .option("--auto", "安全な変更のみをAI起動なしで自動適用")
   .option("--fix", "旧gateway URLをバックアップ後に安全なloopback URLへ置換")
+  .option("--restore-deleted-skills [names...]", "削除した同梱スキルを配置し直す。名前を並べるとそのスキルだけ、名前なしは全部（指定しない限り、再起動でも更新でも戻らない）")
   .action(async (opts) => {
     const { runMigrate } = await import("../src/cli/migrate.js");
     await runMigrate(opts);
@@ -385,6 +386,54 @@ program
     });
 }
 
+// バックアップ（ryoko backup run|list|verify|restore）
+{
+  const backupCmd = program
+    .command("backup")
+    .description("ホーム（設定・人格・記憶・cron・org・skills など）と DB のバックアップと復元");
+
+  backupCmd
+    .command("run")
+    .description("今すぐホームのファイル（設定・cron・人格・記憶など）をアーカイブする。DB は gateway が毎日自分でコピーするので、ここでは開かない")
+    .option("--include-databases", "DB もコピーする。gateway を止めているときだけ使う（稼働の気配があれば DB は開かず、終了コード 1）")
+    .option("--json", "JSON形式で出力")
+    .action(async (opts: { includeDatabases?: boolean; json?: boolean }) => {
+      const cli = await import("../src/cli/backup.js");
+      await cli.runBackupRun(opts);
+    });
+
+  backupCmd
+    .command("list")
+    .description("バックアップを新しい順に一覧表示する")
+    .option("--json", "JSON形式で出力")
+    .action(async (opts: { json?: boolean }) => {
+      const cli = await import("../src/cli/backup.js");
+      await cli.runBackupList(opts);
+    });
+
+  backupCmd
+    .command("verify <id>")
+    .description("バックアップを読み戻して検証する（id は list の表示。ファイルのパスでも可）")
+    .option("--json", "JSON形式で出力")
+    .action(async (id: string, opts: { json?: boolean }) => {
+      const cli = await import("../src/cli/backup.js");
+      await cli.runBackupVerify(id, opts);
+    });
+
+  backupCmd
+    .command("restore <id>")
+    .description("バックアップから復元する（先に現在の状態を退避する。DB の復元は gateway 停止中のみ）")
+    .option("--only <kinds>", "復元する種類をカンマ区切りで指定: config, cron, cron-history, persona, memory, org, skills, docs, knowledge, workflows")
+    .option("--dry-run", "何が変わるかだけ表示し、何も書き込まない")
+    .option("--allow-external-symlinks", "ホームの外を指す symlink も元どおりに作り直す（既定では拒否）")
+    .option("--gateway-stopped", "DB の復元に必須。gateway を止めたことの確認（コンテナ運用ではコンテナの中で実行する）")
+    .option("--json", "JSON形式で出力")
+    .action(async (id: string, opts: { only?: string; dryRun?: boolean; allowExternalSymlinks?: boolean; gatewayStopped?: boolean; json?: boolean }) => {
+      const cli = await import("../src/cli/backup.js");
+      await cli.runBackupRestore(id, opts);
+    });
+}
+
 program
   .command("chrome-allow")
   .description("Claude Chrome拡張で全サイトを事前承認する")
@@ -395,4 +444,10 @@ program
     await runChromeAllow(opts);
   });
 
-program.parse();
+// Every command runs through here: a config.yaml that cannot be loaded ends the
+// CLI with two lines and exit code 1 instead of a stack trace (see
+// src/cli/config-failure.ts). Any other failure is thrown on as before.
+program.parseAsync().catch(async (error: unknown) => {
+  const { exitOnConfigFailure } = await import("../src/cli/config-failure.js");
+  exitOnConfigFailure(error);
+});

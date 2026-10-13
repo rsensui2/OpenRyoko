@@ -1,7 +1,6 @@
-import fs from "node:fs";
 import readline from "node:readline";
-import { CONFIG_PATH } from "../shared/paths.js";
 import { loadConfig } from "../shared/config.js";
+import { readConfigSnapshot, writeConfigText } from "../shared/config-file.js";
 
 const GREEN = "\x1b[32m";
 const YELLOW = "\x1b[33m";
@@ -28,10 +27,19 @@ export function getInteractiveSetting(): boolean | undefined {
  * Only the `claude` engine carries an `interactive:` key, so the first live or
  * commented match is unambiguous; otherwise the key is inserted under `claude:`.
  * Returns true if the file changed.
+ *
+ * Read and written through the shared config writer: a config.yaml that does
+ * not parse is refused rather than edited blind (the error names no line of
+ * it), and the edited text is staged next to the file and renamed into place,
+ * so a full disk or a crash part-way leaves the previous file whole.
  */
 export function setInteractiveSetting(enabled: boolean): boolean {
-  const raw = fs.readFileSync(CONFIG_PATH, "utf-8");
-  const lines = raw.split("\n");
+  const snapshot = readConfigSnapshot();
+  if (snapshot.raw === null) throw new Error("config.yaml not found");
+  const save = (edited: string[]): void => {
+    writeConfigText(snapshot, edited.join("\n"));
+  };
+  const lines = snapshot.raw.split("\n");
   const indentOf = (l: string) => (l.match(/^(\s*)/)?.[1].length) ?? 0;
 
   // Locate the engines.claude block STRUCTURALLY so a stray `interactive:` in
@@ -65,7 +73,7 @@ export function setInteractiveSetting(enabled: boolean): boolean {
       const next = lines[i].replace(/(interactive:\s*)\S+/, `$1${enabled}`);
       if (next === lines[i]) return false;
       lines[i] = next;
-      fs.writeFileSync(CONFIG_PATH, lines.join("\n"), "utf-8");
+      save(lines);
       return true;
     }
   }
@@ -75,14 +83,14 @@ export function setInteractiveSetting(enabled: boolean): boolean {
     const m = lines[i].match(/^(\s*)#\s*interactive:\s*\S+(\s*#.*)?$/);
     if (m) {
       lines[i] = `${m[1]}interactive: ${enabled}${m[2] ?? ""}`;
-      fs.writeFileSync(CONFIG_PATH, lines.join("\n"), "utf-8");
+      save(lines);
       return true;
     }
   }
 
   // 3) Absent — insert as the first child of the claude block at the child indent.
   lines.splice(claudeIdx + 1, 0, `${childIndent}interactive: ${enabled}`);
-  fs.writeFileSync(CONFIG_PATH, lines.join("\n"), "utf-8");
+  save(lines);
   return true;
 }
 

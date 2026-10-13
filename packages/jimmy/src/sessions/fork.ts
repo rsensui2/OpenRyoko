@@ -12,6 +12,7 @@ import path from "node:path";
 import os from "node:os";
 import { v4 as uuidv4 } from "uuid";
 import { logger } from "../shared/logger.js";
+import { CLAUDE_LOCAL_ENV } from "../shared/childEnv.js";
 import { claudeAutoMemoryEnvFor } from "../shared/claude-auto-memory.js";
 
 export interface ForkResult {
@@ -35,7 +36,7 @@ export function forkClaudeSession(engineSessionId: string, cwd: string): ForkRes
     cwd,
     encoding: "utf-8",
     timeout: 60_000,
-    env: { ...process.env, PATH: process.env.PATH, ...claudeAutoMemoryEnvFor(cwd) },
+    env: { ...process.env, PATH: process.env.PATH, ...claudeAutoMemoryEnvFor(cwd), ...CLAUDE_LOCAL_ENV },
   });
 
   const lastLine = result.trim().split("\n").pop();

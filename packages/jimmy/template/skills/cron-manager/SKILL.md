@@ -80,6 +80,8 @@ Common fields are `id`, `name`, `enabled`, five-field `schedule`, and IANA `time
 }
 ```
 
+`engine` and `model` are optional. A job that names neither runs on its employee's engine or on the default one, and while that engine's usage limit is on record it starts on the fallback engine without a failed turn. A job that names either is not moved: during the limit every fire fails a turn on the named engine first. Keep an explicit engine or model only where the job needs it.
+
 The example model must be available to the configured account. Use the installed model registry for supported effort levels. Terra/medium is an example starting point for routine work; preserve the operator's selected model and use a stronger model only where the job needs it. Adjust the affected job when quality requires it; do not reset the global model to a costly default as routine maintenance.
 
 `employee` is optional and must match an existing persona. `delivery` is an optional approved destination for prompt output. Reporting and analytical output should follow the established review route. Preserve existing delivery requirements; lack of a destination does not require adding one.
@@ -89,6 +91,14 @@ The AI instruction is `prompt`. Legacy `payload.message` is ignored. A cron's ex
 ## Verify results and recover safely
 
 For command success, history should show `kind: "command"`, `status: "success"`, `exitCode: 0`, and no AI `sessionId`. Nonzero exit, spawn failure, or timeout is failure. `logFile`, `signal`, `timedOut`, and `durationMs` provide diagnostic evidence. An exit code is not proof of an external delivery; inspect the actual result as required by the workflow.
+
+For a prompt job, `status: "error"` covers more than a routing failure. The run is an error, with the reason in `error`, when its session ended in error, when its result was not delivered (the delivery connector was not running, or refused the message), or when the job names an engine the gateway does not have. `sessionId`, when present, names the session to inspect; it is absent when the run failed before a session was reported, which is always so for a job naming an engine the gateway does not have. Use `GET /api/cron/<id>/runs?limit=N` to read only the newest N runs.
+
+`status: "skipped"` with `reason: "previous-run-waiting-for-usage-limit"` means an earlier fire of the same job is waiting for an engine's usage limit to reset, and will run the job once when it does. `waitingSessionId` names that session and `resetsAt`, when present, the reset. Do not run the skipped fires by hand while it waits; they are not made up afterwards either.
+
+Failure alerts for prompt jobs go to `cron.alertConnector` / `cron.alertChannel`. A job that keeps failing for the same reason alerts once per `cron.alertThrottleMinutes` (default 60; `0` alerts every time), so the absence of a new alert is not recovery. Confirm with the run history.
+
+When an engine's usage limit will not reset within six hours and no fallback engine can take the job, every fire fails at once and is logged as an `error` that names the reset. That failure is alerted once per limit period (an engine and the reset it stated), not once per `cron.alertThrottleMinutes`, and the job's delivery channel is told once per limit period too. Silence in either place is not recovery.
 
 Logs live under `~/.ryoko/cron/commands/<job-hash>/`, with up to 100 logs per job and a 1 MiB limit per file. A durable `running.lock` prevents overlap. After abnormal termination, inspect its recorded PIDs, process state, logs, and completed external effects before removing only that lock or retrying. Do not clear all locks or state files.
 

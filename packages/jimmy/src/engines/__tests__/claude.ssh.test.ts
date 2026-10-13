@@ -140,6 +140,18 @@ describe("ClaudeEngine — SSH remote execution", () => {
     expect(result.error).toBe("User cancelled");
   });
 
+  it("marks a run that kill() ended as a stop the gateway asked for", async () => {
+    const runProc = createMockProcess();
+    mockSpawn.mockReturnValue(runProc as any);
+    const p = engine.run({ prompt: "long task", cwd: "/tmp", sessionId: "asked-to-stop" });
+
+    engine.kill("asked-to-stop", "Interrupted: new message received");
+    runProc.exitCode = 0;
+    runProc.emit("close", 0);
+
+    expect(await p).toMatchObject({ error: "Interrupted: new message received", interruptRequested: true });
+  });
+
   it("defers the remote kill until the pgid marker arrives when kill() races startup", async () => {
     const runProc = createMockProcess();
     const killProc = createMockProcess();

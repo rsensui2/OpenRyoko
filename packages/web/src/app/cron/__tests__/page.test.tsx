@@ -130,6 +130,34 @@ describe("Cron scheduler visibility", () => {
     expect(mocks.getCronStatus).toHaveBeenCalledTimes(3)
   })
 
+  // The gateway returns a job's runs oldest first; the page used to show the
+  // first five of them — the five oldest — under "Recent Runs".
+  describe("recent runs of an expanded job", () => {
+    const history = Array.from({ length: 8 }, (_, index) => ({
+      timestamp: `2026-10-0${index + 1}T07:00:00.000Z`, status: "skipped", durationMs: 1000, reason: `run ${index + 1}`,
+    }))
+    const shownRuns = () => screen.getAllByText(/^run \d$/).map((element) => element.textContent)
+
+    it("asks for the newest five and lists them newest first", async () => {
+      mocks.getCronRuns.mockImplementation(async (_id: string, limit?: number) => limit ? history.slice(-limit) : history)
+      render(<CronPage />)
+      fireEvent.click(await screen.findByText("Daily report"))
+
+      expect(await screen.findByText("run 8")).toBeDefined()
+      expect(mocks.getCronRuns).toHaveBeenCalledWith(job.id, 5)
+      expect(shownRuns()).toEqual(["run 8", "run 7", "run 6", "run 5", "run 4"])
+    })
+
+    it("still shows the newest five when it is handed the whole history", async () => {
+      mocks.getCronRuns.mockResolvedValue(history)
+      render(<CronPage />)
+      fireEvent.click(await screen.findByText("Daily report"))
+
+      expect(await screen.findByText("run 8")).toBeDefined()
+      expect(shownRuns()).toEqual(["run 8", "run 7", "run 6", "run 5", "run 4"])
+    })
+  })
+
   it("polls within 30 seconds and stops polling and event subscriptions on unmount", async () => {
     vi.useFakeTimers()
     const view = render(<CronPage />)

@@ -63,6 +63,17 @@ connectors:
     #   engine: codex
     #   model: gpt-5-nano
     #   timeoutMs: 30000
+    #
+    # Claude / Codex のログインが切れたとき、オペレータ本人が自分の DM から
+    # ログインし直せるようにする。デフォルトはオフ。portal.operatorSlackId が必須。
+    # 使い方と注意点は docs/connectors.md の「Provider Re-login」を参照。
+    # providerAuth:
+    #   enabled: true
+    #
+    # 受け取る添付ファイルの上限（MB、既定 200）。これより大きい添付は取得せず、どの添付が
+    # なぜ読めなかったかをセッションに伝える（返信でその旨を案内できる）。
+    # discord / whatsapp の下でも同じキーが使える。
+    # maxAttachmentMb: 200
 
 # MCPサーバーは従業員にブラウザ・検索・メッセージング機能を提供する。
 # Claude Codeセッションに --mcp-config 経由で自動注入される。
@@ -86,8 +97,18 @@ mcp:
   #     env:
   #       API_KEY: ${MY_API_KEY}
 
-# セッション上限（予約済みキー: 現行ランタイムはまだ参照しない。有効化しても効かない点に注意）
+# 再起動で打ち切られたターンの再開（既定で有効。設定しなくても動く）
+# gateway の再起動（更新・手動の再起動・クラッシュ）で途中のまま止まったターンは、次の起動時に
+# そのセッションへ通知を1回だけ送り、続きから再開させる（返信は元の会話に届く）。
+# 利用上限の解除を待っていたターンも対象で、待っていた解除時刻のあとに再開させる。
+# 対象外: cron の実行、workflow の試行、キューから自動で再実行されるターン（Web セッションへの依頼・
+# 子セッションの完了通知など）。1回の起動で起こすのは10件まで。同じセッションは30分以内に
+# 続けては起こさず、24時間で3回まで。エンジンの異常終了や子セッションの完了通知の扱いも含め、
+# 詳しくは docs/architecture.md の「Session Lifecycle」。
 # sessions:
+#   resumeInterruptedOnBoot: true          # false で無効（打ち切られたセッションは起こさず、そのまま残す）
+#   resumeInterruptedMaxAgeMinutes: 120    # 起動した時点でこれより古い打ち切りは起こさない
+#   # 以下の2つは予約済みキー: 現行ランタイムはまだ参照しない。有効化しても効かない点に注意
 #   maxDurationMinutes: 30
 #   maxCostUsd: 10.00
 
@@ -95,6 +116,28 @@ mcp:
 cron:
   # alertConnector: slack
   # alertChannel: "#alerts"
+  # 同じジョブで同じ失敗が続く間、アラートを再送しない時間（分）。0 で毎回送る。
+  # alertThrottleMinutes: 60
+
+# バックアップ（既定で有効。設定しなくても動く）
+# 1日1回、ホームの config.yaml・cron・人格と記憶・org・skills・docs・knowledge を
+# tar.gz にまとめ、セッションDB と workflow DB のコピーと一緒に保存する。
+# 一覧は `ryoko backup list`、復元は `ryoko backup restore <id> [--only config,cron] [--dry-run]`。
+# 失敗は gateway のログと /api/status の backup に出る。対象・戻し方・DB の復元手順は docs/backup.md。
+# backup:
+#   enabled: true
+#   directory: /path/to/backups   # 省略時は <ホーム>/backups。ホームの外（別ディスクなど）も指定できる
+#   retention: 14                 # アーカイブを残す日数（日ごとの最新。同じ日の分は直近3個まで。DBのコピーは7世代で固定）
+#   maxArchiveMb: 512             # 1回のアーカイブに入れるファイル合計の上限。超えたら書かずに失敗として報告する
+#   maxEntries: 50000             # 同じく、ファイル・ディレクトリ・symlink の数の上限（空のファイルも数える）
+
+# 同梱スキル（パッケージに入っているスキル）は gateway の起動時に同期される。
+# 新しく同梱されたものを追加し、手を入れていないものだけを新しい版に置き換える。編集したスキルと
+# symlink には触れず、自分で削除したスキルも戻さない（戻すときは ryoko migrate --restore-deleted-skills）。
+# 置き換える前の中身は .migration-backups/ に残る。docs/skills.md を参照。
+# 起動時の同期を止めるときだけ指定する（ryoko migrate は指定に関係なく同期する）:
+# skills:
+#   autoSync: false
 
 # portal.operatorSlackId / portal.operatorDiscordId = オペレータ本人の Slack ID と
 # Discord ユーザー ID（スノーフレーク。プロフィール右クリック → ユーザーIDをコピー）。
@@ -105,6 +148,8 @@ cron:
 # ID を追加すること）。Discord ID は YAML では**必ず引用符で囲む**こと — スノーフレークは
 # 数値として読むと精度が落ちるため、引用符なしの数値は警告つきで無視される
 # （厳密モード自体は維持され、誰にも一致しなくなる）。trustedSpeakers の ID も同様。
+# チャットから Claude Code のコマンド（/compact・/clear）を実行できるのも
+# この ID が一致した本人だけ。未設定なら誰も実行できない（docs/connectors.md「Commands in Chat」）。
 #   operatorSlackId: U0XXXXXXX
 #   operatorDiscordId: "123456789012345678"
 #
@@ -117,8 +162,8 @@ cron:
 # またいで再利用されるため、一度注入した記憶が履歴に残るのを防ぐ）。記入例:
 #   trustedSpeakers:
 #     - U0XXXXXXX   # 表示名（所属・関係のメモ）
-# 注意: portal ブロックの内側にはコメントを書かない（Web オンボーディングの
-# 部分書き換えがブロックを再生成するため、内側のコメントは保持されない）。
+# portal ブロックの内側に書いたコメント（上の行末メモなど）は、Web の設定画面や
+# オンボーディングで保存しても保たれる（書き換わるのは値が変わった行だけ）。
 portal:
   portalName: Ryoko
   language: Japanese

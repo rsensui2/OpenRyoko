@@ -15,12 +15,14 @@ import type {
   Target,
 } from "../../shared/types.js";
 import { buildReplyContext, deriveSessionKey, isOldSlackMessage } from "./threads.js";
+import { fetchSlackFiles } from "./attachments.js";
 import {
-  downloadAttachment,
   formatAttachmentFailureNotice,
   formatResponse,
-  resolveSlackFileAttachment,
+  type SlackFileLike,
 } from "./format.js";
+import { sendChunksInOrder } from "../chunked-send.js";
+import { rememberAuthTest } from "./auth-test-cache.js";
 import { normalizeSpeakerInfo, type SpeakerInfo } from "./speaker.js";
 import { runTriage } from "./triage.js";
 import { readTriageHistory } from "./triage-context.js";
@@ -41,9 +43,12 @@ import type { TriageCapabilitySnapshot } from "../../shared/triage-capabilities.
 import { explicitThread } from "../../shared/threading.js";
 import { ConversationTracker } from "./conversation-tracker.js";
 import { AgentsCanvasUpdater } from "./agents-canvas.js";
+import { createSlackProviderAuth, type SlackProviderAuth } from "./provider-auth.js";
 import { startsWithSlashCommand } from "../../sessions/manager.js";
 import type { SlackTriageConfig } from "../../shared/types.js";
-import { JINN_HOME, TMP_DIR } from "../../shared/paths.js";
+import { JINN_HOME } from "../../shared/paths.js";
+import { newAttachmentDir } from "../../shared/attachments.js";
+import { attachmentLimitBytes } from "../../shared/attachment-download.js";
 import { logger } from "../../shared/logger.js";
 
 export interface SlackConnectorContext {
@@ -68,6 +73,8 @@ export class SlackConnector implements Connector {
   private handler: ((msg: IncomingMessage) => void) | null = null;
   private readonly allowedUsers: Set<string> | null;
   private readonly ignoreOldMessagesOnBoot: boolean;
+  /** connectors.slack.maxAttachmentMb, as written in the config (see shared/attachment-download.ts). */
+  private readonly maxAttachmentMb: number | undefined;
   private readonly bootTimeMs = Date.now();
   private started = false;
   private lastError: string | null = null;
@@ -84,6 +91,8 @@ export class SlackConnector implements Connector {
   private readonly operatorAliases: string[] | undefined;
   private readonly conversations: ConversationTracker;
   private readonly agentsCanvas: AgentsCanvasUpdater | null;
+  /** Operator-only Claude / Codex re-login from a DM. Absent unless `providerAuth.enabled`. */
+  private readonly providerAuth: SlackProviderAuth | undefined;
   private static CHANNEL_CACHE_TTL_MS = 3600_000; // 1 hour
   private static USER_CACHE_TTL_MS = 3600_000; // 1 hour
 
@@ -151,9 +160,16 @@ export class SlackConnector implements Connector {
       token: config.botToken,
       appToken: config.appToken,
       socketMode: true,
+      // Bolt's default fires auth.test from this constructor and never awaits
+      // it, so a bad token or an unreachable API is an unhandled rejection.
+      // start() resolves the bot user ID with its own awaited auth.test.
+      tokenVerificationEnabled: false,
     });
+    // Without this, Bolt would call auth.test before every incoming event.
+    rememberAuthTest(this.app.client.auth);
     if (context.getModelManagement && context.getOperatorSlackId) this.modelControls = new SlackModelControls(context.getModelManagement, context.getOperatorSlackId, (config as { id?: string }).id || "slack");
     this.ignoreOldMessagesOnBoot = config.ignoreOldMessagesOnBoot !== false;
+    this.maxAttachmentMb = config.maxAttachmentMb;
     const allowFrom = Array.isArray(config.allowFrom)
       ? config.allowFrom
       : typeof config.allowFrom === "string"
@@ -177,6 +193,11 @@ export class SlackConnector implements Connector {
     this.agentsCanvas = config.agentsCanvas?.enabled
       ? new AgentsCanvasUpdater(this.app, config.agentsCanvas)
       : null;
+    this.providerAuth = createSlackProviderAuth(this.app.client, config, {
+      getOperatorSlackId: context.getOperatorSlackId,
+      isAllowedUser: (user) => !this.allowedUsers || this.allowedUsers.has(user),
+      isStaleEvent: (ts) => this.ignoreOldMessagesOnBoot && isOldSlackMessage(ts, this.bootTimeMs),
+    });
   }
 
   /**
@@ -400,7 +421,13 @@ export class SlackConnector implements Connector {
         await respond({ text: error instanceof Error ? error.message : "設定を変更できませんでした。", response_type: "ephemeral", replace_original: false });
       }
     });
-    this.app.message(async ({ event }) => {
+    this.providerAuth?.register(this.app);
+    this.app.message(async ({ event, context }) => {
+      // start() may have failed to learn the bot's user ID; an authorized event carries it.
+      this.botUserId ??= context?.botUserId ?? null;
+      // Before the log line below: a login command or a pasted login code is
+      // handled here and must never be logged, routed, or stored.
+      if (await this.providerAuth?.handleMessage(event as any)) return;
       logger.info(`[slack] Received message event: user=${(event as any).user} channel=${(event as any).channel} channel_type=${(event as any).channel_type ?? "-"} thread_ts=${(event as any).thread_ts ?? "-"} subtype=${(event as any).subtype ?? "-"} text="${((event as any).text || "").slice(0, 50)}"`);
       // Skip bot's own messages
       if ((event as any).bot_id) {
@@ -528,36 +555,9 @@ export class SlackConnector implements Connector {
         }
       }
 
-      // Download attachments if present
-      const attachments = [];
-      const failedAttachments: string[] = [];
-      if ((event as any).files) {
-        for (const file of (event as any).files) {
-          try {
-            const resolved = await resolveSlackFileAttachment(
-              file,
-              (args) => this.app.client.files.info(args),
-            );
-            const localPath = await downloadAttachment(
-              resolved.url,
-              this.app.client.token!,
-              TMP_DIR,
-            );
-            attachments.push({
-              name: resolved.name,
-              url: resolved.url,
-              mimeType: resolved.mimeType,
-              localPath,
-            });
-          } catch (err) {
-            // File names are user-controlled. Keep the injected failure notice
-            // limited to Slack's opaque ID so it cannot become prompt content.
-            const label = file.id ? `Slack file ${file.id}` : "Slack attachment";
-            failedAttachments.push(label);
-            logger.warn(`[slack] Failed to retrieve attachment ${label}: ${err}`);
-          }
-        }
-      }
+      // The files are fetched further down, once the message is going to be
+      // answered — most messages in a channel are not (see ./attachments.ts).
+      const eventFiles: SlackFileLike[] = (event as any).files ?? [];
 
       const [channelInfo, speaker] = await Promise.all([
         this.resolveChannelInfo((event as any).channel),
@@ -573,10 +573,7 @@ export class SlackConnector implements Connector {
       // "[Thread context — …]" preamble below silently breaks that parsing,
       // so a command typed inside a Slack thread would never be intercepted.
       // Commands don't need conversation context anyway — pass them verbatim.
-      const attachmentFailureNotice = formatAttachmentFailureNotice(failedAttachments);
-      const text = startsWithSlashCommand(rawText)
-        ? rawText + attachmentFailureNotice
-        : parentContext + rawText + attachmentFailureNotice;
+      const text = startsWithSlashCommand(rawText) ? rawText : parentContext + rawText;
 
       const msg: IncomingMessage = {
         connector: this.name,
@@ -589,7 +586,7 @@ export class SlackConnector implements Connector {
         user: (event as any).user,
         userId: (event as any).user,
         text,
-        attachments,
+        attachments: [], // filled in below, once the message is accepted
         raw: event,
         transportMeta: {
           channelType,
@@ -624,7 +621,7 @@ export class SlackConnector implements Connector {
         channelType,
         isDmEquivalent,
         wasMentioned,
-        attachmentCount: attachments.length,
+        attachmentCount: eventFiles.length,
         text: rawText,
       });
       const skipTriage =
@@ -687,6 +684,15 @@ export class SlackConnector implements Connector {
       if (!startsWithSlashCommand(rawText)) {
         await this.addReaction(this.reconstructTarget(replyContext), "eyes");
       }
+      if (eventFiles.length > 0) {
+        const fetched = await fetchSlackFiles(
+          eventFiles,
+          { token: this.app.client.token!, filesInfo: (args) => this.app.client.files.info(args), maxBytes: attachmentLimitBytes(this.maxAttachmentMb) },
+          newAttachmentDir(), // this message's own (see shared/attachments.ts)
+        );
+        msg.attachments = fetched.attachments;
+        msg.text += formatAttachmentFailureNotice(fetched.failed);
+      }
       // Completion tracking runs inside the session queue, after engine routing.
       this.handler(msg);
     });
@@ -700,16 +706,17 @@ export class SlackConnector implements Connector {
       logger.warn(`[slack] Failed to get bot user ID: ${err}`);
     }
     // Fail closed: without our own user ID, mention detection is impossible,
-    // so mention-gated scopes will drop everything (except engaged threads).
-    // That honors "never barge in un-mentioned" at the cost of missed
-    // mentions until the next successful start — surface it loudly.
+    // so mention-gated scopes would drop everything (except engaged threads).
+    // The listeners therefore take the ID from the first event Bolt
+    // authorizes; this only says that the start-up lookup did not provide it.
     if (!this.botUserId && hasMentionScope(this.respondTo)) {
       logger.warn(
-        "[slack] respondTo mention gate is configured but the bot user ID could not be resolved — un-mentioned messages in mention scopes will be dropped",
+        "[slack] respondTo mention gate is configured but the bot user ID could not be resolved at start — it will be taken from the first incoming event",
       );
     }
 
-    this.app.event("reaction_added", async ({ event }) => {
+    this.app.event("reaction_added", async ({ event, context }) => {
+      this.botUserId ??= context?.botUserId ?? null;
       // Only handle reactions on messages (not files, etc.)
       if (event.item.type !== "message") return;
 
@@ -850,6 +857,7 @@ export class SlackConnector implements Connector {
   }
 
   async stop() {
+    await this.providerAuth?.stop();
     this.agentsCanvas?.stop();
     this.conversations.flush();
     for (const interval of this.typingIntervals.values()) {
@@ -932,38 +940,36 @@ export class SlackConnector implements Connector {
     if (thread) {
       return this.replyMessage({ ...target, thread }, text);
     }
-    const chunks = formatResponse(text);
-    let lastTs: string | undefined;
-    for (const chunk of chunks) {
-      if (!chunk.trim()) continue;
+    const chunks = formatResponse(text).filter((chunk) => chunk.trim());
+    const { lastId: lastTs, partial } = await sendChunksInOrder("Slack sendMessage", chunks, async (chunk) => {
       const res = await this.app.client.chat.postMessage({
         channel: target.channel,
         text: chunk,
       });
-      lastTs = res.ts;
-    }
+      return res.ts;
+    });
     // A newly-posted root message will be the thread_ts for any follow-up replies,
     // so mark its future thread as bot-engaged. Only relevant when tracking is on.
     if (lastTs && this.conversationTrackingEnabled()) {
       this.conversations.recordBotInitiatedThread(target.channel, lastTs, { messageTs: lastTs });
     }
+    // What was posted is tracked above; the missing rest is still a failure.
+    if (partial) throw partial;
     return lastTs;
   }
 
   async replyMessage(target: Target, text: string): Promise<string | undefined> {
     if (!text || !text.trim()) return undefined;
     const threadTs = target.thread || target.messageTs;
-    const chunks = formatResponse(text);
-    let lastTs: string | undefined;
-    for (const chunk of chunks) {
-      if (!chunk.trim()) continue;
+    const chunks = formatResponse(text).filter((chunk) => chunk.trim());
+    const { lastId: lastTs, partial } = await sendChunksInOrder("Slack replyMessage", chunks, async (chunk) => {
       const res = await this.app.client.chat.postMessage({
         channel: target.channel,
         thread_ts: threadTs,
         text: chunk,
       });
-      lastTs = res.ts;
-    }
+      return res.ts;
+    });
     // Record the thread the bot just replied in. Subsequent user replies in
     // this same thread will carry thread_ts === threadTs and bypass triage
     // and the respondTo mention gate. Only relevant when tracking is on.
@@ -987,6 +993,8 @@ export class SlackConnector implements Connector {
         this.conversations.recordBotThreadReply(target.channel, threadTs, { messageTs: lastTs });
       }
     }
+    // What was posted is tracked above; the missing rest is still a failure.
+    if (partial) throw partial;
     return lastTs;
   }
 

@@ -3,7 +3,7 @@ import type { EngineRateLimitInfo, InterruptibleEngine, EngineRunOpts, EngineRes
 import { logger } from "../shared/logger.js";
 import { isDeadSessionError } from "../shared/rateLimit.js";
 import { resolveBin, formatSpawnError } from "../shared/resolveBin.js";
-import { buildChildEnv } from "../shared/childEnv.js";
+import { buildChildEnv, CLAUDE_LOCAL_ENV } from "../shared/childEnv.js";
 import { claudeAutoMemoryEnvFor } from "../shared/claude-auto-memory.js";
 
 interface LiveProcess {
@@ -74,6 +74,26 @@ function isTransientError(stderr: string, code: number | null): boolean {
   // Exit code 1 with no meaningful stderr is often a transient crash
   if (code === 1 && stderr.trim().length < 10) return true;
   return TRANSIENT_PATTERNS.some((pat) => pat.test(stderr));
+}
+
+/**
+ * Whether a failed attempt may be started again.
+ *
+ * Starting again sends the same prompt — into a new session, unless there is
+ * one to resume — so it is only safe while the attempt has done nothing: no
+ * tool used, no turn beyond the one every failure reports, nothing spent. A
+ * turn that ran tools and then met a 529 is not one to run three times over.
+ *
+ * Nor is a failure that came with a declared usage limit. That is reported as
+ * an error whose text is whatever the CLI answered, so the patterns above would
+ * be matched against an answer — a reset time with "529" in it, a reply that
+ * mentions a 503 — rather than against a fault. A usage limit is the session
+ * layer's to wait out or to switch away from.
+ */
+function mayStartAgain(result: EngineResult, usedTool: boolean): boolean {
+  if (usedTool || (result.numTurns ?? 0) > 1 || (result.cost ?? 0) > 0) return false;
+  if (result.rateLimit?.status === "rejected") return false;
+  return isTransientError(result.error ?? "", null);
 }
 
 const MAX_RETRIES = 2;
@@ -154,7 +174,13 @@ export class ClaudeEngine implements InterruptibleEngine {
         await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
 
-      const result = await this.runOnce(opts);
+      // Whether this attempt used a tool is read off its own stream: a failed
+      // attempt's result does not say.
+      let usedTool = false;
+      const result = await this.runOnce({ ...opts, onStream: (delta) => {
+        if (delta.type === "tool_use") usedTool = true;
+        opts.onStream?.(delta);
+      } });
       lastResult = result;
 
       // Success or non-transient error — return immediately
@@ -172,8 +198,8 @@ export class ClaudeEngine implements InterruptibleEngine {
         return result;
       }
 
-      // Check if this is a transient failure worth retrying
-      if (attempt < MAX_RETRIES && isTransientError(result.error, null)) {
+      // A transient failure is worth retrying only while nothing was done
+      if (attempt < MAX_RETRIES && mayStartAgain(result, usedTool)) {
         logger.warn(`Transient Claude failure (attempt ${attempt + 1}): ${result.error.slice(0, 200)}`);
         continue;
       }
@@ -271,7 +297,10 @@ export class ClaudeEngine implements InterruptibleEngine {
       spawnBin = resolveBin(requestedBin);
       spawnArgs = args;
       spawnCwd = opts.cwd;
-      spawnEnv = { ...buildChildEnv(), ...claudeAutoMemoryEnvFor(opts.cwd || process.cwd()) };
+      // Local only — a value set here is not forwarded to the remote process
+      // over the SSH branch above, and a /logout there is that host's own CLI
+      // (see CLAUDE_LOCAL_ENV).
+      spawnEnv = { ...buildChildEnv(), ...claudeAutoMemoryEnvFor(opts.cwd || process.cwd()), ...CLAUDE_LOCAL_ENV };
       logger.info(
         `Claude engine (one-shot) starting: ${spawnBin} -p --output-format ${streaming ? "stream-json" : "json"} --model ${opts.model || "default"} (resume: ${opts.resumeSessionId || "none"})`,
       );
@@ -433,6 +462,7 @@ export class ClaudeEngine implements InterruptibleEngine {
             sessionId: opts.resumeSessionId || "",
             result: "",
             error: terminationReason,
+            interruptRequested: true, // only kill() sets a termination reason
           });
           return;
         }

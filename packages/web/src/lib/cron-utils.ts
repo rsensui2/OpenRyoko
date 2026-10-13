@@ -35,6 +35,14 @@ export function formatDuration(ms: number): string {
 }
 
 /**
+ * The newest `count` runs, newest first. The gateway returns a job's runs
+ * oldest first (the run log is append-only), so "recent" is the tail.
+ */
+export function newestRuns<T>(runs: T[], count: number): T[] {
+  return count > 0 ? runs.slice(-count).reverse() : []
+}
+
+/**
  * Parse a 5-field cron expression into schedule slots for weekly grid display.
  * Returns { hour, minute, days } where days is 0=Sun..6=Sat.
  * Returns null for unparseable expressions.

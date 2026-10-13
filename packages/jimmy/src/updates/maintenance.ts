@@ -6,6 +6,7 @@ import type { SessionManager } from "../sessions/manager.js";
 import { getSession, getSessionBySessionKey } from "../sessions/registry.js";
 import { JINN_HOME } from "../shared/paths.js";
 import { redactText } from "../shared/redact.js";
+import { isPartialDelivery } from "../shared/partial-delivery.js";
 import { CronConnector } from "../connectors/cron/index.js";
 import { scanOrg, findEmployee } from "../gateway/org.js";
 import { buildMaintenancePrompt, inspectMaintenance, validMaintenanceMode, type MaintenanceMode } from "./maintenance-audit.js";
@@ -89,9 +90,22 @@ export async function runUpdateMaintenance(
       return { status: "skipped", reason: "session-still-active", sessionId: previousSession.id };
     }
     const deliver = async (record: Receipt): Promise<MaintenanceRunResult> => {
-      await target.sendMessage({ channel: delivery.channel }, record.report!);
+      let partlyDelivered = false;
+      try {
+        await target.sendMessage({ channel: delivery.channel }, record.report!);
+      } catch (error) {
+        // Nothing reached the channel: the receipt stays "ready" and the next run sends it.
+        if (!isPartialDelivery(error)) throw error;
+        // Part of the report is in the channel. Sending it again from the top
+        // would repeat that part on every run, and a pending delivery keeps the
+        // next inspection from starting — so this one counts as notified.
+        partlyDelivered = true;
+      }
       writeReceipt(job.id, { ...record, status: "notified", updatedAt: new Date().toISOString() });
-      return { status: "notified", outcome: record.outcome, sessionId: record.sessionId };
+      return {
+        status: "notified", outcome: record.outcome, sessionId: record.sessionId,
+        ...(partlyDelivered ? { reason: "partially-delivered" } : {}),
+      };
     };
     // Finish pending delivery before inspecting another version or mode.
     if (receipt?.status === "ready") return deliver(receipt);
@@ -130,8 +144,12 @@ export async function runUpdateMaintenance(
         text: buildMaintenancePrompt(audit, mode), raw: { trigger: "update-maintenance" },
         transportMeta: { maintenanceJobId: job.id, maintenanceMode: mode },
       }, buffer, {
-        employee, engine: job.engine || employee?.engine || config.engines.default,
-        model: job.model || employee?.model, effortLevel: job.effortLevel, title: `OpenRyoko運用点検 (${mode})`,
+        // Only what the job itself names, as the cron runner does. route()
+        // resolves the employee and the default engine; one spelled out here
+        // reads as an engine the job insists on, and the session then spends a
+        // failed turn on an engine already known to be out of allowance.
+        employee, engine: job.engine || undefined,
+        model: job.model || undefined, effortLevel: job.effortLevel, title: `OpenRyoko運用点検 (${mode})`,
       });
       const session = routed && getSession(routed.sessionId);
       if (routed) receipt.sessionId = routed.sessionId;

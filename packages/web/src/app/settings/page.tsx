@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { RotateCcw, Trash2, Check, Save, Loader2 } from "lucide-react"
 import { PageLayout } from "@/components/page-layout"
 import { useSettings } from "@/app/settings-provider"
@@ -8,7 +8,7 @@ import { useBreadcrumbs } from "@/context/breadcrumb-context"
 import { useTheme } from "@/app/providers"
 import { THEMES } from "@/lib/themes"
 import type { ThemeId } from "@/lib/themes"
-import { api } from "@/lib/api"
+import { api, ConfigConflictError } from "@/lib/api"
 import { EmojiPicker } from "@/components/ui/emoji-picker"
 import { ModelSelector } from "@/components/settings/model-selector"
 import { JevSettings } from "@/components/settings/jev-settings"
@@ -237,6 +237,40 @@ interface Config {
   [key: string]: unknown
 }
 
+/** One change made in the gateway form: the value at `path` becomes `value`. */
+interface ConfigEdit {
+  path: string[]
+  value: unknown
+}
+
+function applyConfigEdit(config: Config, { path, value }: ConfigEdit): Config {
+  const next = structuredClone(config)
+  let obj: Record<string, unknown> = next
+  for (let i = 0; i < path.length - 1; i++) {
+    if (!obj[path[i]] || typeof obj[path[i]] !== "object") {
+      obj[path[i]] = {}
+    }
+    obj = obj[path[i]] as Record<string, unknown>
+  }
+  obj[path[path.length - 1]] = value
+  // Both the default-model and engine-specific pickers use this path.
+  // Changing models must not leave an invisible max effort selected.
+  if (
+    obj.effortLevel === "max" && (
+      (path.join(".") === "engines.codex.model" && !codexEffortOptionsForModel(String(value)).some((option) => option.value === "max")) ||
+      (path.join(".") === "engines.claude.model" && !claudeEffortOptionsForModel(String(value)).some((option) => option.value === "max"))
+    )
+  ) {
+    obj.effortLevel = "default"
+  }
+  return next
+}
+
+/** Shown when the gateway refuses a save because config.yaml changed after
+ *  this form loaded it (a hand edit, an agent, another tab). */
+const CONFIG_CONFLICT_MESSAGE =
+  "config.yaml がこの画面を開いたあとに変更されたため、保存していません（保存すると、その変更を古い値で上書きしてしまいます）。再読み込みして最新の内容を確認し、編集をやり直してください。"
+
 function configuredConnectorIds(config: Config): string[] {
   const ids = new Set<string>()
   for (const [name, value] of Object.entries(config.connectors ?? {})) {
@@ -401,7 +435,8 @@ const WHISPER_LANGUAGES: Record<string, string> = {
 // Voice Input (STT) settings section — self-contained state
 // ---------------------------------------------------------------------------
 
-function SttSettingsSection() {
+/** `onConfigWritten` fires after a change here has been saved to config.yaml. */
+function SttSettingsSection({ onConfigWritten }: { onConfigWritten?: () => void }) {
   const [status, setStatus] = useState<{
     available: boolean
     model: string | null
@@ -430,7 +465,10 @@ function SttSettingsSection() {
     const next = status.languages.filter((l) => l !== code)
     setSaving(true)
     api.sttUpdateConfig(next)
-      .then(() => setStatus((prev) => prev ? { ...prev, languages: next } : prev))
+      .then(() => {
+        setStatus((prev) => prev ? { ...prev, languages: next } : prev)
+        onConfigWritten?.()
+      })
       .catch(() => {})
       .finally(() => setSaving(false))
   }
@@ -441,7 +479,10 @@ function SttSettingsSection() {
     setSaving(true)
     setAddLang("")
     api.sttUpdateConfig(next)
-      .then(() => setStatus((prev) => prev ? { ...prev, languages: next } : prev))
+      .then(() => {
+        setStatus((prev) => prev ? { ...prev, languages: next } : prev)
+        onConfigWritten?.()
+      })
       .catch(() => {})
       .finally(() => setSaving(false))
   }
@@ -707,7 +748,16 @@ export default function SettingsPage() {
   const [feedback, setFeedback] = useState<{
     type: "success" | "error"
     message: string
+    /** Offer to reload the config from disk (the save was refused as stale). */
+    reload?: boolean
   } | null>(null)
+  // Revision of the config.yaml this form holds. It goes back with the save,
+  // so the gateway can refuse to overwrite a change made to the file since.
+  const configRevision = useRef<string | null>(null)
+  // Edits made in the form and not saved yet, in order — re-applied when the
+  // form follows a write this page made through another endpoint.
+  const pendingEdits = useRef<ConfigEdit[]>([])
+  const configLoads = useRef(0)
 
   // WhatsApp QR code state
   const [waQr, setWaQr] = useState<string | null>(null)
@@ -775,18 +825,37 @@ export default function SettingsPage() {
     settings.accentColor,
   ])
 
-  // Load gateway config
-  function loadConfig() {
-    setConfigLoading(true)
+  // Load gateway config. A plain load replaces the form with what is on disk.
+  // With keepEdits it follows the file in the background instead: unsaved
+  // edits are re-applied on top, and the form stays on screen.
+  function loadConfig({ keepEdits = false }: { keepEdits?: boolean } = {}) {
+    const load = ++configLoads.current
+    if (!keepEdits) {
+      setConfigLoading(true)
+      setFeedback(null)
+      pendingEdits.current = []
+    }
     api
-      .getConfig()
-      .then((data) => {
-        setConfig(data as Config)
+      .getConfigWithRevision()
+      .then(({ config: loaded, revision }) => {
+        if (load !== configLoads.current) return // a newer load is on its way
+        configRevision.current = revision
+        setConfig(pendingEdits.current.reduce(applyConfigEdit, loaded as Config))
         setConfigError(null)
       })
-      .catch((err) => setConfigError(err.message))
-      .finally(() => setConfigLoading(false))
+      .catch((err) => {
+        if (!keepEdits && load === configLoads.current) setConfigError(err.message)
+      })
+      .finally(() => {
+        if (!keepEdits) setConfigLoading(false)
+      })
   }
+
+  // Branding and voice languages are saved immediately, through their own
+  // endpoints, and those writes change config.yaml too. Without following
+  // them the next "save" here would be refused as stale — or, before the
+  // revision check existed, would silently put the previous values back.
+  const followOwnConfigWrite = () => loadConfig({ keepEdits: true })
 
   useEffect(() => {
     loadConfig()
@@ -826,41 +895,27 @@ export default function SettingsPage() {
   }, [config.connectors?.whatsapp])
 
   function updateConfig(path: string[], value: unknown) {
-    setConfig((prev) => {
-      const next = structuredClone(prev)
-      let obj: Record<string, unknown> = next
-      for (let i = 0; i < path.length - 1; i++) {
-        if (!obj[path[i]] || typeof obj[path[i]] !== "object") {
-          obj[path[i]] = {}
-        }
-        obj = obj[path[i]] as Record<string, unknown>
-      }
-      obj[path[path.length - 1]] = value
-      // Both the default-model and engine-specific pickers use this path.
-      // Changing models must not leave an invisible max effort selected.
-      if (
-        obj.effortLevel === "max" && (
-          (path.join(".") === "engines.codex.model" && !codexEffortOptionsForModel(String(value)).some((option) => option.value === "max")) ||
-          (path.join(".") === "engines.claude.model" && !claudeEffortOptionsForModel(String(value)).some((option) => option.value === "max"))
-        )
-      ) {
-        obj.effortLevel = "default"
-      }
-      return next
-    })
+    const edit = { path, value }
+    pendingEdits.current = [...pendingEdits.current, edit]
+    setConfig((prev) => applyConfigEdit(prev, edit))
   }
 
   function handleSave() {
     setSaving(true)
     setFeedback(null)
+    const editsInThisSave = pendingEdits.current.length
     api
-      .updateConfig(config)
-      .then((response) => {
+      .updateConfigAtRevision(config, configRevision.current)
+      .then(({ result, revision }) => {
+        // The file now holds this form's edits: later saves start from the
+        // revision this one produced, not from the one the form was loaded at.
+        configRevision.current = revision
+        pendingEdits.current = pendingEdits.current.slice(editsInThisSave)
         // Backend signals "partial" when the file was written but at least
         // one connector failed to (re)start — typically a bad Slack token.
         // Show the underlying errors so the user can fix them, instead of
         // a misleading "Settings saved" toast.
-        const r = response as {
+        const r = result as {
           status?: string
           connectorsReload?: { errors?: string[] }
           connectorsReloadError?: string
@@ -882,12 +937,18 @@ export default function SettingsPage() {
         }
         setFeedback({ type: "success", message: "Settings saved successfully" })
       })
-      .catch((err) =>
+      .catch((err) => {
+        // Nothing was written. Reloading is left to the operator: it replaces
+        // the unsaved edits in this form with what is on disk.
+        if (err instanceof ConfigConflictError) {
+          setFeedback({ type: "error", message: CONFIG_CONFLICT_MESSAGE, reload: true })
+          return
+        }
         setFeedback({
           type: "error",
           message: `Failed to save: ${err.message}`,
         })
-      )
+      })
       .finally(() => setSaving(false))
   }
 
@@ -1086,7 +1147,7 @@ export default function SettingsPage() {
                   onChange={(e) => setNameValue(e.target.value)}
                   onBlur={() => {
                     setPortalName(nameValue || null)
-                    api.completeOnboarding({ portalName: nameValue || undefined }).catch(() => {})
+                    api.completeOnboarding({ portalName: nameValue || undefined }).then(followOwnConfigWrite).catch(() => {})
                   }}
                 />
               </div>
@@ -1121,7 +1182,7 @@ export default function SettingsPage() {
                   onChange={(e) => setOperatorNameValue(e.target.value)}
                   onBlur={() => {
                     setOperatorName(operatorNameValue || null)
-                    api.completeOnboarding({ operatorName: operatorNameValue || undefined }).catch(() => {})
+                    api.completeOnboarding({ operatorName: operatorNameValue || undefined }).then(followOwnConfigWrite).catch(() => {})
                   }}
                 />
               </div>
@@ -1153,7 +1214,7 @@ export default function SettingsPage() {
                   onChange={(e) => setLanguageValue(e.target.value)}
                   onBlur={() => {
                     setLanguage(languageValue || "English")
-                    api.completeOnboarding({ language: languageValue || undefined }).catch(() => {})
+                    api.completeOnboarding({ language: languageValue || undefined }).then(followOwnConfigWrite).catch(() => {})
                   }}
                   className="w-full bg-[var(--bg-secondary)] border border-[var(--separator)] rounded-[var(--radius-sm)] px-[10px] py-[6px] text-[length:var(--text-footnote)] text-[var(--text-primary)] cursor-pointer"
                 >
@@ -1179,6 +1240,7 @@ export default function SettingsPage() {
           {/* Gateway config feedback */}
           {feedback && (
             <div
+              role={feedback.type === "success" ? "status" : "alert"}
               className="mb-[var(--space-4)] px-[var(--space-4)] py-[var(--space-3)] rounded-[var(--radius-md)] text-[length:var(--text-footnote)]"
               style={{
                 background:
@@ -1197,6 +1259,15 @@ export default function SettingsPage() {
               }}
             >
               {feedback.message}
+              {feedback.reload && (
+                <button
+                  onClick={() => loadConfig()}
+                  className="mt-[var(--space-2)] px-[var(--space-3)] py-[var(--space-1)] rounded-[var(--radius-sm)] bg-[var(--fill-tertiary)] text-[var(--text-primary)] border-none cursor-pointer text-[length:var(--text-footnote)] font-[var(--weight-medium)] flex items-center gap-[6px]"
+                >
+                  <RotateCcw size={14} />
+                  再読み込み（未保存の編集は破棄されます）
+                </button>
+              )}
             </div>
           )}
 
@@ -2330,7 +2401,7 @@ export default function SettingsPage() {
               </Section>
 
               {/* -- Section 8: Voice Input (STT) -- */}
-              <SttSettingsSection />
+              <SttSettingsSection onConfigWritten={followOwnConfigWrite} />
 
               {/* Save button for gateway config */}
               <div

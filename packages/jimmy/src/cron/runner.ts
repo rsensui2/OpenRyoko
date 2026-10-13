@@ -9,6 +9,9 @@ import { getLastNotifiedVersion, markVersionNotified } from "../updates/notifica
 import { runUpdateMaintenance } from "../updates/maintenance.js";
 import type { MaintenanceMode } from "../updates/maintenance-audit.js";
 import { runCommand } from "./command.js";
+import { settledLimitFailure, settledRunFailure } from "./run-outcome.js";
+import { clearAlertThrottle, isAlertThrottled, isLimitAlertThrottled, recordAlertSent, recordLimitAlertSent } from "./alert-throttle.js";
+import { fireWaitingOnUsageLimit, trackFire } from "./waiting-fires.js";
 
 const updateNotificationRuns = new Set<string>();
 
@@ -144,6 +147,22 @@ export async function runCronJob(
       );
     }
 
+    // An earlier fire of this job that is parked on a usage limit runs when the
+    // limit resets. One started beside it would spend a turn finding the same
+    // limit, wait as well, and run the job a second time at that moment.
+    const waiting = fireWaitingOnUsageLimit(job.id);
+    if (waiting) {
+      appendRunLog(job.id, {
+        timestamp: startedAt,
+        status: "skipped",
+        durationMs: Date.now() - startTime,
+        reason: "previous-run-waiting-for-usage-limit",
+        ...waiting,
+      });
+      logger.info(`Cron job "${job.name}" skipped: an earlier fire is waiting for a usage limit to reset${waiting.resetsAt ? ` at ${waiting.resetsAt}` : ""}`);
+      return;
+    }
+
     let employee;
     if (job.employee) {
       const orgRegistry = scanOrg();
@@ -152,8 +171,17 @@ export async function runCronJob(
 
     const connector = new CronConnector(connectors, delivery);
     const sessionKey = `cron:${job.id}:${Date.now()}`;
+    let sessionId: string | null = null;
+    const fireSettled = trackFire(job.id, sessionKey);
 
     try {
+      // route() would start a session, post "engine not available" into the
+      // delivery channel and return as if the turn had run. Only an engine the
+      // job itself names is checked; defaults remain route()'s to resolve.
+      if (job.engine && !sessionManager.getEngine(job.engine)) {
+        throw new Error(`Engine "${job.engine}" named by the job is not available`);
+      }
+
       const routeResult = await sessionManager.route(
         {
           connector: connector.name,
@@ -184,12 +212,35 @@ export async function runCronJob(
         connector,
         {
           employee,
-          engine: job.engine || employee?.engine || config.engines.default,
-          model: job.model || employee?.model || config.engines[(job.engine || config.engines.default) as "claude" | "codex" | "gemini"]?.model,
+          // Only what the job itself names. route() resolves the employee and
+          // config defaults, and the engine that runs supplies its own model;
+          // spelling a default out here handed an employee on another engine
+          // the default engine's model.
+          engine: job.engine || undefined,
+          model: job.model || undefined,
           title: job.name,
           effortLevel: job.effortLevel,
         },
       );
+      sessionId = routeResult?.sessionId ?? null;
+
+      // route() returning is not the turn succeeding: a failed turn settles its
+      // session as an error and still returns here. Read that receipt before
+      // anything else is awaited, and fail the run the way a throw already does.
+      const failure = settledRunFailure(sessionId, job.name);
+      if (failure) throw new Error(failure);
+
+      // A turn can succeed and still reach nobody: when the delivery connector
+      // is not running, the cron connector can only drop what it is given. A
+      // notice lost along the way is logged, not failed, once the result arrived.
+      const undelivered = connector.getUndeliveredMessageCount();
+      if (connector.isOutputUndelivered()) {
+        // No count in the reason: how many messages a fire lost varies, the failure does not.
+        throw new Error(`Delivery connector "${delivery?.connector}" is not available: the run's output was not delivered`);
+      }
+      if (undelivered > 0) {
+        logger.warn(`Cron job "${job.name}" delivered its result, but ${undelivered} earlier message${undelivered === 1 ? " was" : "s were"} not delivered: connector "${delivery?.connector}" was not available`);
+      }
 
       if (updateVersion && (
         connector.getDeliveredMessageCount() === 0 ||
@@ -201,7 +252,7 @@ export async function runCronJob(
       appendRunLog(job.id, {
         timestamp: startedAt,
         sessionKey,
-        sessionId: routeResult?.sessionId ?? null,
+        sessionId,
         status: "success",
         durationMs: Date.now() - startTime,
         error: null,
@@ -209,12 +260,14 @@ export async function runCronJob(
         ...(updateVersion ? { updateVersion } : {}),
       });
       if (updateVersion) markVersionNotified(job.id, updateVersion);
+      clearAlertThrottle(job.id);
       logger.info(`Cron job "${job.name}" completed in ${Date.now() - startTime}ms`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       appendRunLog(job.id, {
         timestamp: startedAt,
         sessionKey,
+        ...(sessionId ? { sessionId } : {}),
         status: "error",
         durationMs: Date.now() - startTime,
         error: message,
@@ -227,15 +280,26 @@ export async function runCronJob(
       const alertChannel = config.cron?.alertChannel;
       if (alertConnector && alertChannel) {
         const alertTarget = connectors.get(alertConnector);
-        if (alertTarget) {
+        const destination = `${alertConnector}:${alertChannel}`;
+        // A usage limit that is not waited for fails every fire until it
+        // resets: its alert is held for that limit period, not for a window.
+        const limit = settledLimitFailure(sessionId);
+        const throttled = limit
+          ? isLimitAlertThrottled(job.id, limit, destination, config.cron?.alertThrottleMinutes)
+          : isAlertThrottled(job.id, message, destination, config.cron?.alertThrottleMinutes);
+        if (alertTarget && throttled) {
+          logger.info(`Cron alert for "${job.name}" not repeated: the same failure was already reported`);
+        } else if (alertTarget) {
           await alertTarget.sendMessage(
             { channel: alertChannel },
             `⚠️ Cron job "${job.name}" failed:\n${message.slice(0, 500)}`,
-          ).catch((alertErr) => {
+          ).then(() => (limit ? recordLimitAlertSent(job.id, limit, destination) : recordAlertSent(job.id, message, destination)), (alertErr) => {
             logger.error(`Failed to send cron alert: ${alertErr instanceof Error ? alertErr.message : alertErr}`);
           });
         }
       }
+    } finally {
+      fireSettled();
     }
   } finally {
     if (job.kind === "update-notification") updateNotificationRuns.delete(job.id);

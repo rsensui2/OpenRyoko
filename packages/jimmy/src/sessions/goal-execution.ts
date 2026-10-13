@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Engine, EngineResult, EngineRunOpts, JinnConfig, Session, SessionGoal, SlackGoalExtractionConfig } from "../shared/types.js";
 import { extractGoalCondition, parseGoalExtractionResult } from "../connectors/slack/goal-extractor.js";
+import { withEarlierProgress } from "../shared/rateLimit.js";
 import { getMessages, getSession, updateSession } from "./registry.js";
 import { reviewGoal } from "./goal-review.js";
 import type { SessionQueue } from "./queue.js";
@@ -111,6 +112,7 @@ export async function runWithSessionGoal(engine: Engine, opts: EngineRunOpts, op
   let totalCost: number | undefined;
   let totalTurns = 0;
   let totalDuration = 0;
+  let earlier: EngineResult | undefined;
   for (let count = 0; ; count++) {
     if (!stillOwned()) return interrupted();
     const previousGoal = goal!;
@@ -122,7 +124,13 @@ export async function runWithSessionGoal(engine: Engine, opts: EngineRunOpts, op
     totalTurns += raw.numTurns ?? 0;
     totalDuration += raw.durationMs ?? 0;
     const { turns: _turns, ...single } = raw;
-    const result: EngineResult = { ...single, ...(totalCost !== undefined ? { cost: totalCost } : {}), numTurns: totalTurns, durationMs: totalDuration };
+    // One result for however many runs the task has taken: the totals, and what
+    // every run so far was seen doing. Keeping this run's alone made a task
+    // whose continuation failed at once look as if it had never started, and
+    // it was run again from the top.
+    const result: EngineResult = withEarlierProgress(earlier,
+      { ...single, ...(totalCost !== undefined ? { cost: totalCost } : {}), numTurns: totalTurns, durationMs: totalDuration });
+    earlier = result;
     if (!stillOwned()) return interrupted(result);
     if (result.sessionId && session.engine === engine.name) updateSession(session.id, { engineSessionId: result.sessionId });
     goal = { ...goal!, tools: [...toolEvidence] };

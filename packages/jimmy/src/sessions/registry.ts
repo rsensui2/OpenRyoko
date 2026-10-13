@@ -258,7 +258,8 @@ export function initDb(): Database.Database {
       created_at TEXT NOT NULL,
       started_at TEXT,
       completed_at TEXT,
-      internal INTEGER NOT NULL DEFAULT 0
+      internal INTEGER NOT NULL DEFAULT 0,
+      batch TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_queue_session
       ON queue_items (session_key, status, position);
@@ -355,6 +356,14 @@ export function migrateSessionsSchema(database: Database.Database): void {
   if (queueCols.length > 0 && !queueCols.some((c) => c.name === 'internal')) {
     try {
       database.exec('ALTER TABLE queue_items ADD COLUMN internal INTEGER NOT NULL DEFAULT 0');
+    } catch (error) {
+      if (!String(error).includes('duplicate column name')) throw error;
+    }
+  }
+  // `batch` — the notifications folded into one row (sessions/completion-batching.ts).
+  if (queueCols.length > 0 && !queueCols.some((c) => c.name === 'batch')) {
+    try {
+      database.exec('ALTER TABLE queue_items ADD COLUMN batch TEXT');
     } catch (error) {
       if (!String(error).includes('duplicate column name')) throw error;
     }
@@ -653,15 +662,21 @@ export function listSessions(filter?: ListSessionsFilter): Session[] {
 }
 
 /**
- * Mark any sessions stuck in "running" status as "interrupted".
- * Called on gateway startup — if the gateway is starting, no sessions can actually be running.
+ * Mark any sessions stuck in "running" or "waiting" status as "interrupted".
+ * Called on gateway startup — if the gateway is starting, no sessions can actually be running,
+ * and none can be waiting either: a turn parked on a usage limit waits in a loop inside the
+ * process, and that loop went with it. Left as "waiting", the session would say so for good.
  * Sessions with an engine_session_id can be resumed via the Claude --resume flag.
  */
 export function recoverStaleSessions(): number {
   const db = initDb();
   const now = new Date().toISOString();
+  // Every right-hand side reads the row as it was, so the CASE still sees the old status.
   const result = db.prepare(
-    "UPDATE sessions SET status = 'interrupted', last_activity = ?, last_error = 'Interrupted: gateway restarted while session was running' WHERE status = 'running' AND workflow_kind IS NULL",
+    `UPDATE sessions SET status = 'interrupted', last_activity = ?,
+       last_error = CASE status WHEN 'waiting' THEN 'Interrupted: gateway restarted while session was waiting for a usage limit'
+                                ELSE 'Interrupted: gateway restarted while session was running' END
+     WHERE status IN ('running', 'waiting') AND workflow_kind IS NULL`,
   ).run(now);
   return result.changes;
 }

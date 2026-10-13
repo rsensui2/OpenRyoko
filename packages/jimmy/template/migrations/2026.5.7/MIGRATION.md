@@ -1,3 +1,9 @@
+---
+# ryoko migrate --auto（ryoko update）は、この migration を適用済みにしません。
+# AI セッションか所有者の作業が要る手順を含むためです。ryoko migrate で適用します。
+auto: false
+---
+
 # Migration: 2026.5.7 (OpenClaw-style Persona / Memory Layer)
 
 ## Summary

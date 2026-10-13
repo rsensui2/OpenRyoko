@@ -234,6 +234,15 @@ describe("Jinn v0.27-v0.30 reliability ports", () => {
     expect(buildClaudePtyEnv(undefined, { PATH: "/bin", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" }).CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBeUndefined();
   });
 
+  it("turns off /logout in the CLI it spawns, but leaves /login on", () => {
+    const env = buildClaudePtyEnv(undefined, { PATH: "/bin" });
+
+    // /logout signs the shared account out from under every session; /login is
+    // how the operator signs back in from the web live terminal.
+    expect(env.DISABLE_LOGOUT_COMMAND).toBe("1");
+    expect(env).not.toHaveProperty("DISABLE_LOGIN_COMMAND");
+  });
+
   it("applies the auto-memory policy to the PTY it spawns for a working directory", () => {
     const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pty-wiring-"));
     const saved = process.env.CLAUDE_CONFIG_DIR;

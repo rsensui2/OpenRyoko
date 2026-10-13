@@ -104,11 +104,14 @@ describe("ClaudeEngine — auto memory for gateway-run sessions", () => {
     forkClaudeSession("sess-1", cwd);
     const options = mockExecFileSync.mock.calls[0][2] as { env: Record<string, string> };
     expect(options.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe("1");
+    expect(options.env.DISABLE_LOGOUT_COMMAND).toBe("1"); // and /logout is off, like every local Claude launch
   });
 
   it("passes the flag to the Claude run that applies migrations, and leaves other engines alone", () => {
     expect(migrateChildEnv("claude", cwd).CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe("1");
+    expect(migrateChildEnv("claude", cwd).DISABLE_LOGOUT_COMMAND).toBe("1");
     expect(migrateChildEnv("codex", cwd).CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBeUndefined();
+    expect(migrateChildEnv("codex", cwd).DISABLE_LOGOUT_COMMAND).toBeUndefined();
   });
 
   it("does not forward the flag to a remote host over SSH (its Claude home is not ours)", async () => {
@@ -122,5 +125,27 @@ describe("ClaudeEngine — auto memory for gateway-run sessions", () => {
     expect(bin).toBe("ssh");
     expect(args.join(" ")).not.toContain("CLAUDE_CODE_DISABLE_AUTO_MEMORY");
     expect(options.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBeUndefined();
+  });
+
+  it("turns off /logout in the local CLI it spawns, but leaves /login on", async () => {
+    const env = await spawnedEnv();
+
+    expect(env.DISABLE_LOGOUT_COMMAND).toBe("1");
+    expect(env).not.toHaveProperty("DISABLE_LOGIN_COMMAND");
+  });
+
+  it("does not set DISABLE_LOGOUT_COMMAND on the ssh process for a remote turn", async () => {
+    // The value would not cross to the remote process over this ssh invocation
+    // anyway, and a /logout on the remote is that host's own CLI, not ours.
+    const proc = createMockProcess();
+    mockSpawn.mockReturnValue(proc as any);
+    const run = new ClaudeEngine().run({ prompt: "hi", cwd, sessionId: "s3", sshHost: "worker" } as any);
+    await new Promise((resolve) => setImmediate(resolve));
+    finishOk(proc);
+    await run;
+    const [bin, args, options] = mockSpawn.mock.calls[0] as [string, string[], { env: Record<string, string> }];
+    expect(bin).toBe("ssh");
+    expect(args.join(" ")).not.toContain("DISABLE_LOGOUT_COMMAND");
+    expect(options.env).not.toHaveProperty("DISABLE_LOGOUT_COMMAND");
   });
 });

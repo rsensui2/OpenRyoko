@@ -147,7 +147,7 @@ rm ~/.ryoko/BOOTSTRAP.md
 
 ## Error Handling
 
-- `~/.ryoko/knowledge/` が無ければ作成する（通常は `jimmy init` で作られているはず）
+- `~/.ryoko/knowledge/` が無ければ作成する（通常は `ryoko setup` で作られているはず）
 - ユーザーが圧倒されている様子なら簡素化 — 1部門・1従業員だけ提案
 - ユーザーがオンボーディングをスキップしたい場合、それを尊重して BOOTSTRAP.md を削除してから終了する
-- `IDENTITY.md` などのファイルが存在しない場合、`jimmy init` の実行を促す（誤って削除された可能性）
+- `IDENTITY.md` などのファイルが存在しない場合は、誤って削除された可能性がある。まずバックアップから戻す（`ryoko backup list`、`ryoko backup restore <id> --only persona,memory --dry-run`）。バックアップに無ければ、`ryoko setup` の実行を促す（無いファイルだけを雛形から作る）

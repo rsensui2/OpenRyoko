@@ -14,7 +14,10 @@ import { chooseApproval, keystrokesToSelect, parsePermissionPrompt, terminalText
 import type { HookRegistry, HookPayload } from "../gateway/hook-registry.js";
 import { SsePtyProxy, type SseDataEvent, type StreamCtx } from "./sse-pty-proxy.js";
 import { neutralizeForPaste } from "../shared/skill-commands.js";
+import { stripTerminalControlChars } from "../shared/terminal-safe-text.js";
+import { CLAUDE_LOCAL_ENV } from "../shared/childEnv.js";
 import { claudeAutoMemoryEnvFor } from "../shared/claude-auto-memory.js";
+import { claudeLimitReset } from "../shared/claude-limit-reset.js";
 
 export type { PtyControlEvent } from "./pty-view-engine.js";
 
@@ -230,20 +233,27 @@ export function sanitizeAssistantText(text: string): string {
  * Returns null unless the turn failed specifically with error === "rate_limit".
  * The shape matches what ClaudeEngine produces from `rate_limit_event` JSON, so
  * detectRateLimit() / the wait-retry machinery in manager.ts work unchanged.
- * (error_details may carry a reset time, but its format is unconfirmed — left
- * unparsed; manager.ts computes a default backoff when resetsAt is absent.)
+ * The payload never names the reset (error_details' format is unconfirmed), so
+ * a rate-limit failure — and only that one — asks the account's usage source
+ * which window is spent. Without an answer resetsAt stays absent and manager.ts
+ * computes its default backoff, exactly as before.
  */
-function rateLimitFromStopFailure(payload: HookPayload | undefined): EngineRateLimitInfo | null {
+export async function rateLimitFromStopFailure(payload: HookPayload | undefined, model?: string): Promise<EngineRateLimitInfo | null> {
   if (!payload || payload.hook_event_name !== "StopFailure") return null;
   if (payload.error !== "rate_limit") return null;
-  return { status: "rejected", rateLimitType: "interactive_detected" };
+  // The turn has already failed: nothing the lookup does may fail it again.
+  const reset = await claudeLimitReset({ model }).catch(() => undefined);
+  return { status: "rejected", rateLimitType: "interactive_detected", ...(reset ? { resetsAt: reset.resetsAt, window: reset.window } : {}) };
 }
 
 function buildInteractiveArgs(o: InteractiveArgsOpts): string[] {
   const args: string[] = [];
   if (o.resumeSessionId) args.push("--resume", o.resumeSessionId);
 
-  let prompt = o.prompt;
+  // Cold start: the prompt is a positional argument the CLI submits into its
+  // input. Strip terminal control characters here, as the paste path does for a
+  // warm turn — the first turn of a conversation must be no different.
+  let prompt = stripTerminalControlChars(o.prompt);
   if (o.attachments?.length) {
     prompt += buildAttachmentSuffix(o.attachments);
   }
@@ -401,7 +411,9 @@ export class TurnResolver {
     this.settle({ sessionId: sid, result: text, error: undefined, numTurns: 1 });
   }
 
-  interrupt(reason: string): void {
+  /** `requested`: the gateway asked for this stop (kill()), as opposed to the
+   *  engine noticing that its own process died or went silent. */
+  interrupt(reason: string, requested = false): void {
     // PTY died while a StopFailure was held in grace — the API error is the
     // real cause; report it instead of the generic "process exited". Other
     // interrupt reasons (user abort, engine switch, shutdown) keep their
@@ -410,7 +422,7 @@ export class TurnResolver {
       this.settleWithFailure();
       return;
     }
-    this.settle({ sessionId: this.claudeSessionId ?? this.opts.fallbackSessionId ?? "", result: "", error: reason });
+    this.settle({ sessionId: this.claudeSessionId ?? this.opts.fallbackSessionId ?? "", result: "", error: reason, ...(requested ? { interruptRequested: true as const } : {}) });
   }
 
   /** Settle a native local command (no Stop hook fires for context mutators). */
@@ -552,7 +564,11 @@ export interface SubmitConfirmation {
 }
 
 export function pasteAndSubmit(proc: Pick<pty.IPty, "write">, text: string, confirm?: SubmitConfirmation): () => void {
-  const payload = neutralizeForPaste(text);
+  // Strip first: a control character in the message could otherwise close the
+  // bracketed paste below (ESC [ 201 ~) and have what follows typed as
+  // keystrokes. Covers every caller — warm follow-up, web xterm stdin — and
+  // the prompt the session guard never saw (web, history handed on at a switch).
+  const payload = neutralizeForPaste(stripTerminalControlChars(text));
   proc.write(`\x1b[200~${payload}\x1b[201~`);
   // 150ms beat (upstream finding): 50ms occasionally raced the TUI's paste
   // handling and the CR landed before the paste was consumed.
@@ -604,6 +620,9 @@ export function buildClaudePtyEnv(
   env.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN = "1";
   env.CLAUDE_CODE_RESUME_TOKEN_THRESHOLD = "999999999";
   env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = sourceEnv.CLAUDE_CODE_AUTO_COMPACT_WINDOW || "1000000";
+  // Turn off /logout (see CLAUDE_LOCAL_ENV): it signs the shared account out
+  // from under every session. /login stays on for web live-terminal recovery.
+  Object.assign(env, CLAUDE_LOCAL_ENV);
   if (proxyPort) {
     env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${proxyPort}`;
     env._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL = "1";
@@ -961,8 +980,11 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
     }
     // Map a StopFailure rate-limit into result.rateLimit so manager.ts's
     // wait/retry/fallback machinery engages exactly as it does for `claude -p`.
-    const rl = rateLimitFromStopFailure(resolver.stopFailure);
-    if (rl) result.rateLimit = rl;
+    const rl = await rateLimitFromStopFailure(resolver.stopFailure, opts.model);
+    if (rl) {
+      result.rateLimit = rl;
+      logger.info(`InteractiveClaudeEngine: usage limit for ${jinnSessionId} — ${rl.resetsAt ? `${rl.window} window resets ${new Date(rl.resetsAt * 1000).toISOString()}` : "reset time unknown"}`);
+    }
     return result;
   }
 
@@ -1318,7 +1340,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
 
   kill(sessionId: string, reason = "Interrupted"): void {
     const e = this.active.get(sessionId);
-    e?.resolver.interrupt(reason.startsWith("Interrupted") ? reason : `Interrupted: ${reason}`);
+    e?.resolver.interrupt(reason.startsWith("Interrupted") ? reason : `Interrupted: ${reason}`, true);
     this.lifecycle.releaseSession(sessionId);
     // A remote (sshHost) turn ran on the headless fallback — kill it there too.
     this.remoteFallback?.kill(sessionId, reason);

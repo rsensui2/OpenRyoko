@@ -8,6 +8,7 @@ const {
   getLastNotifiedVersion,
   markVersionNotified,
   runUpdateMaintenance,
+  getSession,
 } = vi.hoisted(() => ({
   appendRunLog: vi.fn(),
   checkForUpdates: vi.fn(),
@@ -15,9 +16,11 @@ const {
   getLastNotifiedVersion: vi.fn(),
   markVersionNotified: vi.fn(),
   runUpdateMaintenance: vi.fn().mockResolvedValue({ status: "skipped", reason: "no-findings" }),
+  getSession: vi.fn(),
 }));
 
 vi.mock("../jobs.js", () => ({ appendRunLog }));
+vi.mock("../../sessions/registry.js", () => ({ getSession }));
 vi.mock("../../updates/checker.js", () => ({ checkForUpdates, buildUpdateNotificationPrompt }));
 vi.mock("../../updates/notification-state.js", () => ({ getLastNotifiedVersion, markVersionNotified }));
 vi.mock("../../updates/maintenance.js", () => ({ runUpdateMaintenance }));
@@ -53,6 +56,7 @@ describe("update notification cron runner", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     getLastNotifiedVersion.mockReturnValue(undefined);
+    getSession.mockReturnValue(undefined);
   });
 
   it("does not invoke the AI when the installed version is current", async () => {
@@ -171,6 +175,35 @@ describe("update notification cron runner", () => {
       status: "error",
       error: expect.stringContaining("without a verified chat delivery"),
     }));
+  });
+
+  it("reports why the notification turn failed instead of marking the release notified", async () => {
+    checkForUpdates.mockResolvedValue({
+      currentVersion: "2026.8.18",
+      latestVersion: "2026.8.19",
+      updateAvailable: true,
+      checkedAt: new Date().toISOString(),
+      releaseUrl: "https://github.com/rsensui2/OpenRyoko/releases/tag/v2026.8.19",
+      stale: false,
+    });
+    getSession.mockReturnValue({ id: "session-1", status: "error", lastError: "Not logged in · Please run /login" });
+    const sessionManager = {
+      route: vi.fn(async (_message: unknown, cronConnector: { replyMessage: (target: { channel: string }, text: string) => Promise<unknown> }) => {
+        await cronConnector.replyMessage({ channel: "C123" }, "Not logged in · Please run /login");
+        return { sessionId: "session-1" };
+      }),
+    };
+
+    await runCronJob(job, sessionManager as never, config, connectors);
+
+    expect(getSession).toHaveBeenCalledWith("session-1");
+    expect(markVersionNotified).not.toHaveBeenCalled();
+    expect(appendRunLog).toHaveBeenCalledWith(job.id, expect.objectContaining({
+      status: "error",
+      error: "Not logged in · Please run /login",
+      sessionId: "session-1",
+    }));
+    expect(appendRunLog).not.toHaveBeenCalledWith(job.id, expect.objectContaining({ status: "success" }));
   });
 
   it("does not spend an AI turn when the delivery connector is unavailable", async () => {
