@@ -137,6 +137,16 @@ describe("restart resume — a nudged turn that meets the usage limit again", ()
     return { prepared, summary };
   }
 
+  /**
+   * A nudge goes on record when its POST returns. With an engine that answers at once, the turn the
+   * nudge started can be over before that, and a restart staged in between finds no nudge to count.
+   * The gateway does not stage one there: its shutdown cancels the nudges before it marks a session.
+   */
+  const nudgeOnRecord = (sessionId: string): Promise<void> => vi.waitFor(
+    () => expect(restartResume.readRestartResumeState(registry.getSession(sessionId)!.transportMeta).nudgedAt).toHaveLength(1),
+    { timeout: 10_000 },
+  );
+
   it("fails once, without a word in the thread, when the limit now resets days away — and no later restart wakes it again", async () => {
     const session = waitedAndWasShutDown();
     engineRun.mockImplementation(async () => limitedFor(5 * 24 * HOUR));
@@ -148,6 +158,7 @@ describe("restart resume — a nudged turn that meets the usage limit again", ()
     expect(engineRun).toHaveBeenCalledTimes(1);
     await new Promise((r) => setTimeout(r, 300));
     expect(replyMessage).not.toHaveBeenCalled();
+    await nudgeOnRecord(session.id);
 
     // Restart after restart while the limit is on: the session is left alone.
     for (let restart = 0; restart < 3; restart++) {
@@ -170,6 +181,7 @@ describe("restart resume — a nudged turn that meets the usage limit again", ()
     await vi.waitFor(() => expect(wait.held).toHaveLength(1), { timeout: 10_000 });
     expect(engineRun).toHaveBeenCalledTimes(1);
     expect(replyMessage).not.toHaveBeenCalled();
+    await nudgeOnRecord(session.id);
 
     // The gateway restarts again while it waits.
     restartResume.interruptRunningSessionsForShutdown();
