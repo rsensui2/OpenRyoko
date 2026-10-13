@@ -36,7 +36,7 @@ describe("the migrations this package ships", () => {
   const declared = shipped.filter((version) => migrationNeedsSession(version)).sort();
 
   it("declare a session needed exactly where MIGRATION.md gives an AI or the owner something to do", () => {
-    expect(declared).toEqual(["0.3.0", "0.7.3", "0.9.0", "2026.10.9", "2026.5.7", "2026.8.28", "2026.9.11"]);
+    expect(declared).toEqual(["0.3.0", "0.7.3", "0.9.0", "2026.10.13", "2026.10.9", "2026.5.7", "2026.8.28", "2026.9.11"]);
   });
 
   it("never leave an instruction to confirm, merge or ask without the declaration", () => {
