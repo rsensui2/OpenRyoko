@@ -67,6 +67,9 @@ describe("migration 2026.10.13", () => {
     // Said without the condition, "skills were synced" drops all six skill changes in such a home: nothing was synced there.
     expect(instructions).toContain('"Bundled skills were synced before this session started."');
     expect(instructions).toContain('"no bundled skill was synced"');
+    // Such a home may hold a migrate skill from before the sync existed, so the one this migration ships is cited.
+    expect(instructions).toContain("`files/skills/migrate/SKILL.md` の「同期が動かないホーム」");
+    expect(read(`${MIGRATION}/files/skills/migrate/SKILL.md`)).toContain("**同期が動かないホーム**");
     expect(instructions).toMatch(/プロンプトに同期についての記載が無いとき.*何も適用せずに止め/);
     // And a skill the prompt says to leave is left, the rewritten self-heal included.
     expect(instructions).toMatch(/「触らない」「そのままにする」とされたスキル.*書き換えません/);

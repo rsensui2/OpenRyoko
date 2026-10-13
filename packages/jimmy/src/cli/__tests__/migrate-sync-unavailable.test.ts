@@ -209,6 +209,8 @@ describe("migrate: a home whose skills/ is the user's own symlink", () => {
     expect(mockExecFileSync).toHaveBeenCalledOnce();
     expect(prompt()).toContain(path.join(skillsDir, "migrate", "SKILL.md"));
     expect(prompt()).toMatch(/symlink.*sync does not run/);
+    // Migration 2026.10.13 quotes this sentence to tell such a home apart: its files/skills/ are applied by hand here.
+    expect(prompt()).toContain("no bundled skill was synced");
     expect(prompt()).toMatch(/files\/skills\//);
     // Told to keep out of skills/ and then to record the version, it would drop every
     // skill change the migration ships, for good.

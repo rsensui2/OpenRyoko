@@ -21,7 +21,7 @@ auto: false
 この版で内容が変わった同梱スキルは `cron-manager`・`management`・`migrate`・`onboarding`・`openryoko-config`・`self-heal` の6つで、`files/skills/` にはこの6つがディレクトリごと入っています。どう扱うかは、この作業を始めたときのプロンプトで決まります。
 
 - **プロンプトが、同梱スキルは同期済みだと言っているとき**（"Bundled skills were synced before this session started."）: `files/skills/` を当てるのは、プロンプトに、同期が触らなかったスキルとして挙がったものだけです。扱い方は、プロンプトがスキルごとに示しています。「触らない」「そのままにする」とされたスキル（symlink、読めない、大きすぎる、ディレクトリでない）は、書き換えません。「何も当てない」とされたスキル（最新、削除済み、退役）には、何も入れません。
-- **プロンプトが、`skills/` は利用者が管理する symlink で同期は動かないと言っているとき**（"no bundled skill was synced"）: 何も同期されていません。`files/skills/` の6つを、migrate スキルの「同期が動かないホーム」の手順で扱います。無ければ置き、あれば、所有者の追記を保ってマージします。
+- **プロンプトが、`skills/` は利用者が管理する symlink で同期は動かないと言っているとき**（"no bundled skill was synced"）: 何も同期されていません。`files/skills/` の6つを、自分で扱います。無ければ置き、あれば、所有者の追記を保ってマージします（詳しくは、この migration の `files/skills/migrate/SKILL.md` の「同期が動かないホーム」）。
 - **プロンプトに同期についての記載が無いとき**: migrate スキルの手順どおり、何も適用せずに止め、ターミナルで `ryoko migrate` を実行するよう伝えます。
 
 `self-heal` は、必ず確かめます。この版で、修復の手順を書き直しました。古いコピーには、次の手順が残っています。
@@ -38,7 +38,7 @@ auto: false
 
 - **日次のバックアップ**: gateway が動いている間、1日1回、ホームのアーカイブと DB のコピーを `backups/` に取ります。最初の分は、起動の約15秒後です。アーカイブには `config.yaml` の token と `.env` が入ります。保存先を変えるのは `backup.directory`、止めるのは `backup.enabled: false` です（`docs/backup.md`）。
 - **再起動で打ち切られたターンの再開**: 次の起動で、打ち切られたセッションへ通知を1回送り、元の会話に返信させます。止めるのは `sessions.resumeInterruptedOnBoot: false` です（`docs/architecture.md` の「Session Lifecycle」）。
-- **同梱スキルの同期**: gateway の起動時と `ryoko migrate` の実行時に、ホームに無い同梱スキルを追加し、未編集の同梱スキルを新しい版に置き換えます。置き換える前の中身は `.migration-backups/` に残ります。以前に削除した同梱スキルは、削除の記録がまだ無いので、最初の同期で1回だけ戻っています。要らなければ、もう一度削除してもらいます（以後は戻りません）。起動時の同期を止めるのは `skills.autoSync: false` です（`docs/skills.md` の「Keeping bundled skills up to date」）。
+- **同梱スキルの同期**: gateway の起動時と `ryoko migrate` の実行時に、ホームに無い同梱スキルを追加し、未編集の同梱スキルを新しい版に置き換えます。置き換える前の中身は `.migration-backups/` に残ります。以前に削除した同梱スキルは、削除の記録がまだ無いので、最初の同期で1回だけ戻っています。要らなければ、もう一度削除してもらいます（以後は戻りません）。起動時の同期を止めるのは `skills.autoSync: false` です（`docs/skills.md` の「Keeping bundled skills up to date」）。`skills/` そのものが symlink のホームでは、この同期は動きません。その場合は、同期が動かないことと、`ryoko migrate` が、無い同梱スキルを実行のたびに追加することを伝えます。
 
 ## 4. 確かめて、結果を所有者に伝える（読み取りだけ）
 
@@ -46,7 +46,7 @@ auto: false
 
 1. **cron のアラート**: `config.yaml` の `cron.alertConnector`・`cron.alertChannel` の設定の有無。この版から、セッションがエラーで終わった実行と、結果を配信できなかった実行は、実行履歴に `error` と記録され、設定があればアラートが出ます。これまでは `success` と記録していました。緑だったジョブが赤くなることがあります（`docs/cron.md` の「Run Logs」「Failure Alerts」）。
 2. **Slack の `respondTo`**: `config.yaml` のトップレベルの `connectors.slack` に `respondTo` があるか。あれば、この版から初めて効きます。`channel: mention` なら、メンションの無いチャンネルの投稿に応答しなくなり、チャンネルのリアクションも扱わなくなります。意図した設定かどうかを、所有者に確かめてもらいます（`docs/connectors.md` の「Response Gating」）。
-3. **オペレータ ID**: `portal.operatorSlackId`・`portal.operatorDiscordId` の有無と、値の形。値は、引用符で囲んだ、空でない文字列でなければなりません。数字だけの ID を引用符なしで書いたものや、空の値は無視され、キーがあるかぎり、誰もオペレータと認められません（起動のログに `[identity]` の警告が出ます）。この版から、チャットから Claude Code のコマンドを実行できるのは、オペレータ本人の `/compact` と `/clear` だけです。どちらかのキーがある環境では、`/model <名前>` と `/cron run|enable|disable` も、オペレータだけが使えます。キーが無い環境では、`/compact` と `/clear` は誰も実行できず、`/model` と `/cron` はこれまでどおりです（`docs/connectors.md` の「Commands in Chat」）。
+3. **オペレータ ID**: `portal.operatorSlackId`・`portal.operatorDiscordId` の有無と、値の形。値は、空でない文字列でなければなりません。`U…` の形の Slack の ID は、引用符なしでも文字列です。数字だけの ID（Discord）は、引用符で囲まないと数値として読まれます。数値や空の値は無視され、そのキーがあるかぎり、そのプラットフォームでは誰もオペレータと認められません（最初のメッセージを処理したときに、gateway のログに `[identity]` の警告が出ます）。この版から、チャットから Claude Code のコマンドを実行できるのは、オペレータ本人の `/compact` と `/clear` だけです。どちらかのキーがある環境では、`/model <名前>` と `/cron run|enable|disable` も、オペレータだけが使えます。キーが無い環境では、`/compact` と `/clear` は誰も実行できず、`/model` と `/cron` はこれまでどおりです（`docs/connectors.md` の「Commands in Chat」）。
 4. **廃止した API と、変わった前提**: ホームの中のスクリプト・スキル・cron の prompt に、次が残っていないか。
    - `/api/files/transfer`、`POST /api/files` の `path`・`url`・`open`（廃止しました）
    - `/api/connectors/<名前>/send` の応答を確かめずに「送信済み」と扱う処理（届かなかった送信は 500 を返すようになりました）
