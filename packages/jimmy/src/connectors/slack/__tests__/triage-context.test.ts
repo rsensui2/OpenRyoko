@@ -32,6 +32,27 @@ describe("Slack triage context", () => {
     }
   });
 
+  it("reports every earlier speaker of a thread, beyond the context tail and without text", async () => {
+    const replies = vi.fn().mockResolvedValueOnce({
+      messages: [
+        { ts: "1.000", user: "URYOKO", bot_id: "B1", text: "定期レポート" },
+        { ts: "2.000", user: "U2", text: "" },
+        ...Array.from({ length: 20 }, (_, i) => ({ ts: `${i + 3}.000`, user: "U1", text: `m${i + 3}` })),
+        { ts: "2.000", user: "U2", text: "" },
+        { ts: "40.000", user: "U3", text: "after the current message" },
+      ],
+    });
+    const result = await readTriageHistory({ replies, history: vi.fn() }, {
+      channel: "C1", threadTs: "1.000", messageTs: "30.000", limit: 10,
+    });
+    expect(result.incomplete).toBe(false);
+    expect(result.messages).toHaveLength(10);
+    expect(result.threadSpeakers).toEqual([
+      { user: "URYOKO", botId: "B1" }, { user: "U2" },
+      ...Array.from({ length: 20 }, () => ({ user: "U1" })),
+    ]);
+  });
+
   it("returns newest channel messages chronologically, deduplicated", async () => {
     const history = vi.fn().mockResolvedValue({ messages: [
       { ts: "3.000", text: "new" }, { ts: "2.000", text: "old" }, { ts: "2.000", text: "old" },

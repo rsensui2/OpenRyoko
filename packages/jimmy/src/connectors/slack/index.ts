@@ -25,7 +25,8 @@ import { sendChunksInOrder } from "../chunked-send.js";
 import { rememberAuthTest } from "./auth-test-cache.js";
 import { normalizeSpeakerInfo, type SpeakerInfo } from "./speaker.js";
 import { runTriage } from "./triage.js";
-import { readTriageHistory } from "./triage-context.js";
+import { readTriageHistory, type TriageHistory } from "./triage-context.js";
+import { isSoloThread, mentionsOfOthers, opensByAddressingOthers } from "./addressing.js";
 import {
   shouldForceTaskContinuationReply,
   shouldRunReactOnlyTriage,
@@ -255,17 +256,15 @@ export class SlackConnector implements Connector {
       dmEquivalent?: boolean;
       reactionTarget?: { speaker: string; text: string; isBot: boolean; isSelf: boolean };
       reactionMessageTs?: string;
+      /** History the message path already read for this event; read here otherwise. */
+      history?: Promise<TriageHistory>;
     },
   ): Promise<{ action: "silent" | "react" | "reply"; emoji?: string; reason?: string }> {
-    const threadLimit = this.triageConfig?.threadContextLimit ?? 10;
     const { recentThread, incomplete } = ctx.reactionTarget
       ? { recentThread: [ctx.reactionTarget], incomplete: false }
-      : await this.fetchRecentThreadForTriage(
-      event.channel,
-      event.thread_ts,
-      event.ts,
-      threadLimit,
-    );
+      : await this.describeThreadForTriage(
+        await (ctx.history ?? this.readThreadForTriage(event.channel, event.thread_ts, event.ts)),
+      );
 
     const tracked = this.conversations.getContext({
       channel: event.channel, threadTs: event.thread_ts, ts: event.ts,
@@ -350,18 +349,20 @@ export class SlackConnector implements Connector {
     return decision;
   }
 
-  private async fetchRecentThreadForTriage(
+  private readThreadForTriage(
     channelId: string,
     threadTs: string | undefined,
     messageTs: string | undefined,
-    limit: number,
-  ): Promise<{
+  ): Promise<TriageHistory> {
+    return readTriageHistory(this.app.client.conversations, {
+      channel: channelId, threadTs, messageTs, limit: this.triageConfig?.threadContextLimit ?? 10,
+    });
+  }
+
+  private async describeThreadForTriage({ messages, incomplete }: TriageHistory): Promise<{
     recentThread: Array<{ speaker: string; text: string; isBot: boolean; isSelf: boolean }>;
     incomplete: boolean;
   }> {
-    const { messages, incomplete } = await readTriageHistory(this.app.client.conversations, {
-      channel: channelId, threadTs, messageTs, limit,
-    });
     const recentThread = await Promise.all(messages.map(async (m) => {
       const isSelf = !!m.user && m.user === this.botUserId;
       const isBot = !!m.bot_id || isSelf;
@@ -510,22 +511,42 @@ export class SlackConnector implements Connector {
         return;
       }
 
+      // In a thread where only this person and the bot have spoken, a reply
+      // has no other addressee. The thread's own history decides, so this holds
+      // after the tracker's conversation has expired or its task completed, and
+      // under scheduled posts of the bot that the tracker never saw. The
+      // history is read at most once per message and shared with triage.
+      let threadHistory: Promise<TriageHistory> | undefined;
+      const readThreadHistory = () => threadHistory ??= this.readThreadForTriage(
+        (event as any).channel, threadTs, (event as any).ts,
+      );
+      const inSoloThread = async (): Promise<boolean> => {
+        if (!threadTs || threadTs === (event as any).ts) return false;
+        const { incomplete, threadSpeakers } = await readThreadHistory();
+        return isSoloThread({ speakers: threadSpeakers, incomplete, botUserId: this.botUserId, userId: slackUserId });
+      };
+
       // Early silent for cross-bot / cross-user traffic in shared channels.
       // If the message @-mentions specific user(s), none of whom are us, and
       // it isn't a DM, stay silent — regardless of whether the thread was
       // previously marked "active" by an earlier reply. The activeThread
       // TTL exists for mid-conversation follow-ups, not for sibling mentions
-      // directed at another bot or human in the same channel.
+      // directed at another bot or human in the same channel. An app's "Sent
+      // using" footer names the app, not an addressee. In a solo thread only a
+      // message that opens by addressing someone else is theirs; a mention
+      // further on is a reference or a side note to a request for the bot.
       if (!wasMentioned && this.botUserId && channelType !== "im") {
-        const mentionedUsers = Array.from(
-          rawText.matchAll(/<@([UW][A-Z0-9]+)>/g),
-          (m) => m[1],
-        );
-        if (mentionedUsers.length > 0 && !mentionedUsers.includes(this.botUserId)) {
+        const mentionedUsers = mentionsOfOthers(rawText, this.botUserId);
+        if (mentionedUsers.length > 0) {
+          if (opensByAddressingOthers(rawText, this.botUserId) || !await inSoloThread()) {
+            logger.info(
+              `[slack] message @-mentions ${mentionedUsers.join(",")} (not us) — staying silent for ts=${(event as any).ts}`,
+            );
+            return;
+          }
           logger.info(
-            `[slack] message @-mentions ${mentionedUsers.join(",")} (not us) — staying silent for ts=${(event as any).ts}`,
+            `[slack] message also @-mentions ${mentionedUsers.join(",")}, but only this user and the bot have spoken in the thread — handling ts=${(event as any).ts}`,
           );
-          return;
         }
       }
 
@@ -605,10 +626,14 @@ export class SlackConnector implements Connector {
       //   - DM-equivalent conversation: bot has engaged AND only this user has
       //     spoken in a recent conversation, or a structured request is awaiting
       //     that user. Reactions alone never grant this bypass.
-      const isDmEquivalent =
-        triageEnabled && channelType !== "im" && !wasMentioned
-          ? this.conversations.isDmEquivalent(conversationKey)
-          : false;
+      //   - Solo thread: past that conversation, the thread history shows that
+      //     only this user and the bot have spoken (see inSoloThread above),
+      //     and the message does not open by addressing a group.
+      const ambient = triageEnabled && channelType !== "im" && !wasMentioned;
+      const trackedDmEquivalent = ambient && this.conversations.isDmEquivalent(conversationKey);
+      const soloThread = ambient && !trackedDmEquivalent &&
+        !opensByAddressingOthers(rawText, this.botUserId ?? "") && await inSoloThread();
+      const isDmEquivalent = trackedDmEquivalent || soloThread;
       // Short-ack exception: the always-reply fast paths (real DMs and
       // DM-equivalent conversations) otherwise swallow the one situation
       // react-triage is FOR — pure appreciation right after the bot replied
@@ -630,7 +655,9 @@ export class SlackConnector implements Connector {
         ((channelType === "im" || isDmEquivalent) && !shortAckTriage);
 
       if (triageEnabled && isDmEquivalent && !shortAckTriage) {
-        logger.info(`[slack] skipping triage — DM-equivalent conversation in ${(event as any).channel}`);
+        logger.info(soloThread
+          ? `[slack] skipping triage — only this user and the bot have spoken in the thread in ${(event as any).channel}`
+          : `[slack] skipping triage — DM-equivalent conversation in ${(event as any).channel}`);
       }
 
       if (!skipTriage) {
@@ -641,6 +668,7 @@ export class SlackConnector implements Connector {
           wasMentioned,
           messageText: rawText,
           dmEquivalent: shortAckTriage,
+          history: readThreadHistory(),
         });
 
         if (decision.action === "silent") {
