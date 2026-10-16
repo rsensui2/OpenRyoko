@@ -106,15 +106,19 @@ describe("Slack conversation routing integration", () => {
       portalName: "Momo",
       getBotName: () => resolveAssistantName("Momo", employee),
     });
-    f.replies.mockResolvedValue({ messages: [{ ts: "2.000", user: "URYOKO", text: "前の返答" }] });
+    // A second person keeps the thread on the triage path this test inspects.
+    f.replies.mockResolvedValue({ messages: [
+      { ts: "1.500", user: "U2", text: "相談です" },
+      { ts: "2.000", user: "URYOKO", text: "前の返答" },
+    ] });
     await f.event("Sora、聞こえる？");
     expect(vi.mocked(runTriage).mock.calls.at(-1)?.[0]).toMatchObject({
-      botName: "Sora", recentThread: [{ speaker: "Sora", isSelf: true }],
+      botName: "Sora", recentThread: [{ isSelf: false }, { speaker: "Sora", isSelf: true }],
     });
     employee = { name: "support", displayName: "Mika" };
     await f.event("Mika、聞こえる？", { ts: "5.000" });
     expect(vi.mocked(runTriage).mock.calls.at(-1)?.[0]).toMatchObject({
-      botName: "Mika", recentThread: [{ speaker: "Mika", isSelf: true }],
+      botName: "Mika", recentThread: [{ isSelf: false }, { speaker: "Mika", isSelf: true }],
     });
     await f.reaction("heart");
     expect(vi.mocked(runTriage).mock.calls.at(-1)?.[0]).toMatchObject({
@@ -166,6 +170,13 @@ describe("Slack conversation routing integration", () => {
 
   it("actual reply grants membership; idle expiry returns followups to triage", async () => {
     const f = await fixture(true);
+    // A second person keeps the thread out of the solo-thread route, which
+    // would otherwise answer the follow-up after idle expiry as well.
+    f.replies.mockResolvedValue({ messages: [
+      { ts: "1.000", user: "U1", text: "<@URYOKO> 調査して" },
+      { ts: "2.000", user: "U2", text: "私も気になります" },
+      { ts: "3.000", user: "URYOKO", bot_id: "B1", text: "調べました" },
+    ] });
     await f.event("<@URYOKO> 調査して");
     await f.connector.replyMessage({ channel: "C1", thread: "1.000" }, "調べました");
     await f.event("補足して");
@@ -255,6 +266,13 @@ describe("Slack conversation routing integration", () => {
 
   it("completion and another human prevent unconditional conversation bypass", async () => {
     const f = await fixture();
+    // Two people in the thread's history keep both messages out of the
+    // solo-thread route, which would otherwise answer after completion.
+    f.replies.mockResolvedValue({ messages: [
+      { ts: "1.000", user: "U1", text: "相談です" },
+      { ts: "2.000", user: "U2", text: "私も" },
+      { ts: "3.000", user: "URYOKO", bot_id: "B1", text: "完了しました" },
+    ] });
     await f.connector.replyMessage({ channel: "C1", thread: "1.000" }, "完了しました");
     f.connector.setConversationState({ channel: "C1", thread: "1.000" }, "completed", "U1");
     await f.event("次の話です");
@@ -267,7 +285,11 @@ describe("Slack conversation routing integration", () => {
   it("only our own immediately preceding reply protects a continuation", async () => {
     for (const user of ["UOTHERBOT", "URYOKO"]) {
       const f = await fixture();
-      f.replies.mockResolvedValue({ messages: [{ ts: "3.000", user, bot_id: "B1", text: "進めますか？" }] });
+      // A second person keeps the thread on the triage path this test inspects.
+      f.replies.mockResolvedValue({ messages: [
+        { ts: "2.000", user: "U2", text: "相談です" },
+        { ts: "3.000", user, bot_id: "B1", text: "進めますか？" },
+      ] });
       vi.mocked(runTriage).mockResolvedValue({ action: "silent" });
       await f.event("はい");
       expect(f.handler.mock.calls.length).toBe(user === "URYOKO" ? 1 : 0);
@@ -350,5 +372,146 @@ describe("Slack conversation routing integration", () => {
     const before = vi.mocked(runTriage).mock.calls.length;
     await f.reaction("pray", { user: "URYOKO" });
     expect(runTriage).toHaveBeenCalledTimes(before);
+  });
+});
+
+describe("Slack routing in a thread where only one person and the bot have spoken", () => {
+  const solo = { messages: [
+    { ts: "1.000", user: "U1", text: "<@URYOKO> 調べて" },
+    { ts: "2.000", user: "URYOKO", bot_id: "B1", text: "調べました" },
+  ] };
+  // The parent-message lookup reads one message without `latest`; the history read sets it.
+  const historyReads = (replies: ReturnType<typeof vi.fn>) =>
+    replies.mock.calls.filter(([args]) => args.latest !== undefined).length;
+
+  it("keeps the direct route after the task completes and after the idle window", async () => {
+    const f = await fixture();
+    f.replies.mockResolvedValue(solo);
+    await f.connector.replyMessage({ channel: "C1", thread: "1.000" }, "完了しました");
+    f.connector.setConversationState({ channel: "C1", thread: "1.000" }, "completed", "U1");
+    await f.event("メッセンジャーにも返す文面をちょうだい");
+    f.advance();
+    await f.event("それと、来週の予定も確認して", { ts: "5.000" });
+    expect(runTriage).not.toHaveBeenCalled();
+    expect(f.handler).toHaveBeenCalledTimes(2);
+  });
+
+  it("recognizes a thread under the bot's own post that the tracker never saw", async () => {
+    const f = await fixture();
+    f.replies.mockResolvedValue({ messages: [{ ts: "1.000", user: "URYOKO", bot_id: "B1", text: "今日の巡回結果" }] });
+    await f.event("2件目はどういうこと？");
+    expect(runTriage).not.toHaveBeenCalled();
+    expect(f.handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not read the thread while the tracked conversation is still live", async () => {
+    const f = await fixture();
+    await f.event("<@URYOKO> 調べて");
+    await f.connector.replyMessage(f.connector.reconstructTarget(f.handler.mock.calls[0][0].replyContext), "調べました");
+    await f.event("補足して", { ts: "5.000" });
+    expect(f.handler).toHaveBeenCalledTimes(2);
+    expect(historyReads(f.replies)).toBe(0);
+  });
+
+  it("still lets a bare thanks get a reaction, reading the thread once", async () => {
+    const f = await fixture();
+    f.replies.mockResolvedValue(solo);
+    vi.mocked(runTriage).mockResolvedValue({ action: "react", emoji: "pray" });
+    await f.event("ありがとう");
+    expect(vi.mocked(runTriage).mock.calls[0][0]).toMatchObject({
+      dmEquivalent: true, recentThread: [{ isSelf: false }, { isSelf: true }],
+    });
+    expect(f.handler).not.toHaveBeenCalled();
+    expect(f.reactions.mock.calls.map((call) => call[0].name)).toEqual(["pray"]);
+    expect(historyReads(f.replies)).toBe(1);
+  });
+
+  it.each([
+    ["another person", { ts: "3.000", user: "U2", text: "見ました" }],
+    ["another bot", { ts: "3.000", user: "UOTHERBOT", bot_id: "B2", text: "別の通知" }],
+  ])("returns to triage once %s has spoken, reading the thread once", async (_who, other) => {
+    const f = await fixture();
+    f.replies.mockResolvedValue({ messages: [...solo.messages, other] });
+    await f.event("あとで話そう");
+    expect(runTriage).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(runTriage).mock.calls[0][0].dmEquivalent).toBeFalsy();
+    expect(historyReads(f.replies)).toBe(1);
+  });
+
+  it("returns to triage when the thread history cannot be read", async () => {
+    const f = await fixture();
+    f.replies.mockRejectedValue(new Error("ratelimited"));
+    await f.event("続きをお願い");
+    expect(runTriage).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(runTriage).mock.calls[0][0].contextIncomplete).toBe(true);
+  });
+
+  it("handles a request that mentions someone else later, not one that opens by addressing them", async () => {
+    const f = await fixture();
+    f.replies.mockResolvedValue(solo);
+    await f.event("予定を押さえておいて。\n<@U2> 11日の夕方は空いていますか？");
+    expect(f.handler).toHaveBeenCalledTimes(1);
+    await f.event("<@U2> 対応完了です", { ts: "5.000" });
+    expect(f.handler).toHaveBeenCalledTimes(1);
+    expect(runTriage).not.toHaveBeenCalled();
+  });
+
+  it("ignores Slackbot notices in the thread", async () => {
+    const f = await fixture();
+    f.replies.mockResolvedValue({ messages: [
+      ...solo.messages, { ts: "3.000", user: "USLACKBOT", text: "リマインダー: 進捗を確認" },
+    ] });
+    await f.event("進捗どう？");
+    expect(runTriage).not.toHaveBeenCalled();
+    expect(f.handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps triage for a message that opens with a group mention", async () => {
+    const f = await fixture();
+    f.replies.mockResolvedValue(solo);
+    await f.event("<!here> 確認お願いします");
+    expect(runTriage).toHaveBeenCalledTimes(1);
+  });
+
+  it("with triage off, answers a later mention there but not a greeting followed by one", async () => {
+    const f = await fixture();
+    Object.assign(f.connector, { triageConfig: { enabled: false } });
+    f.replies.mockResolvedValue(solo);
+    await f.event("予定を押さえておいて。\n<@U2> 11日の夕方は空いていますか？");
+    await f.event("お疲れ様です。\n<@U2> 明日の件、確認お願いします", { ts: "5.000" });
+    expect(f.handler).toHaveBeenCalledTimes(1);
+    expect(runTriage).not.toHaveBeenCalled();
+  });
+
+  it("reads no thread history for messages that never reach the solo check", async () => {
+    const f = await fixture();
+    f.replies.mockResolvedValue(solo);
+    await f.event("<@URYOKO> 調べて");
+    await f.event("<@U2> 対応完了です", { ts: "5.000" });
+    await f.event("全体への連絡です", { thread_ts: undefined, ts: "6.000" });
+    expect(historyReads(f.replies)).toBe(0);
+    const gated = await fixture(true);
+    gated.replies.mockResolvedValue(solo);
+    await gated.event("メンションなしの返信");
+    expect(gated.handler).not.toHaveBeenCalled();
+    expect(historyReads(gated.replies)).toBe(0);
+  });
+
+  it("stays silent for a mention of someone else outside such a thread", async () => {
+    const f = await fixture();
+    f.replies.mockResolvedValue({ messages: [...solo.messages, { ts: "3.000", user: "U2", text: "見ました" }] });
+    await f.event("予定を押さえておいて <@U2>");
+    expect(f.handler).not.toHaveBeenCalled();
+    expect(runTriage).not.toHaveBeenCalled();
+  });
+
+  it("does not take an app's 'sent using' footer for a mention of someone else", async () => {
+    const f = await fixture();
+    await f.event("Codexです。確認しました。 *使用して送信されました* <@UCHATGPT>");
+    expect(runTriage).toHaveBeenCalledTimes(1);
+    f.replies.mockResolvedValue(solo);
+    await f.event("Codexです。続きです。 *使用して送信されました* <@UCHATGPT>", { ts: "5.000" });
+    expect(runTriage).toHaveBeenCalledTimes(1);
+    expect(f.handler).toHaveBeenCalledTimes(2);
   });
 });

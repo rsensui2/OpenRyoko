@@ -6,6 +6,19 @@ export interface TriageHistoryMessage {
   bot_id?: string;
 }
 
+/** Who posted one earlier message of a thread; never its content. */
+export interface ThreadSpeaker {
+  user?: string;
+  botId?: string;
+}
+
+export interface TriageHistory {
+  messages: TriageHistoryMessage[];
+  incomplete: boolean;
+  /** Thread reads only: every earlier message's author, including messages without text. */
+  threadSpeakers?: ThreadSpeaker[];
+}
+
 interface HistoryPage {
   messages?: TriageHistoryMessage[];
   has_more?: boolean;
@@ -25,7 +38,7 @@ export interface TriageHistoryClient {
 export async function readTriageHistory(
   client: TriageHistoryClient,
   input: { channel: string; threadTs?: string; messageTs?: string; limit: number },
-): Promise<{ messages: TriageHistoryMessage[]; incomplete: boolean }> {
+): Promise<TriageHistory> {
   const limit = Number.isFinite(input.limit) ? Math.max(1, Math.min(10, Math.floor(input.limit))) : 10;
   const collected: TriageHistoryMessage[] = [];
   let incomplete = false;
@@ -60,13 +73,23 @@ export async function readTriageHistory(
   }
   const cutoff = input.messageTs ? Number(input.messageTs) : undefined;
   const deduplicated = new Map<string, TriageHistoryMessage>();
+  // Authorship covers the whole thread, not just the tail: a person who spoke
+  // early, or only attached a file, is still a participant.
+  const speakers = new Map<string, ThreadSpeaker>();
   for (const message of collected) {
     if (!message.ts || !Number.isFinite(Number(message.ts))) { incomplete = true; continue; }
     if (cutoff !== undefined && Number(message.ts) >= cutoff) continue;
+    speakers.set(message.ts, {
+      ...(message.user ? { user: message.user } : {}),
+      ...(message.bot_id ? { botId: message.bot_id } : {}),
+    });
     if (!message.text?.trim()) continue;
     deduplicated.set(message.ts, message);
   }
   const messages = [...deduplicated.values()]
     .sort((a, b) => Number(a.ts) - Number(b.ts)).slice(-limit);
-  return { messages, incomplete };
+  if (!input.threadTs) return { messages, incomplete };
+  const threadSpeakers = [...speakers]
+    .sort(([a], [b]) => Number(a) - Number(b)).map(([, speaker]) => speaker);
+  return { messages, incomplete, threadSpeakers };
 }
