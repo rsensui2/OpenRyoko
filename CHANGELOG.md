@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026.10.16
+
+### Behavior changes
+
+- With triage on, answer a Slack thread reply that does not @-mention the bot, without air-reading it, when the thread's history shows that the bot has posted in it and that nobody else has besides the person writing — no other person, bot or app; Slackbot notices aside. This holds more than 30 minutes after the last exchange, after a Codex task in the thread was marked complete, and in threads under the bot's own posts that no conversation started, such as scheduled reports. Until now such a reply went back to triage once the 30-minute window (`triage.conversationIdleTimeoutMs`) had passed or the task was complete, and triage often left it unanswered: with `triage.backend: jev` and `jev.fallback: none`, an uncertain judgment ends in silence. A bare thank-you can still be answered with a reaction alone, as in a live conversation. A thread that anyone else has posted in, or whose history cannot be read in full (a failed read, or a thread of more than about 400 messages), is triaged as before, and so is a message that opens with `@here`, `@channel`, `@everyone` or a user group. The history is the one triage already read, now read once per message and shared. `respondTo` still applies first: with `channel: mention`, a thread the bot has not replied in through the gateway still needs a mention.
+- In a thread where only the bot and the person writing have posted, answer a message that also @-mentions someone else, unless it opens by addressing them — formatting such as a quote marker or bold, and a short greeting such as 「お疲れ様です」, may come before the mention. A mention further on is taken as a reference or an aside in a request to the bot. This applies with triage on or off. Anywhere else a message that @-mentions someone other than the bot is still left alone, before triage.
+- Do not count the footer of a message an app sent on a person's behalf — `*使用して送信されました* @app` in a Japanese workspace — as an @-mention of someone else. Messages posted this way through the ChatGPT or Claude Slack apps were left unanswered without being triaged.
+
 ## 2026.10.13
 
 The first three groups are on by default, change what an existing instance does, or remove something. Read them before upgrading.
