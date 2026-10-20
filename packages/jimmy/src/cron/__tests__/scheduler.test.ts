@@ -246,7 +246,7 @@ describe("cron scheduler configuration", () => {
 
     live = reloadedConfig;
     expect(await triggerCronJob(" MANUAL ")).toEqual(manual);
-    expect(mocks.runCronJob).toHaveBeenCalledExactlyOnceWith(manual, manager, reloadedConfig, connectors);
+    expect(mocks.runCronJob).toHaveBeenCalledExactlyOnceWith(manual, manager, reloadedConfig, connectors, { manual: true });
   });
 
   it("keeps resolving the config on every fire rather than once", async () => {

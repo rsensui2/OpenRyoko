@@ -13,6 +13,7 @@ vi.mock("../api.js", () => ({
 import {
   runAutomationList,
   runAutomationToggle,
+  runAutomationResume,
   runWorkflowCreate,
   reportCliFailure,
 } from "../automation.js";
@@ -212,5 +213,59 @@ describe("reportCliFailure", () => {
     }
     const parsed = JSON.parse(errors.join("\n")) as { error: string };
     expect(parsed.error).toMatch(/employee/);
+  });
+});
+
+describe("automation resume", () => {
+  const PAUSED = { id: "circleback-notes", enabled: true, breaker: { failures: 5, lastError: "Command exited 1" } };
+
+  it("shows a job paused after repeated failures as paused, not as ON", async () => {
+    request.mockImplementation(async ({ path }: { path: string }) => {
+      if (path === "/api/cron") return ok([PAUSED, { id: "daily-briefing", enabled: true, breaker: null }]);
+      if (path === "/api/automation/templates") return TEMPLATES_OFF;
+      throw new Error(`unexpected ${path}`);
+    });
+    const capture = logCapture();
+    try {
+      await runAutomationList({});
+    } finally {
+      capture.restore();
+    }
+    const paused = capture.lines.find((line) => line.includes("circleback-notes")) ?? "";
+    const healthy = capture.lines.find((line) => line.includes("daily-briefing")) ?? "";
+    expect(paused).toContain("停止中");
+    expect(healthy).toContain("ON");
+  });
+
+  it("posts to the resume route of a paused cron job", async () => {
+    request.mockImplementation(async ({ method, path }: { method: string; path: string }) => {
+      if (path === "/api/cron" && method === "GET") return ok([PAUSED]);
+      if (path === "/api/cron/circleback-notes/resume" && method === "POST") return ok({ id: "circleback-notes", resumed: true });
+      throw new Error(`unexpected ${method} ${path}`);
+    });
+    const capture = logCapture();
+    try {
+      await runAutomationResume("circleback-notes", { json: true });
+    } finally {
+      capture.restore();
+    }
+    expect(request).toHaveBeenCalledWith(expect.objectContaining({ method: "POST", path: "/api/cron/circleback-notes/resume" }));
+    expect(JSON.parse(capture.lines.join("\n"))).toMatchObject({ id: "circleback-notes", resumed: true });
+  });
+
+  it("says so when the job was not paused, and points at the list when the id is unknown", async () => {
+    request.mockImplementation(async ({ method, path }: { method: string; path: string }) => {
+      if (path === "/api/cron" && method === "GET") return ok([{ id: "daily-briefing", enabled: true, breaker: null }]);
+      if (path === "/api/cron/daily-briefing/resume") return ok({ id: "daily-briefing", resumed: false });
+      throw new Error(`unexpected ${method} ${path}`);
+    });
+    const capture = logCapture();
+    try {
+      await runAutomationResume("daily-briefing", {});
+    } finally {
+      capture.restore();
+    }
+    expect(capture.lines.join("\n")).toContain("一時停止していません");
+    await expect(runAutomationResume("no-such-job", {})).rejects.toThrow(/ryoko automation list/);
   });
 });

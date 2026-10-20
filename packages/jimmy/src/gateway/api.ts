@@ -69,6 +69,7 @@ import { getClaudeExpectedResetAt, recordClaudeRateLimit } from "../shared/usage
 import { CronJobsReadError, loadJobs, readRunLog, runLogPath, saveJobs } from "../cron/jobs.js";
 import { getCronJobScheduleStatus, getSchedulerSnapshot, reloadScheduler } from "../cron/scheduler.js";
 import { runCronJob } from "../cron/runner.js";
+import { readBreaker, resumeBreaker } from "../cron/breaker.js";
 import { checkForUpdates } from "../updates/checker.js";
 import { inspectMaintenance, validMaintenanceMode } from "../updates/maintenance-audit.js";
 import QRCode from "qrcode";
@@ -795,7 +796,7 @@ export async function handleApiRequest(
         return badRequest(res, "Maintenance requires an available delivery connector and channel");
       }
       void runCronJob(job, context.sessionManager, context.getConfig(), context.connectors, {
-        maintenanceOnly: true, maintenanceMode: body.mode as "review" | "apply", forceMaintenance: true,
+        maintenanceOnly: true, maintenanceMode: body.mode as "review" | "apply", forceMaintenance: true, manual: true,
       }).catch(() => logger.error("Manual maintenance failed"));
       return json(res, { status: "started", jobId: job.id, mode: body.mode }, 202);
     }
@@ -1474,7 +1475,7 @@ export async function handleApiRequest(
             try { lastRun = JSON.parse(lines[lines.length - 1]); } catch {}
           }
         }
-        return { ...job, lastRun, scheduler: getCronJobScheduleStatus(job) };
+        return { ...job, lastRun, scheduler: getCronJobScheduleStatus(job), breaker: readBreaker(job.id) };
       });
       return json(res, enriched);
     }
@@ -1605,7 +1606,7 @@ export async function handleApiRequest(
       logger.info(`Manual trigger for cron job "${job.name}" (${job.id})`);
 
       // Fire and forget — respond immediately, run in background
-      runCronJob(job, context.sessionManager, context.getConfig(), context.connectors).catch(
+      runCronJob(job, context.sessionManager, context.getConfig(), context.connectors, { manual: true }).catch(
         (err) => logger.error(`Manual cron trigger failed for "${job.name}": ${err}`)
       );
 
@@ -1616,6 +1617,16 @@ export async function handleApiRequest(
         employee: job.employee,
         message: `Cron job "${job.name}" triggered manually`,
       });
+    }
+
+    // POST /api/cron/:id/resume — lift an automatic pause (after too many consecutive failures)
+    params = matchRoute("/api/cron/:id/resume", pathname);
+    if (method === "POST" && params) {
+      const job = loadCronJobsForApi().find((j) => j.id === params!.id);
+      if (!job) return notFound(res);
+      const resumed = resumeBreaker(job.id);
+      logger.info(`Cron job "${job.name}" (${job.id}) ${resumed ? "resumed" : "was not paused"}`);
+      return json(res, { id: job.id, name: job.name, resumed });
     }
 
     // GET /api/org

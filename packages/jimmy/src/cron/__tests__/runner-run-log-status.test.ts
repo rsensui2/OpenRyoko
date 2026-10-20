@@ -40,6 +40,8 @@ function setup(sessions: Record<string, unknown> = {}, fallback: { claude?: stri
   const job: CronJob = {
     id: `run-log-status-${++sequence}`, name: "Morning briefing", enabled: true, schedule: "0 7 * * *",
     prompt: "Write the morning briefing", delivery: { connector: "slack", channel: "C-briefing" },
+    // These tests are about how repeated failures are alerted, not about pausing the job.
+    maxConsecutiveFailures: null,
   };
   const config = {
     gateway: { host: "127.0.0.1", port: 0 },

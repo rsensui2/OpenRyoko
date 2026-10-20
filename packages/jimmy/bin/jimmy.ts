@@ -112,6 +112,14 @@ program
       const cli = await import("../src/cli/automation.js");
       await cli.runAutomationToggle(id, false, opts).catch((e) => cli.reportCliFailure(e, opts.json));
     });
+  automationCmd
+    .command("resume <id>")
+    .description("連続失敗で自動停止した cron を再開する（原因を直してから）")
+    .option("--json", "JSON形式で出力")
+    .action(async (id: string, opts: { json?: boolean }) => {
+      const cli = await import("../src/cli/automation.js");
+      await cli.runAutomationResume(id, opts).catch((e) => cli.reportCliFailure(e, opts.json));
+    });
 
   const workflowCmd = program
     .command("workflow")
