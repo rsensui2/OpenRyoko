@@ -217,7 +217,7 @@ describe("reportCliFailure", () => {
 });
 
 describe("automation resume", () => {
-  const PAUSED = { id: "circleback-notes", enabled: true, breaker: { failures: 5, lastError: "Command exited 1" } };
+  const PAUSED = { id: "nightly-report", enabled: true, breaker: { failures: 5, lastError: "Command exited 1" } };
 
   it("shows a job paused after repeated failures as paused, not as ON", async () => {
     request.mockImplementation(async ({ path }: { path: string }) => {
@@ -231,7 +231,7 @@ describe("automation resume", () => {
     } finally {
       capture.restore();
     }
-    const paused = capture.lines.find((line) => line.includes("circleback-notes")) ?? "";
+    const paused = capture.lines.find((line) => line.includes("nightly-report")) ?? "";
     const healthy = capture.lines.find((line) => line.includes("daily-briefing")) ?? "";
     expect(paused).toContain("停止中");
     expect(healthy).toContain("ON");
@@ -240,17 +240,17 @@ describe("automation resume", () => {
   it("posts to the resume route of a paused cron job", async () => {
     request.mockImplementation(async ({ method, path }: { method: string; path: string }) => {
       if (path === "/api/cron" && method === "GET") return ok([PAUSED]);
-      if (path === "/api/cron/circleback-notes/resume" && method === "POST") return ok({ id: "circleback-notes", resumed: true });
+      if (path === "/api/cron/nightly-report/resume" && method === "POST") return ok({ id: "nightly-report", resumed: true });
       throw new Error(`unexpected ${method} ${path}`);
     });
     const capture = logCapture();
     try {
-      await runAutomationResume("circleback-notes", { json: true });
+      await runAutomationResume("nightly-report", { json: true });
     } finally {
       capture.restore();
     }
-    expect(request).toHaveBeenCalledWith(expect.objectContaining({ method: "POST", path: "/api/cron/circleback-notes/resume" }));
-    expect(JSON.parse(capture.lines.join("\n"))).toMatchObject({ id: "circleback-notes", resumed: true });
+    expect(request).toHaveBeenCalledWith(expect.objectContaining({ method: "POST", path: "/api/cron/nightly-report/resume" }));
+    expect(JSON.parse(capture.lines.join("\n"))).toMatchObject({ id: "nightly-report", resumed: true });
   });
 
   it("says so when the job was not paused, and points at the list when the id is unknown", async () => {
