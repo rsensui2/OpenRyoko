@@ -74,6 +74,8 @@ export const WORKFLOWS_DIR = path.join(JINN_HOME, "workflows");
 export const WORKFLOWS_DB_PATH = path.join(WORKFLOWS_DIR, "workflows.db");
 export const CRON_JOBS = path.join(JINN_HOME, "cron", "jobs.json");
 export const CRON_RUNS = path.join(JINN_HOME, "cron", "runs");
+/** Per-job runtime state kept apart from jobs.json, which people and agents edit by hand. */
+export const CRON_STATE = path.join(JINN_HOME, "cron", "state");
 export const UPDATE_STATE = path.join(JINN_HOME, "updates", "state.json");
 export const ORG_DIR = path.join(JINN_HOME, "org");
 export const SKILLS_DIR = path.join(JINN_HOME, "skills");

@@ -14,6 +14,8 @@ interface CronJobRow {
   employee?: string;
   description?: string;
   lastRun?: { at?: string; timestamp?: string; status?: string } | null;
+  /** Set while the job is paused after too many consecutive failures. */
+  breaker?: { failures?: number; lastError?: string } | null;
 }
 
 interface WorkflowSummaryRow {
@@ -126,10 +128,10 @@ export async function runAutomationList(opts: { json?: boolean }): Promise<void>
 
   const rows = [
     ...workflowRows.filter((item) => !item.retiredAt).map((item) => ({
-      kind: "workflow" as const, id: item.id, title: item.title, enabled: item.enabled, schedule: null as string | null, lastRun: null as string | null,
+      kind: "workflow" as const, id: item.id, title: item.title, enabled: item.enabled, paused: false, schedule: null as string | null, lastRun: null as string | null,
     })),
     ...cronJobs.map((job) => ({
-      kind: "cron" as const, id: job.id, title: job.description ?? job.id, enabled: job.enabled !== false,
+      kind: "cron" as const, id: job.id, title: job.description ?? job.id, enabled: job.enabled !== false, paused: Boolean(job.breaker),
       schedule: job.schedule ?? null, lastRun: cronLastRunAt(job),
     })),
   ];
@@ -141,9 +143,10 @@ export async function runAutomationList(opts: { json?: boolean }): Promise<void>
     const pad = (value: string, width: number) => value.length > width ? value.slice(0, width - 1) + "…" : value.padEnd(width);
     console.log(`${pad("種別", 10)} ${pad("ID", 34)} ${pad("状態", 6)} ${pad("スケジュール", 16)} 最終実行`);
     for (const row of rows) {
-      console.log(`${pad(row.kind, 10)} ${pad(row.id, 34)} ${pad(row.enabled ? "ON" : "off", 6)} ${pad(row.schedule ?? "—", 16)} ${row.lastRun ?? "—"}`);
+      console.log(`${pad(row.kind, 10)} ${pad(row.id, 34)} ${pad(row.paused ? "停止中" : row.enabled ? "ON" : "off", 6)} ${pad(row.schedule ?? "—", 16)} ${row.lastRun ?? "—"}`);
     }
     console.log(`\n${rows.length} 件。詳細: ryoko workflow show <id> / 切替: ryoko automation enable|disable <id>`);
+    if (rows.some((row) => row.paused)) console.log("停止中 = 連続失敗で自動停止。原因を直したら: ryoko automation resume <id>");
   });
 }
 
@@ -190,6 +193,18 @@ export async function runAutomationToggle(
   fail(engineOn
     ? `"${id}" は cron にも workflow にもありません（一覧: ryoko automation list）`
     : `"${id}" は cron にありません。${ENGINE_DISABLED_MESSAGE}`);
+}
+
+/** Lift the automatic pause a cron job gets after too many consecutive failures. */
+export async function runAutomationResume(id: string, opts: { json?: boolean }): Promise<void> {
+  const cronJobs = await gateway("GET", "/api/cron") as CronJobRow[];
+  if (!cronJobs.some((job) => job.id === id)) fail(`cron "${id}" は見つかりません（一覧: ryoko automation list）`);
+  const result = await gateway("POST", `/api/cron/${encodeURIComponent(id)}/resume`) as { id: string; resumed: boolean };
+  emit(Boolean(opts.json), result, () => {
+    console.log(result.resumed
+      ? `cron ${id} の一時停止を解除しました。次の予定から実行されます`
+      : `cron ${id} は一時停止していません`);
+  });
 }
 
 export async function runWorkflowTemplates(opts: { json?: boolean }): Promise<void> {

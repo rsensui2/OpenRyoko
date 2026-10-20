@@ -301,6 +301,10 @@ export interface CronJob {
   /** Direct process execution. Never routes through an AI session. */
   command?: CronCommand;
   failureDelivery?: CronDelivery | null;
+  /** Pause the job after this many failed runs in a row (default 5; null or 0 turns it off).
+   * A paused job gets an hourly trial run and resumes itself when one succeeds; to resume at once,
+   * run `ryoko automation resume <id>` or trigger it by hand. */
+  maxConsecutiveFailures?: number | null;
   effortLevel?: string;
   /** Installed-feature maintenance during update checks. Default: review.
    * apply explicitly authorizes bounded local changes; off disables inspection. */

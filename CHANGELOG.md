@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026.10.17
+
+### Behavior changes
+
+- A cron job that fails five times in a row is now paused. Its ticks are skipped and logged as `paused`, and one message says why. The message goes to the job's `failureDelivery`, or to `cron.alertConnector` / `cron.alertChannel`; a job with `failureDelivery: null` is paused without a message.
+- A paused job is not abandoned. Once an hour it gets one trial run, quietly (no failure alert), and when a trial succeeds it resumes by itself, so an outage that heals on its own costs at most an hour. The pause is kept in `cron/state/<jobId>.json`, never in `jobs.json`, so `enabled: false` still means "turned off on purpose".
+- Set `maxConsecutiveFailures` on a job to change the limit; `null` or `0` turns the pause off. Turn it off for a job whose non-zero exit is its result rather than a fault, such as a daily check that reports the problems it finds.
+- A manual trigger (`/cron run`, the trigger API, the maintenance run API) runs even while the job is paused, and a success resumes the job.
+
+### Added
+
+- `ryoko automation resume <id>` and `POST /api/cron/:id/resume` lift a pause at once. Resuming writes a `resumed` entry to the run log, so the next failure starts a new count. `ryoko automation list` shows a paused job as 停止中, and `GET /api/cron` returns its `breaker` state.
+- The failure count is read from the end of the run log. `skipped` and `paused` entries are neither a failure nor a recovery, and the `maintenance` entries of an update-notification job are not counted.
+
 ## 2026.10.16
 
 ### Behavior changes

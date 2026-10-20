@@ -12,15 +12,55 @@ import { runCommand } from "./command.js";
 import { settledLimitFailure, settledRunFailure } from "./run-outcome.js";
 import { clearAlertThrottle, isAlertThrottled, isLimitAlertThrottled, recordAlertSent, recordLimitAlertSent } from "./alert-throttle.js";
 import { fireWaitingOnUsageLimit, trackFire } from "./waiting-fires.js";
+import { countConsecutiveFailures, failureLimit, markProbe, probeDue, readBreaker, resumeBreaker, tripBreaker } from "./breaker.js";
 
 const updateNotificationRuns = new Set<string>();
+
+/** Where a failure alert goes: the job's own channel, the configured default, or nowhere (null switches it off). */
+function alertTarget(job: CronJob, config: JinnConfig): { connector: string; channel: string } | undefined {
+  if (job.failureDelivery === null) return undefined;
+  return job.failureDelivery ?? (config.cron?.alertConnector && config.cron?.alertChannel
+    ? { connector: config.cron.alertConnector, channel: config.cron.alertChannel } : undefined);
+}
+
+/** Resuming must never turn a good run into a failure. */
+function resumeQuietly(job: CronJob): void {
+  try { resumeBreaker(job.id); }
+  catch (error) { logger.error(`Could not resume cron job "${job.name}": ${String(error)}`); }
+}
+
+/** After a failed run: once the streak reaches the limit, pause the job and say so once. */
+async function pauseAfterStreak(
+  job: CronJob, config: JinnConfig, connectors: Map<string, Connector>, lastError: string, logFile?: string,
+): Promise<void> {
+  try {
+    const limit = failureLimit(job);
+    if (limit === null || readBreaker(job.id)) return;
+    const failures = countConsecutiveFailures(job.id);
+    if (failures < limit) return;
+    tripBreaker(job.id, failures, lastError);
+    logger.error(`Cron job "${job.name}" paused after ${failures} consecutive failures`);
+    const target = alertTarget(job, config);
+    const connector = target ? connectors.get(target.connector) : undefined;
+    if (!target || !connector) {
+      logger.warn(`Cron job "${job.name}" was paused but has no usable alert target`);
+      return;
+    }
+    await connector.sendMessage({ channel: target.channel },
+      `⏸ Cron job "${job.name}" を連続${failures}回の失敗のため一時停止しました。1時間ごとに試し実行し、成功すれば自動で再開します。`
+      + `すぐ戻すなら原因を直して \`ryoko automation resume ${job.id}\`。`
+      + `\n最後のエラー: ${lastError.slice(0, 300)}${logFile ? `\nログ: ${logFile}` : ""}`);
+  } catch (error) {
+    logger.error(`Cron breaker failed for "${job.name}": ${String(error)}`);
+  }
+}
 
 export async function runCronJob(
   job: CronJob,
   sessionManager: SessionManager,
   config: JinnConfig,
   connectors: Map<string, Connector>,
-  options: { maintenanceOnly?: boolean; maintenanceMode?: MaintenanceMode; forceMaintenance?: boolean } = {},
+  options: { maintenanceOnly?: boolean; maintenanceMode?: MaintenanceMode; forceMaintenance?: boolean; manual?: boolean } = {},
 ): Promise<void> {
   const startTime = Date.now();
   logger.info(`Cron job "${job.name}" (${job.id}) starting`);
@@ -28,15 +68,28 @@ export async function runCronJob(
   const delivery = job.delivery || config.cron?.defaultDelivery;
   const startedAt = new Date().toISOString();
 
+  // A manual run goes ahead even when paused: that is how a fix is tried out.
+  // Otherwise a paused job only gets its hourly trial run, quietly: it is already known to be failing.
+  const held = options.manual ? null : readBreaker(job.id);
+  const probing = held !== null;
+  if (held) {
+    if (!probeDue(held)) {
+      appendRunLog(job.id, { timestamp: startedAt, status: "paused", reason: held.reason, durationMs: 0 });
+      logger.warn(`Cron job "${job.name}" is paused after ${held.failures} consecutive failures; resume with: ryoko automation resume ${job.id}`);
+      return;
+    }
+    markProbe(job.id, held);
+    logger.info(`Cron job "${job.name}" is paused; running a trial`);
+  }
+
   if (job.kind === "command") {
     let result;
     try { result = await runCommand(job); }
     catch (error) { result = { status: "error" as const, error: error instanceof Error ? error.message : String(error) }; }
     appendRunLog(job.id, { timestamp: startedAt, kind: "command", durationMs: Date.now() - startTime, ...result });
     logger.info(`Cron command "${job.name}" ${result.status} in ${Date.now() - startTime}ms`);
-    if (result.status === "error") {
-      const target = job.failureDelivery === null ? undefined : job.failureDelivery ?? (config.cron?.alertConnector && config.cron?.alertChannel
-        ? { connector: config.cron.alertConnector, channel: config.cron.alertChannel } : undefined);
+    if (result.status === "error" && !probing) {
+      const target = alertTarget(job, config);
       if (target) {
         const connector = connectors.get(target.connector);
         if (connector) await connector.sendMessage({ channel: target.channel },
@@ -44,6 +97,9 @@ export async function runCronJob(
           .catch(error => logger.error(`Cron command alert failed: ${String(error)}`));
         else logger.error(`Cron command alert connector unavailable: ${target.connector}`);
       }
+      await pauseAfterStreak(job, config, connectors, result.error ?? "Command failed", "logFile" in result ? result.logFile : undefined);
+    } else if (result.status === "success" && (options.manual || probing)) {
+      resumeQuietly(job);
     }
     return;
   }
@@ -261,6 +317,7 @@ export async function runCronJob(
       });
       if (updateVersion) markVersionNotified(job.id, updateVersion);
       clearAlertThrottle(job.id);
+      if (options.manual || probing) resumeQuietly(job);
       logger.info(`Cron job "${job.name}" completed in ${Date.now() - startTime}ms`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -278,7 +335,8 @@ export async function runCronJob(
       // Send alert if configured
       const alertConnector = config.cron?.alertConnector;
       const alertChannel = config.cron?.alertChannel;
-      if (alertConnector && alertChannel) {
+      // A paused job's trial run is already known to be failing: no alert for it.
+      if (alertConnector && alertChannel && !probing) {
         const alertTarget = connectors.get(alertConnector);
         const destination = `${alertConnector}:${alertChannel}`;
         // A usage limit that is not waited for fails every fire until it
@@ -298,6 +356,7 @@ export async function runCronJob(
           });
         }
       }
+      await pauseAfterStreak(job, config, connectors, message);
     } finally {
       fireSettled();
     }

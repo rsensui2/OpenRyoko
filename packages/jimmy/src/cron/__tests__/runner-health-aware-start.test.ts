@@ -63,6 +63,8 @@ function setup(options: Options = {}) {
   const job: CronJob = {
     id: `health-aware-${++sequence}`, name: "Morning briefing", enabled: true, schedule: "*/15 * * * *",
     prompt: "Write the morning briefing", delivery: { connector: "slack", channel: "C-briefing" },
+    // These tests are about how repeated failures are alerted, not about pausing the job.
+    maxConsecutiveFailures: null,
     ...(options.employee ? { employee: options.employee.name } : {}), ...options.job,
   };
   registry.clear();

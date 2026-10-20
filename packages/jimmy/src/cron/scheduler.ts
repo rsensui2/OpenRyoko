@@ -198,7 +198,7 @@ function jobFingerprint(job: CronJob): string {
 export async function triggerCronJob(idOrName: string): Promise<CronJob | undefined> {
   const job = findJob(idOrName);
   if (!job) return undefined;
-  await runCronJob(job, currentSessionManager, resolveConfig(), currentConnectors);
+  await runCronJob(job, currentSessionManager, resolveConfig(), currentConnectors, { manual: true });
   return job;
 }
 
