@@ -5,10 +5,13 @@ import { isDeadSessionError } from "../shared/rateLimit.js";
 import { resolveBin, formatSpawnError } from "../shared/resolveBin.js";
 import { buildChildEnv, CLAUDE_LOCAL_ENV } from "../shared/childEnv.js";
 import { claudeAutoMemoryEnvFor } from "../shared/claude-auto-memory.js";
+import { lastActivityAt, startedRun, withOutput, withStreamLine, type ClaudeRunActivity } from "./claude-activity.js";
 
 interface LiveProcess {
   proc: ChildProcess;
   terminationReason: string | null;
+  /** What the run has printed, for getLastActivityAt. Replaced on each chunk of stdout. */
+  activity: ClaudeRunActivity;
   /** SSH host when the engine runs remotely — used to kill the remote process. */
   remoteHost?: string;
   /** Remote process-group id (emitted by the remote supervisor) to signal on kill. */
@@ -158,6 +161,17 @@ export class ClaudeEngine implements InterruptibleEngine {
   isAlive(sessionId: string): boolean {
     const live = this.liveProcesses.get(sessionId);
     return !!live && !live.proc.killed && live.proc.exitCode === null;
+  }
+
+  /** When the session's claude last showed it is working (see claude-activity.ts); 0 when none runs. */
+  getLastActivityAt(sessionId: string): number {
+    const live = this.liveProcesses.get(sessionId);
+    return live ? lastActivityAt(live.activity, Date.now()) : 0;
+  }
+
+  /** Drop a finished run's entry, unless a newer run of the session has taken its place. */
+  private forget(sessionId: string | undefined, entry: LiveProcess): void {
+    if (sessionId && this.liveProcesses.get(sessionId) === entry) this.liveProcesses.delete(sessionId);
   }
 
   async run(opts: EngineRunOpts): Promise<EngineResult> {
@@ -318,12 +332,11 @@ export class ClaudeEngine implements InterruptibleEngine {
         detached: process.platform !== "win32",
       }) as ChildProcessWithoutNullStreams;
 
+      // This run's own entry: its output is recorded here even if another run
+      // of the session has since taken its place in the map.
+      const entry: LiveProcess = { proc, terminationReason: null, remoteHost: opts.sshHost, activity: startedRun(Date.now()) };
       if (opts.sessionId) {
-        this.liveProcesses.set(opts.sessionId, {
-          proc,
-          terminationReason: null,
-          remoteHost: opts.sshHost,
-        });
+        this.liveProcesses.set(opts.sessionId, entry);
       }
 
       // Remote runs receive the prompt over stdin (forwarded by ssh), then EOF.
@@ -362,6 +375,11 @@ export class ClaudeEngine implements InterruptibleEngine {
           lineBuf += chunk;
           const lines = lineBuf.split("\n");
           lineBuf = lines.pop() || "";
+          // Output is activity, including lines that never become a delta
+          // (thinking, a tool call's input) and part of a line still arriving.
+          const now = Date.now();
+          const afterLines = lines.reduce((activity, line) => withStreamLine(activity, line, now), entry.activity);
+          entry.activity = lineBuf ? withOutput(afterLines, now) : afterLines;
           for (const line of lines) {
             // Track per-turn text snapshots from raw `assistant` events
             // before they're transformed into deltas. Each turn emits one
@@ -448,12 +466,9 @@ export class ClaudeEngine implements InterruptibleEngine {
         if (settled) return;
         settled = true;
 
-        const live = opts.sessionId ? this.liveProcesses.get(opts.sessionId) : undefined;
-        const terminationReason = live?.terminationReason ?? null;
-        if (live?.remoteKillFallback) clearTimeout(live.remoteKillFallback);
-        if (opts.sessionId) {
-          this.liveProcesses.delete(opts.sessionId);
-        }
+        const terminationReason = entry.terminationReason;
+        if (entry.remoteKillFallback) clearTimeout(entry.remoteKillFallback);
+        this.forget(opts.sessionId, entry);
 
         logger.info(`Claude engine (one-shot) exited with code ${code}`);
 
@@ -574,9 +589,7 @@ export class ClaudeEngine implements InterruptibleEngine {
       proc.on("error", (err) => {
         if (settled) return;
         settled = true;
-        if (opts.sessionId) {
-          this.liveProcesses.delete(opts.sessionId);
-        }
+        this.forget(opts.sessionId, entry);
         const errMsg = formatSpawnError("Claude CLI", requestedBin, err);
         logger.error(errMsg);
         opts.onStream?.({ type: "error", content: errMsg });

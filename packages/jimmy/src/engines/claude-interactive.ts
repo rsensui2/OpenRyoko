@@ -18,6 +18,7 @@ import { stripTerminalControlChars } from "../shared/terminal-safe-text.js";
 import { CLAUDE_LOCAL_ENV } from "../shared/childEnv.js";
 import { claudeAutoMemoryEnvFor } from "../shared/claude-auto-memory.js";
 import { claudeLimitReset } from "../shared/claude-limit-reset.js";
+import { workStillCounts } from "./claude-activity.js";
 
 export type { PtyControlEvent } from "./pty-view-engine.js";
 
@@ -638,7 +639,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
    *  released by a kill->respawn race can't poison the freshly-started turn.
    *  `onStream` is the current turn's delta callback; the per-PTY SSE proxy routes
    *  parsed events here (a PTY outlives its turn, so the proxy looks this up live). */
-  private active = new Map<string, { resolver: TurnResolver; onStream?: (d: StreamDelta) => void; boundProc?: pty.IPty; activeTools: number; permissionPromptPending: boolean; permissionTimer?: NodeJS.Timeout; submitConfirmationArmed: boolean; submitAcknowledged: boolean; cancelSubmitConfirm?: () => void }>();
+  private active = new Map<string, { resolver: TurnResolver; onStream?: (d: StreamDelta) => void; boundProc?: pty.IPty; activeTools: number; toolEventAt: number; permissionPromptPending: boolean; permissionTimer?: NodeJS.Timeout; submitConfirmationArmed: boolean; submitAcknowledged: boolean; cancelSubmitConfirm?: () => void }>();
   /** Epoch ms of the most recent PTY output per session — the quiet-window
    *  signal for native-command settle and lost-Stop recovery. */
   private lastOutputAt = new Map<string, number>();
@@ -738,11 +739,13 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
       shouldDeferStopFailure: () => this.hasInflightUpstream(jinnSessionId),
       native: nativeCommand,
     });
-    const entry = { resolver, onStream: opts.onStream, activeTools: 0, permissionPromptPending: false, submitConfirmationArmed: false, submitAcknowledged: false } as {
+    const entry = { resolver, onStream: opts.onStream, activeTools: 0, toolEventAt: turnStartedAtMs, permissionPromptPending: false, submitConfirmationArmed: false, submitAcknowledged: false } as {
       resolver: TurnResolver;
       onStream?: (d: StreamDelta) => void;
       boundProc?: pty.IPty;
       activeTools: number;
+      /** When a tool last started or finished (PreToolUse / PostToolUse). */
+      toolEventAt: number;
       permissionPromptPending: boolean;
       permissionTimer?: NodeJS.Timeout;
       submitConfirmationArmed: boolean;
@@ -761,10 +764,13 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
         entry.submitAcknowledged = true;
       }
       // Track local tool executions: lost-Stop recovery must never fire while a
-      // tool is mid-run (transcript text exists but the turn isn't done).
+      // tool is mid-run (transcript text exists but the turn isn't done). A tool
+      // that fails ends with PostToolUseFailure instead of PostToolUse.
+      const toolEnded = h.hook_event_name === "PostToolUse" || h.hook_event_name === "PostToolUseFailure";
       if (!buffered && h.hook_event_name === "PreToolUse") entry.activeTools += 1;
-      if (!buffered && h.hook_event_name === "PostToolUse") entry.activeTools = Math.max(0, entry.activeTools - 1);
-      if (!buffered && h.hook_event_name === "PostToolUse" && entry.permissionPromptPending && entry.activeTools === 0) {
+      if (!buffered && toolEnded) entry.activeTools = Math.max(0, entry.activeTools - 1);
+      if (!buffered && (h.hook_event_name === "PreToolUse" || toolEnded)) entry.toolEventAt = Date.now();
+      if (!buffered && toolEnded && entry.permissionPromptPending && entry.activeTools === 0) {
         // Permission Notification follows the gated tool's PreToolUse. Only
         // clear after every then-in-flight tool has posted completion; clearing
         // on an unrelated parallel tool's PostToolUse can hide a still-blocked
@@ -805,7 +811,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
       // (content_block_start / content_block_delta) in true order. The hook only
       // supplies tool_result — the assistant SSE stream has no tool_result event
       // (tools execute locally between assistant messages).
-      if (!buffered && h.hook_event_name === "PostToolUse" && opts.onStream) {
+      if (!buffered && toolEnded && opts.onStream) {
         opts.onStream({
           type: "tool_result",
           content: String(h.tool_name ?? ""),
@@ -1379,11 +1385,18 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
     return proxy?.isBusy(InteractiveClaudeEngine.BUSY_ACTIVITY_WINDOW_MS) ?? false;
   }
 
-  /** Inactivity watchdogs need actual progress; inflight alone can be a stalled SSE connection. */
+  /** Inactivity watchdogs need actual progress; inflight alone can be a stalled SSE connection.
+   *  A local tool sends nothing upstream while it runs, so one between its
+   *  PreToolUse and PostToolUse(Failure) hooks counts as activity — up to the cap
+   *  (claude-activity.ts), and not while a permission prompt is reported pending.
+   *  A turn run over SSH is the headless engine's. */
   getLastActivityAt(sessionId: string): number {
     const handle = this.lifecycle.getWarm(sessionId);
     const proxy = handle ? (handle as any)._proxy as SsePtyProxy | undefined : undefined;
-    return proxy?.getLastActivityAt() ?? 0;
+    const turn = this.active.get(sessionId);
+    const now = Date.now();
+    if (turn && !turn.permissionPromptPending && workStillCounts(turn.activeTools, turn.toolEventAt, now)) return now;
+    return Math.max(proxy?.getLastActivityAt() ?? 0, this.remoteFallback?.getLastActivityAt?.(sessionId) ?? 0);
   }
 
   /** True while an upstream API request is streaming through the session's SSE

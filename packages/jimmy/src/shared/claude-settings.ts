@@ -20,8 +20,11 @@ function shellQuote(s: string): string {
 // StopFailure fires INSTEAD of Stop when an API error ends the turn (rate_limit,
 // billing_error, server_error, …) — confirmed by the Phase 0 spike. It is the
 // structured rate-limit signal, so it must be registered alongside Stop.
+// Likewise a tool that fails (a shell command that exits non-zero, for one) ends
+// with PostToolUseFailure, not PostToolUse; without it a failed tool looks like
+// one still running. Claude Code knows both from 2.1.139, the oldest it supports.
 export interface ClaudeSettings {
-  hooks: Record<"SessionStart" | "UserPromptSubmit" | "Stop" | "StopFailure" | "PreToolUse" | "PostToolUse", HookMatcher[]>;
+  hooks: Record<"SessionStart" | "UserPromptSubmit" | "Stop" | "StopFailure" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure", HookMatcher[]>;
   appendSystemPrompt?: string;
 }
 
@@ -40,6 +43,7 @@ export function buildSessionSettings(opts: SessionSettingsOpts): ClaudeSettings 
       StopFailure: [cmd()],
       PreToolUse: [cmd()],
       PostToolUse: [cmd()],
+      PostToolUseFailure: [cmd()],
     },
     ...(opts.appendSystemPrompt ? { appendSystemPrompt: opts.appendSystemPrompt } : {}),
   };
