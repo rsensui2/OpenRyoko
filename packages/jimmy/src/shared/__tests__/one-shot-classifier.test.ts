@@ -38,6 +38,19 @@ describe("isolated classification CLI", () => {
     expect(fs.existsSync(cwd)).toBe(false);
   });
 
+  it("turns off thinking for a Claude classifier only", async () => {
+    const { proc, spawnFn, promise } = setup("claude");
+    expect(spawnFn.mock.calls[0][2].env.MAX_THINKING_TOKENS).toBe("0");
+    proc.stdout.emit("data", Buffer.from(JSON.stringify({ result: "ok" })));
+    proc.emit("close", 0);
+    await promise;
+
+    const codex = setup("codex");
+    expect(codex.spawnFn.mock.calls[0][2].env.MAX_THINKING_TOKENS).toBe(process.env.MAX_THINKING_TOKENS);
+    codex.proc.emit("close", 0);
+    await codex.promise;
+  });
+
   it("kills a timed-out classifier and cleans its directory", async () => {
     vi.useFakeTimers();
     const { proc, cwd, promise } = setup("codex");
