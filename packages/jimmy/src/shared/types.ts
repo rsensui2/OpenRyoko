@@ -14,7 +14,8 @@ export interface StreamDelta {
 export interface Engine {
   name: string;
   run(opts: EngineRunOpts): Promise<EngineResult>;
-  /** Last observed upstream bytes/request activity, not merely an open connection. */
+  /** Last observed sign of work — upstream bytes, output, a tool still running
+   *  (for a bounded time) — not merely an open connection. */
   getLastActivityAt?(sessionId: string): number;
 }
 

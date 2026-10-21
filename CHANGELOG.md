@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026.10.22
+
+### Fixed
+
+- Stop the response watchdog from cutting off Claude turns that are still working. On the headless engine (`claude -p`), everything the CLI prints now counts as activity — run on the local machine, that includes extended thinking and the input of a tool call, such as a long file being written — and so does a tool call while it runs, from the moment its input is complete until its result comes back. A deploy or build that runs longer than `sessions.engineNoResponseTimeoutMs` (five minutes by default) is no longer stopped halfway and handed to the fallback engine, as long as it ends within the 15-minute limit below. An agent that the CLI runs in the background counts the same way until it is done. The CLI's keep-alive heartbeat does not count.
+- Treat running work as hung once no tool or background task has started or finished for 15 minutes, longer than the 10-minute maximum Claude Code allows a shell command by default. Every tool is held to this limit, MCP calls included. The watchdog then stops the turn as before: with the default limit, 15 to 20 minutes after the tool started.
+- Count a tool that the interactive (PTY) Claude engine runs between two API requests as activity too, under the same limit; until now only API traffic counted there. The engine now also listens for `PostToolUseFailure`, which Claude Code sends instead of `PostToolUse` when a tool fails. Until now a failed tool looked as if it were still running for the rest of the turn, which also kept a turn whose `Stop` hook was lost from being recovered. A turn that the interactive engine hands to the headless engine, for an employee with `sshHost`, reports that engine's activity.
+
 ## 2026.10.17
 
 ### Behavior changes

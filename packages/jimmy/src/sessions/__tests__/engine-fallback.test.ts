@@ -197,6 +197,28 @@ describe("engine response inactivity and cleanup", () => {
     expect(engine.kill).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps a run that streams nothing alive for as long as the engine reports activity, and expires it one timeout after the reports stop", async () => {
+    vi.useFakeTimers();
+    const { config } = setup();
+    config.sessions!.engineNoResponseTimeoutMs = 1000;
+    let finish!: (result: EngineResult) => void;
+    let stoppedAt: number | undefined;
+    let alive = true;
+    // No stream delta at all, as while a long tool runs: only the engine's own report of activity.
+    const engine: InterruptibleEngine = { name: "claude", run: () => new Promise<EngineResult>((resolve) => { finish = resolve; }),
+      kill: vi.fn((_id, reason) => { alive = false; finish({ sessionId: "s", result: "", error: reason }); }),
+      isAlive: () => alive, getLastActivityAt: () => stoppedAt ?? Date.now(), killAll: vi.fn() };
+    const pending = runEngineWithResponseTimeout(engine, { prompt: "task", cwd: "/tmp", sessionId: "s" }, config);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(engine.kill).not.toHaveBeenCalled();
+    stoppedAt = Date.now();
+    await vi.advanceTimersByTimeAsync(999);
+    expect(engine.kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(engineFallbackFailure(await pending)).toBe("timeout");
+    expect(engine.kill).toHaveBeenCalledTimes(1);
+  });
+
   it("resets the idle clock for stream activity and preserves real proof of ongoing work", async () => {
     vi.useFakeTimers();
     const { config } = setup();
