@@ -12,7 +12,7 @@ export function isRateLimitMessage(text: string | null | undefined): boolean {
 }
 
 const RATE_LIMIT_ERROR_RE =
-  /rate.?limit|too many requests|429|overloaded|usage.*limit|exceeded.*limit|out of extra usage/i;
+  /rate.?limit|too many requests|429|overloaded|\bat capacity\b|usage.*limit|exceeded.*limit|out of extra usage/i;
 
 export interface RateLimitDetection {
   limited: boolean;
