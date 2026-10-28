@@ -35,13 +35,15 @@ const QUOTA_SIGNATURES: readonly RegExp[] = [
   /out of extra usage/i,
 ];
 
-/** The request was throttled. `overloaded` lives here AND in provider-outage:
- *  the provider is refusing load, which reads as both to different callers. */
+/** The request was throttled. `overloaded` and `at capacity` live here AND in
+ *  provider-outage: the provider is refusing load, which reads as both to
+ *  different callers. Codex says "Selected model is at capacity". */
 const RATE_LIMIT_SIGNATURES: readonly RegExp[] = [
   /rate.?limit/i,
   /too many requests/i,
   /429/,
   /overloaded/i,
+  /\bat capacity\b/i,
 ];
 
 /**
@@ -51,6 +53,7 @@ const RATE_LIMIT_SIGNATURES: readonly RegExp[] = [
 const PROVIDER_OUTAGE_SIGNATURES: readonly RegExp[] = [
   /\b(?:server_error|api_error)\b/i,
   /overloaded/i,
+  /\bat capacity\b/i,
   // HTTP 5xx, but only in status context — a bare "503" in a diagnostic is not a
   // status code, and matching one would misread a genuine failure as an outage.
   /\b(?:HTTP|status)(?:\s+code)?\s*[:=]?\s*5\d\d\b/i,

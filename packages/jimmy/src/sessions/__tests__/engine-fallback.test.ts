@@ -147,6 +147,12 @@ describe("engine response inactivity and cleanup", () => {
     expect(engineFallbackFailure({ sessionId: "s", result: "", error: "Interrupted: user stopped" })).toBeNull();
   });
 
+  it("hands a model that is at capacity to the fallback engine instead of failing the turn", () => {
+    // Codex's own words when the provider sheds load on one model.
+    const error = "Selected model is at capacity. Please try a different model.";
+    expect(engineFallbackFailure({ sessionId: "s", result: "", error })).toBe("rate_limit");
+  });
+
   it("kills and waits for the timed-out process before allowing a fallback", async () => {
     vi.useFakeTimers();
     const { config } = setup();

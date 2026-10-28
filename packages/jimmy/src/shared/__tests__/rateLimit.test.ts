@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { EngineResult } from "../types.js";
-import { isDeadSessionError, detectRateLimit, isPoisonedTranscriptError, isTransientServerError } from "../rateLimit.js";
+import { isDeadSessionError, detectRateLimit, isPoisonedTranscriptError, isRateLimitMessage, isTransientServerError } from "../rateLimit.js";
 
 function makeResult(overrides: Partial<EngineResult> = {}): EngineResult {
   return {
@@ -16,6 +16,12 @@ it("never turns a supervisor stop into a fresh-session or transport retry", () =
   expect(isTransientServerError(result)).toBe(false);
   expect(isPoisonedTranscriptError(result)).toBe(false);
   expect(detectRateLimit(result).limited).toBe(false);
+});
+
+it("reads a model at capacity as throttling, the same way in both detectors", () => {
+  const error = "Selected model is at capacity. Please try a different model.";
+  expect(detectRateLimit(makeResult({ error })).limited).toBe(true);
+  expect(isRateLimitMessage(error)).toBe(true);
 });
 
 describe("isDeadSessionError", () => {
