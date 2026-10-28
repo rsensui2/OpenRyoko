@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "source": "67 release tags, v0.1.0 to v2026.10.22",
+  "source": "68 release tags, v0.1.0 to v2026.10.28",
   "names": [
     "cron-manager",
     "find-and-install",
