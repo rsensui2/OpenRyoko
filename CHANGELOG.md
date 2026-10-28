@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026.10.28
+
+### Fixed
+
+- Fall back to the other engine when Codex reports that the selected model is at capacity (`Selected model is at capacity. Please try a different model.`). The message was read as a terminal failure, so the turn — a cron run included — failed without trying the engine named in `engines.codex.fallback`. It is now read the same way as `overloaded`: a throttle, handed to the fallback engine.
+
+### Changed
+
+- Require Node.js `^22.23.4 || ^24.22.1 || ^26.12.1`, the releases that carry the October 2026 Node.js security fixes, and take compatible security updates of dependencies. Check the Node.js version of your host or container image before upgrading.
+
 ## 2026.10.22
 
 ### Fixed
