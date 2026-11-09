@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026.11.10
+
+### Added
+
+- Send chosen Claude models to an Anthropic-compatible server, such as an oMLX instance on another Mac, with `engines.claude.endpoints`. Each endpoint has a `baseUrl`, a key (`apiKeyEnv` or `apiKeyFile`), and the models it serves. Claude Code runs those models against that server: every inherited `ANTHROPIC_*` value is dropped, the endpoint's URL and key are set, and Claude Code's own secondary model calls use the same model. Every other model still goes to Anthropic. See `docs/claude-endpoints.md`.
+- An endpoint model never falls through to Anthropic. When its key is missing or its entry is invalid, the turn fails. Interactive (PTY) sessions run endpoint models headless, a duplicated endpoint session forks on the endpoint, and an `sshHost` employee cannot use an endpoint model.
+- Endpoint turns do not count toward the Anthropic login and usage-limit records kept under `claude`, and a failed endpoint turn stays on the endpoint unless the endpoint sets `fallback: true`.
+- Endpoint models appear after the Claude models in the dashboard and Slack model pickers, even when a `models:` block restricts the list. They run with the same permissions and environment as any Claude session.
+
 ## 2026.10.28
 
 ### Fixed

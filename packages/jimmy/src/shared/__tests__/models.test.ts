@@ -250,3 +250,38 @@ describe("cache + invalidate", () => {
     expect(c.claude.models[0].id).toBe("CHANGED");
   });
 });
+
+describe("engines.claude.endpoints in the registry", () => {
+  const endpoints = [{
+    name: "local-mac",
+    baseUrl: "http://100.64.0.10:1236",
+    apiKeyEnv: "OMLX_512_API_KEY",
+    models: ["deepseek-v41-uncensored"],
+  }];
+
+  it("adds endpoint models after the built-in Claude models in a synthesized registry", () => {
+    const config = cfg({ claude: { bin: "claude", model: "claude-opus-5-5", endpoints } as JinnConfig["engines"]["claude"] });
+    const reg = getModelRegistry(config);
+    expect(reg.claude.defaultModel).toBe("claude-opus-5-5");
+    expect(reg.claude.models.map((m) => m.id)).toContain("claude-opus-5-5");
+    expect(reg.claude.models.at(-1)?.id).toBe("deepseek-v41-uncensored");
+    expect(effortLevelsForModel(config, "claude", "deepseek-v41-uncensored")).toEqual([]);
+  });
+
+  it("adds endpoint models even when an explicit models block restricts the picker", () => {
+    const config = cfg(
+      { claude: { bin: "claude", model: "claude-opus-5-5", endpoints } as JinnConfig["engines"]["claude"] },
+      { claude: { models: [{ id: "claude-opus-5-5", supportsEffort: true, effortLevels: ["high"] }] } },
+    );
+    expect(getModelRegistry(config).claude.models.map((m) => m.id)).toEqual(["claude-opus-5-5", "deepseek-v41-uncensored"]);
+  });
+
+  it("does not duplicate a model the explicit block already lists", () => {
+    const config = cfg(
+      { claude: { bin: "claude", model: "claude-opus-5-5", endpoints } as JinnConfig["engines"]["claude"] },
+      { claude: { models: [{ id: "claude-opus-5-5" }, { id: "deepseek-v41-uncensored", label: "mine" }] } },
+    );
+    const ids = getModelRegistry(config).claude.models.map((m) => m.id);
+    expect(ids.filter((id) => id === "deepseek-v41-uncensored")).toHaveLength(1);
+  });
+});

@@ -47,6 +47,7 @@ import { deliverUnlessAlreadyTold } from "./limit-failure-notice.js";
 import { SessionQueue } from "./queue.js";
 import { JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
+import { isClaudeEndpointRun } from "../shared/claude-endpoints.js";
 import { resolveEffort } from "../shared/effort.js";
 import { effortLevelsForModel } from "../shared/models.js";
 import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit, isDeadSessionError, isPoisonedTranscriptError, isTransientServerError, MAX_USAGE_LIMIT_WAIT_MS, withEarlierProgress } from "../shared/rateLimit.js";
@@ -686,7 +687,8 @@ export class SessionManager {
         processLifetime:
           engineName === "claude" &&
           this.config.engines.claude?.interactive === true &&
-          !sshHost
+          !sshHost &&
+          !isClaudeEndpointRun(engineName, session.model)
             ? "persistent"
             : "one-shot",
         hierarchy,
@@ -972,7 +974,7 @@ export class SessionManager {
       // not enter a hours-long retry wait or ping-pong between them this turn.
       const rateLimit = (!wasInterrupted && !isDead && !isPoisoned) ? detectRateLimit(result) : { limited: false as const };
       if (rateLimit.limited && !fallback.attempted) {
-        if (session.engine === "claude") recordClaudeRateLimit(rateLimit.resetsAt);
+        if (session.engine === "claude" && !isClaudeEndpointRun(session.engine, session.model)) recordClaudeRateLimit(rateLimit.resetsAt);
 
         const waitEmoji = "hourglass_flowing_sand";
 
@@ -1080,7 +1082,7 @@ export class SessionManager {
             const retryInterrupted = retryResult.error?.startsWith("Interrupted");
             const retryRateLimit = !retryInterrupted ? detectRateLimit(retryResult) : { limited: false as const };
             if (retryRateLimit.limited) {
-              if (session.engine === "claude") recordClaudeRateLimit(retryRateLimit.resetsAt);
+              if (session.engine === "claude" && !isClaudeEndpointRun(session.engine, session.model)) recordClaudeRateLimit(retryRateLimit.resetsAt);
               logger.info(`Session ${session.id} still rate limited (attempt ${attempt})`);
 
               const next = computeNextRetryDelayMs(retryRateLimit.resetsAt);

@@ -785,6 +785,26 @@ export interface EngineModelsConfig {
 /** `models:` block keyed by engine name (claude | codex | gemini). */
 export type ModelsConfig = Record<string, EngineModelsConfig>;
 
+/** A model served by a Claude endpoint: an id, or an id with picker metadata. */
+export type ClaudeEndpointModelConfig =
+  | string
+  | { id: string; label?: string; contextWindow?: number; supportsEffort?: boolean; effortLevels?: string[] };
+
+/** `engines.claude.endpoints[]` — see shared/claude-endpoints.ts. */
+export interface ClaudeEndpointConfig {
+  /** Name used in logs, errors, and the default picker label. */
+  name: string;
+  /** Anthropic Messages API base URL, without `/v1` (http or https). */
+  baseUrl: string;
+  /** Environment variable holding the API key. With apiKeyFile, the line to read. */
+  apiKeyEnv?: string;
+  /** File holding the API key: the bare key, or KEY=VALUE lines. */
+  apiKeyFile?: string;
+  /** Let a failed turn be handed to the engine fallback (e.g. a cloud engine). Default false. */
+  fallback?: boolean;
+  models: ClaudeEndpointModelConfig[];
+}
+
 export interface JinnConfig {
   jinn?: { version?: string };
   gateway: {
@@ -832,6 +852,11 @@ export interface JinnConfig {
        *  turn it off. Unset: off, unless un-migrated notes already exist there
        *  (kept on until they are moved into knowledge/). true/false forces it. */
       autoMemory?: boolean;
+      /** Anthropic-compatible servers (e.g. a local oMLX) that serve specific
+       *  models. A session whose model one of these lists runs headless
+       *  `claude -p` against that server; every other model still goes to
+       *  Anthropic. Not applied to interactive PTYs or SSH employees. */
+      endpoints?: ClaudeEndpointConfig[];
     };
     codex: { bin: string; model: string; effortLevel?: string; childEffortOverride?: string; fallback?: ("claude" | "codex" | "gemini")[]; fallbackModelMap?: Record<string, string> };
     gemini?: { bin: string; model: string; effortLevel?: string; childEffortOverride?: string; fallback?: ("claude" | "codex" | "gemini")[]; fallbackModelMap?: Record<string, string> };

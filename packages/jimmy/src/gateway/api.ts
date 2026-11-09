@@ -46,6 +46,7 @@ import {
   searchMessages,
 } from "../sessions/registry.js";
 import { forkEngineSession } from "../sessions/fork.js";
+import { isClaudeEndpointRun } from "../shared/claude-endpoints.js";
 import { deliverToOriginConnector, isUndeliveredToOrigin, recordFailedOriginDelivery } from "../sessions/origin-delivery.js";
 import { isCompletionBatchItem, queueChildCompletion, queuedPrompt } from "../sessions/completion-batching.js";
 import {
@@ -1090,7 +1091,8 @@ export async function handleApiRequest(
         newSessionId = newSession.id;
 
         // 2. Fork the engine session (Claude/Codex/Gemini)
-        const forkResult = forkEngineSession(source.engine, source.engineSessionId, JINN_HOME);
+        // A session without its own model ran engines.claude.model — fork on that.
+        const forkResult = forkEngineSession(source.engine, source.engineSessionId, JINN_HOME, source.model ?? (source.engine === "claude" ? context.getConfig().engines.claude?.model : undefined));
 
         // 3. Store the new engine session ID
         updateSession(newSession.id, { engineSessionId: forkResult.engineSessionId });
@@ -2999,7 +3001,7 @@ async function runWebSession(
     const initialResult = await runTurn(engine, initialOpts);
     if (shouldStop()) return;
     const initialRateLimit = detectRateLimit(initialResult);
-    if (engine.name === "claude" && initialRateLimit.limited) recordClaudeRateLimit(initialRateLimit.resetsAt);
+    if (engine.name === "claude" && initialRateLimit.limited && !isClaudeEndpointRun(engine.name, initialOpts.model)) recordClaudeRateLimit(initialRateLimit.resetsAt);
     const fallback = await runFallbackAttempts({
       config, session: currentSession, initialEngine: engine, initialResult, initialOpts, employee,
       getEngine: (name) => context.sessionManager.getEngine(name), run: runTurn, shouldStop, prepareOptions,
@@ -3016,7 +3018,7 @@ async function runWebSession(
     const wasInterrupted = result.error?.startsWith("Interrupted");
     const rateLimit = !wasInterrupted ? detectRateLimit(result) : { limited: false as const };
 
-    if (rateLimit.limited && fallback.engine.name === "claude") recordClaudeRateLimit(rateLimit.resetsAt);
+    if (rateLimit.limited && fallback.engine.name === "claude" && !isClaudeEndpointRun(fallback.engine.name, fallback.session.model)) recordClaudeRateLimit(rateLimit.resetsAt);
     if (rateLimit.limited && !fallback.attempted) {
       recordTurnAccounting(currentSession.id, result);
       const engineLabel = fallback.engine.name;
@@ -3106,7 +3108,7 @@ async function runWebSession(
 
           if (retryRateLimit.limited) {
             recordTurnAccounting(currentSession.id, retryResult);
-            if (engine.name === "claude") recordClaudeRateLimit(retryRateLimit.resetsAt);
+            if (engine.name === "claude" && !isClaudeEndpointRun(engine.name, currentSession.model)) recordClaudeRateLimit(retryRateLimit.resetsAt);
             logger.info(`Web session ${currentSession.id} still rate limited (attempt ${attempt})`);
 
             const next = computeNextRetryDelayMs(retryRateLimit.resetsAt);

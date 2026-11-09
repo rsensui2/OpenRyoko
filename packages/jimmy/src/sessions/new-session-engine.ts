@@ -18,6 +18,7 @@ import { compatibleEffort } from "../models/families.js";
 import { resolveFallbackEngine, resolveSubstituteModel } from "../shared/engine-fallback.js";
 import { effortLevelsForModel, getModelRegistry } from "../shared/models.js";
 import { logger } from "../shared/logger.js";
+import { isClaudeEndpointRun } from "../shared/claude-endpoints.js";
 import type { Employee, Engine, JinnConfig, Session } from "../shared/types.js";
 import { fallbackConfig } from "./engine-fallback.js";
 import { claimUsageLimitAnnouncement, exhaustedRecordFor, HEALTH_OVERRIDE_SOURCE, isUsableFallbackTarget } from "./engine-health-gate.js";
@@ -83,6 +84,8 @@ function rerouted(
 ): HealthyStart {
   if (preference.engine !== undefined || preference.model !== undefined) return { session };
   if (config.sessions?.rateLimitStrategy === "wait" || session.workflowProvenance || preference.employee?.sshHost) return { session };
+  // An endpoint model does not depend on the Anthropic allowance recorded under "claude".
+  if (isClaudeEndpointRun(session.engine, session.model)) return { session };
 
   const from = session.engine;
   const record = exhaustedRecordFor(from, session.model ?? engineSection(config, from)?.model, now);

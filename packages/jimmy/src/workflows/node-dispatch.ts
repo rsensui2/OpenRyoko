@@ -10,6 +10,7 @@ import type { WorkflowRepository } from "./repository.js";
 import type { ResolvedEmployeeConfig, WorkflowError, WorkflowRunDetail } from "./runtime.js";
 import type { WorkflowSessionExecutor } from "./session-executor.js";
 import type { WorkflowTodoDispatchOverride } from "./todo-ports.js";
+import { claudeEndpointAllowsFallback, isClaudeEndpointRun } from "../shared/claude-endpoints.js";
 
 /**
  * What a run's bindings see, and what an Employee node's attempt actually runs
@@ -131,6 +132,8 @@ function recordAttemptHealth(attempt: WorkflowRunDetail["attempts"][number] | un
   if (!attempt) return;
   const availability = engineAvailabilityFailure(attempt.error);
   if (!availability) return;
+  // A failure on a Claude endpoint says nothing about the Anthropic account.
+  if (isClaudeEndpointRun(attempt.resolvedConfig.engine, attempt.resolvedConfig.model)) return;
   recordEngineUnavailable(attempt.resolvedConfig.engine, availability.reason, availability.resetsAt);
 }
 
@@ -154,7 +157,9 @@ function dispatchTarget(
   const base = resolveTarget(pinned, employee, options.models);
   const failed = run.attempts.filter((attempt) => attempt.nodeId === node.id).at(-1);
   recordAttemptHealth(failed);
-  const substitutedFrom = selectSubstituteEngine(run, node.id, base.engine, failed?.error, substituteDeps(options));
+  // Work for a Claude endpoint stays there unless that endpoint opts in.
+  const keepOnEndpoint = isClaudeEndpointRun(base.engine, base.model) && !claudeEndpointAllowsFallback(base.model);
+  const substitutedFrom = keepOnEndpoint ? undefined : selectSubstituteEngine(run, node.id, base.engine, failed?.error, substituteDeps(options));
   const own = Boolean(pinned.engine || pinned.model);
   if (!substitutedFrom) return { ...base, pinned: own };
   const stood = resolveTarget({ engine: substitutedFrom.engine, model: options.engineFallback?.modelFor?.(base.engine, substitutedFrom.engine, base.model) }, employee, options.models);
@@ -178,6 +183,8 @@ export function hasSubstitute(
   failure: WorkflowError,
   options: DispatchResolutionDeps,
 ): boolean {
+  const { engine, model } = attempt.resolvedConfig;
+  if (isClaudeEndpointRun(engine, model) && !claudeEndpointAllowsFallback(model)) return false;
   return selectSubstituteEngine(run, attempt.nodeId, substitutionBase(attempt), failure, substituteDeps(options)) !== undefined;
 }
 
