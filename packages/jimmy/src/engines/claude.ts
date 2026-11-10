@@ -5,6 +5,7 @@ import { isDeadSessionError } from "../shared/rateLimit.js";
 import { resolveBin, formatSpawnError } from "../shared/resolveBin.js";
 import { buildChildEnv, CLAUDE_LOCAL_ENV } from "../shared/childEnv.js";
 import { claudeAutoMemoryEnvFor } from "../shared/claude-auto-memory.js";
+import { findClaudeEndpoint, isClaudeEndpointRun, withClaudeEndpointEnv } from "../shared/claude-endpoints.js";
 import { lastActivityAt, startedRun, withOutput, withStreamLine, type ClaudeRunActivity } from "./claude-activity.js";
 
 interface LiveProcess {
@@ -304,19 +305,39 @@ export class ClaudeEngine implements InterruptibleEngine {
       if (opts.mcpConfigPath) {
         logger.warn(`SSH employee: --mcp-config is not available on remote host ${opts.sshHost}`);
       }
+      // An endpoint's URL and key do not travel to the remote host, whose own
+      // Claude would send the model to Anthropic instead.
+      if (isClaudeEndpointRun("claude", opts.model)) {
+        const message = `Model ${opts.model} runs on a Claude endpoint, which an SSH employee (${opts.sshHost}) cannot use`;
+        logger.error(message);
+        return { sessionId: opts.resumeSessionId || "", result: "", error: message, retryable: false };
+      }
       logger.info(
         `Claude engine (one-shot) starting via SSH ${opts.sshHost}: ${remoteBin} -p --output-format ${streaming ? "stream-json" : "json"} --model ${opts.model || "default"} (resume: ${opts.resumeSessionId || "none"})`,
       );
     } else {
+      // A model served by engines.claude.endpoints runs against that server.
+      // A missing key fails the run here rather than letting it reach Anthropic.
       spawnBin = resolveBin(requestedBin);
       spawnArgs = args;
       spawnCwd = opts.cwd;
       // Local only — a value set here is not forwarded to the remote process
       // over the SSH branch above, and a /logout there is that host's own CLI
       // (see CLAUDE_LOCAL_ENV).
-      spawnEnv = { ...buildChildEnv(), ...claudeAutoMemoryEnvFor(opts.cwd || process.cwd()), ...CLAUDE_LOCAL_ENV };
+      try {
+        spawnEnv = withClaudeEndpointEnv(
+          { ...buildChildEnv(), ...claudeAutoMemoryEnvFor(opts.cwd || process.cwd()), ...CLAUDE_LOCAL_ENV },
+          opts.model,
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.error(message);
+        return { sessionId: opts.resumeSessionId || "", result: "", error: message, retryable: false };
+      }
+      const endpoint = findClaudeEndpoint(opts.model);
+      const via = endpoint ? ` via ${endpoint.name} (${endpoint.baseUrl})` : "";
       logger.info(
-        `Claude engine (one-shot) starting: ${spawnBin} -p --output-format ${streaming ? "stream-json" : "json"} --model ${opts.model || "default"} (resume: ${opts.resumeSessionId || "none"})`,
+        `Claude engine (one-shot) starting: ${spawnBin} -p --output-format ${streaming ? "stream-json" : "json"} --model ${opts.model || "default"}${via} (resume: ${opts.resumeSessionId || "none"})`,
       );
     }
 

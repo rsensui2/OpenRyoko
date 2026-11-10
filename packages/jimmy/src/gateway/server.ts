@@ -13,6 +13,7 @@ import { loadConfig } from "../shared/config.js";
 import { configErrorForLog } from "../shared/config-file.js";
 import { startAttachmentSweep } from "../shared/attachments.js";
 import { claudeAutoMemoryEnvFor, configureClaudeAutoMemory } from "../shared/claude-auto-memory.js";
+import { configureClaudeEndpoints } from "../shared/claude-endpoints.js";
 import { resolveAssistantName } from "../shared/assistant-identity.js";
 import { getTriageCapabilities, invalidateTriageCapabilities } from "../shared/triage-capabilities.js";
 import { invalidateModelRegistry } from "../shared/models.js";
@@ -245,6 +246,7 @@ export async function startGateway(
 
   // Set up engines
   configureClaudeAutoMemory(config.engines?.claude?.autoMemory);
+  applyClaudeEndpoints(config);
   // Resolve once at boot so un-migrated notes are reported in the startup log,
   // not only when the first Claude session happens to spawn.
   claudeAutoMemoryEnvFor(JINN_HOME);
@@ -827,6 +829,7 @@ export async function startGateway(
     // responsible for updating apiContext.config too.
     currentConfig = fresh;
     invalidateModelRegistry(); // rebuild the model/capability registry from the new config
+    applyClaudeEndpoints(fresh);
     sessionManager.setConfig(fresh);
 
     // Order:
@@ -1249,6 +1252,7 @@ export async function startGateway(
         // even when the connectors block didn't change.
         sessionManager.setConfig(currentConfig);
         configureClaudeAutoMemory(currentConfig.engines?.claude?.autoMemory);
+        applyClaudeEndpoints(currentConfig);
         warnEngineFallbackConfigProblems(currentConfig); // each problem is reported once
         logger.info("Config reloaded successfully");
         emit("config:reloaded", {});
@@ -1530,4 +1534,10 @@ export async function startGateway(
 
     logger.info("Gateway shutdown complete");
   };
+}
+
+/** Load engines.claude.endpoints (boot and every reload). Endpoint models run
+ *  headless even when engines.claude.interactive is on (see claude-interactive.ts). */
+function applyClaudeEndpoints(config: JinnConfig): void {
+  configureClaudeEndpoints(config.engines?.claude?.endpoints, config.engines?.claude?.model);
 }

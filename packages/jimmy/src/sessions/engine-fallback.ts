@@ -4,6 +4,7 @@ import { isInterruptibleEngine } from "../shared/types.js";
 import { resolveFallbackEngine, resolveSubstituteModel } from "../shared/engine-fallback.js";
 import { effortLevelsForModel, getModelRegistry } from "../shared/models.js";
 import { logger } from "../shared/logger.js";
+import { claudeEndpointAllowsFallback, isClaudeEndpointRun } from "../shared/claude-endpoints.js";
 import { detectRateLimit, MAX_OBSERVED_PROGRESS_CHARS, MAX_USAGE_LIMIT_WAIT_MS, usageLimitOutlastsWait, withEarlierProgress } from "../shared/rateLimit.js";
 import { recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { redactText } from "../shared/redact.js";
@@ -144,7 +145,7 @@ const RESET_DAY_AND_TIME: Intl.DateTimeFormatOptions = { weekday: "short", day: 
  * result out of the wait: it is no longer something to retry.
  */
 export function failLimitThatOutlastsTheWait(
-  outcome: { result: EngineResult; engine: Engine; attempted: boolean; session?: Pick<Session, "id"> },
+  outcome: { result: EngineResult; engine: Engine; attempted: boolean; session?: Pick<Session, "id"> & Partial<Pick<Session, "model">> },
   nowMs = Date.now(),
 ): EngineResult {
   const { result, engine } = outcome;
@@ -154,7 +155,7 @@ export function failLimitThatOutlastsTheWait(
   const limit = detectRateLimit(result);
   if (!limit.limited || limit.resetsAt === undefined || !usageLimitOutlastsWait(limit.resetsAt, nowMs)) return result;
   const resetsAt = new Date(limit.resetsAt * 1000);
-  if (engine.name === "claude") recordClaudeRateLimit(limit.resetsAt); // what entering the wait would have noted
+  if (engine.name === "claude" && !isClaudeEndpointRun(engine.name, outcome.session?.model)) recordClaudeRateLimit(limit.resetsAt); // what entering the wait would have noted
   logger.info(`Session ${outcome.session?.id ?? "(unknown)"} hit ${engine.name} usage limit that resets at ${resetsAt.toISOString()} — ` +
     `further off than the ${Math.round(MAX_USAGE_LIMIT_WAIT_MS / 3_600_000)}h a turn waits, so it fails now instead of waiting`);
   // Marked as what it is, so that a cron job's channel is not told of the
@@ -258,7 +259,10 @@ export async function runEngineWithResponseTimeout(
   } })).catch((error): EngineResult => ({ sessionId: opts.resumeSessionId ?? "", result: "", error: error instanceof Error ? error.message : String(error) }));
   // Every engine attempt — connector, cron, workflow, web — settles here, so a
   // lost provider login is noticed whichever path ran the turn.
-  void running.then((result) => reportEngineAttempt(engine.name, opts, result));
+  // A turn on a Claude endpoint (a non-Anthropic server) says nothing about
+  // the Anthropic login or allowance kept under the "claude" name.
+  const endpointRun = isClaudeEndpointRun(engine.name, opts.model);
+  if (!endpointRun) void running.then((result) => reportEngineAttempt(engine.name, opts, result));
   const withProgress = (result: EngineResult): EngineResult => {
     const progress = [streamedText, toolProgress.length ? `Observed tool events (verify their effects before continuing):\n${toolProgress.join("\n")}` : ""].filter(Boolean).join("\n\n");
     const annotated = progress ? { ...result, handoffContext: redactText(progress).slice(-MAX_OBSERVED_PROGRESS_CHARS) } : result;
@@ -275,7 +279,7 @@ export async function runEngineWithResponseTimeout(
       // stated limit is remembered for the next session, a served turn that
       // started after it forgets it. A run over SSH used the remote machine's
       // account and says nothing.
-      if (!opts.sshHost) noteEngineTurnOutcome(engine.name, result, opts.model, new Date(), startedAt);
+      if (!opts.sshHost && !endpointRun) noteEngineTurnOutcome(engine.name, result, opts.model, new Date(), startedAt);
       return result;
     }
     stopped = true;
@@ -385,7 +389,10 @@ export async function runFallbackAttempts(options: EngineFallbackOptions): Promi
   while (config.sessions?.rateLimitStrategy !== "wait" && !session.workflowProvenance) {
     const reason = engineFallbackFailure(result);
     if (!reason || options.shouldStop?.() || !getSession(session.id)) break;
-    if (reason === "rate_limit" && engine.name === "claude") recordClaudeRateLimit(detectRateLimit(result).resetsAt);
+    const endpointRun = isClaudeEndpointRun(engine.name, session.model);
+    // Work for a Claude endpoint stays there unless that endpoint opts in.
+    if (endpointRun && !claudeEndpointAllowsFallback(session.model)) break;
+    if (reason === "rate_limit" && engine.name === "claude" && !endpointRun) recordClaudeRateLimit(detectRateLimit(result).resetsAt);
     // A candidate known to be out of allowance, or known to be missing from
     // this machine, cannot take the turn: the walk moves on to the next member
     // and, with none left, the failure is returned as it was before.
@@ -478,7 +485,8 @@ export async function runFallbackAttempts(options: EngineFallbackOptions): Promi
       // Take it back — engine, model, effort, and the override this switch
       // made — leave the engine out of fallback for a while, and carry on from
       // the failure the session had before, as if it had never been a candidate.
-      confirmLoginRefusal(targetName);
+      // An endpoint refusing a key says nothing about the Anthropic login.
+      if (!isClaudeEndpointRun(targetName, session.model)) confirmLoginRefusal(targetName);
       logger.warn(`Fallback to ${targetName} taken back for session ${session.id}: it cannot sign in (${errorSummary(result)}). ` +
         `Not offering it sessions for ${Math.round(LOGIN_REFUSAL_HOLD_MS / 60_000)} minutes — sign it in on this machine to use it as a fallback.`);
       stopEngineFor(target, session.id, ENGINE_SWITCHED); // the session leaves it again

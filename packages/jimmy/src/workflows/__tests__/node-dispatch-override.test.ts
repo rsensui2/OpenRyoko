@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Employee, JinnConfig, ModelRegistry } from '../../shared/types.js';
 import { buildRegistry } from '../../shared/models.js';
 import type { EmployeeNode, WorkflowDefinition, WorkflowNode } from '../model.js';
-import { resolveDispatch, type DispatchResolutionDeps } from '../node-dispatch.js';
+import { hasSubstitute, resolveDispatch, type DispatchResolutionDeps } from '../node-dispatch.js';
+import { configureClaudeEndpoints, resetClaudeEndpointsForTests } from '../../shared/claude-endpoints.js';
 import { openWorkflowDatabase } from '../repository-migrations.js';
 import { WorkflowRepository } from '../repository.js';
 import type { WorkflowRunDetail } from '../runtime.js';
@@ -224,5 +225,46 @@ describe('resolveDispatch and the chain substitution', () => {
     expect(resolved.engine).toBe('claude');
     expect(resolved.model).not.toBe('gpt-5.5');
     expect(MODELS.claude.models.map((model) => model.id)).toContain(resolved.model);
+  });
+});
+
+describe('a node on a Claude endpoint model', () => {
+  const LOCAL_WORKER = { ...WORKER, engine: 'claude', model: 'local-model' } as unknown as Employee;
+  const LOCAL_MODELS = { ...MODELS, claude: { ...MODELS.claude,
+    models: [...MODELS.claude.models, { id: 'local-model', supportsEffort: false, effortLevels: [] }] } } as unknown as ModelRegistry;
+  const localDeps: DispatchResolutionDeps = {
+    ...deps(), employees: () => new Map([['worker', LOCAL_WORKER]]), models: () => LOCAL_MODELS,
+    engineFallback: { chainFor: (engine) => (engine === 'claude' ? ['codex'] : []) },
+  };
+
+  function afterEndpointOutage(): WorkflowRunDetail {
+    const detail = run('JIN-1');
+    detail.attempts = [{
+      nodeId: 'work', attempt: 1, error: { code: 'workflow-step-failed', message: 'Claude usage limit reached' },
+      resolvedConfig: { employeeId: 'worker', engine: 'claude', model: 'local-model' },
+    }] as unknown as WorkflowRunDetail['attempts'];
+    return detail;
+  }
+
+  function endpoint(fallback: boolean) {
+    process.env.TEST_LOCAL_KEY = 'k';
+    configureClaudeEndpoints([{ name: 'local-mac', baseUrl: 'http://100.64.0.10:1236', apiKeyEnv: 'TEST_LOCAL_KEY', fallback, models: ['local-model'] }]);
+  }
+
+  afterEach(() => {
+    resetClaudeEndpointsForTests();
+    delete process.env.TEST_LOCAL_KEY;
+  });
+
+  it('stays on the endpoint after a failure instead of moving to the chain', () => {
+    endpoint(false);
+    const detail = afterEndpointOutage();
+    expect(resolveDispatch(detail, employeeNode(), localDeps)).toMatchObject({ engine: 'claude', model: 'local-model' });
+    expect(hasSubstitute(detail, detail.attempts[0], detail.attempts[0].error!, localDeps)).toBe(false);
+  });
+
+  it('moves to the chain when the endpoint opts in', () => {
+    endpoint(true);
+    expect(resolveDispatch(afterEndpointOutage(), employeeNode(), localDeps).engine).toBe('codex');
   });
 });

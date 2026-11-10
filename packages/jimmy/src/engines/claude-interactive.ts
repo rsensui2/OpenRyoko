@@ -4,6 +4,7 @@ import path from "node:path";
 import * as pty from "node-pty";
 import type { InterruptibleEngine, EngineRunOpts, EngineResult, EngineRateLimitInfo, StreamDelta } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
+import { isClaudeEndpointRun } from "../shared/claude-endpoints.js";
 import { JINN_HOME, CLAUDE_SETTINGS_DIR, HOOK_RELAY_SCRIPT } from "../shared/paths.js";
 import { writeSessionSettings } from "../shared/claude-settings.js";
 import { awaitFreshClaudeCredentials } from "../shared/claude-oauth-gate.js";
@@ -696,6 +697,15 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
     // which OpenRyoko runs over SSH. Falls through to local PTY when no fallback wired.
     if (opts.sshHost && this.remoteFallback) {
       return this.remoteFallback.run(opts);
+    }
+    // A model served by engines.claude.endpoints runs headless against that
+    // server; the PTY's proxy only speaks to Anthropic.
+    if (isClaudeEndpointRun("claude", opts.model)) {
+      // Drop a warm PTY: its in-memory conversation would miss this turn if the
+      // session later returns to the Anthropic model it was spawned with.
+      if (opts.sessionId) this.lifecycle.releaseSession(opts.sessionId);
+      if (this.remoteFallback) return this.remoteFallback.run(opts);
+      return { sessionId: opts.resumeSessionId ?? "", result: "", error: `Model ${opts.model} runs on a Claude endpoint, which needs the headless engine`, retryable: false };
     }
     const jinnSessionId = opts.sessionId;
     if (!jinnSessionId) throw new Error("InteractiveClaudeEngine.run requires opts.sessionId");

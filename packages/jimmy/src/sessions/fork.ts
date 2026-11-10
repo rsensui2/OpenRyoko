@@ -14,6 +14,7 @@ import { v4 as uuidv4 } from "uuid";
 import { logger } from "../shared/logger.js";
 import { CLAUDE_LOCAL_ENV } from "../shared/childEnv.js";
 import { claudeAutoMemoryEnvFor } from "../shared/claude-auto-memory.js";
+import { findClaudeEndpoint, withClaudeEndpointEnv } from "../shared/claude-endpoints.js";
 
 export interface ForkResult {
   engineSessionId: string;
@@ -21,22 +22,29 @@ export interface ForkResult {
 
 /**
  * Fork a Claude Code CLI session using --fork-session.
- * Returns the new engine session ID from the fork.
+ * Returns the new engine session ID from the fork. The fork runs one turn, so a
+ * session on a Claude endpoint forks there, with its model, never on Anthropic.
  */
-export function forkClaudeSession(engineSessionId: string, cwd: string): ForkResult {
+export function forkClaudeSession(engineSessionId: string, cwd: string, model?: string): ForkResult {
   logger.info(`Forking Claude session ${engineSessionId} in ${cwd}`);
 
+  const endpoint = findClaudeEndpoint(model);
+  const env = withClaudeEndpointEnv(
+    { ...process.env, PATH: process.env.PATH, ...claudeAutoMemoryEnvFor(cwd), ...CLAUDE_LOCAL_ENV },
+    model,
+  );
   const result = execFileSync("claude", [
     "--resume", engineSessionId,
     "--fork-session",
     "--print",
     "--output-format", "json",
+    ...(endpoint && model ? ["--model", model] : []),
     "-p", "Session duplicated — this is a snapshot of the original conversation.",
   ], {
     cwd,
     encoding: "utf-8",
     timeout: 60_000,
-    env: { ...process.env, PATH: process.env.PATH, ...claudeAutoMemoryEnvFor(cwd), ...CLAUDE_LOCAL_ENV },
+    env,
   });
 
   const lastLine = result.trim().split("\n").pop();
@@ -130,10 +138,10 @@ export function forkGeminiSession(engineSessionId: string): ForkResult {
 /**
  * Fork an engine session based on engine type.
  */
-export function forkEngineSession(engine: string, engineSessionId: string, cwd: string): ForkResult {
+export function forkEngineSession(engine: string, engineSessionId: string, cwd: string, model?: string): ForkResult {
   switch (engine) {
     case "claude":
-      return forkClaudeSession(engineSessionId, cwd);
+      return forkClaudeSession(engineSessionId, cwd, model);
     case "codex":
       return forkCodexSession(engineSessionId);
     case "gemini":

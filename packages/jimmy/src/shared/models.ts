@@ -6,6 +6,7 @@ import type {
   EffortMechanism,
   EngineModelsConfig,
 } from "./types.js";
+import { claudeEndpointModels } from "./claude-endpoints.js";
 
 /**
  * Model + capability registry — the single source of truth for which engines and
@@ -207,7 +208,7 @@ export function contextWindowForModel(config: JinnConfig, engine: string, modelI
 export function buildRegistry(config: JinnConfig): ModelRegistry {
   const synthesized = synthesizeFromEngineConfig(config);
   const block = config.models;
-  if (!block) return synthesized;
+  if (!block) return withClaudeEndpointModels(config, synthesized);
 
   const registry: ModelRegistry = {};
   for (const name of ENGINE_NAMES) {
@@ -216,7 +217,20 @@ export function buildRegistry(config: JinnConfig): ModelRegistry {
       ? fromEngineModelsConfig(name, engineBlock)
       : synthesized[name]; // engine omitted from the block → keep the synthesized entry
   }
-  return registry;
+  return withClaudeEndpointModels(config, registry);
+}
+
+/** Append the models `engines.claude.endpoints` serves. They are declared
+ *  explicitly, so an explicit `models:` block does not hide them. */
+function withClaudeEndpointModels(config: JinnConfig, registry: ModelRegistry): ModelRegistry {
+  const entry = registry.claude;
+  const extra = claudeEndpointModels(config.engines?.claude?.endpoints);
+  if (!entry || extra.length === 0) return registry;
+  const known = new Set(entry.models.map((m) => m.id));
+  return {
+    ...registry,
+    claude: { ...entry, models: [...entry.models, ...extra.filter((m) => !known.has(m.id))] },
+  };
 }
 
 /** Keep the configured default first and add built-in models without duplicates. */
