@@ -623,14 +623,14 @@ export class SlackConnector implements Connector {
       // Fast paths that bypass the LLM triage entirely:
       //   - DMs: 1:1 context is implicitly addressed to the bot
       //   - Explicit @-mention: always reply
-      //   - DM-equivalent conversation: bot has engaged AND only this user has
-      //     spoken in a recent conversation, or a structured request is awaiting
-      //     that user. Reactions alone never grant this bypass.
-      //   - Solo thread: past that conversation, the thread history shows that
-      //     only this user and the bot have spoken (see inSoloThread above),
-      //     and the message does not open by addressing a group.
+      //   - DM-equivalent channel conversation: bot has engaged AND only this
+      //     user has spoken recently, or a structured request awaits that user.
+      //   - Solo thread: complete Slack history shows that only this user and
+      //     the bot have spoken, and the message does not address someone else.
+      // The tracker alone cannot prove a thread is one-to-one: it can miss
+      // earlier participants, allowFrom-rejected users and other bots.
       const ambient = triageEnabled && channelType !== "im" && !wasMentioned;
-      const trackedDmEquivalent = ambient && this.conversations.isDmEquivalent(conversationKey);
+      const trackedDmEquivalent = ambient && !threadTs && this.conversations.isDmEquivalent(conversationKey);
       const soloThread = ambient && !trackedDmEquivalent &&
         !opensByAddressingOthers(rawText, this.botUserId ?? "") && await inSoloThread();
       const isDmEquivalent = trackedDmEquivalent || soloThread;

@@ -168,7 +168,7 @@ describe("Slack conversation routing integration", () => {
     expect(runTriage).not.toHaveBeenCalled();
   });
 
-  it("actual reply grants membership; idle expiry returns followups to triage", async () => {
+  it("actual reply grants membership but multi-human followups still go through triage", async () => {
     const f = await fixture(true);
     // A second person keeps the thread out of the solo-thread route, which
     // would otherwise answer the follow-up after idle expiry as well.
@@ -180,10 +180,10 @@ describe("Slack conversation routing integration", () => {
     await f.event("<@URYOKO> 調査して");
     await f.connector.replyMessage({ channel: "C1", thread: "1.000" }, "調べました");
     await f.event("補足して");
-    expect(runTriage).not.toHaveBeenCalled();
+    expect(runTriage).toHaveBeenCalledTimes(1);
     f.advance();
     await f.event("次の話です");
-    expect(runTriage).toHaveBeenCalledTimes(1);
+    expect(runTriage).toHaveBeenCalledTimes(2);
     expect(f.handler).toHaveBeenCalledTimes(3);
   });
 
@@ -204,6 +204,10 @@ describe("Slack conversation routing integration", () => {
 
   it("pending input survives idle and an observation addressed to another user", async () => {
     const f = await fixture(true);
+    f.replies.mockResolvedValue({ messages: [
+      { ts: "1.000", user: "U1", text: "<@URYOKO> 調査して" },
+      { ts: "3.000", user: "URYOKO", bot_id: "B1", text: "どちらにしますか" },
+    ] });
     await f.connector.replyMessage({ channel: "C1", thread: "1.000" }, "どちらにしますか");
     f.connector.setConversationState({ channel: "C1", thread: "1.000" }, "awaiting_input", "U1");
     f.advance();
@@ -231,6 +235,10 @@ describe("Slack conversation routing integration", () => {
 
   it("a thread answer consumes and completes its original root conversation", async () => {
     const f = await fixture();
+    f.replies.mockResolvedValue({ messages: [
+      { ts: "1.000", user: "U1", text: "<@URYOKO> 調査して" },
+      { ts: "3.000", user: "URYOKO", bot_id: "B1", text: "A案とB案、どちらですか？" },
+    ] });
     await f.event("<@URYOKO> 調査して", { thread_ts: undefined, ts: "1.000" });
     const root = f.connector.reconstructTarget(f.handler.mock.calls[0][0].replyContext);
     await f.connector.replyMessage(root, "A案とB案、どちらですか？");
@@ -304,6 +312,75 @@ describe("Slack conversation routing integration", () => {
     await f.event("<@URYOKO> お願い");
     expect(f.handler).toHaveBeenCalledTimes(2);
     expect(runTriage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a participant from before the bot joined", "U2", false],
+    ["a participant excluded by allowFrom", "U2", true],
+    ["another bot", "UOTHERBOT", false],
+  ] as const)("does not bypass triage in an active thread with %s", async (_label, other, restricted) => {
+    const f = await fixture(true);
+    if (restricted) Object.assign(f.connector, { allowedUsers: new Set(["U1"]) });
+    f.replies.mockResolvedValue({ messages: [
+      { ts: "1.000", user: other, ...(other === "UOTHERBOT" ? { bot_id: "B2" } : {}), text: "最初の相談です" },
+      { ts: "2.000", user: "U1", text: "<@URYOKO> 調査して" },
+      { ts: "3.000", user: "URYOKO", bot_id: "B1", text: "調べました" },
+    ] });
+    await f.event("<@URYOKO> 調査して", { ts: "2.000" });
+    const target = f.connector.reconstructTarget(f.handler.mock.calls[0][0].replyContext);
+    await f.connector.replyMessage(target, "調べました");
+    if (restricted) {
+      await f.event("人間同士の相談です", { user: other, ts: "3.500" });
+      expect(f.handler).toHaveBeenCalledTimes(1);
+      expect(runTriage).not.toHaveBeenCalled();
+    }
+    vi.mocked(runTriage).mockResolvedValue({ action: "silent" });
+    await f.event("泉水さん、ご対応ありがとうございました", { ts: "4.000" });
+    expect(runTriage).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(runTriage).mock.calls[0][0].dmEquivalent).toBeFalsy();
+    expect(f.handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not use active-thread tracking when the history is unavailable", async () => {
+    const f = await fixture(true);
+    await f.event("<@URYOKO> 調査して");
+    await f.connector.replyMessage(f.connector.reconstructTarget(f.handler.mock.calls[0][0].replyContext), "調べました");
+    f.replies.mockRejectedValue(new Error("ratelimited"));
+    vi.mocked(runTriage).mockResolvedValue({ action: "silent" });
+    await f.event("泉水さん、ありがとうございます", { ts: "5.000" });
+    expect(runTriage).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(runTriage).mock.calls[0][0].contextIncomplete).toBe(true);
+    expect(f.handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not bypass triage for a group-addressed message in a live solo thread", async () => {
+    const f = await fixture(true);
+    f.replies.mockResolvedValue({ messages: [
+      { ts: "1.000", user: "U1", text: "<@URYOKO> 調査して" },
+      { ts: "3.000", user: "URYOKO", bot_id: "B1", text: "調べました" },
+    ] });
+    await f.event("<@URYOKO> 調査して", { ts: "2.000" });
+    await f.connector.replyMessage(f.connector.reconstructTarget(f.handler.mock.calls[0][0].replyContext), "調べました");
+    vi.mocked(runTriage).mockResolvedValue({ action: "silent" });
+    await f.event("<!here> 確認お願いします", { ts: "4.000" });
+    expect(runTriage).toHaveBeenCalledTimes(1);
+    expect(f.handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps strict mention and allowFrom gates ahead of history and triage", async () => {
+    const f = await fixture(true);
+    Object.assign(f.connector, {
+      allowedUsers: new Set(["U1"]),
+      respondTo: { channel: "mention", engagedThreads: false },
+    });
+    await f.event("<@URYOKO> 調査して");
+    await f.connector.replyMessage(f.connector.reconstructTarget(f.handler.mock.calls[0][0].replyContext), "調べました");
+    f.replies.mockClear();
+    await f.event("メンションなしの続き", { ts: "5.000" });
+    await f.event("<@URYOKO> 調査して", { user: "U2", ts: "6.000" });
+    expect(f.handler).toHaveBeenCalledTimes(1);
+    expect(runTriage).not.toHaveBeenCalled();
+    expect(f.replies).not.toHaveBeenCalled();
   });
 
   it("shows eyes before dispatching accepted work, but only the chosen emoji for acknowledgment", async () => {
@@ -404,13 +481,15 @@ describe("Slack routing in a thread where only one person and the bot have spoke
     expect(f.handler).toHaveBeenCalledTimes(1);
   });
 
-  it("does not read the thread while the tracked conversation is still live", async () => {
+  it("checks the thread even while the tracked conversation is still live", async () => {
     const f = await fixture();
+    f.replies.mockResolvedValue(solo);
     await f.event("<@URYOKO> 調べて");
     await f.connector.replyMessage(f.connector.reconstructTarget(f.handler.mock.calls[0][0].replyContext), "調べました");
     await f.event("補足して", { ts: "5.000" });
     expect(f.handler).toHaveBeenCalledTimes(2);
-    expect(historyReads(f.replies)).toBe(0);
+    expect(runTriage).not.toHaveBeenCalled();
+    expect(historyReads(f.replies)).toBe(1);
   });
 
   it("still lets a bare thanks get a reaction, reading the thread once", async () => {
