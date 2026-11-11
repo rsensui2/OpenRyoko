@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026.11.12
+
+### Fixed
+
+- Check Slack thread history before bypassing air-reading triage for a conversation treated as one-to-one. The local conversation tracker can miss people who spoke before the bot joined, people excluded by `allowFrom`, and other bots. Their presence now returns non-mentioned thread messages to normal triage instead of automatically replying. Incomplete or unavailable history also goes through triage. Direct messages, explicit mentions, channel-level conversations, and response-policy defaults are unchanged.
+- Apply the existing group-addressing check to active threads as well, so an opening `@here`, `@channel`, or user-group mention goes through triage rather than being treated as a direct request to the bot.
+
+### Upgrade notes
+
+- With triage enabled, non-mentioned thread messages can require additional Slack history reads, bounded by the existing four-page limit and shared within each message. A thread confirmed to contain only the current person and the bot still bypasses triage.
+- `respondTo.engagedThreads` still defaults to `true`. For strict mention-only channel replies, set `respondTo.channel: mention` and `respondTo.engagedThreads: false`. `allowFrom` still applies before mention handling. This release does not change behavior when triage is disabled.
+
 ## 2026.11.10
 
 ### Added
