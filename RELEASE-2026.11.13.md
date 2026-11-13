@@ -22,3 +22,5 @@ This gives Codex a chance but does not guarantee it. Codex measures silence on i
 Use Node.js `^22.23.4`, `^24.22.1`, or `^26.12.1`. Install `openryoko@2026.11.13` using your existing deployment method, run `ryoko migrate` in the environment running the gateway, and restart it through its existing service manager. For Docker installations, rebuild and recreate the service with the new package; preserve the instance home and other mounted data.
 
 The migration reports the behavior change and updates only `jinn.version`. It does not change the response timeout, jobs, instructions, or memory.
+
+Fix: [#122](https://github.com/rsensui2/OpenRyoko/pull/122).
