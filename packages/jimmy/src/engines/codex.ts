@@ -10,6 +10,15 @@ interface LiveProcess {
 }
 
 /**
+ * Codex's in-turn retries: a stream reconnect (a top-level `error` event) and the
+ * switch from WebSockets to HTTPS (an `error` item, which codex documents as
+ * non-fatal). The turn carries on after either. Streamed as status, not error.
+ */
+const RETRY_NOTICE = /^(?:Reconnecting\.\.\. (?:\d+\/\d+\b|waiting for network)|Falling back from WebSockets to HTTPS transport\.)/;
+/** Codex's wait for the network has no limit, so its notices are not activity. */
+const OFFLINE_NOTICE = /^Reconnecting\.\.\. waiting for network/;
+
+/**
  * Context-meter source for Codex: the `turn.completed` event carries a `usage`
  * object whose `input_tokens` reflects how full the context window currently is.
  * Defensive — returns undefined on any shape mismatch so it can never break the
@@ -92,7 +101,12 @@ export class CodexEngine implements InterruptibleEngine {
       let resultText = "";
       let numTurns = 0;
       let lastContextTokens: number | undefined;
+      // codex exec exits non-zero exactly when the turn failed; an `error` event or
+      // item before a clean exit was a warning or a retry it recovered from. So only
+      // `turn.failed` fails a run that exited 0, and the last error is kept to
+      // explain a run that did not.
       let turnError: string | null = null;
+      let lastError: string | null = null;
       let lineBuf = "";
       const onStream = opts.onStream || null;
       const STDERR_MAX = 10 * 1024; // 10KB rolling window for error reporting
@@ -127,8 +141,15 @@ export class CodexEngine implements InterruptibleEngine {
               if (onStream) onStream(parsed.delta);
               break;
             case "error":
-              turnError = parsed.message;
+              lastError = parsed.message;
               if (onStream) onStream({ type: "error", content: parsed.message });
+              break;
+            case "notice":
+              logger.info(`[codex] ${parsed.message.slice(0, 200)}`);
+              // A bounded retry ends in an answer or a failure, so the response watchdog may
+              // count it as activity. Codex's wait for the network does not end: during an
+              // outage the turn must still time out and reach the fallback engine.
+              if (onStream && !OFFLINE_NOTICE.test(parsed.message)) onStream({ type: "status", content: parsed.message });
               break;
             case "usage":
               numTurns++;
@@ -180,7 +201,7 @@ export class CodexEngine implements InterruptibleEngine {
                 if (typeof parsed.contextTokens === "number") lastContextTokens = parsed.contextTokens;
                 break;
               case "error":
-                turnError = parsed.message;
+                lastError = parsed.message;
                 break;
               case "turn_failed":
                 turnError = parsed.message;
@@ -214,7 +235,7 @@ export class CodexEngine implements InterruptibleEngine {
           return;
         }
 
-        const errMsg = turnError || `Codex exited with code ${code}: ${stderr.slice(0, 500)}`;
+        const errMsg = turnError || lastError || `Codex exited with code ${code}: ${stderr.slice(0, 500)}`;
         logger.error(errMsg);
         resolve({
           sessionId: threadId || opts.resumeSessionId || "",
@@ -265,6 +286,7 @@ export class CodexEngine implements InterruptibleEngine {
     | { type: "tool_end"; delta: StreamDelta }
     | { type: "text"; delta: StreamDelta }
     | { type: "error"; message: string }
+    | { type: "notice"; message: string }
     | { type: "usage"; contextTokens?: number }
     | { type: "turn_failed"; message: string }
     | null {
@@ -397,7 +419,7 @@ export class CodexEngine implements InterruptibleEngine {
           logger.debug(`[codex] suppressed warning: ${message.slice(0, 200)}`);
           return null;
         }
-        return { type: "error", message };
+        return RETRY_NOTICE.test(message) ? { type: "notice", message } : { type: "error", message };
       }
 
       return null;
@@ -413,7 +435,8 @@ export class CodexEngine implements InterruptibleEngine {
     }
 
     if (eventType === "error") {
-      return { type: "error", message: String(msg.message || "Unknown error") };
+      const message = String(msg.message || "Unknown error");
+      return RETRY_NOTICE.test(message) ? { type: "notice", message } : { type: "error", message };
     }
 
     return null;
