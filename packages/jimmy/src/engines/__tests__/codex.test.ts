@@ -88,6 +88,110 @@ describe("CodexEngine", () => {
     });
   });
 
+  // codex exec exits non-zero exactly when a turn failed. Its in-turn retries come
+  // as a top-level `error` event (a stream reconnect) or an `error` item (the switch
+  // to HTTPS), and a turn that then completes exits 0.
+  describe("run() — codex's exit code decides the outcome", () => {
+    const reconnect = "Reconnecting... 1/5 (stream disconnected before completion: idle timeout waiting for SSE)";
+    const offline = "Reconnecting... waiting for network (failed to lookup address information)";
+    const wsFallback = "Falling back from WebSockets to HTTPS transport. stream disconnected before completion: websocket closed by server before response.completed";
+    const asEvent = (message: string) => ({ type: "error", message });
+    const asItem = (message: string) => ({ type: "item.completed", item: { id: "item_1", type: "error", message } });
+
+    function start() {
+      const proc = createMockProcess();
+      mockSpawn.mockReturnValue(proc as any);
+      const deltas: StreamDelta[] = [];
+      const result = engine.run({ prompt: "hello", cwd: "/tmp", onStream: (delta) => deltas.push(delta) });
+      const emit = (events: Record<string, unknown>[], trailingNewline = true) =>
+        proc.stdout.emit("data", Buffer.from(events.map((event) => JSON.stringify(event)).join("\n") + (trailingNewline ? "\n" : "")));
+      const close = (code: number) => { proc.exitCode = code; proc.emit("close", code); };
+      return { result, deltas, emit, close };
+    }
+
+    it.each([
+      ["a stream reconnect", asEvent(reconnect), [{ type: "status", content: reconnect }]],
+      ["the switch to HTTPS", asItem(wsFallback), [{ type: "status", content: wsFallback }]],
+      // Not streamed: codex waits for the network without limit, and a streamed delta
+      // would keep the response watchdog from ever stopping the turn during an outage.
+      ["a wait for the network", asEvent(offline), []],
+    ])("keeps a completed turn after %s", async (_label, notice, notices) => {
+      const run = start();
+      run.emit([
+        { type: "thread.started", thread_id: "recovered-thread" },
+        notice,
+        { type: "item.completed", item: { type: "agent_message", text: "DONE" } },
+        { type: "turn.completed", usage: { input_tokens: 10 } },
+      ]);
+      run.close(0);
+
+      const result = await run.result;
+      expect(result).toMatchObject({ sessionId: "recovered-thread", result: "DONE" });
+      expect(result.error).toBeUndefined();
+      expect(run.deltas).toEqual([...notices, { type: "text", content: "DONE" }]);
+    });
+
+    it("keeps a completed turn when a notice is the last line, with no newline", async () => {
+      const run = start();
+      run.emit([
+        { type: "thread.started", thread_id: "eof-thread" },
+        { type: "item.completed", item: { type: "agent_message", text: "DONE" } },
+        asEvent(reconnect),
+      ], false);
+      run.close(0);
+
+      expect((await run.result).error).toBeUndefined();
+    });
+
+    it("does not fail a turn that exited 0 on a warning it has no name for", async () => {
+      const run = start();
+      const warning = "Failed to save the conversation transcript; Codex will continue retrying.";
+      run.emit([asItem(warning), { type: "item.completed", item: { type: "agent_message", text: "DONE" } }]);
+      run.close(0);
+
+      const result = await run.result;
+      expect(result).toMatchObject({ result: "DONE" });
+      expect(result.error).toBeUndefined();
+      expect(run.deltas).toContainEqual({ type: "error", content: warning });
+    });
+
+    it("reports the failure codex gave up on, not the retry notices before it", async () => {
+      const run = start();
+      const failure = "stream disconnected before completion: idle timeout waiting for SSE";
+      run.emit([asEvent(reconnect), asEvent(failure), { type: "turn.failed", error: { message: failure } }]);
+      run.close(1);
+
+      expect((await run.result).error).toBe(failure);
+    });
+
+    it("explains a non-zero exit with the last error when no turn.failed came", async () => {
+      const run = start();
+      const failure = "unexpected status 401 Unauthorized";
+      run.emit([asEvent(failure)]);
+      run.close(1);
+
+      expect((await run.result).error).toBe(failure);
+    });
+
+    it("does not present a retry notice as the reason for a non-zero exit", async () => {
+      const run = start();
+      run.emit([asEvent(reconnect)]);
+      run.close(1);
+
+      expect((await run.result).error).toMatch(/^Codex exited with code 1/);
+    });
+
+    it("does not take a message that only mentions reconnecting as a notice", async () => {
+      const run = start();
+      const failure = "Upstream said: Reconnecting... 1/5 is not allowed";
+      run.emit([asEvent(failure)]);
+      run.close(1);
+
+      expect((await run.result).error).toBe(failure);
+      expect(run.deltas).toEqual([{ type: "error", content: failure }]);
+    });
+  });
+
   describe("run() — agent_message handling", () => {
     it.each([undefined, "thread-astra"])("passes Astra and max effort to Codex (resume=%s)", async (resumeSessionId) => {
       const proc = createMockProcess();

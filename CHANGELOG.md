@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026.11.13
+
+### Fixed
+
+- Stop failing Codex runs that Codex itself completed. `codex exec` reports its in-turn retries as errors — a stream reconnect as an `error` event (`Reconnecting... 1/5 (…)`, `Reconnecting... waiting for network (…)`), the switch from WebSockets to HTTPS as an `error` item (`Falling back from WebSockets to HTTPS transport. …`) — and then carries on. These were kept as the turn's error, so a turn that finished, a cron run included, was recorded as failed and could be handed to the fallback engine. The outcome now follows Codex's exit code: a run that exits 0 succeeds unless Codex reported `turn.failed`, and a run that exits non-zero is still a failure, explained by `turn.failed`, then the last error other than a retry notice, then its exit code. A stream reconnect or the switch to HTTPS is streamed as status rather than as an error, and still counts as activity for `sessions.engineNoResponseTimeoutMs`. Codex's open-ended wait for the network (`Reconnecting... waiting for network`) no longer counts, so the timeout can still stop a turn during an outage.
+
+### Upgrade notes
+
+- By default, Codex reconnects a response stream that has been silent for 5 minutes, and `sessions.engineNoResponseTimeoutMs` also defaults to 5 minutes, so the timeout usually stops the turn before Codex can reconnect. A value above 300000, for example `420000`, gives Codex a chance to reconnect but does not guarantee it: Codex measures silence on its own stream, including reasoning that OpenRyoko does not see, and its first reconnect over WebSockets prints nothing. The setting applies to every engine, so a turn that is truly stuck is also stopped later. This release does not change the default.
+
 ## 2026.11.12
 
 ### Fixed
