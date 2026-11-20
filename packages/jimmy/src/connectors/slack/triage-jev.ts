@@ -1,7 +1,11 @@
-/** Native TypeSafe Choice/Noul evaluation. No Slack side effects or tool authorization. */
+/** Native Jev Choice/Noul evaluation. No Slack side effects or tool authorization. */
 import { createHash } from "node:crypto";
 import type { SlackTriageConfig } from "../../shared/types.js";
-import { resolveTypeSafeApiKey } from "../../shared/typesafe-credentials.js";
+import { resolveDecisionApiKey } from "../../shared/decision-credentials.js";
+import {
+  DECISION_PROVIDER_PROFILES, isDecisionProvider, LOCAL_DECISION_PROFILE,
+  type DecisionProvider, type DecisionProviderProfile,
+} from "./decision-providers.js";
 import {
   isShortAckCandidate,
   isTaskContinuationCandidate,
@@ -11,29 +15,38 @@ import {
 } from "./triage-prompt.js";
 
 export type JevTriageOptions = NonNullable<SlackTriageConfig["jev"]> & {
-  /** Tests can inject a transport. The destination is TypeSafe or a loopback endpoint only. */
+  /** Tests can inject a transport. The destination is a fixed provider endpoint or a loopback endpoint only. */
   fetchImpl?: typeof fetch;
 };
 
-const ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
-const JEV_MODEL = /^jev-[\w.-]{1,64}$/;
-// Local Jev-compatible servers (e.g. Ollama decision models) use their own model names such as "nimble" or "tev1:0.8b".
-const LOCAL_MODEL = /^[A-Za-z0-9][\w.:-]{0,63}$/;
+
+interface ResolvedEndpoint {
+  url: string;
+  provider: DecisionProvider | "local";
+  profile: Omit<DecisionProviderProfile, "endpoint" | "credential">;
+  /** Credential sent with the request; absent for loopback servers. */
+  credential?: DecisionProvider;
+}
 
 /**
- * Slack text must never reach an arbitrary host: only the TypeSafe production
- * endpoint or a loopback server exposing the same /v1/systemone shape is allowed.
+ * Slack text must never reach an arbitrary host: only the selected provider's
+ * fixed HTTPS endpoint or a loopback server exposing the /v1/systemone shape is
+ * allowed. A loopback endpoint takes precedence over the provider and gets no key.
  */
-function resolveEndpoint(raw: string | undefined): { url: string; local: boolean } | undefined {
-  if (raw === undefined || raw === ENDPOINT) return { url: ENDPOINT, local: false };
+function resolveEndpoint(raw: unknown, providerOption: unknown): ResolvedEndpoint | undefined {
+  if (providerOption !== undefined && !isDecisionProvider(providerOption)) return undefined;
+  const provider: DecisionProvider = providerOption ?? "typesafe";
+  const remote = DECISION_PROVIDER_PROFILES[provider];
+  if (raw === undefined || raw === remote.endpoint) return { url: remote.endpoint, provider, profile: remote, credential: remote.credential };
+  if (typeof raw !== "string") return undefined;
   let url: URL;
   try { url = new URL(raw); } catch { return undefined; }
   if ((url.protocol !== "http:" && url.protocol !== "https:") || !LOOPBACK_HOSTS.has(url.hostname)
     || url.pathname !== "/v1/systemone" || url.search || url.hash || url.username || url.password) return undefined;
-  return { url: url.href, local: true };
+  return { url: url.href, provider: "local", profile: LOCAL_DECISION_PROFILE };
 }
-const DEFAULT_MODEL = "jev-1.13.0";
+const DEFAULT_MODEL = DECISION_PROVIDER_PROFILES.typesafe.defaultModel;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const DEFAULT_THRESHOLDS = { reply: 0.8, react: 0.9, silent: 0.97 };
 const ACTIONABLE_INTENTS = ["request", "continuation", "correction", "stop", "mixed"];
@@ -130,6 +143,8 @@ type Answers = Record<ChoiceAxis, ChoiceAnswer> & { response_value: { probabilit
 /** Contains only validated enums/numbers/model identifiers, never Slack text or credentials. */
 export interface JevTriageMetadata {
   elapsedMs: number;
+  /** Validated provider enum, or "local" for a loopback endpoint. */
+  provider?: DecisionProvider | "local";
   model?: string;
   inputTokens?: number;
   outputTokens?: number;
@@ -262,7 +277,7 @@ function parseChoiceAnswer(answer: unknown, options: string[]): ChoiceAnswer {
   };
 }
 
-function parseResponse(raw: unknown, withCapabilities: boolean, withProactive: boolean, modelPattern: RegExp = JEV_MODEL): { answers: Answers; metadata: Omit<JevTriageMetadata, "elapsedMs"> } {
+function parseResponse(raw: unknown, withCapabilities: boolean, withProactive: boolean, modelPattern: RegExp): { answers: Answers; metadata: Omit<JevTriageMetadata, "elapsedMs"> } {
   if (!record(raw) || typeof raw.model !== "string" || !modelPattern.test(raw.model)
     || !record(raw.answers) || !record(raw.usage)
     || !tokenCount(raw.usage.input_tokens) || !tokenCount(raw.usage.output_tokens)) {
@@ -553,16 +568,16 @@ export async function evaluateJevTriage(input: TriagePromptInput, options: JevTr
   const controller = new AbortController();
   try {
     if (options.useCapabilities === false) input = { ...input, capabilities: undefined };
-    const model = options.model ?? DEFAULT_MODEL;
+    const endpoint = resolveEndpoint(options.endpoint, options.provider);
+    const model = options.model ?? endpoint?.profile.defaultModel;
     const keyEnv = options.apiKeyEnv ?? "TYPESAFE_API_KEY";
     const timeoutMs = options.timeoutMs ?? 3000;
     const maxConcurrent = options.maxConcurrent ?? 4;
     const proactivePercent = options.proactiveParticipationPercent ?? 0;
     const withProactive = input.capabilities !== undefined && proactivePercent > 0;
     const thresholds = { ...DEFAULT_THRESHOLDS, ...options.minProbability };
-    const endpoint = resolveEndpoint(options.endpoint);
-    const modelPattern = endpoint?.local ? LOCAL_MODEL : JEV_MODEL;
-    if (!endpoint || !modelPattern.test(model) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(keyEnv)
+    if (!endpoint || typeof model !== "string" || !endpoint.profile.requestModel.test(model)
+      || typeof keyEnv !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(keyEnv)
       || options.useCapabilities !== undefined && typeof options.useCapabilities !== "boolean"
       || !Number.isInteger(proactivePercent) || proactivePercent < 0 || proactivePercent > 100
       || !Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 10000
@@ -570,21 +585,26 @@ export async function evaluateJevTriage(input: TriagePromptInput, options: JevTr
       || Object.values(thresholds).some((value) => !probability(value) || value < 0.5)) {
       throw new JevFailure("invalid_config");
     }
-    // A loopback server needs no TypeSafe key; never forward one to it.
-    const apiKey = endpoint.local ? undefined : resolveTypeSafeApiKey(keyEnv);
-    if (!endpoint.local && !apiKey) throw new JevFailure("missing_key");
+    metadata = { ...metadata, provider: endpoint.provider };
+    // A loopback server needs no key; never forward one to it. Each provider's
+    // key goes only to its own fixed endpoint. apiKeyEnv selects the TypeSafe
+    // key only, so a TypeSafe-named variable can never leak to another provider.
+    const apiKey = endpoint.credential === undefined ? undefined
+      : resolveDecisionApiKey(endpoint.credential, endpoint.credential === "typesafe" ? keyEnv : undefined);
+    if (endpoint.credential !== undefined && !apiKey) throw new JevFailure("missing_key");
     if (input.contextIncomplete) throw new JevFailure("context_incomplete");
     // Do not truncate the message and risk losing a trailing instruction.
     if (input.messageText.length > 4000) throw new JevFailure("input_too_large");
     if (inFlight >= maxConcurrent) throw new JevFailure("busy");
     inFlight++;
     acquired = true;
+    const systemOneRequest = buildJevTriageRequest(input, model, withProactive);
     const request = async () => {
       const response = await (options.fetchImpl ?? fetch)(endpoint.url, {
         method: "POST",
         redirect: "error",
         headers: apiKey ? { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" } : { "Content-Type": "application/json" },
-        body: JSON.stringify(buildJevTriageRequest(input, model, withProactive)),
+        body: JSON.stringify(endpoint.profile.toWire(systemOneRequest)),
         signal: controller.signal,
       });
       if (controller.signal.aborted) {
@@ -596,7 +616,10 @@ export async function evaluateJevTriage(input: TriagePromptInput, options: JevTr
         void response.body?.cancel().catch(() => {});
         throw new JevFailure("http_error", response.status);
       }
-      return readBoundedJson(response, controller.signal);
+      const wire = await readBoundedJson(response, controller.signal);
+      const converted = endpoint.profile.fromWire(wire, systemOneRequest);
+      if (converted === undefined) throw new JevFailure("invalid_response");
+      return converted;
     };
     const deadline = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
@@ -605,7 +628,7 @@ export async function evaluateJevTriage(input: TriagePromptInput, options: JevTr
       }, timeoutMs);
     });
     const raw = await Promise.race([request(), deadline]);
-    const parsed = parseResponse(raw, input.capabilities !== undefined, withProactive, modelPattern);
+    const parsed = parseResponse(raw, input.capabilities !== undefined, withProactive, endpoint.profile.responseModel);
     metadata = { ...metadata, ...parsed.metadata };
     const decision = chooseWithProactiveParticipation(input, parsed.answers, thresholds, proactivePercent, metadata);
     return { status: "accepted", decision, metadata: { ...metadata, elapsedMs: Date.now() - startedAt } };

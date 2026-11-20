@@ -28,6 +28,8 @@ vi.mock("@/app/settings-provider", () => {
 vi.mock("@/components/ui/emoji-picker", () => ({ EmojiPicker: () => null }))
 vi.mock("@/components/settings/model-selector", () => ({ ModelSelector: () => null }))
 vi.mock("@/components/settings/jev-settings", () => ({ JevSettings: () => null }))
+// Saves on its own revision and is tested in lib/__tests__/slack-behavior.test.ts.
+vi.mock("@/components/onboarding/slack-behavior-editor", () => ({ SlackBehaviorEditor: () => null }))
 vi.mock("@/components/settings/update-notification-settings", () => ({ UpdateNotificationSettings: () => null }))
 
 import { ConfigConflictError } from "@/lib/api"

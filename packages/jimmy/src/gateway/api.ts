@@ -96,6 +96,7 @@ import {
 } from "./auth.js";
 import { handleWorkflowApi } from "./workflow-api.js";
 import { handleTypeSafeIntegrationApi } from "./integrations-typesafe-api.js";
+import { DECISION_KEYS_ROOT, handleDecisionKeysIntegrationApi } from "./integrations-decision-keys-api.js";
 import type { WorkflowService } from "../workflows/service.js";
 import { shouldRequireGatewayAuth as workflowAuthRequired, verifyGatewayAuth as workflowVerifyAuth } from "./auth.js";
 import { getDiskSpaceStatus } from "../shared/storage-health.js";
@@ -401,6 +402,16 @@ export function sanitizeChannelRouting(value: unknown): unknown {
   );
 }
 
+/** A new mapping without the null entries a client sent to delete keys. */
+function withoutRemovals(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([, child]) => child !== null)
+      .map(([key, child]) => [key, withoutRemovals(child)]),
+  );
+}
+
 export function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): Record<string, unknown> {
   const result = { ...target };
   for (const key of Object.keys(source)) {
@@ -429,8 +440,10 @@ export function deepMerge(target: Record<string, unknown>, source: Record<string
     } else if (sv && typeof sv === "object" && !Array.isArray(sv) && tv && typeof tv === "object" && !Array.isArray(tv)) {
       result[key] = deepMerge(tv as Record<string, unknown>, sv as Record<string, unknown>);
     } else {
-      // A block config.yaml does not have: same rule, no placeholder is written.
-      result[key] = withoutPlaceholders(sv, SANITIZED_KEYS);
+      // A block config.yaml does not have: same rule, no placeholder is written,
+      // and a null inside it (a removal) has nothing to remove, so it is left out
+      // rather than stored as a literal null.
+      result[key] = withoutRemovals(withoutPlaceholders(sv, SANITIZED_KEYS));
     }
   }
   return result;
@@ -490,6 +503,11 @@ export async function handleApiRequest(
   try {
     if (pathname === "/api/integrations/typesafe" || pathname === "/api/integrations/typesafe/test") {
       if (await handleTypeSafeIntegrationApi(req, res, { method, pathname, url }, {
+        config: context.getConfig(), authToken: context.authToken, authHome: context.authHome,
+      })) return;
+    }
+    if (pathname.startsWith(`${DECISION_KEYS_ROOT}/`)) {
+      if (await handleDecisionKeysIntegrationApi(req, res, { method, pathname, url }, {
         config: context.getConfig(), authToken: context.authToken, authHome: context.authHome,
       })) return;
     }

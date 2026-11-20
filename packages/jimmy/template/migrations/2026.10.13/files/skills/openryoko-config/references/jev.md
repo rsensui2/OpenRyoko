@@ -2,9 +2,9 @@
 
 ## 役割と対応確認
 
-JevはTypeSafe APIで「黙る／リアクション／返信」の入口を判定する。返信すると決まった後の作業は通常のClaude Code／Codex等へ渡す。
+Jevは判定モデルのAPIで「黙る／リアクション／返信」の入口を判定する。返信すると決まった後の作業は通常のClaude Code／Codex等へ渡す。
 
-このスキルと同梱する実装は、Jevによる判定・能力の考慮・未依頼の場面への参加率設定に対応している。旧版や別ホストの稼働環境へ設定する際は、対象の `connectors/slack/triage-jev`、`triage` のbackend分岐、`integrations-typesafe-api` のルート配線と `proactiveParticipationPercent` の利用箇所を確認する。スキルだけをコピーした場合や、型にキーを足しただけでは有効にならない。
+このスキルと同梱する実装は、Jevによる判定・能力の考慮・未依頼の場面への参加率設定・判定モデルの提供元の切替（`jev.provider`）に対応している。旧版や別ホストの稼働環境へ設定する際は、対象の `connectors/slack/triage-jev`、`triage` のbackend分岐、`integrations-typesafe-api` のルート配線と `proactiveParticipationPercent` の利用箇所を確認する。スキルだけをコピーした場合や、型にキーを足しただけでは有効にならない。
 
 ## 設定する接続先を特定する
 
@@ -23,6 +23,7 @@ connectors:
       conversationIdleTimeoutMs: 1800000
       conversationMaxEntries: 5000
       jev:
+        provider: typesafe
         fallback: none
         useCapabilities: true
         proactiveParticipationPercent: 0
@@ -47,6 +48,7 @@ connectors:
 | `jev.fallback: cli` | Jevが採用できないときに `triage.engine/bin/model` で従来判定を実行 |
 | `jev.useCapabilities` | 既定true。社員の役割・提供サービスとスキルの名前／説明を判定材料にする。スキル本文・MEMORY・認証設定は送らない |
 | `jev.proactiveParticipationPercent` | 0〜100の整数、既定0。未依頼でも具体的に役立てると判定した場面への参加率。`useCapabilities: true` が必要。100は対象条件を満たす機会すべて、50は平均して半分に参加する |
+| `jev.provider` | 判定モデルの提供元。既定 `typesafe`。下の「提供元」を参照。未知の値はJevを使わず `invalid_config` 扱い |
 | `jev.endpoint` | 既定 `https://api.typesafe.ai/v1/systemone`。差し替えられるのは同じ `/v1/systemone` 形式の**ループバック（localhost／127.0.0.1／[::1]）だけ**（例：Ollama 0.35+ の判定モデル `http://localhost:11434/v1/systemone`）。Slack本文を他のホストへ送らないための制限。ループバックではAPIキー不要（送らない）で、`jev.model` に `nimble` 等の独自名を使える。⚠️ローカルの判定は1通3〜7秒かかることがある（M6・Nimble 9Bの実測）ため `jev.timeoutMs: 10000` を推奨 |
 | `jev.timeoutMs` | 既定3000ms、最大10000ms。外側の `triage.timeoutMs` はCLI用で別 |
 | `jev.maxConcurrent` | gatewayプロセス内の上限。既定4、最大16 |
@@ -56,6 +58,20 @@ connectors:
 `fallback: none` は「すべての障害で沈黙」ではない。DM・明示メンション・根拠のある続行は保護し、不確かな部屋の会話には沈黙する。純粋な感謝等はリアクションになり、作業に入る時は👀が付く。名前だけの呼びかけ、全体への依頼、他人宛て、他botへの続行を分けて検証する。
 
 能力一致だけで会話へ割り込むわけではない。自己名は接続先社員の `displayName` → `name` → `portal.portalName` → Ryoko。別社員のスキル説明に出る名前を自己名として設定しない。
+
+## 提供元（`jev.provider`）
+
+| 値 | 送信先（固定） | `jev.model` | キー |
+|---|---|---|---|
+| `typesafe`（既定） | `https://api.typesafe.ai/v1/systemone` | 既定 `jev-1.13.0`（`jev-*`） | `credentials/typesafe.json` → `TYPESAFE_API_KEY`（`apiKeyEnv` で変更可） |
+| `openrouter` | `https://openrouter.ai/api/v1/systemone` | 既定 `typesafe/jev-1.13`（`typesafe/jev-*`・`~typesafe/jev-latest`） | `credentials/openrouter.json` → `OPENROUTER_API_KEY` |
+| `openai` | `https://api.openai.com/v1/decisions`（OpenAI Decisions API） | `gpt-6-luna` のみ | `credentials/openai.json` → `OPENAI_API_KEY` |
+
+- **Slackの判定対象本文・履歴（有効なら役割／スキル説明）は、選んだ提供元へ送られる。** 切り替える前に送信先が変わることを伝える。
+- OpenAIにはOpenAI PlatformのAPIキーが要る。ChatGPT／Codexのサブスクリプションのログインは APIキーではないので使えない。
+- `apiKeyEnv` はTypeSafeにだけ効く。他の提供元は上の固定の環境変数だけを読み、別の提供元のキーは送らない。
+- 提供元を変えたら `jev.model` も合わせる（例：`jev-1.13.0` のまま `openai` にすると `invalid_config`）。未指定なら提供元の既定を使う。
+- `jev.endpoint` にループバックを指定すると、提供元の設定より優先してローカル扱いになる（キーは送らない）。ループバック以外で書けるのは選んだ提供元の固定URLだけ。
 
 ## 呼ばれていない時の参加率
 
@@ -67,14 +83,14 @@ connectors:
 
 ## 認証キー
 
-対応版の設定画面（Jev／TypeSafe連携）で登録する。APIは `GET /api/integrations/typesafe` で `configured/source` だけ取得し、`PUT` でキーを保存、`DELETE` で保存済みキーのみ削除する。秘密値をコマンドの `--data` やチャットに埋め込まない。
+対応版の設定画面（Jev連携）で登録する。APIは `GET /api/integrations/decision-keys/{typesafe|openrouter|openai}` で `configured/source` だけ取得し、`PUT`（`{"apiKey": ...}`）でキーを保存、`DELETE` で保存済みキーのみ削除する。従来の `/api/integrations/typesafe` は `typesafe` と同じ保存先を扱う。秘密値をコマンドの `--data` やチャットに埋め込まない。
 
-- 保存先は対象ホームの `credentials/typesafe.json`（所有者のみ読み書き）。APIからキー自体は返さない。rawファイルを表示して確認しない。
+- 保存先は対象ホームの `credentials/<提供元>.json`（所有者のみ読み書き）。APIからキー自体は返さない。rawファイルを表示して確認しない。
 - `apiKeyEnv: TYPESAFE_API_KEY` の既定では、保存済みキー → gatewayプロセスの環境変数の順。独自の変数名ならその変数だけを使い、UI保存キーには戻らない。
 - 環境変数変更にはgatewayの再起動、Docker Composeの `env_file` 変更には通常コンテナ再作成が必要。対話シェルでexportしただけでは起動済みdaemonへ届かない。
 - 保存キー削除後も環境変数があれば利用可能なまま。`source` を確認する。標準のstatus/test APIは既定キーを調べるため、独自 `apiKeyEnv` の認証成功までは証明しない。
 
-依頼された接続設定の検証には、合成入力だけを送る `POST /api/integrations/typesafe/test` を使える。接続先は `https://api.typesafe.ai/v1/systemone` に固定。これは外部API呼出しであり、通常運用ではSlackの判定対象本文・履歴・有効なら役割／スキル説明がTypeSafeへ送られることを設定時に伝える。会話本文を使った評価やSlackへのテスト投稿を暗黙に追加しない。
+依頼された接続設定の検証には、合成入力だけを送る `POST /api/integrations/decision-keys/<提供元>/test`（従来の `/api/integrations/typesafe/test` も可）を使える。接続先は各提供元の固定URL。これは外部API呼出しであり、通常運用ではSlackの判定対象本文・履歴・有効なら役割／スキル説明が選んだ提供元へ送られることを設定時に伝える。会話本文を使った評価やSlackへのテスト投稿を暗黙に追加しない。
 
 ## 遅延・取りこぼしの切り分け
 
@@ -86,4 +102,4 @@ connectors:
 
 Jevから従来判定へ戻すなら `triage.backend: cli`。会話追跡はそのまま継続する。CLI起動を避けたい依頼では自動的にこの切り戻しを選ばず、希望に合う `jev.fallback: none` を保持して原因を報告する。
 
-ソースでの一次情報：`connectors/slack/triage.ts`、`triage-jev.ts`、`conversation-tracker.ts`、`shared/triage-capabilities.ts`、`shared/typesafe-credentials.ts`、`gateway/integrations-typesafe-api.ts`。同じディレクトリのテストと、ソースリポジトリの `docs/jev-slack-triage.md` も参照する。
+ソースでの一次情報：`connectors/slack/triage.ts`、`triage-jev.ts`、`conversation-tracker.ts`、`shared/triage-capabilities.ts`、`decision-providers.ts`、`shared/decision-credentials.ts`、`gateway/integrations-decision-keys-api.ts`。同じディレクトリのテストと、ソースリポジトリの `docs/jev-slack-triage.md` も参照する。
