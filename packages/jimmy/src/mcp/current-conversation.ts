@@ -22,6 +22,14 @@ export function currentConversationFromEnv(env: NodeJS.ProcessEnv = process.env)
   };
 }
 
+/** Where send_message posts when no connector is named: the session's own
+ *  Slack connector (a peer Ryoko's "slack-<name>"), so a peer never speaks
+ *  as the main bot by default; "slack" otherwise. */
+export function defaultSendConnector(current: CurrentConversation): string {
+  const connector = clean(current.connector);
+  return connector && /^slack(?:-[a-z0-9-]+)?$/.test(connector) ? connector : "slack";
+}
+
 export function isSendToCurrentConversation(
   target: OutgoingMessageTarget,
   current: CurrentConversation,
@@ -30,7 +38,7 @@ export function isSendToCurrentConversation(
   const currentChannel = clean(current.channel);
   if (!currentConnector || !currentChannel) return false;
 
-  const connector = clean(target.connector) ?? "slack";
+  const connector = clean(target.connector) ?? defaultSendConnector(current);
   const channel = clean(target.channel);
   if (!channel) return false;
   if (connector !== currentConnector || channel !== currentChannel) return false;

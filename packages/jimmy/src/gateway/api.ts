@@ -108,6 +108,8 @@ import { PairingAttemptLimiter, pairingAttemptKey } from "./pairing-rate-limit.j
 import { applyLanguageSection, personalizeInstructionMd, personalizeIdentityMd, resolveEffectiveName } from "./onboarding-personalize.js";
 import { savePortalBlock, writeFileAtomic } from "./portal-config.js";
 import { restoreBeforeSlackConnect, slackBlockOf, snapshotStillHoldingSlackTokens } from "./slack-connect-rollback.js";
+import { peerSlackInstanceId } from "../shared/peer-ryoko.js";
+import { peerExists as peerRyokoExists } from "./ryokos/ryoko-store.js";
 import { newAttachmentDir } from "../shared/attachments.js";
 
 /** Max bytes accepted on /api/internal/hook (loopback-only relay payloads are tiny). */
@@ -533,12 +535,30 @@ export async function handleApiRequest(
       return json(res, await probeOnboardingEngines(config));
     }
 
+    // /api/ryokos[/:name] — peer Ryokos (ryokos/).
+    if (pathname === "/api/ryokos" || pathname.startsWith("/api/ryokos/")) {
+      const { handleRyokosApi } = await import("./ryokos/routes.js");
+      const { removeConnectorInstance } = await import("./slack-instance-connect.js");
+      const { forgetSlackSecrets } = await import("./slack-provision/provision-flow.js");
+      if (await handleRyokosApi(req, res, { method, pathname }, {
+        getConfig: () => context.getConfig(),
+        readConfigDocument: () => readConfigSnapshot().document,
+        removeConnectorInstance: (id) => removeConnectorInstance(slackInstanceDeps(context), id),
+        forgetSlackSetup: (name) => forgetSlackSecrets(JINN_HOME, name),
+        emit: context.emit,
+      })) return;
+    }
+
     // /api/onboarding/slack/{app,finish,oauth/callback} — the automatic Slack
     // app setup from one configuration refresh token (slack-provision/).
+    // `bot` picks the main Ryoko (default) or a peer's own Slack app.
     if (pathname.startsWith("/api/onboarding/slack/")) {
       const { handleSlackProvisionApi } = await import("./slack-provision/routes.js");
-      if (await handleSlackProvisionApi(req, res, { method, pathname, url },
-        { connect: (botToken, appToken) => connectSlack(context, botToken, appToken) })) return;
+      if (await handleSlackProvisionApi(req, res, { method, pathname, url }, {
+        connect: (botToken, appToken) => connectSlack(context, botToken, appToken),
+        connectPeer: (bot, botToken, appToken) => connectPeerSlack(context, bot, botToken, appToken),
+        peerExists: (name) => peerRyokoExists(name),
+      })) return;
     }
 
     // POST /api/onboarding/slack/connect — the whole Slack hookup as ONE
@@ -550,19 +570,26 @@ export async function handleApiRequest(
       const { readJsonBody } = await import("./http-helpers.js");
       const read = await readJsonBody(req, res, { maxBytes: 16 * 1024 });
       if (!read.ok) return;
-      const body = read.body as { botToken?: unknown; appToken?: unknown } | null;
+      const body = read.body as { botToken?: unknown; appToken?: unknown; bot?: unknown } | null;
       const botToken = typeof body?.botToken === "string" ? body.botToken.trim() : "";
       const appToken = typeof body?.appToken === "string" ? body.appToken.trim() : "";
       if (!botToken.startsWith("xoxb-") || !appToken.startsWith("xapp-")) {
         return badRequest(res, "botToken must start with xoxb- and appToken with xapp-");
       }
+      // Optional `bot`: a peer Ryoko's own Slack app instead of the main one.
+      const peerBot = body?.bot === undefined || body.bot === null || body.bot === "" || body.bot === "main" ? undefined : body.bot;
+      if (peerBot !== undefined && !peerRyokoExists(peerBot)) {
+        return badRequest(res, "bot must be \"main\" or the name of an existing Ryoko");
+      }
       res.setHeader("Cache-Control", "no-store");
-      const outcome = await connectSlack(context, botToken, appToken);
+      const outcome = peerBot
+        ? await connectPeerSlack(context, peerBot as string, botToken, appToken)
+        : await connectSlack(context, botToken, appToken);
       if (outcome.ok) {
         // Connected by hand: an unfinished automatic setup's configuration
         // token and secrets have no further use, so they are not left on disk.
         const { forgetSlackSecrets } = await import("./slack-provision/provision-flow.js");
-        await forgetSlackSecrets().catch((err) => logger.warn(`[slack-provision] could not clear setup secrets: ${err instanceof Error ? err.message : String(err)}`));
+        await forgetSlackSecrets(JINN_HOME, peerBot as string | undefined).catch((err) => logger.warn(`[slack-provision] could not clear setup secrets: ${err instanceof Error ? err.message : String(err)}`));
       }
       return json(res, outcome);
     }
@@ -2343,11 +2370,14 @@ Handle this as a priority request from a colleague.`;
       return json(res, { qr: dataUrl });
     }
 
-    // GET /api/connectors/slack/channels — channels the bot is a member of.
-    // Used by the settings UI to populate the Agents View canvas channel picker.
+    // GET /api/connectors/slack/channels[?instance=<id>] — channels the bot is
+    // a member of. Used by the settings UI to populate the Agents View canvas
+    // channel picker. `instance` picks a Slack connector instance (e.g. a peer
+    // Ryoko's "slack-<name>"); the default is the top-level "slack".
     if (method === "GET" && pathname === "/api/connectors/slack/channels") {
-      const slackConnector = context.connectors.get("slack");
-      if (!slackConnector) {
+      const instanceId = url.searchParams.get("instance") || "slack";
+      const slackConnector = context.connectors.get(instanceId);
+      if (!slackConnector || slackConnector.name !== "slack") {
         return json(res, { ok: false, error: "slack_not_configured" }, 400);
       }
       const lister = (slackConnector as unknown as { listChannels?: () => Promise<Array<{ id: string; name: string; isPrivate: boolean; isMember: boolean }>> }).listChannels;
@@ -2945,6 +2975,7 @@ async function runWebSession(
       connectors: Array.from(context.connectors.keys()),
       config,
       sessionId: currentSession.id,
+      parentSessionId: currentSession.parentSessionId,
       // Interactive PTY survives across turns; everything else is a one-shot
       // process whose background tasks die at turn end (#38).
       processLifetime:
@@ -3537,6 +3568,26 @@ function slackFailure(outcome: ConfigPatchOutcome): string | null {
   if (slack) return slack;
   if (outcome.status === "partial" && errors.length > 0) return errors.join(" | ");
   return null;
+}
+
+/** What the connector-instance writers need from the gateway. */
+function slackInstanceDeps(context: ApiContext): import("./slack-instance-connect.js").SlackInstanceDeps {
+  return {
+    verify: verifySlackTokens,
+    reloadAfterWrite: () => reloadAfterConfigWrite(context),
+    suppressNextConnectorReload: context.suppressNextConnectorReload,
+    clearSuppressNextConnectorReload: context.clearSuppressNextConnectorReload,
+  };
+}
+
+/** connectSlack for a peer Ryoko: its own `connectors.instances` entry. The
+ *  peer is checked again inside the config lock, so a DELETE that wins the
+ *  race is never undone by this write. */
+async function connectPeerSlack(context: ApiContext, bot: string, botToken: string, appToken: string) {
+  const { connectSlackInstance } = await import("./slack-instance-connect.js");
+  return connectSlackInstance(slackInstanceDeps(context), {
+    id: peerSlackInstanceId(bot), employee: bot, botToken, appToken, stillWanted: () => peerRyokoExists(bot),
+  });
 }
 
 async function connectSlack(context: ApiContext, botToken: string, appToken: string): Promise<SlackConnectResult> {

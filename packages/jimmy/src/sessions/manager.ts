@@ -356,6 +356,28 @@ export class SessionManager {
     return this.queue;
   }
 
+  /**
+   * Whether `session` belongs to an assistant other than the one this message
+   * is routed to. The one continuation still allowed is the existing
+   * delegation one: a message through the unbound (main) connector reaching
+   * a subordinate employee's child session in a thread that session posted
+   * in. A bot bound to an assistant never continues another's session, no
+   * session continues across connectors (two bots), and a peer Ryoko's
+   * session belongs to that peer's bot alone.
+   */
+  private async ownedElsewhere(session: Session, msg: IncomingMessage, routedEmployee: string | null): Promise<boolean> {
+    const owner = session.employee ?? null;
+    if (owner === routedEmployee) return false;
+    if (routedEmployee !== null) return true;
+    if (session.connector && msg.connector && session.connector !== msg.connector) return true;
+    try {
+      const { scanOrg } = await import("../gateway/org.js");
+      return Boolean(owner && scanOrg().get(owner)?.peer);
+    } catch {
+      return true; // cannot tell: do not hand over another assistant's session
+    }
+  }
+
   async route(msg: IncomingMessage, connector: Connector, opts: RouteOptions = {}): Promise<{ sessionId: string } | void> {
     if (await this.handleCommand(msg, connector)) {
       // A command is answered on the spot: nothing will read what came attached to it.
@@ -364,6 +386,18 @@ export class SessionManager {
     }
 
     let session = getSessionBySessionKey(msg.sessionKey);
+    // A session belongs to one assistant. Never continue one that another
+    // assistant owns — its engine history and memory would carry over —
+    // start a new session under the same key instead. See ownedElsewhere for
+    // the one cross-assistant continuation that stays allowed.
+    const routedEmployee = opts.employee?.name ?? null;
+    if (session && await this.ownedElsewhere(session, msg, routedEmployee)) {
+      logger.warn(
+        `Session ${session.id} for ${msg.sessionKey} belongs to ${session.employee ?? "the main assistant"}, ` +
+        `not ${routedEmployee ?? "the main assistant"} — starting a new session instead of continuing it`,
+      );
+      session = undefined;
+    }
     let healthyStartNotice: string | undefined;
     if (!session) {
       session = createSession({
@@ -670,6 +704,7 @@ export class SessionManager {
         connectors: this.connectorNames,
         config: this.config,
         sessionId: session.id,
+        parentSessionId: session.parentSessionId,
         channelName: (meta.channelName as string) || undefined,
         speakerName: (meta.speakerName as string) || undefined,
         speakerRealName: (meta.speakerRealName as string) || undefined,
@@ -702,7 +737,9 @@ export class SessionManager {
           : this.config.engines.claude;
       if (session.engine === "claude") {
         const mcpConfig = resolveMcpServers(this.config.mcp, employee, {
-          connector: connector.name,
+          // The instance the conversation came through (e.g. a peer Ryoko's
+          // own Slack bot), so "reply here" goes out through that bot.
+          connector: session.connector || connector.name,
           channel: target.channel,
           thread: target.thread || target.messageTs,
         });
@@ -953,7 +990,7 @@ export class SessionManager {
         prepareOptions: (targetEngine, opts) => {
           if (targetEngine.name === "claude" && !mcpConfigPath) {
             const mcpConfig = resolveMcpServers(this.config.mcp, employee, {
-              connector: connector.name, channel: target.channel, thread: target.thread || target.messageTs,
+              connector: session.connector || connector.name, channel: target.channel, thread: target.thread || target.messageTs,
             });
             if (Object.keys(mcpConfig.mcpServers).length) mcpConfigPath = writeMcpConfigFile(mcpConfig, session.id);
           }

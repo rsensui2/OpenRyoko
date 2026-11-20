@@ -15,6 +15,29 @@ export interface SlackVerifyResult {
   app: { ok: boolean; error?: string }
 }
 
+export type RyokoMemoryMode = "shared" | "own"
+
+export interface RyokoSummary {
+  name: string
+  displayName: string
+  emoji?: string
+  persona?: string
+  engine?: string
+  model?: string
+  memory: "main" | RyokoMemoryMode
+  primary: boolean
+  slack: { connected: boolean; instanceId?: string }
+}
+
+export interface RyokoInput {
+  displayName: string
+  emoji?: string
+  persona: string
+  engine: "claude" | "codex"
+  model?: string
+  memory: RyokoMemoryMode
+}
+
 export interface TypeSafeKeyStatus {
   configured: boolean
   source: "stored" | "environment" | "none"
@@ -527,13 +550,21 @@ export const api = {
   connectSlack: (botToken: string, appToken: string) =>
     post<SlackConnectResult>("/api/onboarding/slack/connect", { botToken, appToken }),
   // Automatic Slack app setup from one configuration refresh token.
-  getSlackApp: () => get<SlackAppStatus>("/api/onboarding/slack/app"),
-  provisionSlackApp: (input: { name: string; refreshToken?: string; icon?: string; redirectUrl?: string; returnTo?: string; fresh?: boolean }) =>
+  // `bot` picks which Ryoko's Slack app (omitted = the main one).
+  getSlackApp: (bot?: string) => get<SlackAppStatus>(`/api/onboarding/slack/app${bot ? `?bot=${encodeURIComponent(bot)}` : ""}`),
+  provisionSlackApp: (input: { name: string; refreshToken?: string; icon?: string; redirectUrl?: string; returnTo?: string; fresh?: boolean; bot?: string }) =>
     post<SlackProvisionResult>("/api/onboarding/slack/app", input),
-  reissueSlackInstallUrl: () =>
-    post<{ ok: true; installUrl: string } | { ok: false; error: string }>("/api/onboarding/slack/install-url", {}),
-  finishSlack: (appToken: string, botToken?: string) =>
-    post<SlackConnectResult>("/api/onboarding/slack/finish", { appToken, ...(botToken ? { botToken } : {}) }),
+  reissueSlackInstallUrl: (bot?: string) =>
+    post<{ ok: true; installUrl: string } | { ok: false; error: string }>("/api/onboarding/slack/install-url", bot ? { bot } : {}),
+  finishSlack: (appToken: string, botToken?: string, bot?: string) =>
+    post<SlackConnectResult>("/api/onboarding/slack/finish", { appToken, ...(botToken ? { botToken } : {}), ...(bot ? { bot } : {}) }),
+  // Ryokos: the main one and peers with their own personality, Slack app and memory mode.
+  listRyokos: () => get<{ ryokos: RyokoSummary[] }>("/api/ryokos"),
+  createRyoko: (input: RyokoInput) => post<{ ok: true; ryoko: RyokoSummary }>("/api/ryokos", input),
+  updateRyoko: (name: string, input: Partial<RyokoInput>) =>
+    patch<{ ok: true; ryoko: RyokoSummary }>(`/api/ryokos/${encodeURIComponent(name)}`, input),
+  deleteRyoko: (name: string) =>
+    del<{ ok: true; keptMemory: boolean }>(`/api/ryokos/${encodeURIComponent(name)}`),
   getOnboarding: () =>
     get<{ needed: boolean; onboarded: boolean; sessionsCount: number; hasEmployees: boolean; portalName: string | null; operatorName: string | null }>("/api/onboarding"),
   completeOnboarding: (data: { portalName?: string; operatorName?: string; language?: string }) =>

@@ -12,7 +12,7 @@ import { api, ConfigConflictError } from "@/lib/api"
 import { describeAirReading } from "@/lib/air-reading"
 import { AirReadingPicker } from "./air-reading-picker"
 import {
-  behaviorFromConfig, behaviorToConfigPatch, describeBehavior, usesMentions,
+  behaviorFromConfig, behaviorToConfigPatch, connectorsPatchFor, describeBehavior, MAIN_SLACK, slackBlockFor, usesMentions,
   type ChannelChoice, type GroupDmChoice, type RespondMode, type SlackBehavior, type SlackBehaviorConfig,
 } from "@/lib/slack-behavior"
 
@@ -104,7 +104,9 @@ function Exceptions({ behavior, channels, channelError, onChange }: {
 
 /** `onSaved` lets a host page that also writes config.yaml re-read it, so its
  *  own next save is not refused as a conflict. */
-export function SlackBehaviorEditor({ onSaved }: { onSaved?: () => void } = {}) {
+/** `instanceId` = a peer Ryoko's Slack connector ("slack-<name>"); omitted = the main one. */
+export function SlackBehaviorEditor({ onSaved, instanceId = MAIN_SLACK }: { onSaved?: () => void; instanceId?: string } = {}) {
+  const [connectors, setConnectors] = useState<Parameters<typeof slackBlockFor>[0]>(undefined)
   const [loaded, setLoaded] = useState<{ behavior: SlackBehavior; revision: string | null } | null>(null)
   const [behavior, setBehavior] = useState<SlackBehavior | null>(null)
   const [channels, setChannels] = useState<SlackChannel[] | null>(null)
@@ -116,16 +118,17 @@ export function SlackBehaviorEditor({ onSaved }: { onSaved?: () => void } = {}) 
   const load = () => {
     api.getConfigWithRevision()
       .then(({ config, revision }) => {
-        const slack = (config.connectors as { slack?: SlackBehaviorConfig } | undefined)?.slack
-        const read = behaviorFromConfig(slack)
+        const all = config.connectors as Parameters<typeof slackBlockFor>[0]
+        setConnectors(all)
+        const read = behaviorFromConfig(slackBlockFor(all, instanceId))
         setLoaded({ behavior: read, revision })
         setBehavior(read)
       })
       .catch((err) => setLoadError(err instanceof Error ? err.message : String(err)))
   }
-  useEffect(load, [])
+  useEffect(load, [instanceId]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
-    fetch("/api/connectors/slack/channels")
+    fetch(`/api/connectors/slack/channels${instanceId === MAIN_SLACK ? "" : `?instance=${encodeURIComponent(instanceId)}`}`)
       .then(async (res) => {
         const body = await res.json().catch(() => ({}))
         if (res.ok && Array.isArray(body.channels)) setChannels(body.channels)
@@ -134,7 +137,7 @@ export function SlackBehaviorEditor({ onSaved }: { onSaved?: () => void } = {}) 
           : "チャンネル一覧を読めませんでした。")
       })
       .catch(() => setChannelError("チャンネル一覧を読めませんでした。"))
-  }, [])
+  }, [instanceId])
 
   const nameOf = useMemo(() => (id: string) => channels?.find((c) => c.id === id)?.name ?? id, [channels])
 
@@ -149,7 +152,7 @@ export function SlackBehaviorEditor({ onSaved }: { onSaved?: () => void } = {}) 
     setMessage(null)
     try {
       const patch = behaviorToConfigPatch(behavior, loaded.behavior)
-      const { revision } = await api.updateConfigAtRevision({ connectors: { slack: patch } }, loaded.revision)
+      const { revision } = await api.updateConfigAtRevision({ connectors: connectorsPatchFor(connectors, instanceId, patch) }, loaded.revision)
       setLoaded({ behavior, revision })
       setMessage({ ok: true, text: "保存しました。Slack の接続を読み込み直したので、もう反映されています。" })
       onSaved?.()

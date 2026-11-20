@@ -19,16 +19,22 @@ function connectorHealth(status: unknown): ConnectorHealthMap {
   return connectors && typeof connectors === "object" ? (connectors as ConnectorHealthMap) : {}
 }
 
-export function SlackConnectPanel({ defaultName }: { defaultName: string }) {
+/** `bot`/`instanceId` target a peer Ryoko's own Slack connector; omitted = the main one. */
+export function SlackConnectPanel({ defaultName, bot, instanceId = "slack", behaviorHref }: {
+  defaultName: string
+  bot?: string
+  instanceId?: string
+  behaviorHref?: string
+}) {
   const [already, setAlready] = useState(false)
   const [replaceExisting, setReplaceExisting] = useState(false)
   const [manual, setManual] = useState(false)
 
   useEffect(() => {
     api.getStatus()
-      .then((status) => { if (connectorHealth(status).slack?.status === "running") setAlready(true) })
+      .then((status) => { if (connectorHealth(status)[instanceId]?.status === "running") setAlready(true) })
       .catch(() => { /* status is optional here */ })
-  }, [])
+  }, [instanceId])
   const locked = already && !replaceExisting
 
   return (
@@ -42,8 +48,9 @@ export function SlackConnectPanel({ defaultName }: { defaultName: string }) {
           </label>
         </div>
       )}
-      {!locked && (manual ? <SlackManualTokens /> : <SlackAutoSetup defaultName={defaultName} />)}
-      {!locked && (
+      {!locked && (manual && !bot ? <SlackManualTokens /> : <SlackAutoSetup defaultName={defaultName} bot={bot} behaviorHref={behaviorHref} />)}
+      {/* Hand-made tokens go into the main connector only. */}
+      {!locked && !bot && (
         <button
           type="button"
           onClick={() => setManual(!manual)}

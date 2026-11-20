@@ -138,3 +138,26 @@ export function describeBehavior(behavior: SlackBehavior, channelName: (id: stri
   }
   return lines
 }
+
+/** The main Slack connector, or a peer Ryoko's `connectors.instances` entry. */
+export const MAIN_SLACK = "slack"
+
+type ConnectorsConfig = { slack?: SlackBehaviorConfig; instances?: Array<{ id?: unknown } & SlackBehaviorConfig> } | undefined
+
+export function slackBlockFor(connectors: ConnectorsConfig, instanceId: string = MAIN_SLACK): SlackBehaviorConfig | undefined {
+  if (instanceId === MAIN_SLACK) return connectors?.slack
+  return connectors?.instances?.find((item) => item.id === instanceId)
+}
+
+/**
+ * The `connectors` patch that writes `patch` to one connector. The gateway
+ * replaces arrays, merging each item with the stored one of the same id, so
+ * an instance update sends every instance: the others as bare ids (left as
+ * they are), the target with the patch.
+ */
+export function connectorsPatchFor(connectors: ConnectorsConfig, instanceId: string, patch: SlackBehaviorPatch): Record<string, unknown> {
+  if (instanceId === MAIN_SLACK) return { slack: patch }
+  const instances = connectors?.instances ?? []
+  if (!instances.some((item) => item.id === instanceId)) throw new Error(`Slack connector ${instanceId} is not set up yet`)
+  return { instances: instances.map((item) => (item.id === instanceId ? { id: item.id, ...patch } : { id: item.id })) }
+}

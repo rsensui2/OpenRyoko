@@ -18,7 +18,7 @@ import {
   slackAppPages, SlackProvisionError, updateAppManifest, type FetchLike,
 } from "./slack-config-api.js";
 import {
-  newOAuthState, oauthStateMatches, readSlackAppRecord, withSlackRecordLock, writeSlackAppRecord, type SlackAppRecord,
+  botForOAuthState, newOAuthState, readSlackAppRecord, withSlackRecordLock, writeSlackAppRecord, type SlackAppRecord,
 } from "./provision-store.js";
 
 export const SLACK_OAUTH_CALLBACK_PATH = "/api/onboarding/slack/oauth/callback";
@@ -27,7 +27,13 @@ export const DEFAULT_SLACK_OAUTH_RELAY_URL = "https://rsensui2.github.io/OpenRyo
 const ICON_MIN_PX = 512;
 const ICON_MAX_PX = 2000;
 
-export interface ProvisionDeps { fetchImpl?: FetchLike; home?: string; now?: () => number }
+export interface ProvisionDeps {
+  fetchImpl?: FetchLike;
+  home?: string;
+  now?: () => number;
+  /** Which Ryoko's Slack app: omitted or "main" for the main one, else a peer's name. */
+  bot?: string;
+}
 
 export interface ProvisionInput {
   /** Omitted to reuse the refresh token kept from the last setup. */
@@ -145,14 +151,15 @@ export function provisionSlackApp(input: ProvisionInput, deps: ProvisionDeps = {
 async function provisionLocked(input: ProvisionInput, deps: ProvisionDeps): Promise<ProvisionResult> {
   const home = deps.home ?? JINN_HOME;
   const fetchImpl = deps.fetchImpl ?? fetch;
-  const record = readSlackAppRecord(home);
+  const bot = deps.bot;
+  const record = readSlackAppRecord(home, bot);
   const refreshToken = input.refreshToken ?? record?.configRefreshToken;
   if (!refreshToken) throw new SlackProvisionError("config_token_required");
 
   const rotated = await rotateConfigToken(refreshToken, fetchImpl);
   // The pasted token is spent the moment Slack rotates it: keep the new one first.
   const kept = keptAppFields(record, rotated.teamId, Boolean(input.fresh));
-  const saved = writeSlackAppRecord({ teamId: rotated.teamId, configRefreshToken: rotated.refreshToken, ...kept }, home);
+  const saved = writeSlackAppRecord({ teamId: rotated.teamId, configRefreshToken: rotated.refreshToken, ...kept }, home, bot);
 
   const returnTo = input.redirectUrl ? undefined : input.returnTo;
   const redirectUrl = input.redirectUrl ?? (returnTo ? slackOAuthRelayUrl() : undefined);
@@ -165,7 +172,7 @@ async function provisionLocked(input: ProvisionInput, deps: ProvisionDeps): Prom
     writeSlackAppRecord({
       ...saved, configRefreshToken: undefined, appId: app.appId, clientId: app.clientId, clientSecret: app.clientSecret,
       name: input.name, redirectUrl, returnTo, oauthState, pendingBotToken: undefined,
-    }, home);
+    }, home, bot);
   } catch (err) {
     // The app exists in Slack but its secret is lost: name it so it can be deleted there.
     logger.error(`[slack-provision] app ${app.appId} was ${app.created ? "created" : "updated"} but could not be recorded: ${err instanceof Error ? err.message : String(err)}`);
@@ -184,14 +191,16 @@ async function provisionLocked(input: ProvisionInput, deps: ProvisionDeps): Prom
 export function reissueInstallUrl(deps: ProvisionDeps = {}): Promise<string> {
   return withSlackRecordLock(async () => {
     const home = deps.home ?? JINN_HOME;
-    const record = readSlackAppRecord(home);
+    const record = readSlackAppRecord(home, deps.bot);
     if (!record?.clientId || !record.redirectUrl) throw new SlackProvisionError("app_not_created");
     const oauthState = newOAuthState((deps.now ?? Date.now)(), record.returnTo);
-    writeSlackAppRecord({ ...record, oauthState }, home);
+    writeSlackAppRecord({ ...record, oauthState }, home, deps.bot);
     return buildInstallUrl({ clientId: record.clientId, redirectUri: record.redirectUrl, state: oauthState.value, teamId: record.teamId });
   });
 }
 
+/** Slack sends back only the state: the record (main or a peer's) is the
+ *  one that issued it. `deps.bot` is not consulted here. */
 export async function completeSlackOAuth(
   input: { code: string; state: string }, deps: ProvisionDeps = {},
 ): Promise<{ teamName?: string }> {
@@ -199,20 +208,21 @@ export async function completeSlackOAuth(
   // Spend the state first (one use, whatever Slack answers), then exchange
   // outside the lock, then merge into the record as it is by then.
   const app = await withSlackRecordLock(async () => {
-    const record = readSlackAppRecord(home);
-    if (!oauthStateMatches(record, input.state, (deps.now ?? Date.now)())) throw new SlackProvisionError("invalid_state");
-    const { appId, clientId, clientSecret, redirectUrl, teamId } = record!;
+    const bot = botForOAuthState(home, input.state, (deps.now ?? Date.now)());
+    if (!bot) throw new SlackProvisionError("invalid_state");
+    const record = readSlackAppRecord(home, bot)!;
+    const { appId, clientId, clientSecret, redirectUrl, teamId } = record;
     if (!clientId || !clientSecret || !redirectUrl) throw new SlackProvisionError("app_not_created");
-    writeSlackAppRecord({ ...record!, oauthState: undefined }, home);
-    return { appId, clientId, clientSecret, redirectUrl, teamId };
+    writeSlackAppRecord({ ...record, oauthState: undefined }, home, bot);
+    return { bot, appId, clientId, clientSecret, redirectUrl, teamId };
   });
   const installed = await exchangeOAuthCode(
     { clientId: app.clientId, clientSecret: app.clientSecret, code: input.code, redirectUri: app.redirectUrl }, deps.fetchImpl ?? fetch);
   if (installed.teamId !== app.teamId) throw new SlackProvisionError("wrong_workspace");
   return withSlackRecordLock(async () => {
-    const latest = readSlackAppRecord(home);
+    const latest = readSlackAppRecord(home, app.bot);
     if (!latest || latest.appId !== app.appId) throw new SlackProvisionError("app_changed");
-    writeSlackAppRecord({ ...latest, pendingBotToken: installed.botToken, teamName: installed.teamName }, home);
+    writeSlackAppRecord({ ...latest, pendingBotToken: installed.botToken, teamName: installed.teamName }, home, app.bot);
     return { teamName: installed.teamName };
   });
 }
@@ -223,9 +233,9 @@ export async function completeSlackOAuth(
 export function cancelSlackOAuth(state: string, deps: ProvisionDeps = {}): Promise<boolean> {
   const home = deps.home ?? JINN_HOME;
   return withSlackRecordLock(async () => {
-    const record = readSlackAppRecord(home);
-    if (!oauthStateMatches(record, state, (deps.now ?? Date.now)())) return false;
-    writeSlackAppRecord({ ...record!, oauthState: undefined }, home);
+    const bot = botForOAuthState(home, state, (deps.now ?? Date.now)());
+    if (!bot) return false;
+    writeSlackAppRecord({ ...readSlackAppRecord(home, bot)!, oauthState: undefined }, home, bot);
     return true;
   });
 }
@@ -241,8 +251,8 @@ export interface SlackProvisionStatus {
 }
 
 /** What the wizard may show; never includes a token or secret. */
-export function slackProvisionStatus(home: string = JINN_HOME): SlackProvisionStatus {
-  const record = readSlackAppRecord(home);
+export function slackProvisionStatus(home: string = JINN_HOME, bot?: string): SlackProvisionStatus {
+  const record = readSlackAppRecord(home, bot);
   if (!record) return { hasConfigToken: false, installed: false };
   return {
     hasConfigToken: Boolean(record.configRefreshToken),
@@ -255,18 +265,18 @@ export function slackProvisionStatus(home: string = JINN_HOME): SlackProvisionSt
   };
 }
 
-export function pendingBotToken(home: string = JINN_HOME): string | undefined {
-  return readSlackAppRecord(home)?.pendingBotToken;
+export function pendingBotToken(home: string = JINN_HOME, bot?: string): string | undefined {
+  return readSlackAppRecord(home, bot)?.pendingBotToken;
 }
 
 /** Once Slack is connected, keep only what names the app. The configuration
  *  token is the person's own Slack credential (it can edit every app they
  *  collaborate on) and the instance home is readable by the engines, so it,
  *  the client secret and the bot token's second copy are not kept. */
-export function forgetSlackSecrets(home: string = JINN_HOME): Promise<void> {
+export function forgetSlackSecrets(home: string = JINN_HOME, bot?: string): Promise<void> {
   return withSlackRecordLock(async () => {
-    const record = readSlackAppRecord(home);
+    const record = readSlackAppRecord(home, bot);
     if (!record) return;
-    writeSlackAppRecord({ teamId: record.teamId, teamName: record.teamName, appId: record.appId, name: record.name }, home);
+    writeSlackAppRecord({ teamId: record.teamId, teamName: record.teamName, appId: record.appId, name: record.name }, home, bot);
   });
 }
