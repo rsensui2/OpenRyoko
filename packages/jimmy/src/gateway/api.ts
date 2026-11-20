@@ -515,6 +515,14 @@ export async function handleApiRequest(
       return json(res, await probeOnboardingEngines(config));
     }
 
+    // /api/onboarding/slack/{app,finish,oauth/callback} — the automatic Slack
+    // app setup from one configuration refresh token (slack-provision/).
+    if (pathname.startsWith("/api/onboarding/slack/")) {
+      const { handleSlackProvisionApi } = await import("./slack-provision/routes.js");
+      if (await handleSlackProvisionApi(req, res, { method, pathname, url },
+        { connect: (botToken, appToken) => connectSlack(context, botToken, appToken) })) return;
+    }
+
     // POST /api/onboarding/slack/connect — the whole Slack hookup as ONE
     // server-side operation: verify both tokens, save, reload, and if the
     // connector still fails to start, put the previous Slack config back and
@@ -531,7 +539,14 @@ export async function handleApiRequest(
         return badRequest(res, "botToken must start with xoxb- and appToken with xapp-");
       }
       res.setHeader("Cache-Control", "no-store");
-      return json(res, await connectSlack(context, botToken, appToken));
+      const outcome = await connectSlack(context, botToken, appToken);
+      if (outcome.ok) {
+        // Connected by hand: an unfinished automatic setup's configuration
+        // token and secrets have no further use, so they are not left on disk.
+        const { forgetSlackSecrets } = await import("./slack-provision/provision-flow.js");
+        await forgetSlackSecrets().catch((err) => logger.warn(`[slack-provision] could not clear setup secrets: ${err instanceof Error ? err.message : String(err)}`));
+      }
+      return json(res, outcome);
     }
 
     // POST /api/onboarding/slack/verify — prove BOTH Slack tokens before

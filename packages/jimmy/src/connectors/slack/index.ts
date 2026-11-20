@@ -33,6 +33,7 @@ import {
 } from "./triage-prompt.js";
 import {
   evaluateRespondPolicy,
+  channelRespondOverride,
   hasMentionScope,
   resolveRespondMode,
   respondPolicyNeedsTracking,
@@ -499,6 +500,7 @@ export class SlackConnector implements Connector {
       const respondDecision = evaluateRespondPolicy({
         config: this.respondTo,
         channelType,
+        channelId: (event as any).channel,
         wasMentioned,
         isEngagedThread:
           !!threadTs &&
@@ -649,9 +651,13 @@ export class SlackConnector implements Connector {
         attachmentCount: eventFiles.length,
         text: rawText,
       });
+      // A channel set to "always" as an exception answers everything there.
+      const alwaysHere = channelType !== "im" &&
+        channelRespondOverride(this.respondTo, (event as any).channel) === "always";
       const skipTriage =
         !triageEnabled ||
         wasMentioned ||
+        alwaysHere ||
         ((channelType === "im" || isDmEquivalent) && !shortAckTriage);
 
       if (triageEnabled && isDmEquivalent && !shortAckTriage) {
@@ -755,7 +761,7 @@ export class SlackConnector implements Connector {
       // carries no @-mention; see shouldHandleReaction.
       if (!shouldHandleReaction(this.respondTo, event.item.channel)) {
         logger.debug(
-          `[slack] respondTo.channel=${resolveRespondMode(this.respondTo, "channel")} — ignoring channel reaction on ${event.item.channel}:${event.item.ts}`,
+          `[slack] respondTo.channel=${resolveRespondMode(this.respondTo, "channel", event.item.channel)} — ignoring channel reaction on ${event.item.channel}:${event.item.ts}`,
         );
         return;
       }
