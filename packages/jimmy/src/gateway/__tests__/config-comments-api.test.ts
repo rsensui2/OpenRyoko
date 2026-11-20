@@ -198,3 +198,18 @@ describe("the other API writers of config.yaml", () => {
     expect(onDisk()).toBe(original);
   });
 });
+
+describe("deepMerge removals inside a new block", () => {
+  it("does not store a null sent to clear a key the block never had", () => {
+    const merged = deepMerge(
+      { connectors: { slack: { botToken: "xoxb-1" } } },
+      { connectors: { slack: { triage: { enabled: true, backend: "jev", jev: { provider: "typesafe", endpoint: null, model: null } } } } },
+    );
+    expect(merged).toEqual({ connectors: { slack: { botToken: "xoxb-1", triage: { enabled: true, backend: "jev", jev: { provider: "typesafe" } } } } });
+  });
+
+  it("still deletes a key that exists", () => {
+    const merged = deepMerge({ triage: { jev: { endpoint: "http://localhost:11434/v1/systemone", model: "nimble" } } }, { triage: { jev: { endpoint: null } } });
+    expect(merged).toEqual({ triage: { jev: { model: "nimble" } } });
+  });
+});

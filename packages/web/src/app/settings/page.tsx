@@ -14,6 +14,7 @@ import { ModelSelector } from "@/components/settings/model-selector"
 import { JevSettings } from "@/components/settings/jev-settings"
 import type { SlackTriageSettings } from "@/lib/triage-settings"
 import { UpdateNotificationSettings } from "@/components/settings/update-notification-settings"
+import { SlackBehaviorEditor } from "@/components/onboarding/slack-behavior-editor"
 import {
   MODEL_VENDORS,
   TRIAGE_MODEL_VENDORS,
@@ -974,6 +975,23 @@ export default function SettingsPage() {
             Settings
           </h1>
 
+          {/* -- Slack first: how the bot behaves is what people come here to change -- */}
+          <Section title="Slack での振る舞い">
+            <div className="flex flex-col gap-[var(--space-4)]">
+              <a
+                href="/connect/slack"
+                className="flex items-center justify-between gap-[var(--space-3)] p-[var(--space-3)] rounded-[var(--radius-md)] border border-[var(--separator)] no-underline"
+              >
+                <span className="flex flex-col">
+                  <span className="text-[length:var(--text-subheadline)] font-[var(--weight-semibold)] text-[var(--text-primary)]">Slack につなぐ・つなぎ直す</span>
+                  <span className="text-[length:var(--text-caption1)] text-[var(--text-secondary)]">Slack アプリを名前・アイコンつきで自動で作り、写真つきの手順でつなぎます。</span>
+                </span>
+                <span className="text-[var(--text-tertiary)] text-[length:var(--text-title3)] shrink-0">→</span>
+              </a>
+              <SlackBehaviorEditor onSaved={followOwnConfigWrite} />
+            </div>
+          </Section>
+
           {/* -- Section 1: Appearance -- */}
           <Section title="外観">
             {/* Theme picker */}
@@ -1556,16 +1574,9 @@ export default function SettingsPage() {
                   </span>
                   <span className="text-[var(--accent)] text-[length:var(--text-title3)] shrink-0">→</span>
                 </a>
-                <a
-                  href="/connect/slack/behavior"
-                  className="flex items-center justify-between gap-[var(--space-3)] mb-[var(--space-3)] p-[var(--space-3)] rounded-[var(--radius-md)] border border-[var(--separator)] no-underline"
-                >
-                  <span className="flex flex-col">
-                    <span className="text-[length:var(--text-subheadline)] font-[var(--weight-semibold)] text-[var(--text-primary)]">Slack での振る舞いを決める</span>
-                    <span className="text-[length:var(--text-caption1)] text-[var(--text-secondary)]">メンションだけ返事する・空気を読む・スレッドで続ける・チャンネルごとの例外を、質問に答えて決めます。下の「応答ゲート」と同じ設定です。</span>
-                  </span>
-                  <span className="text-[var(--text-tertiary)] text-[length:var(--text-title3)] shrink-0">→</span>
-                </a>
+                <div className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)] mb-[var(--space-3)]">
+                  いつ話すか・空気の読み方は、このページのいちばん上「Slack での振る舞い」で決められます。下の「応答ゲート」などは同じ設定を細かく直すための欄です。
+                </div>
                 <div className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)] mb-[var(--space-2)]">
                   Slack アプリを自分で作る場合は、以下の手順とトークン欄を使います。
                 </div>

@@ -9,6 +9,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react"
 import { Check, Loader2, Plus, Trash2 } from "lucide-react"
 import { api, ConfigConflictError } from "@/lib/api"
+import { describeAirReading } from "@/lib/air-reading"
+import { AirReadingPicker } from "./air-reading-picker"
 import {
   behaviorFromConfig, behaviorToConfigPatch, describeBehavior, usesMentions,
   type ChannelChoice, type GroupDmChoice, type RespondMode, type SlackBehavior, type SlackBehaviorConfig,
@@ -100,7 +102,9 @@ function Exceptions({ behavior, channels, channelError, onChange }: {
   )
 }
 
-export function SlackBehaviorEditor() {
+/** `onSaved` lets a host page that also writes config.yaml re-read it, so its
+ *  own next save is not refused as a conflict. */
+export function SlackBehaviorEditor({ onSaved }: { onSaved?: () => void } = {}) {
   const [loaded, setLoaded] = useState<{ behavior: SlackBehavior; revision: string | null } | null>(null)
   const [behavior, setBehavior] = useState<SlackBehavior | null>(null)
   const [channels, setChannels] = useState<SlackChannel[] | null>(null)
@@ -148,6 +152,7 @@ export function SlackBehaviorEditor() {
       const { revision } = await api.updateConfigAtRevision({ connectors: { slack: patch } }, loaded.revision)
       setLoaded({ behavior, revision })
       setMessage({ ok: true, text: "保存しました。Slack の接続を読み込み直したので、もう反映されています。" })
+      onSaved?.()
     } catch (err) {
       setMessage(err instanceof ConfigConflictError
         ? { ok: false, text: "ほかの画面で設定が変わっていました。読み込み直したので、もう一度選んで保存してください。" }
@@ -184,6 +189,12 @@ export function SlackBehaviorEditor() {
         </div>
       </Question>
 
+      {behavior.channel === "auto" && (
+        <Question title="空気はどうやって読む？">
+          <AirReadingPicker value={behavior.airReading} onChange={(airReading) => update({ airReading })} />
+        </Question>
+      )}
+
       {usesMentions(behavior) && (
         <Question title="一度返事したスレッドでは？">
           <Choice name="threads" value="yes" current={behavior.engagedThreads ? "yes" : "no"} onPick={() => update({ engagedThreads: true })}
@@ -201,9 +212,7 @@ export function SlackBehaviorEditor() {
           <div key={line} className="flex gap-2 text-[length:var(--text-footnote)] text-[var(--text-secondary)]"><Check size={14} className="shrink-0 mt-0.5 text-[var(--system-green)]" />{line}</div>
         ))}
         {behavior.channel === "auto" && (
-          <div className="mt-2 text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">
-            空気読みの仕組み（Jev を使うか、どれくらい自分から加わるか）は <a href="/settings">設定ページ</a> の Jev の欄で細かく決められます。
-          </div>
+          <div className="flex gap-2 text-[length:var(--text-footnote)] text-[var(--text-secondary)]"><Check size={14} className="shrink-0 mt-0.5 text-[var(--system-green)]" />空気の読み方: {describeAirReading(behavior.airReading)}</div>
         )}
       </section>
 

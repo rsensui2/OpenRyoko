@@ -411,6 +411,11 @@ export const api = {
   saveTypeSafeKey: (apiKey: string) => typeSafeRequest<TypeSafeKeyStatus>("/api/integrations/typesafe", "PUT", { apiKey }),
   deleteTypeSafeKey: () => typeSafeRequest<TypeSafeKeyStatus>("/api/integrations/typesafe", "DELETE"),
   testTypeSafeKey: () => typeSafeRequest<TypeSafeTestResult>("/api/integrations/typesafe/test", "POST"),
+  /** Decision-model API keys for air-reading, one per provider (typesafe | openrouter | openai). */
+  getDecisionKeyStatus: (provider: string) => typeSafeRequest<TypeSafeKeyStatus>(`/api/integrations/decision-keys/${encodeURIComponent(provider)}`),
+  saveDecisionKey: (provider: string, apiKey: string) => typeSafeRequest<TypeSafeKeyStatus>(`/api/integrations/decision-keys/${encodeURIComponent(provider)}`, "PUT", { apiKey }),
+  deleteDecisionKey: (provider: string) => typeSafeRequest<TypeSafeKeyStatus>(`/api/integrations/decision-keys/${encodeURIComponent(provider)}`, "DELETE"),
+  testDecisionKey: (provider: string) => typeSafeRequest<TypeSafeTestResult>(`/api/integrations/decision-keys/${encodeURIComponent(provider)}/test`, "POST"),
   getStatus: () => get<Record<string, unknown>>("/api/status"),
   getUpdateStatus: (refresh = false) =>
     get<UpdateStatusResponse>(`/api/update${refresh ? "?refresh=1" : ""}`),

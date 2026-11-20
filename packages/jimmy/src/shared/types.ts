@@ -457,8 +457,17 @@ export interface SlackTriageConfig {
   enabled?: boolean;
   /** Default: cli. Shadow observes Jev while the existing CLI still chooses the action. */
   backend?: "cli" | "jev-shadow" | "jev";
-  /** Native TypeSafe API settings. Credentials are read from private storage/environment, never config. */
+  /** Native Jev decision-model settings. Credentials are read from private storage/environment, never config. */
   jev?: {
+    /**
+     * Decision-model provider. Slack text is sent to this provider's fixed HTTPS endpoint only. Default: typesafe.
+     * - typesafe: https://api.typesafe.ai/v1/systemone (key: credentials/typesafe.json or TYPESAFE_API_KEY / apiKeyEnv)
+     * - openrouter: https://openrouter.ai/api/v1/systemone, same System One shape (key: credentials/openrouter.json or OPENROUTER_API_KEY)
+     * - openai: OpenAI Decisions API https://api.openai.com/v1/decisions, model gpt-6-luna
+     *   (OpenAI Platform API key: credentials/openai.json or OPENAI_API_KEY; a ChatGPT/Codex login is not an API key)
+     * A loopback `endpoint` takes precedence and means a local server with no key. An unknown value disables Jev (invalid_config).
+     */
+    provider?: "typesafe" | "openrouter" | "openai";
     /** On uncertainty/error: none uses bounded routing rules without a CLI; cli explicitly opts into legacy classification. Default: none. */
     fallback?: "none" | "cli";
     /** Use bounded role/skill metadata to assess useful help for open requests. Default: true. */
@@ -466,14 +475,18 @@ export interface SlackTriageConfig {
     /** Chance of joining an unsolicited but useful opportunity, 0–100. Default: 0. Direct requests are unaffected. */
     proactiveParticipationPercent?: number;
     /**
-     * Destination of the Jev-compatible /v1/systemone API. Default: https://api.typesafe.ai/v1/systemone.
-     * Only a loopback server (localhost / 127.0.0.1 / [::1], e.g. Ollama decision models) may replace it,
-     * so Slack text never leaves the machine for any other host. A loopback endpoint needs no API key.
+     * Destination override. Default: the provider's fixed endpoint (setting exactly that URL is also accepted).
+     * Only a loopback server (localhost / 127.0.0.1 / [::1], e.g. Ollama decision models) exposing /v1/systemone
+     * may replace it, so Slack text never leaves the machine for any other host. A loopback endpoint needs no
+     * API key, accepts its own model names, and takes precedence over `provider`.
      */
     endpoint?: string;
-    /** Pin an evaluated model. Default: jev-1.13.0 (TypeSafe requires jev-*; a loopback endpoint accepts its own model name). */
+    /**
+     * Pin an evaluated model. Default per provider: typesafe jev-1.13.0 (jev-*), openrouter typesafe/jev-1.13
+     * (jev-*, typesafe/jev-*, ~typesafe/jev-latest), openai gpt-6-luna (only). A loopback endpoint accepts its own model name.
+     */
     model?: string;
-    /** Environment variable containing the TypeSafe API key. Default: TYPESAFE_API_KEY. */
+    /** Environment variable containing the TypeSafe API key (typesafe provider only; others use their fixed env). Default: TYPESAFE_API_KEY. */
     apiKeyEnv?: string;
     /** Total HTTP/body-read budget, then apply the chosen fallback policy. Default: 3000ms; maximum: 10000ms. */
     timeoutMs?: number;

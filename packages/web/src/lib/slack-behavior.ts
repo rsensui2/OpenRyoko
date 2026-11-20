@@ -5,6 +5,8 @@
  * (air-reading: decide per message whether to reply, react or stay quiet).
  */
 
+import { airReadingFromConfig, airReadingPatch, sameAirReading, type AirReading, type TriageConfig, type TriageConfigPatch } from "./air-reading"
+
 export type RespondMode = "always" | "mention" | "never"
 
 /** "auto" = pass every message to air-reading; "always" = answer everything. */
@@ -19,6 +21,8 @@ export interface SlackBehavior {
   engagedThreads: boolean
   /** Channel id → its own mode. */
   exceptions: Record<string, RespondMode>
+  /** How air-reading decides, when it is on. */
+  airReading: AirReading
 }
 
 export interface SlackBehaviorConfig {
@@ -29,13 +33,13 @@ export interface SlackBehaviorConfig {
     engagedThreads?: boolean
     channels?: Record<string, string | null>
   }
-  triage?: { enabled?: boolean }
+  triage?: TriageConfig
 }
 
 /** What saving writes: every gate field, removed exceptions as null. */
 export interface SlackBehaviorPatch {
   respondTo: { im: string; mpim: string; channel: string; engagedThreads: boolean; channels: Record<string, string | null> }
-  triage?: { enabled: boolean }
+  triage?: { enabled?: boolean } & Partial<TriageConfigPatch>
 }
 
 function mode(raw: unknown): RespondMode {
@@ -67,6 +71,7 @@ export function behaviorFromConfig(slack: SlackBehaviorConfig | undefined): Slac
     groupDm: groupMode === channelGate(channel) ? "same" : groupMode,
     engagedThreads: respondTo.engagedThreads !== false,
     exceptions,
+    airReading: airReadingFromConfig(slack?.triage),
   }
 }
 
@@ -92,9 +97,10 @@ export function behaviorToConfigPatch(behavior: SlackBehavior, loaded: SlackBeha
       channels,
     },
   }
-  if (behavior.channel === "auto") return { ...patch, triage: { enabled: true } }
-  if (behavior.channel === "always") return { ...patch, triage: { enabled: false } }
-  return patch
+  const method = sameAirReading(behavior.airReading, loaded.airReading) ? null : airReadingPatch(behavior.airReading)
+  const enabled = behavior.channel === "auto" ? true : behavior.channel === "always" ? false : undefined
+  if (enabled === undefined && !method) return patch
+  return { ...patch, triage: { ...(enabled === undefined ? {} : { enabled }), ...(method ?? {}) } }
 }
 
 /** True when some answer makes a mention matter (the thread question applies). */
