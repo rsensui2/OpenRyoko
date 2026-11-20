@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "source": "71 release tags, v0.1.0 to v2026.11.13",
+  "source": "72 release tags, v0.1.0 to v2026.11.20",
   "names": [
     "cron-manager",
     "find-and-install",
@@ -345,6 +345,26 @@
           },
           "references/jev.md": {
             "sha256": "d5df94d65274625835b91cd31064d430abbc9f1078681cda0b72224438b699fe"
+          },
+          "references/maintenance.md": {
+            "sha256": "033faaaab919d606f1b9c9a2c5bb1a7d28f7ce8897b97f85c3fdca2520d19c72"
+          },
+          "references/platform.md": {
+            "sha256": "4ef99a8b582d7e6802404d889fea85aceff816834fdfea0f021aed7b83289bd7"
+          }
+        }
+      },
+      {
+        "since": "v2026.11.20",
+        "files": {
+          "SKILL.md": {
+            "sha256": "d3b5db4ba5726e10502ca691c8f777b9441006c2b5f9b7995916e706780c5128"
+          },
+          "references/engine-fallback.md": {
+            "sha256": "d1ca2d715bb5adc031bcef4aea34cf816c2517a79d1b5a0f43b2e1fac7ff6ae6"
+          },
+          "references/jev.md": {
+            "sha256": "65b3111db465fbaae9eb250616670e5e38e29485366bc0def175fca82aa2da9f"
           },
           "references/maintenance.md": {
             "sha256": "033faaaab919d606f1b9c9a2c5bb1a7d28f7ce8897b97f85c3fdca2520d19c72"
