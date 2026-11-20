@@ -176,7 +176,7 @@ describe("slackProvisionStatus", () => {
     writeSlackAppRecord({ teamId: "T1", configRefreshToken: "xoxe-1-X", appId: "A1", clientId: "C.1", clientSecret: "SECRET", pendingBotToken: "xoxb-BOT" }, home);
     const status = JSON.stringify(slackProvisionStatus(home));
     expect(status).not.toMatch(/xoxe-|xoxb-|SECRET/);
-    expect(slackProvisionStatus(home)).toMatchObject({ hasConfigToken: true, appId: "A1", installed: true });
+    expect(slackProvisionStatus(home)).toMatchObject({ hasConfigToken: true, appId: "A1", canUpdateApp: true, installed: true });
   });
 });
 
@@ -308,7 +308,17 @@ describe("review fixes", () => {
     await forgetSlackSecrets(home);
     const raw = fs.readFileSync(slackAppRecordPath(home), "utf8");
     expect(raw).not.toMatch(/xoxe-|xoxb-|SECRET|C\.1/);
-    expect(slackProvisionStatus(home)).toMatchObject({ hasConfigToken: false, appId: "A1", teamName: "Example Team", installed: false });
+    expect(slackProvisionStatus(home)).toMatchObject({ hasConfigToken: false, appId: "A1", canUpdateApp: false, teamName: "Example Team", installed: false });
+  });
+
+  it("creates a new app when set up again after connecting, since the client secret is gone", async () => {
+    await provisioned();
+    await forgetSlackSecrets(home);
+    expect(slackProvisionStatus(home).canUpdateApp).toBe(false);
+    const { fetchImpl, calls } = slackStub({ "tooling.tokens.rotate": rotate, "apps.manifest.create": { ...created, app_id: "A2" } });
+    const result = await provisionSlackApp({ refreshToken: "xoxe-1-AGAIN", name: "Ryoko" }, { fetchImpl, home });
+    expect(calls).toEqual(["tooling.tokens.rotate", "apps.manifest.create"]);
+    expect(result).toMatchObject({ appId: "A2", created: true });
   });
 
   it("lets only the callback GET through without gateway auth", () => {

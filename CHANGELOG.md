@@ -4,15 +4,15 @@
 
 ### Added
 
-- Set up Slack from the web UI at `/connect/slack`. With one Slack App Configuration Token, OpenRyoko creates the app from its manifest (or updates the one it created before), sets its icon, and starts the install; after "Allow", the person pastes one App-Level Token. Each step shows a screenshot of the Slack screen it sends the person to. The configuration token is kept only while a setup is in progress. A gateway served over http gets the install redirect back through a static relay page on GitHub Pages (`OPENRYOKO_SLACK_OAUTH_RELAY` points to another one); localhost and private IP addresses are forwarded automatically, other hostnames after a click.
-- "Slack での振る舞い" at the top of the settings page: when to speak in DMs, group DMs, channels, and engaged threads, per-channel exceptions (`respondTo.channels`), and how to read the room. A channel set to always reply skips triage.
-- Air-reading providers: `triage.jev.provider` selects `typesafe` (default), `openrouter`, or `openai` (OpenAI Decisions API, through an adapter to the System One shape). Each provider has a fixed HTTPS endpoint and its own key in `credentials/<provider>.json`, saved and tested through `/api/integrations/decision-keys/:provider`. A loopback `jev.endpoint` still means a local model.
-- Several Ryokos ("Ryoko たち"): a peer assistant beside the main one, with its own name, emoji, personality, engine, Slack app, and Slack behavior, and a memory mode chosen at creation (`shared`, or `own` under `ryokos/<name>/`). `own` is enforced by instructions, not file isolation. Peers are `org/ryokos/<name>.yaml` with `peer.memory`, managed through `/api/ryokos`. A new peer replies in channels only when mentioned.
+- Set up Slack from the web UI at `/connect/slack`. With one Slack App Configuration Token, OpenRyoko creates the app from its manifest (a setup restarted before it finishes updates that app instead; one set up again after connecting gets a new app), sets its icon, and starts the install; after "Allow", the person pastes one App-Level Token. Each step shows a screenshot of the Slack screen it sends the person to. The configuration token is kept only while a setup is in progress. A gateway served over http gets the install redirect back through a static relay page on GitHub Pages (`OPENRYOKO_SLACK_OAUTH_RELAY` points to another one); localhost, private, and 100.64.0.0/10 addresses are forwarded automatically, other hosts after a click.
+- "Slack での振る舞い" at the top of the settings page: when to speak in DMs, group DMs, channels, and engaged threads, per-channel exceptions (`respondTo.channels`), and how to read the room. A per-channel exception set to `always` skips triage.
+- Air-reading providers: a Slack connector's `triage.jev.provider` selects `typesafe` (default), `openrouter`, or `openai` (OpenAI Decisions API, through an adapter to the System One shape). Each provider has a fixed HTTPS endpoint and its own key in `credentials/<provider>.json`, saved and tested through `/api/integrations/decision-keys/:provider`. A loopback `jev.endpoint` still means a local model.
+- Several Ryokos ("Ryoko たち"): a peer assistant beside the main one, with its own name, emoji, personality, engine, Slack app, and Slack behavior, and a memory mode chosen at creation (`shared`, or `own` under `ryokos/<name>/`). `own` is enforced by instructions, not file isolation. Peers are `org/ryokos/<name>.yaml` with `peer.memory`, managed through `/api/ryokos`. A new peer replies in channels only when mentioned, and keeps replying in threads it has joined.
 
 ### Changed
 
-- Slack connectors under `connectors.instances` key sessions by the instance id (`slack-hana:dm:U…`); `connectors.slack` keeps `slack:…`. A session is never continued by another assistant's bot or across two bots, replies go out through the instance the conversation came from, and `send_message` defaults to the session's own Slack connector.
-- A message to an instance bound to a missing employee is dropped with a warning instead of being answered by the main assistant. An instance whose id names a top-level connector (`slack`, `discord`, `telegram`, `whatsapp`) or has surrounding spaces is skipped.
+- Slack connectors under `connectors.instances` key sessions by the instance id (`slack-hana:dm:U…`); `connectors.slack` keeps `slack:…`. A bot bound to an assistant never continues another assistant's session, sessions created from this version on never continue across two bots, replies go out through the instance the conversation came from, and `send_message` without a connector posts through the session's own connector when its id is `slack-<lowercase>`.
+- A message to an entry of `connectors.instances` bound to a missing employee is dropped with a warning instead of being answered by the main assistant. An entry of `connectors.instances` whose id names a top-level connector (`slack`, `discord`, `telegram`, `whatsapp`) or has surrounding spaces is skipped.
 
 ### Fixed
 
@@ -21,6 +21,7 @@
 ### Upgrade notes
 
 - DMs and threads on Slack bots under `connectors.instances` start a new session once after the upgrade. The bot under `connectors.slack` is unaffected.
+- `send_message` from a conversation on an employee's `slack-…` bot now posts as that bot, which must be in the channel.
 - The migration updates the bundled `openryoko-config` skill and only `jinn.version`; every new feature stays off until it is used.
 
 ## 2026.11.13

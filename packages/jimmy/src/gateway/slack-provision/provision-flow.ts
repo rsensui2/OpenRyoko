@@ -245,6 +245,10 @@ export interface SlackProvisionStatus {
   teamId?: string;
   teamName?: string;
   appId?: string;
+  /** Whether a new setup updates `appId` instead of creating another app.
+   *  False once Slack is connected: the client secret an install needs is
+   *  forgotten then, and Slack has no API that hands it back. */
+  canUpdateApp: boolean;
   name?: string;
   installed: boolean;
   pages?: ReturnType<typeof slackAppPages>;
@@ -253,12 +257,13 @@ export interface SlackProvisionStatus {
 /** What the wizard may show; never includes a token or secret. */
 export function slackProvisionStatus(home: string = JINN_HOME, bot?: string): SlackProvisionStatus {
   const record = readSlackAppRecord(home, bot);
-  if (!record) return { hasConfigToken: false, installed: false };
+  if (!record) return { hasConfigToken: false, canUpdateApp: false, installed: false };
   return {
     hasConfigToken: Boolean(record.configRefreshToken),
     teamId: record.teamId,
     teamName: record.teamName,
     appId: record.appId,
+    canUpdateApp: Boolean(record.appId && record.clientId && record.clientSecret),
     name: record.name,
     installed: Boolean(record.pendingBotToken),
     pages: record.appId ? slackAppPages(record.appId) : undefined,
