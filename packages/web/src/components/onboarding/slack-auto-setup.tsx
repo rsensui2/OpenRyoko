@@ -152,7 +152,10 @@ function CreateSteps({ bot, defaultName, status, onCreated, onRefresh }: {
         </div>
         <SecretInput label="コピーした Refresh Token" prefix="xoxe-" value={token} onChange={setToken}
           placeholder={status?.hasConfigToken ? "さっき失敗したときのトークンを使います（貼り直し不要）" : undefined} />
-        {status?.appId && (
+        {status?.appId && !status.canUpdateApp && (
+          <p className={noteClass}>前回のアプリ（{status.appId}）は Slack との接続まで済んでいるので、ここからは更新できません。もう一度設定すると、新しいアプリを作ります。前のアプリが要らなければ、Slack のアプリ管理画面で削除してください。</p>
+        )}
+        {status?.appId && status.canUpdateApp && (
           <label className="flex items-center gap-2 text-[length:var(--text-caption1)] text-[var(--text-secondary)] cursor-pointer">
             <input type="checkbox" checked={fresh} onChange={(e) => setFresh(e.target.checked)} />
             前回作ったアプリ（{status.appId}）を更新せず、新しいアプリとして作る
@@ -160,7 +163,7 @@ function CreateSteps({ bot, defaultName, status, onCreated, onRefresh }: {
         )}
         <div><PrimaryButton busy={busy} disabled={!canSubmit} onClick={submit}>{busy ? "Slack アプリを作成中…" : "Slack アプリを作る"}</PrimaryButton></div>
         <ResultLine result={result} />
-        <p className={noteClass}>トークンはアプリを作り終えたらすぐ消します（作るのに失敗したときだけ、やり直し用に残します）。あとで名前やアイコンを変えるときは、新しいトークンを貼ってください。使い終わったトークンは Slack のアプリ管理画面の同じ欄で削除できます。</p>
+        <p className={noteClass}>トークンはアプリを作り終えたらすぐ消します（作るのに失敗したときだけ、やり直し用に残します）。Slack との接続が済んだあとに名前やアイコンを変えるときは、Slack のアプリ管理画面（Basic Information）で変えてください。使い終わった設定トークンは、上の「Your App Configuration Tokens」の欄で削除できます。</p>
       </GuideStep>
     </>
   )

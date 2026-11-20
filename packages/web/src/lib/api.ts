@@ -93,6 +93,8 @@ export interface SlackAppStatus {
   teamId?: string
   teamName?: string
   appId?: string
+  /** False once Slack is connected: setting up again makes a new app. */
+  canUpdateApp?: boolean
   name?: string
   /** Slack's "Allow" came back and a bot token is waiting for its app token. */
   installed: boolean
