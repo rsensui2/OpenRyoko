@@ -9,6 +9,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { JINN_HOME } from "../../shared/paths.js";
+import { isPeerName, MAIN_RYOKO } from "../../shared/peer-ryoko.js";
 
 export interface SlackAppRecord {
   v: 1;
@@ -41,8 +42,29 @@ export function withSlackRecordLock<T>(fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
-export function slackAppRecordPath(home: string = JINN_HOME): string {
-  return path.join(home, "slack-app.json");
+/** The main Ryoko's record stays at `slack-app.json`; a peer Ryoko's is
+ *  `slack-apps/<name>.json`. Anything else is refused, so a bot name can
+ *  never steer a path outside that folder. */
+export function slackAppRecordPath(home: string = JINN_HOME, bot?: string): string {
+  if (bot === undefined || bot === MAIN_RYOKO) return path.join(home, "slack-app.json");
+  if (!isPeerName(bot)) throw new Error(`invalid Slack bot name: ${JSON.stringify(bot)}`);
+  return path.join(home, "slack-apps", `${bot}.json`);
+}
+
+/** Every bot that has a record: "main" (when it has one) and each peer. */
+export function slackAppRecordBots(home: string = JINN_HOME): string[] {
+  const bots = fs.existsSync(slackAppRecordPath(home)) ? [MAIN_RYOKO] : [];
+  let files: string[] = [];
+  try {
+    files = fs.readdirSync(path.join(home, "slack-apps"));
+  } catch {
+    return bots;
+  }
+  const peers = files.flatMap((file) => {
+    const name = file.endsWith(".json") ? file.slice(0, -".json".length) : "";
+    return isPeerName(name) ? [name] : [];
+  });
+  return [...bots, ...peers.sort()];
 }
 
 function isRecord(value: unknown): value is SlackAppRecord {
@@ -51,19 +73,19 @@ function isRecord(value: unknown): value is SlackAppRecord {
   return candidate.v === 1 && typeof candidate.teamId === "string";
 }
 
-export function readSlackAppRecord(home: string = JINN_HOME): SlackAppRecord | null {
+export function readSlackAppRecord(home: string = JINN_HOME, bot?: string): SlackAppRecord | null {
   try {
-    const parsed: unknown = JSON.parse(fs.readFileSync(slackAppRecordPath(home), "utf8"));
+    const parsed: unknown = JSON.parse(fs.readFileSync(slackAppRecordPath(home, bot), "utf8"));
     return isRecord(parsed) ? parsed : null;
   } catch {
     return null;
   }
 }
 
-export function writeSlackAppRecord(record: Omit<SlackAppRecord, "v" | "updatedAt">, home: string = JINN_HOME): SlackAppRecord {
+export function writeSlackAppRecord(record: Omit<SlackAppRecord, "v" | "updatedAt">, home: string = JINN_HOME, bot?: string): SlackAppRecord {
   const next: SlackAppRecord = { ...record, v: 1, updatedAt: new Date().toISOString() };
-  fs.mkdirSync(home, { recursive: true, mode: 0o700 });
-  const file = slackAppRecordPath(home);
+  const file = slackAppRecordPath(home, bot);
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const temporary = `${file}.tmp-${process.pid}-${crypto.randomBytes(4).toString("hex")}`;
   fs.writeFileSync(temporary, JSON.stringify(next, null, 2), { mode: 0o600 });
   fs.renameSync(temporary, file);
@@ -86,4 +108,15 @@ export function oauthStateMatches(record: SlackAppRecord | null, presented: stri
   const left = Buffer.from(expected.value);
   const right = Buffer.from(presented);
   return left.length === right.length && crypto.timingSafeEqual(left, right);
+}
+
+/** Which bot issued this OAuth state, or null when none did (or it expired).
+ *  Slack hands back only the state, so the callback finds the record by it:
+ *  every record is compared in constant time, and the state stays the same
+ *  unguessable one-use nonce whichever bot it belongs to. */
+export function botForOAuthState(home: string, presented: string, now: number = Date.now()): string | null {
+  for (const bot of slackAppRecordBots(home)) {
+    if (oauthStateMatches(readSlackAppRecord(home, bot), presented, now)) return bot;
+  }
+  return null;
 }

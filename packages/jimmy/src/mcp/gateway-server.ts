@@ -12,7 +12,7 @@
 
 import { createInterface } from "node:readline";
 import { readGatewayAuthToken } from "../gateway/auth.js";
-import { currentConversationFromEnv, isSendToCurrentConversation } from "./current-conversation.js";
+import { currentConversationFromEnv, defaultSendConnector, isSendToCurrentConversation } from "./current-conversation.js";
 
 const GATEWAY_URL = process.env.JINN_GATEWAY_URL || "http://127.0.0.1:7777";
 /** This instance's home, passed by the gateway through the MCP config. */
@@ -242,8 +242,10 @@ async function apiPut(path: string, body: unknown): Promise<unknown> {
 async function handleTool(name: string, args: Record<string, unknown>): Promise<string> {
   switch (name) {
     case "send_message": {
-      const connector = (args.connector as string) || "slack";
-      if (isSendToCurrentConversation({ ...args, connector }, currentConversationFromEnv())) {
+      const current = currentConversationFromEnv();
+      const named = typeof args.connector === "string" ? args.connector.trim() : "";
+      const connector = named || defaultSendConnector(current);
+      if (isSendToCurrentConversation({ ...args, connector }, current)) {
         throw new Error(
           "send_message cannot post to the current conversation. Return the reply as your final answer instead; Jinn will deliver it to the correct thread.",
         );

@@ -8,6 +8,7 @@ import {
   Zap,
   Settings,
   SlidersHorizontal,
+  Bot,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 
@@ -20,6 +21,7 @@ export interface NavItem {
 export const NAV_ITEMS: NavItem[] = [
   { href: "/", label: "ホーム", icon: Home },
   { href: "/chat", label: "チャット", icon: MessageSquare },
+  { href: "/ryokos", label: "Ryoko たち", icon: Bot },
   { href: "/org", label: "組織", icon: Users },
   { href: "/kanban", label: "カンバン", icon: LayoutGrid },
   { href: "/cron", label: "自動化", icon: Clock },

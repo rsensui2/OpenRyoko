@@ -89,7 +89,8 @@ function SecretInput({ label, prefix, value, onChange, placeholder }: { label: s
   )
 }
 
-function CreateSteps({ defaultName, status, onCreated, onRefresh }: {
+function CreateSteps({ bot, defaultName, status, onCreated, onRefresh }: {
+  bot?: string
   defaultName: string
   status: SlackAppStatus | null
   onCreated: (app: Created) => void
@@ -109,7 +110,7 @@ function CreateSteps({ defaultName, status, onCreated, onRefresh }: {
     setBusy(true)
     setResult(null)
     try {
-      const outcome = await api.provisionSlackApp({ name: name.trim(), refreshToken: token || undefined, icon: icon ?? undefined, fresh, ...returnRoute() })
+      const outcome = await api.provisionSlackApp({ name: name.trim(), refreshToken: token || undefined, icon: icon ?? undefined, fresh, bot, ...returnRoute() })
       // Slack saw it: the token is spent (rotated) or refused either way.
       setToken("")
       if (outcome.ok) {
@@ -165,25 +166,25 @@ function CreateSteps({ defaultName, status, onCreated, onRefresh }: {
   )
 }
 
-function useInstalledPoll(active: boolean, since: number): boolean {
+function useInstalledPoll(active: boolean, since: number, bot?: string): boolean {
   const [installed, setInstalled] = useState(false)
   useEffect(() => {
     if (!active || installed) return
     const timer = setInterval(() => {
       if (Date.now() - since > POLL_LIMIT_MS) { clearInterval(timer); return }
-      api.getSlackApp().then((status) => { if (status.installed) setInstalled(true) }).catch(() => { /* keep polling */ })
+      api.getSlackApp(bot).then((status) => { if (status.installed) setInstalled(true) }).catch(() => { /* keep polling */ })
     }, POLL_MS)
     return () => clearInterval(timer)
-  }, [active, installed, since])
+  }, [active, installed, since, bot])
   return installed
 }
 
-function InstallSteps({ app, onDone }: { app: Created; onDone: () => void }) {
+function InstallSteps({ app, bot, onDone }: { app: Created; bot?: string; onDone: () => void }) {
   const [installUrl, setInstallUrl] = useState(app.installUrl)
   const [linkIssuedAt, setLinkIssuedAt] = useState(() => Date.now())
   const [pasteBot, setPasteBot] = useState(!app.installUrl)
   const automatic = Boolean(installUrl) && !pasteBot
-  const installed = useInstalledPoll(automatic, linkIssuedAt)
+  const installed = useInstalledPoll(automatic, linkIssuedAt, bot)
   const [botToken, setBotToken] = useState("")
   const [appToken, setAppToken] = useState("")
   const [busy, setBusy] = useState(false)
@@ -194,7 +195,7 @@ function InstallSteps({ app, onDone }: { app: Created; onDone: () => void }) {
   const reissue = async () => {
     setResult(null)
     try {
-      const outcome = await api.reissueSlackInstallUrl()
+      const outcome = await api.reissueSlackInstallUrl(bot)
       if (outcome.ok) { setInstallUrl(outcome.installUrl); setLinkIssuedAt(Date.now()) }
       else setResult({ ok: false, message: describeProvisionError(outcome.error) })
     } catch (err) {
@@ -206,7 +207,7 @@ function InstallSteps({ app, onDone }: { app: Created; onDone: () => void }) {
     setBusy(true)
     setResult(null)
     try {
-      const outcome = await api.finishSlack(appToken, automatic ? undefined : botToken)
+      const outcome = await api.finishSlack(appToken, automatic ? undefined : botToken, bot)
       const described = outcome.stage || outcome.ok ? describeConnectOutcome(outcome) : { ok: false, message: describeProvisionError(outcome.error ?? "") }
       setResult(described)
       if (described.ok) onDone()
@@ -274,14 +275,16 @@ function createdSummary(app: Created): ReactNode {
   )
 }
 
-export function SlackAutoSetup({ defaultName }: { defaultName: string }) {
+/** `bot` = which Ryoko's Slack app (omitted = the main one); `behaviorHref` =
+ *  where "decide when it talks" leads once connected. */
+export function SlackAutoSetup({ defaultName, bot, behaviorHref = "/settings" }: { defaultName: string; bot?: string; behaviorHref?: string }) {
   const [status, setStatus] = useState<SlackAppStatus | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [app, setApp] = useState<Created | null>(null)
   const [done, setDone] = useState(false)
 
   const refresh = () => {
-    api.getSlackApp().then(setStatus).catch(() => { /* keep the last answer */ }).finally(() => setLoaded(true))
+    api.getSlackApp(bot).then(setStatus).catch(() => { /* keep the last answer */ }).finally(() => setLoaded(true))
   }
   useEffect(refresh, [])
 
@@ -292,7 +295,7 @@ export function SlackAutoSetup({ defaultName }: { defaultName: string }) {
         <Check size={18} className="text-[var(--system-green)] shrink-0 mt-0.5" />
         <div className="flex flex-col gap-1 text-[length:var(--text-subheadline)] text-[var(--text-primary)]">
           <span>つながりました。Slack で bot に DM を送るか、チャンネルに招待してメンションしてみてください。</span>
-          <a href="/connect/slack/behavior" className="text-[length:var(--text-footnote)]">次に、チャンネルでいつ話すか（メンションだけ・空気読みなど）を決める →</a>
+          <a href={behaviorHref} className="text-[length:var(--text-footnote)]">次に、チャンネルでいつ話すか（メンションだけ・空気読みなど）を決める →</a>
         </div>
       </div>
     )
@@ -304,11 +307,11 @@ export function SlackAutoSetup({ defaultName }: { defaultName: string }) {
         <>
           <GuideStep n={1} title="Slack での名前とアイコンを決める" state="done" summary={app.appId ? "設定しました。" : null} />
           <GuideStep n={2} title="Slack の「設定トークン」を貼る" state="done" summary={createdSummary(app)} />
-          <InstallSteps app={app} onDone={() => setDone(true)} />
+          <InstallSteps app={app} bot={bot} onDone={() => setDone(true)} />
         </>
       ) : (
         <>
-          <CreateSteps defaultName={defaultName} status={status} onCreated={setApp} onRefresh={refresh} />
+          <CreateSteps bot={bot} defaultName={defaultName} status={status} onCreated={setApp} onRefresh={refresh} />
           <GuideStep n={3} title="Slack で「許可する」を押す" state="todo" />
           <GuideStep n={4} title="接続用のトークン（App-Level Token）を作って貼る" state="todo" />
         </>

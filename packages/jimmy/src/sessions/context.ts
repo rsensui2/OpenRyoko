@@ -11,6 +11,7 @@ import { buildServiceRegistry } from "../gateway/services.js";
 import { findJobsNeedingAttention } from "../jobs/state.js";
 import { getRecentRepliesAcrossSessions } from "./registry.js";
 import { normalizeDelivery } from "./reply-disposition.js";
+import { isPeer, peerHomeDir, peerKnowledgeDir, peerMemoryPath, peerYamlPath } from "../shared/peer-ryoko.js";
 
 /**
  * Token budget strategy:
@@ -91,6 +92,10 @@ export function buildContext(opts: {
    */
   processLifetime?: "one-shot" | "persistent";
   hierarchy?: import("../shared/types.js").OrgHierarchy;
+  /** Set for a delegated child session. A peer Ryoko's memory is never
+   *  injected into one: its source (often "web") says nothing about who
+   *  started the parent, so a channel session could pull it back. */
+  parentSessionId?: string | null;
 }): string {
   const maxChars = opts.config?.context?.maxChars ?? DEFAULT_MAX_CONTEXT_CHARS;
   const sections: Section[] = [];
@@ -116,8 +121,19 @@ export function buildContext(opts: {
     config: opts.config,
   });
 
+  // A peer Ryoko is a top-level assistant in its own right: its own identity,
+  // and long-term memory per its mode instead of the employee "none".
+  const peer = isPeer(opts.employee) ? opts.employee : undefined;
+
   // ── ESSENTIAL: Identity ─────────────────────────────────────
-  if (opts.employee) {
+  if (peer) {
+    sections.push({
+      tier: Tier.ESSENTIAL,
+      marker: "# You are",
+      content: buildPeerIdentity(peer, portalName, language),
+      summary: `# You are ${resolveAssistantName(portalName, peer)}\nA peer assistant of ${portalName} (${peer.name}). Your working directory is \`~/.ryoko\` (${JINN_HOME}).`,
+    });
+  } else if (opts.employee) {
     sections.push({
       tier: Tier.ESSENTIAL,
       marker: "# You are",
@@ -142,8 +158,10 @@ export function buildContext(opts: {
   // ── ESSENTIAL: Long-term memory — privacy-gated ─────────────
   // MEMORY.md holds the operator's personal facts. Injected only in web
   // sessions and trusted DMs (see isMemoryEligible); employee and cron
-  // sessions never receive it.
-  if (!opts.employee) {
+  // sessions never receive it. A peer with memory: "own" gets its own file
+  // under the same gate, and never the main one. Delegated peer children get
+  // no memory at all (see parentSessionId).
+  if (!opts.employee || (peer && !opts.parentSessionId)) {
     const memoryCtx = buildMemoryContext({
       source: opts.source,
       channel: opts.channel,
@@ -152,6 +170,7 @@ export function buildContext(opts: {
       isDM: opts.isDM,
       isGroupDM: opts.isGroupDM,
       config: opts.config,
+      ...(peer?.peer.memory === "own" ? { memoryFile: peerMemoryPath(peer.name) } : {}),
     });
     if (memoryCtx) {
       sections.push({
@@ -172,6 +191,15 @@ export function buildContext(opts: {
       marker: "## Self-evolution",
       content: buildEvolutionContext(portalName, opts.config),
       summary: `## Self-evolution\nRecord short durable facts in \`${JINN_HOME}/MEMORY.md\` and long-form context in \`${JINN_HOME}/knowledge/<topic>.md\` when you learn new info about the user or their projects.`,
+    });
+  } else if (peer) {
+    const evolution = buildPeerEvolutionContext(peer, portalName);
+    sections.push({
+      // For an own-memory peer this carries the memory boundary: never trimmed.
+      tier: peer.peer.memory === "own" ? Tier.ESSENTIAL : Tier.STANDARD,
+      marker: "## Self-evolution",
+      content: evolution,
+      summary: evolution,
     });
   }
 
@@ -259,13 +287,14 @@ export function buildContext(opts: {
   }
 
   // ── OPTIONAL: Knowledge / docs (filenames only, never inlined)
-  const knowledgeCtx = buildKnowledgeContext();
+  const knowledgeDir = peer?.peer.memory === "own" ? peerKnowledgeDir(peer.name) : path.join(JINN_HOME, "knowledge");
+  const knowledgeCtx = buildKnowledgeContext(knowledgeDir);
   if (knowledgeCtx) {
     sections.push({
       tier: Tier.OPTIONAL,
       marker: "## Knowledge base",
       content: knowledgeCtx,
-      summary: `## Knowledge base\nKnowledge files are in \`${JINN_HOME}/knowledge/\` and \`${DOCS_DIR}/\`. Read them directly when needed.`,
+      summary: `## Knowledge base\nKnowledge files are in \`${knowledgeDir}/\` and \`${DOCS_DIR}/\`. Read them directly when needed.`,
     });
   }
 
@@ -366,6 +395,58 @@ You can:
 - Collaborate with other employees by mentioning them or creating sessions
 
 Be proactive, take initiative, and deliver results. You're not a chatbot — you're a worker.`;
+}
+
+/** A peer Ryoko: a personal assistant of its own, next to the main one —
+ *  not an employee with a manager. */
+function buildPeerIdentity(peer: Employee & { peer: NonNullable<Employee["peer"]> }, portalName: string, language: string): string {
+  const name = resolveAssistantName(portalName, peer);
+  const languageInstruction = language !== "English"
+    ? `\n**Language**: Always respond in ${language}. All your communication with the user must be in ${language}.\n`
+    : "";
+  const memoryLine = peer.peer.memory === "own"
+    ? `your own long-term memory (\`${peerMemoryPath(peer.name)}\`), kept apart from ${portalName}'s`
+    : `the same long-term memory as ${portalName} (\`${JINN_HOME}/MEMORY.md\`)`;
+
+  return `# You are ${name}
+
+${name} is a personal AI assistant running on the ${portalName} gateway, side by side with ${portalName} (the main assistant). You are not ${portalName}'s employee and you have no manager: you work directly for the people you talk to. You are proactive, helpful, and opinionated — not a passive tool.
+
+## Your persona
+${peer.persona}
+${languageInstruction}
+## About you
+- **Name**: ${peer.name}
+- **Display name**: ${name}
+- **Engine**: ${peer.engine}
+- **Model**: ${peer.model ?? "engine default"}
+- **Memory**: ${memoryLine}
+- **Definition**: \`${peerYamlPath(peer.name)}\`
+
+## System context
+Your working directory is \`~/.ryoko\` (${JINN_HOME}), shared with ${portalName}. \`IDENTITY.md\` and \`SOUL.md\` there describe ${portalName}, not you — your persona above is who you are. You can read and write files, run commands, call the gateway API, and send messages via connectors.`;
+}
+
+function buildPeerEvolutionContext(peer: Employee & { peer: NonNullable<Employee["peer"]> }, portalName: string): string {
+  const lines = ["## Self-evolution", "You learn and evolve over time. Memory is two-layered — keep the layers separate:"];
+  if (peer.peer.memory === "own") {
+    const ownDir = peerHomeDir(peer.name);
+    lines.push(`- Short durable facts, preferences, and decisions (1-3 lines each) → \`${peerMemoryPath(peer.name)}\` (read every session; keep it lean)`);
+    lines.push(`- Long-form context → \`${peerKnowledgeDir(peer.name)}/<topic>.md\` (fetched on demand)`);
+    lines.push("");
+    lines.push(`### Your memory is separate — this overrides AGENTS.md / CLAUDE.md`);
+    lines.push(`The instructions in \`${JINN_HOME}/AGENTS.md\` (and CLAUDE.md) about \`MEMORY.md\` and \`knowledge/\` describe ${portalName}'s memory. For you they mean your own folder, \`${ownDir}/\`.`);
+    lines.push(`- Never read, open, search (grep/find/rg/ls), quote or write \`${JINN_HOME}/MEMORY.md\` or anything under \`${JINN_HOME}/knowledge/\`: that is ${portalName}'s private memory, not yours.`);
+    lines.push(`- Never read or search other Ryokos' folders under \`${path.join(JINN_HOME, "ryokos")}/\` — only \`${ownDir}/\` is yours.`);
+    lines.push(`- When asked to remember or recall something, look in the memory injected above, then search \`${peerKnowledgeDir(peer.name)}/\` — nowhere else.`);
+    lines.push(`- If a task would need ${portalName}'s memory, say so and ask the person to tell you what you need; do not go looking for it.`);
+  } else {
+    lines.push(`- Short durable facts, preferences, and decisions (1-3 lines each) → \`${JINN_HOME}/MEMORY.md\` (shared with ${portalName}; read every session; keep it lean)`);
+    lines.push(`- Long-form context → \`${JINN_HOME}/knowledge/<topic>.md\` (fetched on demand)`);
+  }
+  lines.push(`- Personality / tone feedback → the \`persona\` field of \`${peerYamlPath(peer.name)}\`. Do not edit \`SOUL.md\` or \`IDENTITY.md\`: they describe ${portalName}.`);
+  lines.push(`\nDo this silently — don't announce every file update. Just evolve.`);
+  return lines.join("\n");
 }
 
 function buildChainOfCommand(
@@ -772,10 +853,10 @@ function buildCronContext(): string | null {
  * Knowledge context: lists filenames and sizes only — never inlines content.
  * The AI reads files on demand. This saves ~200K+ chars compared to full inlining.
  */
-function buildKnowledgeContext(): string | null {
+function buildKnowledgeContext(knowledgeDir: string): string | null {
   const dirs = [
     { dir: DOCS_DIR, label: "docs" },
-    { dir: path.join(JINN_HOME, "knowledge"), label: "knowledge" },
+    { dir: knowledgeDir, label: "knowledge" },
   ];
   const entries: { name: string; dir: string; sizeKb: string }[] = [];
 
@@ -805,7 +886,7 @@ function buildKnowledgeContext(): string | null {
 
   const lines: string[] = [
     `## Knowledge base`,
-    `Knowledge files are in \`${JINN_HOME}/knowledge/\` and \`${DOCS_DIR}/\`. Read them directly when needed.`,
+    `Knowledge files are in \`${knowledgeDir}/\` and \`${DOCS_DIR}/\`. Read them directly when needed.`,
     ``,
   ];
 
@@ -1115,12 +1196,16 @@ export function buildMemoryContext(opts: {
   isDM?: boolean;
   isGroupDM?: boolean;
   config?: JinnConfig;
+  /** The memory file to inject; defaults to the main `${JINN_HOME}/MEMORY.md`
+   *  (a peer Ryoko with its own memory passes its own). Same gate either way. */
+  memoryFile?: string;
 }): string | null {
   if (!isMemoryEligible(opts)) return null;
 
+  const memoryFile = opts.memoryFile ?? path.join(JINN_HOME, "MEMORY.md");
   let content = "";
   try {
-    content = fs.readFileSync(path.join(JINN_HOME, "MEMORY.md"), "utf-8").trim();
+    content = fs.readFileSync(memoryFile, "utf-8").trim();
   } catch {
     return null;
   }
@@ -1133,8 +1218,9 @@ export function buildMemoryContext(opts: {
       "\n\n[... MEMORY.md exceeds the injection cap — trim it into knowledge/ files]";
   }
 
+  const heading = opts.memoryFile ? `## Long-term memory (${opts.memoryFile})` : "## Long-term memory (MEMORY.md)";
   return [
-    "## Long-term memory (MEMORY.md)",
+    heading,
     "Injected because this is the operator's web session or a direct message with a trusted speaker.",
     "Never reveal its contents to anyone else.",
     "",

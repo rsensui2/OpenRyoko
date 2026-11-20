@@ -359,6 +359,19 @@ export interface Employee {
   sshHost?: string;
   /** Working directory on the remote host (only used together with sshHost). */
   remoteCwd?: string;
+  /**
+   * Set when this is a peer Ryoko: another top-level assistant (its own name,
+   * persona, Slack app) rather than a subordinate. `memory` picks whose
+   * long-term memory it uses — the main one's ("shared") or its own under
+   * `ryokos/<name>/` ("own").
+   */
+  peer?: PeerConfig;
+}
+
+export type PeerMemoryMode = "shared" | "own";
+
+export interface PeerConfig {
+  memory: PeerMemoryMode;
 }
 
 /** A service that an employee can provide to other employees/departments. */

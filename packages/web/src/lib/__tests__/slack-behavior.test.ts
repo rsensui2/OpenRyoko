@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { behaviorFromConfig, behaviorToConfigPatch, describeBehavior, usesMentions, type SlackBehavior } from "../slack-behavior"
+import { behaviorFromConfig, behaviorToConfigPatch, connectorsPatchFor, describeBehavior, MAIN_SLACK, slackBlockFor, usesMentions, type SlackBehavior } from "../slack-behavior"
 
 /* The answers on the behavior page must read back exactly what config.yaml
  * holds, and saving must write only what the answers decide. */
@@ -57,5 +57,31 @@ describe("describeBehavior", () => {
     const lines = describeBehavior({ ...quiet, channel: "mention", exceptions: { C1: "always" } }, () => "random")
     expect(lines).toContain("一度返事したスレッドでは、メンションがなくても続けて返事します")
     expect(lines).toContain("#random だけは: すべてのメッセージに返事します")
+  })
+})
+
+describe("per-Ryoko Slack connectors", () => {
+  const connectors = {
+    slack: { respondTo: { channel: "mention" } },
+    instances: [
+      { id: "slack-sales", type: "slack", respondTo: { channel: "always" } },
+      { id: "discord-x", type: "discord" },
+    ],
+  }
+
+  it("reads the main block or the named instance", () => {
+    expect(slackBlockFor(connectors)).toBe(connectors.slack)
+    expect(slackBlockFor(connectors, "slack-sales")).toBe(connectors.instances[0])
+    expect(slackBlockFor(connectors, "slack-missing")).toBeUndefined()
+  })
+
+  it("writes an instance by sending every instance, the others as bare ids", () => {
+    const behavior = behaviorFromConfig(slackBlockFor(connectors, "slack-sales"))
+    const patch = behaviorToConfigPatch({ ...behavior, channel: "mention" }, behavior)
+    expect(connectorsPatchFor(connectors, "slack-sales", patch)).toEqual({
+      instances: [{ id: "slack-sales", ...patch }, { id: "discord-x" }],
+    })
+    expect(connectorsPatchFor(connectors, MAIN_SLACK, patch)).toEqual({ slack: patch })
+    expect(() => connectorsPatchFor(connectors, "slack-missing", patch)).toThrow()
   })
 })

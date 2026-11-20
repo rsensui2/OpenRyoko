@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { currentConversationFromEnv, isSendToCurrentConversation } from "../current-conversation.js";
+import { currentConversationFromEnv, defaultSendConnector, isSendToCurrentConversation } from "../current-conversation.js";
 
 describe("current conversation send guard", () => {
   const current = {
@@ -57,5 +57,18 @@ describe("current conversation send guard", () => {
       JINN_CURRENT_CHANNEL: " C123 ",
       JINN_CURRENT_THREAD: " 1700000000.000100 ",
     })).toEqual(current);
+  });
+});
+
+describe("defaultSendConnector", () => {
+  it("keeps a peer Ryoko on its own Slack bot when no connector is named", () => {
+    expect(defaultSendConnector({ connector: "slack-hana", channel: "C1" })).toBe("slack-hana");
+    expect(isSendToCurrentConversation({ channel: "C1", thread: "1.0" }, { connector: "slack-hana", channel: "C1", thread: "1.0" })).toBe(true);
+  });
+
+  it("falls back to the main Slack bot otherwise", () => {
+    expect(defaultSendConnector({})).toBe("slack");
+    expect(defaultSendConnector({ connector: "discord" })).toBe("slack");
+    expect(defaultSendConnector({ connector: "slack-../x" })).toBe("slack");
   });
 });

@@ -14,7 +14,7 @@ import type {
   SlackRespondToConfig,
   Target,
 } from "../../shared/types.js";
-import { buildReplyContext, deriveSessionKey, isOldSlackMessage } from "./threads.js";
+import { buildReplyContext, DEFAULT_SLACK_KEY_PREFIX, deriveSessionKey, isOldSlackMessage } from "./threads.js";
 import { fetchSlackFiles } from "./attachments.js";
 import {
   formatAttachmentFailureNotice,
@@ -66,10 +66,23 @@ export interface SlackConnectorContext {
   operatorName?: string;
   /** Additional operator names/handles (portal.operatorAliases) — see operator-match.ts. */
   operatorAliases?: string[];
+  /**
+   * The connector instance id (`connectors.instances[].id`). Omitted for the
+   * default top-level connector, which keeps "slack" — its existing session
+   * keys and its connector name. Set, it prefixes this bot's session keys and
+   * is the `connector` its messages (and so its sessions) carry, so replies
+   * delivered later go back out through this bot, not the default one.
+   */
+  instanceId?: string;
 }
 
 export class SlackConnector implements Connector {
   name = "slack";
+  private configuredInstanceId?: string;
+  /** "slack" for the default connector, else the instance id (see SlackConnectorContext.instanceId). */
+  get instanceId(): string {
+    return this.configuredInstanceId || DEFAULT_SLACK_KEY_PREFIX;
+  }
   private app: App;
   private modelControls?: SlackModelControls;
   private handler: ((msg: IncomingMessage) => void) | null = null;
@@ -158,6 +171,7 @@ export class SlackConnector implements Connector {
   }
 
   constructor(config: SlackConnectorConfig, context: SlackConnectorContext = {}) {
+    this.configuredInstanceId = context.instanceId?.trim() || undefined;
     this.app = new App({
       token: config.botToken,
       appToken: config.appToken,
@@ -169,7 +183,7 @@ export class SlackConnector implements Connector {
     });
     // Without this, Bolt would call auth.test before every incoming event.
     rememberAuthTest(this.app.client.auth);
-    if (context.getModelManagement && context.getOperatorSlackId) this.modelControls = new SlackModelControls(context.getModelManagement, context.getOperatorSlackId, (config as { id?: string }).id || "slack");
+    if (context.getModelManagement && context.getOperatorSlackId) this.modelControls = new SlackModelControls(context.getModelManagement, context.getOperatorSlackId, this.instanceId);
     this.ignoreOldMessagesOnBoot = config.ignoreOldMessagesOnBoot !== false;
     this.maxAttachmentMb = config.maxAttachmentMb;
     const allowFrom = Array.isArray(config.allowFrom)
@@ -474,7 +488,7 @@ export class SlackConnector implements Connector {
         if (!this.modelControls.authorized(slackUserId)) {
           await this.app.client.chat.postEphemeral({ channel, user: slackUserId, text: "モデル設定は管理者専用です。Web設定の operatorSlackId に管理者のSlack IDを登録してください。" });
         } else {
-          await this.app.client.chat.postEphemeral({ channel, user: slackUserId, text: "モデル設定", blocks: this.modelControls.card(channel, slackUserId, deriveSessionKey(event as any)) });
+          await this.app.client.chat.postEphemeral({ channel, user: slackUserId, text: "モデル設定", blocks: this.modelControls.card(channel, slackUserId, deriveSessionKey(event as any, this.instanceId)) });
         }
         return;
       }
@@ -552,7 +566,7 @@ export class SlackConnector implements Connector {
         }
       }
 
-      const sessionKey = deriveSessionKey(event as any);
+      const sessionKey = deriveSessionKey(event as any, this.instanceId);
       const replyContext = {
         ...buildReplyContext(event as any),
         conversationUserId: slackUserId,
@@ -599,7 +613,7 @@ export class SlackConnector implements Connector {
       const text = startsWithSlashCommand(rawText) ? rawText : parentContext + rawText;
 
       const msg: IncomingMessage = {
-        connector: this.name,
+        connector: this.instanceId,
         source: "slack",
         sessionKey,
         replyContext,
@@ -850,10 +864,10 @@ export class SlackConnector implements Connector {
       const sessionKey = deriveSessionKey({
         channel: channelId, user: event.user, ts: reactionTs, thread_ts: threadAnchor,
         channel_type: channelId.startsWith("D") ? "im" : "channel",
-      });
+      }, this.instanceId);
 
       const msg: IncomingMessage = {
-        connector: this.name,
+        connector: this.instanceId,
         source: "slack",
         sessionKey,
         replyContext: {

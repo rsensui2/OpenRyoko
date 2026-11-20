@@ -4,6 +4,7 @@ import yaml from "js-yaml";
 import { ORG_DIR } from "../shared/paths.js";
 import type { Employee } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
+import { parsePeerConfig } from "../shared/peer-ryoko.js";
 
 /**
  * Validate an SSH host/alias before it is handed to the `ssh` command.
@@ -50,6 +51,15 @@ export function scanOrg(): Map<string, Employee> {
               }
             }
 
+            // peer: another top-level Ryoko. An unreadable block must not
+            // quietly turn into a different memory mode: not a peer at all.
+            let peer: Employee["peer"];
+            if (data.peer !== undefined && data.peer !== null) {
+              const parsed = parsePeerConfig(data.peer);
+              if (parsed) peer = parsed;
+              else logger.warn(`Ignoring invalid peer block for employee ${data.name}: expected { memory: "shared" | "own" }`);
+            }
+
             const employee: Employee = {
               name: data.name,
               displayName: data.displayName || data.name,
@@ -72,6 +82,7 @@ export function scanOrg(): Map<string, Employee> {
                 ? data.provides.filter((s: unknown) => s && typeof s === "object" && typeof (s as any).name === "string" && typeof (s as any).description === "string")
                   .map((s: any) => ({ name: s.name as string, description: s.description as string }))
                 : undefined,
+              ...(peer ? { peer } : {}),
             };
             registry.set(employee.name, employee);
           }
