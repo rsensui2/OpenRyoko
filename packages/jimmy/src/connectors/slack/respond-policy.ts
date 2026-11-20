@@ -29,15 +29,36 @@ export function scopeForChannelType(channelType: string | undefined): RespondSco
 export function resolveRespondMode(
   config: SlackRespondToConfig | undefined,
   scope: RespondScope,
+  channelId?: string,
 ): SlackRespondMode {
+  const override = scope === "im" ? undefined : channelRespondOverride(config, channelId);
+  if (override) return override;
   const raw = config?.[scope];
   return raw === "mention" || raw === "never" ? raw : "always";
 }
 
-/** True when any scope requires an @-mention. */
+function isRespondMode(value: unknown): value is SlackRespondMode {
+  return value === "always" || value === "mention" || value === "never";
+}
+
+/** The mode a non-DM conversation was given as an exception, if any. 1:1 DM
+ *  ids ("D…") never carry one: the DM scope is the person's own setting. */
+export function channelRespondOverride(
+  config: SlackRespondToConfig | undefined,
+  channelId: string | undefined,
+): SlackRespondMode | undefined {
+  if (!channelId || channelId.startsWith("D")) return undefined;
+  const channels = config?.channels;
+  if (!channels || typeof channels !== "object") return undefined;
+  const raw = Object.prototype.hasOwnProperty.call(channels, channelId) ? channels[channelId] : undefined;
+  return isRespondMode(raw) ? raw : undefined;
+}
+
+/** True when any scope, or any channel exception, requires an @-mention. */
 export function hasMentionScope(config: SlackRespondToConfig | undefined): boolean {
   if (!config) return false;
-  return [config.im, config.mpim, config.channel].includes("mention");
+  const exceptions = config.channels && typeof config.channels === "object" ? Object.values(config.channels) : [];
+  return [config.im, config.mpim, config.channel, ...exceptions].includes("mention");
 }
 
 /**
@@ -51,6 +72,8 @@ export function respondPolicyNeedsTracking(config: SlackRespondToConfig | undefi
 export interface RespondPolicyInput {
   config: SlackRespondToConfig | undefined;
   channelType: string | undefined;
+  /** The Slack conversation id, for per-channel exceptions. */
+  channelId?: string;
   wasMentioned: boolean;
   /** Whether the message sits in a thread the bot has already engaged. */
   isEngagedThread: boolean;
@@ -60,15 +83,18 @@ export type RespondDecision = { allow: true } | { allow: false; reason: string }
 
 export function evaluateRespondPolicy(input: RespondPolicyInput): RespondDecision {
   const scope = scopeForChannelType(input.channelType);
-  const mode = resolveRespondMode(input.config, scope);
+  const mode = resolveRespondMode(input.config, scope, input.channelId);
+  const source = scope !== "im" && channelRespondOverride(input.config, input.channelId)
+    ? `channels.${input.channelId}`
+    : scope;
   if (mode === "never") {
-    return { allow: false, reason: `respondTo.${scope}=never` };
+    return { allow: false, reason: `respondTo.${source}=never` };
   }
   if (mode === "mention" && !input.wasMentioned) {
     if (input.config?.engagedThreads !== false && input.isEngagedThread) {
       return { allow: true };
     }
-    return { allow: false, reason: `respondTo.${scope}=mention and message has no @-mention` };
+    return { allow: false, reason: `respondTo.${source}=mention and message has no @-mention` };
   }
   return { allow: true };
 }
@@ -93,5 +119,5 @@ export function shouldHandleReaction(
   itemChannel: string,
 ): boolean {
   if (itemChannel.startsWith("D")) return true;
-  return resolveRespondMode(config, "channel") === "always";
+  return resolveRespondMode(config, "channel", itemChannel) === "always";
 }

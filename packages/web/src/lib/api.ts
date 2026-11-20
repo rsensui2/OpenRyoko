@@ -61,6 +61,34 @@ export interface SlackConnectResult {
   app?: SlackVerifyResult["app"]
 }
 
+/** The Slack app's own pages, for the steps Slack offers no API for. */
+export interface SlackAppPages { settings: string; appToken: string; install: string; oauth: string }
+
+/** GET /api/onboarding/slack/app — what the automatic setup has done; never a secret. */
+export interface SlackAppStatus {
+  hasConfigToken: boolean
+  teamId?: string
+  teamName?: string
+  appId?: string
+  name?: string
+  /** Slack's "Allow" came back and a bot token is waiting for its app token. */
+  installed: boolean
+  pages?: SlackAppPages
+}
+
+export type SlackProvisionResult =
+  | {
+      ok: true
+      appId: string
+      teamId: string
+      created: boolean
+      /** Present only when the gateway has an HTTPS address Slack can return to. */
+      installUrl?: string
+      pages: SlackAppPages
+      icon: "set" | "skipped" | { error: string }
+    }
+  | { ok: false; error: string }
+
 /** PUT /api/config answers with the connector reload it triggered itself. */
 export interface ConfigUpdateResult extends Record<string, unknown> {
   status?: "ok" | "partial" | string
@@ -493,6 +521,14 @@ export const api = {
   // Verify → save → reload → rollback-on-failure as ONE server-side operation.
   connectSlack: (botToken: string, appToken: string) =>
     post<SlackConnectResult>("/api/onboarding/slack/connect", { botToken, appToken }),
+  // Automatic Slack app setup from one configuration refresh token.
+  getSlackApp: () => get<SlackAppStatus>("/api/onboarding/slack/app"),
+  provisionSlackApp: (input: { name: string; refreshToken?: string; icon?: string; redirectUrl?: string; returnTo?: string; fresh?: boolean }) =>
+    post<SlackProvisionResult>("/api/onboarding/slack/app", input),
+  reissueSlackInstallUrl: () =>
+    post<{ ok: true; installUrl: string } | { ok: false; error: string }>("/api/onboarding/slack/install-url", {}),
+  finishSlack: (appToken: string, botToken?: string) =>
+    post<SlackConnectResult>("/api/onboarding/slack/finish", { appToken, ...(botToken ? { botToken } : {}) }),
   getOnboarding: () =>
     get<{ needed: boolean; onboarded: boolean; sessionsCount: number; hasEmployees: boolean; portalName: string | null; operatorName: string | null }>("/api/onboarding"),
   completeOnboarding: (data: { portalName?: string; operatorName?: string; language?: string }) =>

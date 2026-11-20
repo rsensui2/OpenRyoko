@@ -1546,6 +1546,29 @@ export default function SettingsPage() {
                 >
                   Slack
                 </div>
+                <a
+                  href="/connect/slack"
+                  className="flex items-center justify-between gap-[var(--space-3)] mb-[var(--space-3)] p-[var(--space-3)] rounded-[var(--radius-md)] border border-[var(--accent)] bg-[var(--accent-fill)] no-underline"
+                >
+                  <span className="flex flex-col">
+                    <span className="text-[length:var(--text-subheadline)] font-[var(--weight-semibold)] text-[var(--text-primary)]">Slack につなぐ（おすすめ）</span>
+                    <span className="text-[length:var(--text-caption1)] text-[var(--text-secondary)]">Slack の画面の写真つきで、4 つの手順でつなぎます。アプリも名前・アイコンつきで自動で作ります。</span>
+                  </span>
+                  <span className="text-[var(--accent)] text-[length:var(--text-title3)] shrink-0">→</span>
+                </a>
+                <a
+                  href="/connect/slack/behavior"
+                  className="flex items-center justify-between gap-[var(--space-3)] mb-[var(--space-3)] p-[var(--space-3)] rounded-[var(--radius-md)] border border-[var(--separator)] no-underline"
+                >
+                  <span className="flex flex-col">
+                    <span className="text-[length:var(--text-subheadline)] font-[var(--weight-semibold)] text-[var(--text-primary)]">Slack での振る舞いを決める</span>
+                    <span className="text-[length:var(--text-caption1)] text-[var(--text-secondary)]">メンションだけ返事する・空気を読む・スレッドで続ける・チャンネルごとの例外を、質問に答えて決めます。下の「応答ゲート」と同じ設定です。</span>
+                  </span>
+                  <span className="text-[var(--text-tertiary)] text-[length:var(--text-title3)] shrink-0">→</span>
+                </a>
+                <div className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)] mb-[var(--space-2)]">
+                  Slack アプリを自分で作る場合は、以下の手順とトークン欄を使います。
+                </div>
                 <SlackSetupGuide />
                 <FieldRow label="App Token">
                   <SettingsInput

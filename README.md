@@ -26,8 +26,8 @@ ryoko start
 
 1. [http://127.0.0.1:7777](http://127.0.0.1:7777) を開き、設定で利用するエンジンを確認します。
 2. Webチャットから短い依頼を送り、応答を確認します。
-3. Slackを使う場合は、設定画面のSlack App Manifestでアプリを作成し、Socket Modeを有効にします。Bot TokenとApp Tokenを設定画面に保存してください。
-4. 許可する利用者のSlack IDを `allowFrom` に設定し、ボットを利用先チャンネルへ招待します。`@Ryoko` とメンションして依頼できます。
+3. Slackを使う場合は、設定画面の「Slack につなぐ」（`/connect/slack`）を開きます。名前とアイコンを決めて Slack の設定トークンを貼ると、Slackアプリを自動で作ります。そのあと Slack で「許可する」を押し、App-Level Token を1つ貼れば接続できます。手順は Slack の画面の写真つきで表示されます。仕組みは [Slack を画面からつなぐ](docs/slack-setup.md) を参照してください。自分で作ったアプリを使う場合は、同じ画面から Bot Token と App Token を直接入力できます。
+4. 「Slack での振る舞い」（`/connect/slack/behavior`）で、メンションだけに返事する・空気を読む・チャンネルごとの例外などを質問に答えて決めます。許可する利用者のSlack IDを `allowFrom` に設定し、ボットを利用先チャンネルへ招待してください。
 
 CLIの導入・ログイン・更新手順は [Claude Code](https://code.claude.com/docs/en/setup)、[Codex](https://learn.chatgpt.com/docs/codex/cli)、[Gemini CLI](https://geminicli.com/docs/get-started/installation/) の公式案内を参照してください。
 
@@ -156,6 +156,8 @@ connectors:
       mpim: mention
       channel: mention
       engagedThreads: true
+      channels:            # チャンネルごとの例外（チャンネルID: always | mention | never）
+        C0123456789: always
     triage:
       enabled: true
       backend: cli

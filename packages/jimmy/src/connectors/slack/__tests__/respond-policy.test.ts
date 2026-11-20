@@ -6,6 +6,7 @@ import {
   hasMentionScope,
   respondPolicyNeedsTracking,
   shouldHandleReaction,
+  channelRespondOverride,
 } from "../respond-policy.js";
 import type { SlackRespondToConfig } from "../../../shared/types.js";
 
@@ -218,5 +219,49 @@ describe("shouldHandleReaction", () => {
     // group DM follows the channel scope exactly like a public channel.
     expect(shouldHandleReaction({ channel: "mention" }, "G123")).toBe(false);
     expect(shouldHandleReaction({ channel: "always" }, "G123")).toBe(true);
+  });
+});
+
+describe("per-channel exceptions (respondTo.channels)", () => {
+  const config: SlackRespondToConfig = {
+    channel: "mention",
+    channels: { C_ALWAYS: "always", C_QUIET: "never", G_GROUP: "always" },
+  };
+  const decide = (channelId: string, channelType: string, wasMentioned = false) =>
+    evaluateRespondPolicy({ config, channelType, channelId, wasMentioned, isEngagedThread: false });
+
+  it("a channel's own mode wins over the channel default", () => {
+    expect(decide("C_ALWAYS", "channel").allow).toBe(true);
+    expect(decide("C_OTHER", "channel").allow).toBe(false);
+    expect(decide("C_QUIET", "channel", true)).toEqual({ allow: false, reason: "respondTo.channels.C_QUIET=never" });
+  });
+
+  it("applies to group DMs and private channels by id, never to 1:1 DMs", () => {
+    expect(decide("G_GROUP", "mpim").allow).toBe(true);
+    const dm: SlackRespondToConfig = { im: "never", channels: { D_ME: "always" } };
+    expect(evaluateRespondPolicy({ config: dm, channelType: "im", channelId: "D_ME", wasMentioned: false, isEngagedThread: false }).allow).toBe(false);
+  });
+
+  it("ignores unknown values so a hand-edited typo falls back to the scope default", () => {
+    const typo = { channel: "mention", channels: { C1: "sometimes" } } as unknown as SlackRespondToConfig;
+    expect(evaluateRespondPolicy({ config: typo, channelType: "channel", channelId: "C1", wasMentioned: false, isEngagedThread: false }).allow).toBe(false);
+  });
+
+  it("reports an explicit always so air-reading can be skipped there", () => {
+    expect(channelRespondOverride(config, "C_ALWAYS")).toBe("always");
+    expect(channelRespondOverride(config, "C_OTHER")).toBeUndefined();
+    expect(channelRespondOverride(config, "D_X")).toBeUndefined();
+  });
+
+  it("counts a mention exception as needing the thread tracker", () => {
+    const onlyException: SlackRespondToConfig = { channels: { C1: "mention" } };
+    expect(hasMentionScope(onlyException)).toBe(true);
+    expect(respondPolicyNeedsTracking(onlyException)).toBe(true);
+  });
+
+  it("handles reactions in a channel whose exception is always, and not in a quiet one", () => {
+    expect(shouldHandleReaction(config, "C_ALWAYS")).toBe(true);
+    expect(shouldHandleReaction(config, "C_OTHER")).toBe(false);
+    expect(shouldHandleReaction({ channels: { C_QUIET: "never" } }, "C_QUIET")).toBe(false);
   });
 });

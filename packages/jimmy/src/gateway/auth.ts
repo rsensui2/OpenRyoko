@@ -98,6 +98,10 @@ export function authRequiredForRequest(method: string | undefined, pathname: str
   if (pathname === "/api/auth/pair" && verb === "POST") return false;
   if (pathname === "/api/auth/logout" && verb === "POST") return false;
   if (pathname === "/api/internal/hook" && verb === "POST") return false;
+  // Slack's redirect after "Allow" may land in a browser that was never paired
+  // (a phone, another default browser). The single-use OAuth state it carries
+  // is what authorizes it; the handler refuses anything without that state.
+  if (pathname === "/api/onboarding/slack/oauth/callback" && verb === "GET") return false;
   return pathname.startsWith("/api/") || pathname === "/ws" || pathname.startsWith("/ws/pty/");
 }
 

@@ -546,6 +546,13 @@ export interface SlackRespondToConfig {
    * message. Default: true.
    */
   engagedThreads?: boolean;
+  /**
+   * Exceptions by Slack conversation id (channels, private channels, group
+   * DMs; never 1:1 DMs). A channel listed here uses its own mode instead of
+   * the scope default; an explicit "always" also skips air-reading triage
+   * there, so every message gets a reply.
+   */
+  channels?: Record<string, SlackRespondMode>;
 }
 
 export interface SlackConnectorConfig {

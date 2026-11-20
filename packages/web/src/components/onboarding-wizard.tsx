@@ -6,7 +6,7 @@
  *
  *   0 名前          who this portal is, and who you are
  *   1 エンジン確認   can Claude / Codex actually run (binary, version, login)
- *   2 Slack 接続    real tokens, real connect, real result
+ *   2 Slack 接続    guided: config token → app created here → allow → app token
  *   3 最初の自動化   pick a template; the automation page finishes it
  *   4 完了          what is now available
  */
@@ -30,6 +30,7 @@ import {
 } from "lucide-react"
 import { useSettings } from "@/app/settings-provider"
 import { api, type AutomationTemplateSpec, type EngineProbe } from "@/lib/api"
+import { SlackConnectPanel } from "./onboarding/slack-connect-panel"
 
 const FEATURES = [
   { icon: MessageSquare, name: "チャット", desc: "従業員との直接対話" },
@@ -152,156 +153,16 @@ function EngineCheckStep({ active }: { active: boolean }) {
 /*  Step 2: Slack                                                      */
 /* ------------------------------------------------------------------ */
 
-type ConnectorHealthMap = Record<string, { status: string; detail?: string } | undefined>
-
-/** /api/status carries per-connector health under `connectors`; the shared
- *  client type does not declare it, so read it defensively here. */
-function connectorHealth(status: unknown): ConnectorHealthMap {
-  const connectors = (status as { connectors?: unknown })?.connectors
-  return connectors && typeof connectors === "object" ? (connectors as ConnectorHealthMap) : {}
-}
-
-/** Slack's error codes and our normalized ones, in words a person can act on. */
-function describeSlackError(code: string | undefined): string {
-  switch (code) {
-    case "invalid_auth": return "トークンが無効です"
-    case "not_authed": return "トークンが送られていません"
-    case "account_inactive": return "このトークンのアカウントは無効化されています"
-    case "network_error": return "Slack に接続できませんでした（ネットワークを確認）"
-    case undefined: return "確認に失敗しました"
-    default: return code.startsWith("http_") ? `Slack が HTTP ${code.slice(5)} を返しました` : code
-  }
-}
-
-/** A save that Slack accepted but the connector could not start — and what
- *  state the install was left in, stated honestly rather than optimistically. */
-function describeReloadFailure(outcome: { error?: string; previous?: "config" | "none"; rolledBack?: boolean; restored?: { disk: boolean; running: boolean }; rollbackError?: string; rollbackSkipped?: string }): string {
-  const head = `トークンは正しいのに接続の起動に失敗しました: ${outcome.error ?? "不明なエラー"}。`
-  // "Rolled back" means two different things depending on what was there
-  // before: an old connection is running again, or Slack is simply
-  // unconfigured again. Say which.
-  const wasUnconfigured = outcome.previous === "none"
-  if (outcome.rolledBack) {
-    return wasUnconfigured
-      ? `${head}保存した設定は取り消し、接続前の状態（Slack 未接続）に戻しました。`
-      : `${head}以前の Slack 設定に戻し、再接続しました。`
-  }
-  if (outcome.rollbackSkipped) return `${head}その間に設定が別の場所から変更されたため、元に戻す操作は行っていません。設定ページで現在の Slack 設定を確認してください。`
-  if (outcome.restored?.disk && !outcome.restored.running) {
-    return wasUnconfigured
-      ? `${head}保存した設定はファイルから取り除きましたが、コネクタの再起動でエラーが出ています（${outcome.rollbackError ?? "原因不明"}）。設定ページで確認してください。`
-      : `${head}以前の設定はファイルに戻しましたが、その接続も起動できていません（${outcome.rollbackError ?? "原因不明"}）。設定ページで確認してください。`
-  }
-  return `${head}以前の設定に戻せませんでした（${outcome.rollbackError ?? "原因不明"}）。設定ページで Slack 設定を確認してください。`
-}
-
-function SlackStep() {
-  const [botToken, setBotToken] = useState("")
-  const [appToken, setAppToken] = useState("")
-  const [busy, setBusy] = useState(false)
-  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null)
-  const [already, setAlready] = useState(false)
-  const [replaceExisting, setReplaceExisting] = useState(false)
-
-  useEffect(() => {
-    api.getStatus()
-      .then((status) => {
-        const slack = connectorHealth(status).slack
-        if (slack && slack.status === "running") setAlready(true)
-      })
-      .catch(() => { /* status is optional here */ })
-  }, [])
-
-  const connect = async () => {
-    if (!botToken.startsWith("xoxb-") || !appToken.startsWith("xapp-")) {
-      setResult({ ok: false, message: "Bot Token は xoxb-、App Token は xapp- で始まります" })
-      return
-    }
-    setBusy(true)
-    setResult(null)
-    try {
-      // One server-side operation: verify both tokens → save → reload → if
-      // the connector still fails, the server restores the previous Slack
-      // config itself. Whatever comes back, nothing here has to guess.
-      const outcome = await api.connectSlack(botToken, appToken)
-      if (outcome.ok) {
-        setResult({
-          ok: true,
-          message: `接続できました（ワークスペース: ${outcome.team ?? "?"} / Bot: ${outcome.user ?? "?"}）。Slack で Ryoko にメンションしてみてください`,
-        })
-        return
-      }
-      if (outcome.stage === "verify") {
-        const parts = []
-        if (outcome.bot && !outcome.bot.ok) parts.push(`Bot Token: ${describeSlackError(outcome.bot.error)}`)
-        if (outcome.app && !outcome.app.ok) parts.push(`App Token: ${describeSlackError(outcome.app.error)}（アプリの Socket Mode が有効で、connections:write スコープがあるか確認）`)
-        setResult({ ok: false, message: `保存していません。${parts.join(" / ") || "トークンを確認できませんでした"}` })
-        return
-      }
-      setResult({ ok: false, message: describeReloadFailure(outcome) })
-    } catch (err) {
-      setResult({ ok: false, message: `接続処理でエラーが起きました: ${err instanceof Error ? err.message : String(err)}` })
-    } finally {
-      setBusy(false)
-    }
-  }
-  const canConnect = Boolean(botToken && appToken) && (!already || replaceExisting)
-
-  const inputClass = "apple-input w-full bg-[var(--bg-secondary)] border border-[var(--separator)] rounded-[var(--radius-sm)] px-3 py-2 text-[length:var(--text-body)] text-[var(--text-primary)]"
-
+function SlackStep({ defaultName }: { defaultName: string }) {
   return (
     <div className="animate-fade-in">
       <h2 className="text-[length:var(--text-title1)] font-[var(--weight-bold)] tracking-[var(--tracking-tight)] text-[var(--text-primary)] mb-[var(--space-1)]">
         Slack につなぐ
       </h2>
       <p className="text-[length:var(--text-subheadline)] text-[var(--text-tertiary)] mb-[var(--space-4)]">
-        Ryoko が働く場所です。Slack アプリ（Socket Mode）の2つのトークンを入れると、その場で接続を試します。あとで設定ページからでも構いません。
+        Slack の画面の写真を見ながら 4 つの手順で進めます。あとで設定ページの「Slack につなぐ」からでも構いません（「次へ」で飛ばせます）。
       </p>
-      {already && (
-        <div className="mb-[var(--space-3)]">
-          <div className="text-[length:var(--text-footnote)] text-[var(--system-green)]">Slack は既に接続されています。「次へ」で構いません。</div>
-          <label className="flex items-center gap-2 mt-1 text-[length:var(--text-caption1)] text-[var(--text-secondary)] cursor-pointer">
-            <input type="checkbox" checked={replaceExisting} onChange={(e) => setReplaceExisting(e.target.checked)} />
-            既存の接続を新しいトークンで差し替える
-          </label>
-        </div>
-      )}
-      <div className="flex flex-col gap-[var(--space-3)]">
-        <div>
-          <label className="block text-[length:var(--text-caption1)] text-[var(--text-tertiary)] mb-[var(--space-1)]" htmlFor="ob-slack-bot">
-            Bot User OAuth Token <span className="text-[var(--text-quaternary)]">xoxb-…</span>
-          </label>
-          <input id="ob-slack-bot" type="password" className={inputClass} value={botToken} onChange={(e) => setBotToken(e.target.value.trim())} placeholder="xoxb-" autoComplete="off" />
-        </div>
-        <div>
-          <label className="block text-[length:var(--text-caption1)] text-[var(--text-tertiary)] mb-[var(--space-1)]" htmlFor="ob-slack-app">
-            App-Level Token <span className="text-[var(--text-quaternary)]">xapp-…（connections:write）</span>
-          </label>
-          <input id="ob-slack-app" type="password" className={inputClass} value={appToken} onChange={(e) => setAppToken(e.target.value.trim())} placeholder="xapp-" autoComplete="off" />
-        </div>
-        <div>
-          <button
-            onClick={connect}
-            disabled={busy || !canConnect}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-[var(--radius-md)] border-none cursor-pointer text-[length:var(--text-subheadline)] font-[var(--weight-semibold)]"
-            style={{
-              background: busy || !canConnect ? "var(--fill-tertiary)" : "var(--accent)",
-              color: busy || !canConnect ? "var(--text-tertiary)" : "var(--accent-contrast)",
-            }}
-          >
-            {busy ? <Loader2 size={16} className="animate-spin" /> : null}
-            {busy ? "確認して接続中…" : "確認して接続する"}
-          </button>
-        </div>
-        {result && (
-          <div className="text-[length:var(--text-footnote)] whitespace-pre-wrap" style={{ color: result.ok ? "var(--system-green)" : "var(--system-red)" }}>
-            {result.message}
-          </div>
-        )}
-      </div>
-      <p className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)] mt-[var(--space-3)]">
-        両方のトークンを Slack に照会してから保存します（正しくないトークンは保存されません）。保存後は画面に再表示されません。
-      </p>
+      <SlackConnectPanel defaultName={defaultName} />
     </div>
   )
 }
@@ -437,7 +298,7 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" style={{ backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}>
-      <div className="animate-fade-in w-full max-w-[520px] mx-[var(--space-4)] bg-[var(--material-regular)] rounded-[var(--radius-lg)] border border-[var(--separator)] overflow-hidden flex flex-col max-h-[90vh]" style={{ boxShadow: "0 24px 48px rgba(0,0,0,0.3)" }}>
+      <div className={`animate-fade-in w-full ${step === 2 ? "max-w-[720px]" : "max-w-[520px]"} mx-[var(--space-4)] bg-[var(--material-regular)] rounded-[var(--radius-lg)] border border-[var(--separator)] overflow-hidden flex flex-col max-h-[90vh]`} style={{ boxShadow: "0 24px 48px rgba(0,0,0,0.3)" }}>
         {/* Step indicator */}
         <div className="flex justify-center gap-2 pt-[var(--space-4)] px-[var(--space-4)]">
           {Array.from({ length: TOTAL_STEPS }).map((_, i) => (
@@ -481,7 +342,7 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
           )}
 
           {step === 1 && <EngineCheckStep active={step === 1} />}
-          {step === 2 && <SlackStep />}
+          {step === 2 && <SlackStep defaultName={localName || "Ryoko"} />}
           {step === 3 && <FirstAutomationStep selected={firstTemplate} onSelect={setFirstTemplate} />}
 
           {step === 4 && (
