@@ -111,6 +111,7 @@ import { restoreBeforeSlackConnect, slackBlockOf, snapshotStillHoldingSlackToken
 import { peerSlackInstanceId } from "../shared/peer-ryoko.js";
 import { peerExists as peerRyokoExists } from "./ryokos/ryoko-store.js";
 import { newAttachmentDir } from "../shared/attachments.js";
+import { engineConfigFor } from "../shared/engine-config.js";
 
 /** Max bytes accepted on /api/internal/hook (loopback-only relay payloads are tiny). */
 const HOOK_BODY_MAX_BYTES = 64 * 1024;
@@ -800,6 +801,7 @@ export async function handleApiRequest(
           claude: { model: config.engines.claude.model, available: true, interactive: config.engines.claude.interactive === true, health: health("claude") },
           codex: { model: config.engines.codex.model, available: true, health: health("codex") },
           ...(config.engines.gemini ? { gemini: { model: config.engines.gemini.model, available: true, health: health("gemini") } } : {}),
+          ...(config.engines.antigravity ? { antigravity: { model: config.engines.antigravity.model, available: true, health: health("antigravity") } } : {}),
         },
         sessions: { total: sessions.length, running, active: running },
         connectors,
@@ -3011,11 +3013,7 @@ async function runWebSession(
       } finally { clearInterval(heartbeat); }
     };
 
-    const engineConfig = currentSession.engine === "codex"
-      ? config.engines.codex
-      : currentSession.engine === "gemini"
-        ? config.engines.gemini ?? config.engines.claude
-        : config.engines.claude;
+    const engineConfig = engineConfigFor(config, currentSession.engine);
     const effortLevel = resolveEffort(
       engineConfig,
       currentSession,
@@ -3368,6 +3366,7 @@ function engineProbeKey(config: JinnConfig): string {
   return JSON.stringify({
     default: config.engines.default,
     claude: config.engines.claude?.bin, codex: config.engines.codex?.bin, gemini: config.engines.gemini?.bin,
+    antigravity: config.engines.antigravity?.bin,
   });
 }
 
@@ -3429,16 +3428,17 @@ async function probeOnboardingEngines(config: JinnConfig): Promise<EngineProbePa
   }
   if (engineProbeInFlight && engineProbeInFlight.key === key) return engineProbeInFlight.promise;
   const promise = (async () => {
-    const [claude, codex, gemini] = await Promise.all([
+    const [claude, codex, gemini, antigravity] = await Promise.all([
       probeEngine("claude", config.engines.claude?.bin),
       probeEngine("codex", config.engines.codex?.bin),
       probeEngine("gemini", config.engines.gemini?.bin),
+      probeEngine("antigravity", config.engines.antigravity?.bin),
     ]);
     if (claude.runnable) claude.auth = observeClaudeAuth();
     if (codex.runnable && codex.bin) codex.auth = await observeCodexAuth(codex.bin);
     const value: EngineProbePayload = {
       default: config.engines.default, probedAt: new Date().toISOString(),
-      engines: [claude, codex, ...(gemini.configured ? [gemini] : [])],
+      engines: [claude, codex, ...[gemini, antigravity].filter((engine) => engine.configured)],
     };
     // Only the newest config's probe may become "the" cache; a probe that ran
     // under a config since replaced must not resurrect a stale answer.

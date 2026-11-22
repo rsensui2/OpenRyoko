@@ -53,7 +53,9 @@ export function ModelSelector({
       ? "例: claude-sonnet-5-20260801"
       : engine === "gemini"
         ? "例: gemini-3.1-pro-preview"
-        : "例: gpt-private-preview"
+        : engine === "antigravity"
+          ? "agy models に出る名前"
+          : "例: gpt-private-preview"
 
   useEffect(() => {
     const isCustom = Boolean(model && !isCatalogModel(engine, model) && !discovered.some(m => m.value === model))

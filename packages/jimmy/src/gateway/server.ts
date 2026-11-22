@@ -25,6 +25,7 @@ import { SessionManager, type RouteOptions } from "../sessions/manager.js";
 import { ClaudeEngine } from "../engines/claude.js";
 import { CodexEngine } from "../engines/codex.js";
 import { GeminiEngine } from "../engines/gemini.js";
+import { AntigravityEngine } from "../engines/antigravity.js";
 import { InteractiveClaudeEngine } from "../engines/claude-interactive.js";
 import { PtyLifecycleManager } from "../engines/pty-lifecycle.js";
 import type { PtyViewEngine } from "../engines/pty-view-engine.js";
@@ -258,6 +259,7 @@ export async function startGateway(
   const claudeEngine = new ClaudeEngine();
   const codexEngine = new CodexEngine();
   const geminiEngine = new GeminiEngine();
+  const antigravityEngine = new AntigravityEngine();
 
   // Interactive Claude (PTY) engine — opt-in via config.engines.claude.interactive.
   // When enabled it REPLACES the headless `claude -p` engine under the "claude" key,
@@ -304,10 +306,11 @@ export async function startGateway(
     logger.info("Interactive Claude (PTY) engine enabled — Claude work turns run via PTY (Max-subsidized cc_entrypoint=cli)");
   }
 
-  const engines = new Map<string, InstanceType<typeof ClaudeEngine> | InstanceType<typeof CodexEngine> | InstanceType<typeof GeminiEngine> | InteractiveClaudeEngine>();
+  const engines = new Map<string, InstanceType<typeof ClaudeEngine> | InstanceType<typeof CodexEngine> | InstanceType<typeof GeminiEngine> | AntigravityEngine | InteractiveClaudeEngine>();
   engines.set("claude", interactiveClaudeEngine ?? claudeEngine);
   engines.set("codex", codexEngine);
   engines.set("gemini", geminiEngine);
+  engines.set("antigravity", antigravityEngine);
 
   // PTY-capable engines keyed by engine name — the /ws/pty/:sessionId handler
   // routes by session.engine so the live xterm CLI view attaches to the right one.
@@ -1451,6 +1454,7 @@ export async function startGateway(
       claudeEngine.killAll();
     }
     codexEngine.killAll();
+    antigravityEngine.killAll();
 
     // Stop workflow triggers/runner before cron
     try { workflowService?.dispose(); } catch { /* best effort */ }

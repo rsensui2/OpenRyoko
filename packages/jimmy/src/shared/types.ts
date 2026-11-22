@@ -815,7 +815,7 @@ export interface EngineModelsConfig {
   models: ModelConfigEntry[];
 }
 
-/** `models:` block keyed by engine name (claude | codex | gemini). */
+/** `models:` block keyed by engine name (claude | codex | gemini | antigravity). */
 export type ModelsConfig = Record<string, EngineModelsConfig>;
 
 /** A model served by a Claude endpoint: an id, or an id with picker metadata. */
@@ -855,7 +855,7 @@ export interface JinnConfig {
     trustedProxyAddresses?: string[];
   };
   engines: {
-    default: "claude" | "codex" | "gemini";
+    default: "claude" | "codex" | "gemini" | "antigravity";
     claude: {
       bin: string;
       model: string;
@@ -876,7 +876,7 @@ export interface JinnConfig {
        *  legitimately occupy one turn (e.g. the seminar-demo generator). */
       interactiveTurnTimeoutMs?: number;
       /** Ordered engine names to try when this engine is unavailable (upstream chain spec). */
-      fallback?: ("claude" | "codex" | "gemini")[];
+      fallback?: ("claude" | "codex" | "gemini" | "antigravity")[];
       /** Pinned-model → substitute-model map applied when swapping engines. */
       fallbackModelMap?: Record<string, string>;
       /** Claude Code's own per-project "auto memory" (~/.claude/projects/<cwd>/memory).
@@ -891,8 +891,10 @@ export interface JinnConfig {
        *  Anthropic. Not applied to interactive PTYs or SSH employees. */
       endpoints?: ClaudeEndpointConfig[];
     };
-    codex: { bin: string; model: string; effortLevel?: string; childEffortOverride?: string; fallback?: ("claude" | "codex" | "gemini")[]; fallbackModelMap?: Record<string, string> };
-    gemini?: { bin: string; model: string; effortLevel?: string; childEffortOverride?: string; fallback?: ("claude" | "codex" | "gemini")[]; fallbackModelMap?: Record<string, string> };
+    codex: { bin: string; model: string; effortLevel?: string; childEffortOverride?: string; fallback?: ("claude" | "codex" | "gemini" | "antigravity")[]; fallbackModelMap?: Record<string, string> };
+    /** Antigravity CLI (`agy`). Signs in with agy's own saved Google account. */
+    antigravity?: { bin: string; model: string; effortLevel?: string; childEffortOverride?: string; fallback?: ("claude" | "codex" | "gemini" | "antigravity")[]; fallbackModelMap?: Record<string, string> };
+    gemini?: { bin: string; model: string; effortLevel?: string; childEffortOverride?: string; fallback?: ("claude" | "codex" | "gemini" | "antigravity")[]; fallbackModelMap?: Record<string, string> };
   };
   /** Optional model/capability registry override. Absent → synthesized from
    *  `engines.<name>.model`. See shared/models.ts. */

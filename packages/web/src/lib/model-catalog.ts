@@ -22,19 +22,20 @@ export interface ModelOption {
   label: string
 }
 
-export type SupportedModelEngine = "claude" | "codex" | "gemini"
-export type TriageModelEngine = Exclude<SupportedModelEngine, "gemini">
+export type SupportedModelEngine = "claude" | "codex" | "gemini" | "antigravity"
+export type TriageModelEngine = Exclude<SupportedModelEngine, "gemini" | "antigravity">
 
 /** Vendor labels shown in settings; values stay compatible with config.yaml. */
 export const MODEL_VENDORS: ModelOption[] = [
   { value: "claude", label: "Anthropic（Claude）" },
   { value: "codex", label: "OpenAI（Codex）" },
-  { value: "gemini", label: "Google（Gemini）" },
+  { value: "gemini", label: "Google（Gemini CLI・旧）" },
+  { value: "antigravity", label: "Google（Antigravity CLI）" },
 ]
 
-/** One-shot triage currently has no Gemini adapter. */
+/** One-shot triage currently has no Gemini or Antigravity adapter. */
 export const TRIAGE_MODEL_VENDORS = MODEL_VENDORS.filter(
-  (vendor) => vendor.value !== "gemini",
+  (vendor) => vendor.value !== "gemini" && vendor.value !== "antigravity",
 )
 
 /** Internal select value used to reveal the free-form model-id input. */
@@ -44,6 +45,7 @@ export const CUSTOM_MODEL_VALUE = "__custom_model__"
 export const DEFAULT_CLAUDE_MODEL = "claude-opus-5-5"
 export const DEFAULT_CODEX_MODEL = "gpt-6-sol"
 export const DEFAULT_GEMINI_MODEL = "gemini-2.5-pro"
+export const DEFAULT_ANTIGRAVITY_MODEL = "Gemini 3.5 Flash (Medium)"
 export const DEFAULT_TRIAGE_CLAUDE_MODEL = "claude-haiku-4-5"
 export const DEFAULT_TRIAGE_CODEX_MODEL = "gpt-5-nano"
 
@@ -120,16 +122,23 @@ export const GEMINI_MODELS: ModelOption[] = [
   { value: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
 ]
 
+/** Antigravity CLI model names as `agy models` lists them. */
+export const ANTIGRAVITY_MODELS: ModelOption[] = [
+  { value: "Gemini 3.5 Flash (Medium)", label: "Gemini 3.5 Flash (Medium)" },
+]
+
 /** Model list for a given triage/goal engine (defaults to the OpenAI list). */
 export function modelsForEngine(engine: string | undefined): ModelOption[] {
   if (engine === "claude") return CLAUDE_MODELS
   if (engine === "gemini") return GEMINI_MODELS
+  if (engine === "antigravity") return ANTIGRAVITY_MODELS
   return OPENAI_MODELS
 }
 
 export function defaultModelForEngine(engine: SupportedModelEngine): string {
   if (engine === "claude") return DEFAULT_CLAUDE_MODEL
   if (engine === "gemini") return DEFAULT_GEMINI_MODEL
+  if (engine === "antigravity") return DEFAULT_ANTIGRAVITY_MODEL
   return DEFAULT_CODEX_MODEL
 }
 

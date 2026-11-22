@@ -42,7 +42,7 @@ export interface AutomationTemplate {
 export class TemplateError extends Error {}
 
 const COMMON_MODEL_VARS: TemplateVariableSpec[] = [
-  { key: "engine", label: "エンジン", hint: "claude / codex / gemini", required: false, default: "claude", options: ["claude", "codex", "gemini"] },
+  { key: "engine", label: "エンジン", hint: "claude / codex / gemini / antigravity", required: false, default: "claude", options: ["claude", "codex", "gemini", "antigravity"] },
   { key: "model", label: "モデル", hint: "例: opus, sonnet, gpt-6-sol", required: false, default: "opus" },
   { key: "effort", label: "effort", hint: "low / medium / high / xhigh / max", required: false, default: "high", options: ["low", "medium", "high", "xhigh", "max"] },
 ];
@@ -58,9 +58,9 @@ export const AUTOMATION_TEMPLATES: AutomationTemplate[] = [
       { key: "interval", label: "間隔", hint: "5m / 15m / 30m / 1h、または cron 式", required: false, default: "15m" },
       { key: "watchPrompt", label: "何を見張るか", hint: "読み取り専用の確認に留める（例: Gmail の受信箱に未返信の問い合わせがないか確認する）", required: true },
       { key: "actPrompt", label: "見つけた時に何をするか", hint: "例: 問い合わせへの返信案を書いて #inquiry に投稿する", required: true },
-      { key: "lightEngine", label: "判定エンジン", hint: "判定に使う安いエンジン", required: false, default: "claude", options: ["claude", "codex", "gemini"] },
+      { key: "lightEngine", label: "判定エンジン", hint: "判定に使う安いエンジン", required: false, default: "claude", options: ["claude", "codex", "gemini", "antigravity"] },
       { key: "lightModel", label: "判定モデル", hint: "判定に使う安いモデル（例: sonnet）", required: false, default: "sonnet" },
-      { key: "heavyEngine", label: "実行エンジン", hint: "本処理のエンジン", required: false, default: "claude", options: ["claude", "codex", "gemini"] },
+      { key: "heavyEngine", label: "実行エンジン", hint: "本処理のエンジン", required: false, default: "claude", options: ["claude", "codex", "gemini", "antigravity"] },
       { key: "heavyModel", label: "実行モデル", hint: "本処理のモデル（例: opus）", required: false, default: "opus" },
       { key: "heavyEffort", label: "実行 effort", hint: "low / medium / high / xhigh / max", required: false, default: "high", options: ["low", "medium", "high", "xhigh", "max"] },
       { key: "approval", label: "実行前の承認", hint: "yes = 重いモデルが動く前に人間の承認を挟む（推奨・既定）。no = 判定が通れば即実行", required: false, default: "yes", options: ["yes", "no"] },

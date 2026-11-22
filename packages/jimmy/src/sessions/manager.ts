@@ -59,6 +59,7 @@ import { setCronJobEnabled, triggerCronJob } from "../cron/scheduler.js";
 import { checkBudget } from "../gateway/budgets.js";
 import { holdAttachmentDirs, removeAttachmentDirs } from "../shared/attachments.js";
 import { resolveMcpServers, writeMcpConfigFile, cleanupMcpConfigFile } from "../mcp/resolver.js";
+import { engineConfigFor } from "../shared/engine-config.js";
 
 const WORKFLOW_CAPABILITIES = { threading: false, messageEdits: false, reactions: false, attachments: false };
 /** Inert connector a workflow attempt turn runs under: nothing to deliver to,
@@ -730,11 +731,7 @@ export class SessionManager {
       });
 
       const systemPrompt = systemPromptFor(session.engine, employee?.sshHost);
-      const engineConfig = session.engine === "codex"
-        ? this.config.engines.codex
-        : session.engine === "gemini"
-          ? this.config.engines.gemini ?? this.config.engines.claude
-          : this.config.engines.claude;
+      const engineConfig = engineConfigFor(this.config, session.engine);
       if (session.engine === "claude") {
         const mcpConfig = resolveMcpServers(this.config.mcp, employee, {
           // The instance the conversation came through (e.g. a peer Ryoko's
@@ -1341,7 +1338,7 @@ export class SessionManager {
         `Session: ${session.id}`,
         `Engine: ${session.engine}`,
         `Connector: ${session.connector || session.source}`,
-        `Model: ${session.model || this.config.engines[session.engine as "claude" | "codex" | "gemini"]?.model || "default"}`,
+        `Model: ${session.model || this.config.engines[session.engine as "claude" | "codex" | "gemini" | "antigravity"]?.model || "default"}`,
         `State: ${transportState}`,
         `Queue depth: ${queueDepth}`,
         `Created: ${session.createdAt}`,
@@ -1392,6 +1389,7 @@ export class SessionManager {
         `Claude: ${this.config.engines.claude.model}`,
         `Codex: ${this.config.engines.codex.model}`,
         ...(this.config.engines.gemini ? [`Gemini: ${this.config.engines.gemini.model}`] : []),
+        ...(this.config.engines.antigravity ? [`Antigravity: ${this.config.engines.antigravity.model}`] : []),
         "Connectors:",
         ...connectorLines,
       ].join("\n");

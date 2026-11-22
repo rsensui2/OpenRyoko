@@ -18,7 +18,7 @@ import { claudeEndpointModels } from "./claude-endpoints.js";
  */
 
 /** Engines registered in this build (mirrors server.ts engine map). */
-export const ENGINE_NAMES = ["claude", "codex", "gemini"] as const;
+export const ENGINE_NAMES = ["claude", "codex", "gemini", "antigravity"] as const;
 export type EngineName = (typeof ENGINE_NAMES)[number];
 
 export function isKnownEngine(engine: string): engine is EngineName {
@@ -29,6 +29,7 @@ const EFFORT_MECHANISM: Record<EngineName, EffortMechanism> = {
   claude: "claude-flag",
   codex: "codex-config",
   gemini: "none",
+  antigravity: "none",
 };
 
 /** Conservative per-engine defaults used when synthesizing (no `models:` block). */
@@ -36,6 +37,7 @@ const SYNTH_DEFAULTS: Record<EngineName, { supportsEffort: boolean; effortLevels
   claude: { supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh"], fallbackModel: "claude-opus-5-5" },
   codex: { supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh"], fallbackModel: "gpt-6-sol" },
   gemini: { supportsEffort: false, effortLevels: [], fallbackModel: "gemini-2.5-pro" },
+  antigravity: { supportsEffort: false, effortLevels: [], fallbackModel: "Gemini 3.5 Flash (Medium)" },
 };
 
 /** Published capabilities, not a guarantee of access on the connected account.
