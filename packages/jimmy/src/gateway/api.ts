@@ -49,6 +49,7 @@ import { forkEngineSession } from "../sessions/fork.js";
 import { isClaudeEndpointRun } from "../shared/claude-endpoints.js";
 import { deliverToOriginConnector, isUndeliveredToOrigin, recordFailedOriginDelivery } from "../sessions/origin-delivery.js";
 import { isCompletionBatchItem, queueChildCompletion, queuedPrompt } from "../sessions/completion-batching.js";
+import { withRestartReplayNote } from "../sessions/restart-resume.js";
 import {
   CRON_JOBS,
   ORG_DIR,
@@ -176,7 +177,11 @@ export interface ApiContext {
   workflowRepository?: import("../workflows/repository.js").WorkflowRepository;
 }
 
-export function resumePendingWebQueueItems(context: ApiContext): void {
+export function resumePendingWebQueueItems(
+  context: ApiContext,
+  /** Items that were mid-run when the gateway went down (recoverStaleQueueItems). */
+  opts: { restartInterruptedItemIds?: ReadonlySet<string> } = {},
+): void {
   const pending = listAllPendingQueueItems();
   if (pending.length === 0) return;
 
@@ -214,7 +219,8 @@ export function resumePendingWebQueueItems(context: ApiContext): void {
     // Ensure the session is in a runnable state
     updateSession(session.id, { status: "running", lastActivity: new Date().toISOString(), lastError: null });
 
-    dispatchWebSessionRun(session, item.prompt, engine, config, context, { queueItemId: item.id, deliverToConnector });
+    const restartReplay = opts.restartInterruptedItemIds?.has(item.id) ?? false;
+    dispatchWebSessionRun(session, item.prompt, engine, config, context, { queueItemId: item.id, deliverToConnector, restartReplay });
     resumed++;
   }
 
@@ -243,13 +249,22 @@ function dispatchWebSessionRun(
   engine: Engine,
   config: JinnConfig,
   context: ApiContext,
-  opts?: { delayMs?: number; queueItemId?: string; attachments?: string[]; deliverToConnector?: boolean },
+  opts?: {
+    delayMs?: number;
+    queueItemId?: string;
+    attachments?: string[];
+    deliverToConnector?: boolean;
+    /** The item was mid-run when the gateway went down: say so in the prompt. */
+    restartReplay?: boolean;
+  },
 ): void {
   const run = async () => {
     await context.sessionManager.getQueue().enqueue(session.sessionKey || session.sourceRef, async () => {
       context.emit("session:started", { sessionId: session.id });
       // Run what the row holds now: a completion batch can grow while it waits its turn.
-      await runWebSession(session, queuedPrompt(opts?.queueItemId, prompt), engine, config, context, opts?.attachments, opts?.deliverToConnector);
+      const current = queuedPrompt(opts?.queueItemId, prompt);
+      const runPrompt = opts?.restartReplay ? withRestartReplayNote(current) : current;
+      await runWebSession(session, runPrompt, engine, config, context, opts?.attachments, opts?.deliverToConnector);
     }, opts?.queueItemId);
   };
 
