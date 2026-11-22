@@ -43,7 +43,7 @@ const FEATURES = [
 
 const TOTAL_STEPS = 5
 
-const ENGINE_LABEL: Record<string, string> = { claude: "Claude Code", codex: "Codex", gemini: "Gemini" }
+const ENGINE_LABEL: Record<string, string> = { claude: "Claude Code", codex: "Codex", gemini: "Gemini", antigravity: "Antigravity" }
 
 /* ------------------------------------------------------------------ */
 /*  Step 1: engine check                                               */

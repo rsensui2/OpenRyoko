@@ -34,6 +34,7 @@ import { printable } from "../skills-sync/names.js";
 import type { BundledSkillSync, KeepReason, KeptSkill } from "../skills-sync/types.js";
 import { claudeAutoMemoryEnvFor } from "../shared/claude-auto-memory.js";
 import { CLAUDE_LOCAL_ENV } from "../shared/childEnv.js";
+import { engineConfigFor } from "../shared/engine-config.js";
 
 const GREEN = "\x1b[32m";
 const YELLOW = "\x1b[33m";
@@ -390,6 +391,9 @@ function buildMigrateArgs(engine: string, prompt: string): string[] {
       return ["exec", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", prompt];
     case "gemini":
       return ["--yolo", prompt];
+    case "antigravity":
+      // agy's print mode stops after 5 minutes unless told otherwise.
+      return ["--print", "--dangerously-skip-permissions", "--print-timeout", "0s", prompt];
     case "claude":
     default:
       return ["-p", "--dangerously-skip-permissions", prompt];
@@ -533,7 +537,7 @@ export async function runMigrate(opts: {
 
   const config = loadConfig();
   const defaultEngine = config.engines.default ?? "claude";
-  const engineConfig = config.engines[defaultEngine] ?? config.engines.claude;
+  const engineConfig = engineConfigFor(config, defaultEngine);
 
   try {
     const prompt = [

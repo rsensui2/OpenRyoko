@@ -18,13 +18,17 @@ import { claudeAutoMemoryEnvFor, configureClaudeAutoMemory } from "../shared/cla
 import { configureClaudeEndpoints } from "../shared/claude-endpoints.js";
 import { resolveAssistantName } from "../shared/assistant-identity.js";
 import { getTriageCapabilities, invalidateTriageCapabilities } from "../shared/triage-capabilities.js";
-import { invalidateModelRegistry } from "../shared/models.js";
+import { invalidateModelRegistry, setDiscoveredModels } from "../shared/models.js";
+import { tryResolveBin } from "../shared/resolveBin.js";
 import { configureLogger, logger } from "../shared/logger.js";
 import { initDb, scheduleFtsBackfill, recoverStaleSessions, recoverStaleWorkflowAttemptSessions, recoverStaleQueueItems, getInterruptedSessions, getSession } from "../sessions/registry.js";
 import { SessionManager, type RouteOptions } from "../sessions/manager.js";
 import { ClaudeEngine } from "../engines/claude.js";
 import { CodexEngine } from "../engines/codex.js";
 import { GeminiEngine } from "../engines/gemini.js";
+import { AntigravityEngine } from "../engines/antigravity.js";
+import { discoverAntigravityModels } from "../models/antigravity-discovery.js";
+import { engineConfigFor } from "../shared/engine-config.js";
 import { InteractiveClaudeEngine } from "../engines/claude-interactive.js";
 import { PtyLifecycleManager } from "../engines/pty-lifecycle.js";
 import type { PtyViewEngine } from "../engines/pty-view-engine.js";
@@ -258,6 +262,7 @@ export async function startGateway(
   const claudeEngine = new ClaudeEngine();
   const codexEngine = new CodexEngine();
   const geminiEngine = new GeminiEngine();
+  const antigravityEngine = new AntigravityEngine();
 
   // Interactive Claude (PTY) engine — opt-in via config.engines.claude.interactive.
   // When enabled it REPLACES the headless `claude -p` engine under the "claude" key,
@@ -304,10 +309,11 @@ export async function startGateway(
     logger.info("Interactive Claude (PTY) engine enabled — Claude work turns run via PTY (Max-subsidized cc_entrypoint=cli)");
   }
 
-  const engines = new Map<string, InstanceType<typeof ClaudeEngine> | InstanceType<typeof CodexEngine> | InstanceType<typeof GeminiEngine> | InteractiveClaudeEngine>();
+  const engines = new Map<string, InstanceType<typeof ClaudeEngine> | InstanceType<typeof CodexEngine> | InstanceType<typeof GeminiEngine> | AntigravityEngine | InteractiveClaudeEngine>();
   engines.set("claude", interactiveClaudeEngine ?? claudeEngine);
   engines.set("codex", codexEngine);
   engines.set("gemini", geminiEngine);
+  engines.set("antigravity", antigravityEngine);
 
   // PTY-capable engines keyed by engine name — the /ws/pty/:sessionId handler
   // routes by session.engine so the live xterm CLI view attaches to the right one.
@@ -986,7 +992,28 @@ export async function startGateway(
     },
   });
   apiContext.modelManagement = modelManagement;
-  const refreshModels = () => modelManagement!.refresh().catch(() => logger.warn("Model catalog refresh failed"));
+  let antigravityRefreshing = false;
+  const refreshAntigravityModels = async () => {
+    // Follows agy's own model list once Antigravity is in use (selected as the
+    // default or given a block in config.yaml) and agy is installed.
+    const inUse = currentConfig.engines.default === "antigravity" || Boolean(currentConfig.engines.antigravity);
+    const bin = engineConfigFor(currentConfig, "antigravity").bin;
+    if (!inUse || antigravityRefreshing || !tryResolveBin(bin)) return;
+    antigravityRefreshing = true;
+    try {
+      const models = await discoverAntigravityModels(bin);
+      setDiscoveredModels("antigravity", models);
+      logger.info(`Antigravity models: ${models.map((model) => model.id).join(", ")}`);
+    } catch (err) {
+      logger.warn(`Antigravity model discovery failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      antigravityRefreshing = false;
+    }
+  };
+  const refreshModels = () => {
+    void refreshAntigravityModels();
+    return modelManagement!.refresh().catch(() => logger.warn("Model catalog refresh failed"));
+  };
   const modelRefreshTimer = setInterval(refreshModels, 6 * 3600_000);
   modelRefreshTimer.unref();
   void refreshModels();
@@ -1452,6 +1479,7 @@ export async function startGateway(
       claudeEngine.killAll();
     }
     codexEngine.killAll();
+    antigravityEngine.killAll();
 
     // Stop workflow triggers/runner before cron
     try { workflowService?.dispose(); } catch { /* best effort */ }

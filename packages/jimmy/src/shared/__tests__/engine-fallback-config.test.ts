@@ -33,7 +33,7 @@ describe("engineFallbackConfigProblems", () => {
     expect(problems).toEqual([
       "engines.claude.fallback must be a list of engine names (got string)",
       "engines.codex.fallback must not name codex itself",
-      'engines.codex.fallback[1] "codexx" is not a known engine (claude, codex, gemini)',
+      'engines.codex.fallback[1] "codexx" is not a known engine (claude, codex, gemini, antigravity)',
     ]);
   });
 

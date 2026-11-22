@@ -50,6 +50,10 @@ const INSTALL_HINTS: Record<string, string[]> = {
     "npm install -g @openai/codex",
     "If installed but invisible to a daemon, set engines.codex.bin to an absolute path in ~/.ryoko/config.yaml.",
   ],
+  agy: [
+    "curl -fsSL https://antigravity.google/cli/install.sh | bash   (installs ~/.local/bin/agy), then run `agy` once to sign in",
+    "If installed but invisible to a daemon, set engines.antigravity.bin to an absolute path in ~/.ryoko/config.yaml.",
+  ],
   gemini: [
     "npm install -g @google/gemini-cli",
     "If installed but invisible to a daemon, set engines.gemini.bin to an absolute path in ~/.ryoko/config.yaml.",

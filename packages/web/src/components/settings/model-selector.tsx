@@ -36,7 +36,8 @@ export function ModelSelector({
   useEffect(() => {
     let active = true
     api.getModels().then(status => {
-      if (active) setCatalog({ engine, models: status.engines.find(e => e.engine === engine)?.models.map(m => ({ value: m.id, label: m.label })) ?? [] })
+      const models = status.engines.find(e => e.engine === engine)?.models ?? status.catalogs?.[engine] ?? []
+      if (active) setCatalog({ engine, models: models.map(m => ({ value: m.id, label: m.label })) })
     }).catch(() => {})
     return () => { active = false }
   }, [engine])
@@ -53,7 +54,9 @@ export function ModelSelector({
       ? "例: claude-sonnet-5-20260801"
       : engine === "gemini"
         ? "例: gemini-3.1-pro-preview"
-        : "例: gpt-private-preview"
+        : engine === "antigravity"
+          ? "例: gemini-3.8-flash-high（agy models の左の列）"
+          : "例: gpt-private-preview"
 
   useEffect(() => {
     const isCustom = Boolean(model && !isCatalogModel(engine, model) && !discovered.some(m => m.value === model))

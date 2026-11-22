@@ -84,10 +84,12 @@ describe("model-catalog", () => {
       "claude",
       "codex",
       "gemini",
+      "antigravity",
     ])
     expect(defaultModelForEngine("claude")).toBe(DEFAULT_CLAUDE_MODEL)
     expect(defaultModelForEngine("codex")).toBe(DEFAULT_CODEX_MODEL)
     expect(defaultModelForEngine("gemini")).toBe(DEFAULT_GEMINI_MODEL)
+    expect(defaultModelForEngine("antigravity")).toBe("gemini-3.8-flash-medium")
     expect(defaultTriageModelForEngine("claude")).toBe(DEFAULT_TRIAGE_CLAUDE_MODEL)
     expect(defaultTriageModelForEngine("codex")).toBe(DEFAULT_TRIAGE_CODEX_MODEL)
     expect(TRIAGE_MODEL_VENDORS.map((vendor) => vendor.value)).toEqual([

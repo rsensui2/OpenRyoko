@@ -147,6 +147,7 @@ interface Config {
     claude?: { bin?: string; model?: string; effortLevel?: string; interactive?: boolean }
     codex?: { bin?: string; model?: string; effortLevel?: string }
     gemini?: { bin?: string; model?: string; effortLevel?: string }
+    antigravity?: { bin?: string; model?: string; effortLevel?: string }
   }
   sessions?: {
     maxDurationMinutes?: number
@@ -958,7 +959,9 @@ export default function SettingsPage() {
       ? "codex"
       : config.engines?.default === "gemini"
         ? "gemini"
-        : "claude"
+        : config.engines?.default === "antigravity"
+          ? "antigravity"
+          : "claude"
 
   return (
     <PageLayout>
@@ -1349,6 +1352,9 @@ export default function SettingsPage() {
                       if (engine === "gemini" && !config.engines?.gemini?.bin) {
                         updateConfig(["engines", "gemini", "bin"], "gemini")
                       }
+                      if (engine === "antigravity" && !config.engines?.antigravity?.bin) {
+                        updateConfig(["engines", "antigravity", "bin"], "agy")
+                      }
                     }}
                     options={MODEL_VENDORS}
                   />
@@ -1509,6 +1515,39 @@ export default function SettingsPage() {
                       )
                       if (!config.engines?.gemini?.bin) {
                         updateConfig(["engines", "gemini", "bin"], "gemini")
+                      }
+                    }}
+                  />
+                </FieldRow>
+
+                <div
+                  className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--text-tertiary)] mt-[var(--space-3)] mb-[var(--space-2)]"
+                >
+                  Antigravity
+                </div>
+                <FieldRow label="Binary Path">
+                  <SettingsInput
+                    value={config.engines?.antigravity?.bin ?? ""}
+                    onChange={(v) =>
+                      updateConfig(["engines", "antigravity", "bin"], v)
+                    }
+                    placeholder="agy"
+                  />
+                </FieldRow>
+                <FieldRow label="Model" htmlFor="antigravity-engine-model">
+                  <ModelSelector
+                    id="antigravity-engine-model"
+                    engine="antigravity"
+                    model={
+                      config.engines?.antigravity?.model ?? defaultModelForEngine("antigravity")
+                    }
+                    onChange={(v) => {
+                      updateConfig(
+                        ["engines", "antigravity", "model"],
+                        v ?? defaultModelForEngine("antigravity"),
+                      )
+                      if (!config.engines?.antigravity?.bin) {
+                        updateConfig(["engines", "antigravity", "bin"], "agy")
                       }
                     }}
                   />

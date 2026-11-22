@@ -12,6 +12,7 @@ import { findJobsNeedingAttention } from "../jobs/state.js";
 import { getRecentRepliesAcrossSessions } from "./registry.js";
 import { normalizeDelivery } from "./reply-disposition.js";
 import { isPeer, peerHomeDir, peerKnowledgeDir, peerMemoryPath, peerYamlPath } from "../shared/peer-ryoko.js";
+import { engineConfigFor } from "../shared/engine-config.js";
 
 /**
  * Token budget strategy:
@@ -739,6 +740,9 @@ function buildConfigContext(config: JinnConfig, gatewayUrl: string): string {
   if (config.engines.codex?.model) {
     lines.push(`- Codex model: ${config.engines.codex.model}`);
   }
+  if (config.engines.antigravity?.model) {
+    lines.push(`- Antigravity model: ${config.engines.antigravity.model}`);
+  }
   if (config.engines.gemini?.model) {
     lines.push(`- Gemini model: ${config.engines.gemini.model}`);
   }
@@ -1309,11 +1313,7 @@ export function buildEvolutionContext(portalName: string, config?: JinnConfig): 
  */
 function buildDelegationProtocol(_gatewayUrl: string, _portalName: string, config?: JinnConfig): string {
   const defaultEngine = config?.engines.default || "claude";
-  const engineConfig = defaultEngine === "codex"
-    ? config?.engines.codex
-    : defaultEngine === "gemini"
-      ? config?.engines.gemini ?? config?.engines.claude
-      : config?.engines.claude;
+  const engineConfig = config ? engineConfigFor(config, defaultEngine) : undefined;
   const childOverride = engineConfig?.childEffortOverride;
 
   const effortOverrideNote = childOverride
