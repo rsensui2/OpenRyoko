@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026.11.22
+
+### Added
+
+- Antigravity CLI engine (`antigravity`). Each turn runs `agy --print` with stream-JSON input and output, resumes the conversation with `--conversation`, streams text and tool steps, and reports the context in use. Sign in once by running `agy` interactively. With no `engines.antigravity` block, the engine uses `agy` and `gemini-3.8-flash-medium`. When Antigravity is the default engine or has a configuration block, the gateway reads `agy models` at startup and on each model refresh, and the settings page offers the models the signed-in account can use.
+
+### Fixed
+
+- A web message interrupted by a gateway restart is run again with a note asking the assistant to read the session's latest messages first, so it does not redo work or repost an answer that is already there.
+
+### Upgrade notes
+
+- No migration step beyond `jinn.version`. Antigravity stays unused until it is selected as an engine.
+- An Antigravity engine without an `engines.antigravity` block is not used as a fallback engine; add the block to use it as one.
+
 ## 2026.11.20
 
 ### Added
