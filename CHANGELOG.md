@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026.11.23
+
+### Fixed
+
+- Find an engine CLI in `~/.local/bin` when the gateway's PATH leaves that directory out, as a daemon's or container's PATH often does. The Antigravity and Claude Code installers put their CLI there, so the Antigravity engine no longer fails with ENOENT until `engines.antigravity.bin` is set to an absolute path. PATH is still searched first.
+
 ## 2026.11.22
 
 ### Added

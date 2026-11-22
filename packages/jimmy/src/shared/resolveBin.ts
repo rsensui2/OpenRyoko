@@ -1,12 +1,13 @@
 import path from "node:path";
 import fs from "node:fs";
+import os from "node:os";
 import { logger } from "./logger.js";
 
 const cache = new Map<string, string>();
 const warnedMisses = new Set<string>();
 
 /**
- * Walk PATH in pure JS to locate an executable. Avoids shelling out
+ * Walk PATH (then the user install directories) in pure JS to locate an executable. Avoids shelling out
  * (which would be a command-injection sink, since bin names come from
  * user-editable config like engines.*.bin).
  */
@@ -23,7 +24,7 @@ function findOnPath(bin: string): string | null {
       ? (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";")
       : [""];
 
-  for (const dir of PATH.split(sep)) {
+  for (const dir of [...PATH.split(sep), ...userInstallDirs()]) {
     if (!dir) continue;
     for (const ext of exts) {
       const candidate = path.join(dir, bin + ext);
@@ -39,6 +40,16 @@ function findOnPath(bin: string): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Searched after PATH. The Claude Code and Antigravity installers put their
+ * CLI in ~/.local/bin, which a daemon's or container's PATH often leaves out.
+ */
+function userInstallDirs(): string[] {
+  if (process.platform === "win32") return [];
+  const home = os.homedir();
+  return home ? [path.join(home, ".local", "bin")] : [];
 }
 
 const INSTALL_HINTS: Record<string, string[]> = {
