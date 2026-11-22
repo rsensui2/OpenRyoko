@@ -146,6 +146,10 @@ export function forkEngineSession(engine: string, engineSessionId: string, cwd: 
       return forkCodexSession(engineSessionId);
     case "gemini":
       return forkGeminiSession(engineSessionId);
+    case "antigravity":
+      // agy cannot copy a conversation: the duplicate keeps the transcript
+      // and starts a new agy conversation on its next turn.
+      return { engineSessionId: "" };
     default:
       throw new Error(`Unsupported engine for fork: ${engine}`);
   }

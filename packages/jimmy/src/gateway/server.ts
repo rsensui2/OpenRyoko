@@ -992,16 +992,22 @@ export async function startGateway(
     },
   });
   apiContext.modelManagement = modelManagement;
+  let antigravityRefreshing = false;
   const refreshAntigravityModels = async () => {
-    // Follows agy's own model list whenever agy is installed and signed in.
+    // Follows agy's own model list once Antigravity is in use (selected as the
+    // default or given a block in config.yaml) and agy is installed.
+    const inUse = currentConfig.engines.default === "antigravity" || Boolean(currentConfig.engines.antigravity);
     const bin = engineConfigFor(currentConfig, "antigravity").bin;
-    if (!tryResolveBin(bin)) return;
+    if (!inUse || antigravityRefreshing || !tryResolveBin(bin)) return;
+    antigravityRefreshing = true;
     try {
       const models = await discoverAntigravityModels(bin);
       setDiscoveredModels("antigravity", models);
       logger.info(`Antigravity models: ${models.map((model) => model.id).join(", ")}`);
     } catch (err) {
       logger.warn(`Antigravity model discovery failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      antigravityRefreshing = false;
     }
   };
   const refreshModels = () => {

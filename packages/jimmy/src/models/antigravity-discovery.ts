@@ -49,8 +49,9 @@ export async function discoverAntigravityModels(requestedBin: string): Promise<M
       };
       const timer = setTimeout(() => finish(new Error("agy models timed out")), DISCOVERY_TIMEOUT_MS);
       timer.unref?.();
-      proc.stdout.on("data", (chunk: Buffer) => {
-        stdout += chunk.toString();
+      proc.stdout.setEncoding("utf8");
+      proc.stdout.on("data", (chunk: string) => {
+        stdout += chunk;
         if (stdout.length > OUTPUT_LIMIT_BYTES) finish(new Error("agy models output exceeded size limit"));
       });
       proc.stderr.on("data", () => { /* not surfaced: may name the account */ });

@@ -22,6 +22,9 @@ import {
 
 const EXIT_CLOSE_GRACE_MS = 1500;
 const FORCE_KILL_GRACE_MS = 2000;
+/** agy may still be saving the conversation after it prints `result`. */
+const AFTER_RESULT_EXIT_GRACE_MS = 5000;
+const TIMEOUT_REASON = "Antigravity turn timed out";
 const STDERR_MAX = 10 * 1024;
 
 interface LiveProcess {
@@ -127,14 +130,17 @@ class AntigravityTurn {
       this.resolve = resolve;
       this.reject = reject;
       const { proc } = this;
-      proc.stdout!.on("data", (chunk: Buffer) => this.onStdout(chunk));
-      proc.stderr!.on("data", (chunk: Buffer) => {
-        this.stderr = (this.stderr + chunk.toString()).slice(-STDERR_MAX);
+      // Decode as a stream so a multibyte character split across chunks survives.
+      proc.stdout!.setEncoding("utf8");
+      proc.stderr!.setEncoding("utf8");
+      proc.stdout!.on("data", (chunk: string) => this.onStdout(chunk));
+      proc.stderr!.on("data", (chunk: string) => {
+        this.stderr = (this.stderr + chunk).slice(-STDERR_MAX);
       });
       proc.stdin!.on("error", () => { /* close/error below carry the diagnostic */ });
       proc.on("close", (code: number | null) => this.finishWithoutResult(code));
       proc.on("exit", (code: number | null) => {
-        this.later(EXIT_CLOSE_GRACE_MS, () => this.finishWithoutResult(code));
+        if (!this.settled) this.later(EXIT_CLOSE_GRACE_MS, () => this.finishWithoutResult(code));
       });
       proc.on("error", (err: Error) => {
         if (this.settled) return;
@@ -144,7 +150,7 @@ class AntigravityTurn {
       });
       this.later(ANTIGRAVITY_TURN_TIMEOUT_MS, () => {
         if (this.settled) return;
-        this.live.terminationReason = "Antigravity turn timed out";
+        this.live.terminationReason = TIMEOUT_REASON;
         terminateProcessTree(proc);
       });
       proc.stdin!.end(antigravityUserLine(prompt));
@@ -157,9 +163,9 @@ class AntigravityTurn {
     this.timers.push(timer);
   }
 
-  private onStdout(chunk: Buffer): void {
+  private onStdout(chunk: string): void {
     if (this.settled) return;
-    this.lineBuffer += chunk.toString();
+    this.lineBuffer += chunk;
     const lines = this.lineBuffer.split("\n");
     this.lineBuffer = lines.pop() ?? "";
     for (const line of lines) this.handleLine(line);
@@ -179,8 +185,16 @@ class AntigravityTurn {
   }
 
   private finishWithResult(parsed: AntigravityParsedLine): void {
-    // agy can linger after its result (background tasks); the turn is over.
-    terminateProcessTree(this.proc);
+    // The turn is over. agy may still be saving the conversation the next turn
+    // resumes, so it gets a moment to exit before anything it left is stopped.
+    const proc = this.proc;
+    setTimeout(() => { if (proc.exitCode === null) terminateProcessTree(proc); }, AFTER_RESULT_EXIT_GRACE_MS).unref?.();
+    const reason = this.live.terminationReason;
+    if (reason && reason !== TIMEOUT_REASON) {
+      // A stop the gateway asked for, even if agy managed to print a result.
+      this.settle({ sessionId: this.conversationId, result: "", error: reason, interruptRequested: true });
+      return;
+    }
     // An older agy that does not stream text_delta still shows its answer.
     if (parsed.result && !this.streamedText) this.opts.onStream?.({ type: "text", content: parsed.result });
     this.settle({
@@ -202,7 +216,7 @@ class AntigravityTurn {
       result: "",
       error: reason ?? `Antigravity exited with code ${code}${detail ? `: ${detail}` : " without a result"}`,
       // Only kill() sets a reason: the gateway asked for this stop.
-      ...(reason && reason !== "Antigravity turn timed out" ? { interruptRequested: true as const } : {}),
+      ...(reason && reason !== TIMEOUT_REASON ? { interruptRequested: true as const } : {}),
     });
   }
 

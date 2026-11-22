@@ -11,8 +11,8 @@ const mockSpawn = vi.mocked(spawn);
 
 function createMockProcess() {
   const proc = new EventEmitter() as any;
-  proc.stdout = new EventEmitter();
-  proc.stderr = new EventEmitter();
+  proc.stdout = Object.assign(new EventEmitter(), { setEncoding: vi.fn() });
+  proc.stderr = Object.assign(new EventEmitter(), { setEncoding: vi.fn() });
   proc.stdin = Object.assign(new EventEmitter(), { end: vi.fn() });
   proc.pid = undefined; // no process group: signals go to proc.kill
   proc.exitCode = null;
@@ -92,6 +92,20 @@ describe("AntigravityEngine", () => {
     expect(proc.kill).toHaveBeenCalledWith("SIGTERM");
     proc.emit("close", null);
     await expect(running).resolves.toMatchObject({ error: "Interrupted: new message", interruptRequested: true });
+  });
+
+  it("reports a stop the gateway asked for as requested even when agy still prints a result", async () => {
+    const running = engine.run({ prompt: "x", cwd: "/tmp", sessionId: "s3" });
+    engine.kill("s3", "Interrupted: stopped by user");
+    proc.stdout.emit("data", line({ event: "result", result: { status: "ERROR", error: "context canceled" } }));
+    await expect(running).resolves.toMatchObject({ error: "Interrupted: stopped by user", interruptRequested: true });
+  });
+
+  it("does not stop agy the moment its result arrives", async () => {
+    const running = engine.run({ prompt: "x", cwd: "/tmp" });
+    proc.stdout.emit("data", line({ event: "result", result: { status: "SUCCESS", response: "ok" } }));
+    await running;
+    expect(proc.kill).not.toHaveBeenCalled();
   });
 
   it("rejects with install hints when agy cannot be spawned", async () => {
