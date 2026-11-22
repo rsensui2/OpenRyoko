@@ -18,7 +18,8 @@ import { claudeAutoMemoryEnvFor, configureClaudeAutoMemory } from "../shared/cla
 import { configureClaudeEndpoints } from "../shared/claude-endpoints.js";
 import { resolveAssistantName } from "../shared/assistant-identity.js";
 import { getTriageCapabilities, invalidateTriageCapabilities } from "../shared/triage-capabilities.js";
-import { invalidateModelRegistry } from "../shared/models.js";
+import { invalidateModelRegistry, setDiscoveredModels } from "../shared/models.js";
+import { tryResolveBin } from "../shared/resolveBin.js";
 import { configureLogger, logger } from "../shared/logger.js";
 import { initDb, scheduleFtsBackfill, recoverStaleSessions, recoverStaleWorkflowAttemptSessions, recoverStaleQueueItems, getInterruptedSessions, getSession } from "../sessions/registry.js";
 import { SessionManager, type RouteOptions } from "../sessions/manager.js";
@@ -26,6 +27,8 @@ import { ClaudeEngine } from "../engines/claude.js";
 import { CodexEngine } from "../engines/codex.js";
 import { GeminiEngine } from "../engines/gemini.js";
 import { AntigravityEngine } from "../engines/antigravity.js";
+import { discoverAntigravityModels } from "../models/antigravity-discovery.js";
+import { engineConfigFor } from "../shared/engine-config.js";
 import { InteractiveClaudeEngine } from "../engines/claude-interactive.js";
 import { PtyLifecycleManager } from "../engines/pty-lifecycle.js";
 import type { PtyViewEngine } from "../engines/pty-view-engine.js";
@@ -989,7 +992,22 @@ export async function startGateway(
     },
   });
   apiContext.modelManagement = modelManagement;
-  const refreshModels = () => modelManagement!.refresh().catch(() => logger.warn("Model catalog refresh failed"));
+  const refreshAntigravityModels = async () => {
+    // Follows agy's own model list whenever agy is installed and signed in.
+    const bin = engineConfigFor(currentConfig, "antigravity").bin;
+    if (!tryResolveBin(bin)) return;
+    try {
+      const models = await discoverAntigravityModels(bin);
+      setDiscoveredModels("antigravity", models);
+      logger.info(`Antigravity models: ${models.map((model) => model.id).join(", ")}`);
+    } catch (err) {
+      logger.warn(`Antigravity model discovery failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+  const refreshModels = () => {
+    void refreshAntigravityModels();
+    return modelManagement!.refresh().catch(() => logger.warn("Model catalog refresh failed"));
+  };
   const modelRefreshTimer = setInterval(refreshModels, 6 * 3600_000);
   modelRefreshTimer.unref();
   void refreshModels();

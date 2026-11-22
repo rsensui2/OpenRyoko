@@ -44,16 +44,39 @@ function parseJsonRecord(line: string): Record<string, unknown> | null {
   }
 }
 
-function resultContextTokens(result: Record<string, unknown>): number | undefined {
-  const inputTokens = asRecord(result.usage)?.input_tokens;
-  return typeof inputTokens === "number" && Number.isFinite(inputTokens) && inputTokens > 0
-    ? inputTokens
-    : undefined;
+/** Context in use after a model step: fresh input plus what came from cache. */
+function stepContextTokens(update: Record<string, unknown>): number | undefined {
+  const usage = asRecord(update.usage);
+  if (!usage) return undefined;
+  const total = [usage.input_tokens, usage.cache_read_tokens]
+    .reduce<number>((sum, value) => sum + (typeof value === "number" && Number.isFinite(value) ? value : 0), 0);
+  return total > 0 ? total : undefined;
 }
 
-function parseToolUpdate(event: Record<string, unknown>): AntigravityParsedLine | null {
+/** The model's reply streams as `text_delta` on `agent_response` steps. */
+function parseResponseUpdate(update: Record<string, unknown>): AntigravityParsedLine {
+  const text = typeof update.text_delta === "string" && update.text_delta ? update.text_delta : undefined;
+  const contextTokens = update.state === "DONE" ? stepContextTokens(update) : undefined;
+  return {
+    conversationId: nonEmptyString(update.conversation_id),
+    deltas: [
+      ...(text ? [{ type: "text" as const, content: text }] : []),
+      ...(contextTokens ? [{ type: "context" as const, content: String(contextTokens) }] : []),
+    ],
+    terminal: false,
+    ...(contextTokens ? { contextTokens } : {}),
+  };
+}
+
+function parseStepUpdate(event: Record<string, unknown>): AntigravityParsedLine | null {
   const update = asRecord(event.step_update);
-  if (!update || update.step_type !== "tool") return null;
+  if (!update) return null;
+  if (update.step_type === "agent_response") return parseResponseUpdate(update);
+  return parseToolUpdate(update);
+}
+
+function parseToolUpdate(update: Record<string, unknown>): AntigravityParsedLine | null {
+  if (update.step_type !== "tool") return null;
   const toolName = nonEmptyString(update.tool_name) ?? "tool";
   const toolId = typeof update.step_index === "number" ? String(update.step_index) : undefined;
   const base = { conversationId: nonEmptyString(update.conversation_id), terminal: false };
@@ -71,13 +94,9 @@ function parseToolUpdate(event: Record<string, unknown>): AntigravityParsedLine 
 function parseResult(event: Record<string, unknown>): AntigravityParsedLine | null {
   const result = asRecord(event.result);
   if (!result || (result.status !== "SUCCESS" && result.status !== "ERROR")) return null;
-  const contextTokens = resultContextTokens(result);
-  const common = {
-    conversationId: nonEmptyString(result.conversation_id),
-    deltas: contextTokens ? [{ type: "context" as const, content: String(contextTokens) }] : [],
-    terminal: true,
-    ...(contextTokens ? { contextTokens } : {}),
-  };
+  // result.usage adds up every step of the turn; the context in use comes
+  // from the last agent_response step instead.
+  const common = { conversationId: nonEmptyString(result.conversation_id), deltas: [], terminal: true };
   if (result.status === "SUCCESS") {
     return { ...common, result: typeof result.response === "string" ? result.response : "" };
   }
@@ -109,7 +128,7 @@ export function parseAntigravityStreamLine(line: string): AntigravityParsedLine 
   if (event.event === "init") {
     return { conversationId: nonEmptyString(event.conversation_id), deltas: [], terminal: false };
   }
-  if (event.event === "step_update") return parseToolUpdate(event);
+  if (event.event === "step_update") return parseStepUpdate(event);
   if (event.event === "result") return parseResult(event);
   return null;
 }

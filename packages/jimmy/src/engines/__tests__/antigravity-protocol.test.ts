@@ -60,12 +60,39 @@ describe("parseAntigravityStreamLine", () => {
     expect(failed?.deltas[0]).toMatchObject({ type: "tool_result", content: "run_command failed" });
   });
 
-  it("reads a successful result with its context size", () => {
+  it("reads a successful result; its usage is the whole turn's, not the context in use", () => {
     const parsed = parseAntigravityStreamLine(JSON.stringify({
       event: "result",
       result: { conversation_id: "conv-9", status: "SUCCESS", response: "hello", usage: { input_tokens: 1200 } },
     }));
-    expect(parsed).toMatchObject({ terminal: true, result: "hello", conversationId: "conv-9", contextTokens: 1200 });
+    expect(parsed).toEqual({ terminal: true, result: "hello", conversationId: "conv-9", deltas: [] });
+  });
+
+  // A tool-using turn as agy 1.5.14 printed it (paths shortened, tool list cut).
+  const CAPTURED_TURN = [
+    '{"event":"init","conversation_id":"30eb032a","init":{"model":"gemini-3.8-flash-medium","cwd":"/work","tools":["read_file"]}}',
+    '{"event":"step_update","step_update":{"conversation_id":"30eb032a","step_index":0,"state":"DONE","step_type":"user_input"}}',
+    '{"event":"step_update","step_update":{"conversation_id":"30eb032a","step_index":1,"state":"DONE","step_type":"agent_response","duration_seconds":5.2,"usage":{"input_tokens":20407,"output_tokens":314,"thinking_tokens":231,"cache_read_tokens":0,"total_tokens":20721}}}',
+    '{"event":"step_update","step_update":{"conversation_id":"30eb032a","step_index":2,"state":"ACTIVE","step_type":"tool","tool_name":"read_file","tool_info":{"name":"read_file","parameters":{"Path":"/work/note.txt"}}}}',
+    '{"event":"step_update","step_update":{"conversation_id":"30eb032a","step_index":2,"state":"DONE","step_type":"tool","tool_name":"read_file","duration_seconds":0.3,"tool_info":{"name":"read_file","parameters":{"Path":"/work/note.txt"},"output":"1 lines, 6 bytes"}}}',
+    '{"event":"step_update","step_update":{"conversation_id":"30eb032a","step_index":3,"state":"ACTIVE","step_type":"agent_response","text_delta":"hello"}}',
+    '{"event":"step_update","step_update":{"conversation_id":"30eb032a","step_index":3,"state":"DONE","step_type":"agent_response","text_delta":"\\n","duration_seconds":3.7,"usage":{"input_tokens":2453,"output_tokens":118,"thinking_tokens":117,"cache_read_tokens":18354,"total_tokens":2571}}}',
+    '{"event":"result","result":{"conversation_id":"30eb032a","status":"SUCCESS","response":"hello\\n","duration_seconds":9.0,"num_turns":1,"usage":{"input_tokens":22860,"output_tokens":432,"thinking_tokens":348,"cache_read_tokens":18354,"total_tokens":23292}}}',
+  ];
+
+  it("follows a real agy 1.5.14 turn: tools, streamed text, context in use, result", () => {
+    const parsed = CAPTURED_TURN.map(parseAntigravityStreamLine);
+    const deltas = parsed.flatMap((line) => line?.deltas ?? []);
+    expect(deltas).toEqual([
+      { type: "context", content: "20407" },
+      { type: "tool_use", content: "Using read_file", toolName: "read_file", toolId: "2" },
+      { type: "tool_result", content: "read_file done", toolName: "read_file", toolId: "2" },
+      { type: "text", content: "hello" },
+      { type: "text", content: "\n" },
+      { type: "context", content: "20807" },
+    ]);
+    expect(parsed.every((line) => line?.conversationId === undefined || line.conversationId === "30eb032a")).toBe(true);
+    expect(parsed.at(-1)).toMatchObject({ terminal: true, result: "hello\n" });
   });
 
   // Captured from agy 1.5.14 when it is not signed in.

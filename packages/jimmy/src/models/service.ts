@@ -156,6 +156,9 @@ export class ModelManagement {
       }),
       fallbackEnabled: config.sessions?.rateLimitStrategy !== "wait" && engines.every(e => engineFallbackChain(config, e).includes(e === "codex" ? "claude" : "codex")),
       notification: config.modelManagement?.notification ?? null,
+      // Engines outside model management: just what can be picked. Antigravity's
+      // list comes from `agy models` (gateway/server.ts) merged into the registry.
+      catalogs: { antigravity: (registry.antigravity?.models ?? []).map(({ id, label }) => ({ id, label })) },
       slackAdminConfigured: Boolean(config.portal?.operatorSlackId),
     };
   }

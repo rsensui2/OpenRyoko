@@ -44,11 +44,22 @@ describe("AntigravityEngine", () => {
 
     proc.stdout.emit("data", line({ event: "init", conversation_id: "conv-1" }));
     proc.stdout.emit("data", line({ event: "step_update", step_update: { step_type: "tool", tool_name: "view_file", step_index: 1, state: "ACTIVE" } }));
-    proc.stdout.emit("data", line({ event: "result", result: { status: "SUCCESS", response: "hi there", usage: { input_tokens: 500 } } }));
+    proc.stdout.emit("data", line({ event: "step_update", step_update: { step_type: "agent_response", state: "ACTIVE", text_delta: "hi " } }));
+    proc.stdout.emit("data", line({ event: "step_update", step_update: { step_type: "agent_response", state: "DONE", text_delta: "there", usage: { input_tokens: 100, cache_read_tokens: 400 } } }));
+    proc.stdout.emit("data", line({ event: "result", result: { status: "SUCCESS", response: "hi there", usage: { input_tokens: 9999 } } }));
 
     await expect(running).resolves.toEqual({ sessionId: "conv-1", result: "hi there", numTurns: 1, contextTokens: 500 });
-    expect(deltas.map((d) => d.type)).toEqual(["tool_use", "context", "text"]);
+    // The answer streamed already; the result does not repeat it.
+    expect(deltas.map((d) => d.type)).toEqual(["tool_use", "text", "text", "context"]);
     expect(engine.isAlive("s1")).toBe(false);
+  });
+
+  it("shows the result as text when nothing streamed", async () => {
+    const deltas: StreamDelta[] = [];
+    const running = engine.run({ prompt: "x", cwd: "/tmp", onStream: (d) => deltas.push(d) });
+    proc.stdout.emit("data", line({ event: "result", result: { status: "SUCCESS", response: "only at the end" } }));
+    await running;
+    expect(deltas).toEqual([{ type: "text", content: "only at the end" }]);
   });
 
   it("resumes a conversation with --conversation", async () => {

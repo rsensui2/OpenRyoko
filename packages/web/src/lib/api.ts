@@ -426,6 +426,8 @@ export interface ModelManagementStatus {
   pins: Array<{ kind: "employee" | "cron" | "workflow"; id: string; name: string; engine: string; model: string | null; effective: string; effort?: string | null; family?: string | null; followPaused?: boolean; unmanagedReason?: string; inheritedFrom?: string; remote: boolean }>;
   notification: { connector: string; channel: string } | null;
   slackAdminConfigured: boolean;
+  /** Models of engines outside model management (e.g. Antigravity), by engine. */
+  catalogs?: Record<string, Array<{ id: string; label: string }>>;
   fallbackEnabled?: boolean;
 }
 

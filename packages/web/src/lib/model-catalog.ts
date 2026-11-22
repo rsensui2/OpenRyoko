@@ -45,7 +45,7 @@ export const CUSTOM_MODEL_VALUE = "__custom_model__"
 export const DEFAULT_CLAUDE_MODEL = "claude-opus-5-5"
 export const DEFAULT_CODEX_MODEL = "gpt-6-sol"
 export const DEFAULT_GEMINI_MODEL = "gemini-2.5-pro"
-export const DEFAULT_ANTIGRAVITY_MODEL = "Gemini 3.5 Flash (Medium)"
+export const DEFAULT_ANTIGRAVITY_MODEL = "gemini-3.8-flash-medium"
 export const DEFAULT_TRIAGE_CLAUDE_MODEL = "claude-haiku-4-5"
 export const DEFAULT_TRIAGE_CODEX_MODEL = "gpt-5-nano"
 
@@ -122,9 +122,15 @@ export const GEMINI_MODELS: ModelOption[] = [
   { value: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
 ]
 
-/** Antigravity CLI model names as `agy models` lists them. */
+/** Antigravity CLI model ids as `agy models` (1.5.14) lists them. The list
+ * moves with Google's releases; a newer id can be typed in as a custom model. */
 export const ANTIGRAVITY_MODELS: ModelOption[] = [
-  { value: "Gemini 3.5 Flash (Medium)", label: "Gemini 3.5 Flash (Medium)" },
+  { value: "gemini-3.8-flash-medium", label: "Gemini 3.8 Flash (Medium) — 既定" },
+  { value: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)" },
+  { value: "gemini-3.8-flash-low", label: "Gemini 3.8 Flash (Low)" },
+  { value: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking) — Antigravity 経由" },
+  { value: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Thinking) — Antigravity 経由" },
+  { value: "gpt-oss-120b-medium", label: "GPT-OSS 120B (Medium)" },
 ]
 
 /** Model list for a given triage/goal engine (defaults to the OpenAI list). */

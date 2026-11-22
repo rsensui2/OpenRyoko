@@ -196,4 +196,15 @@ describe("ModelSelector", () => {
     } finally { mock.mockRestore() }
   })
 
+  it("offers the Antigravity models agy listed", async () => {
+    const mock = vi.spyOn(api, "getModels").mockResolvedValue({
+      engines: [{ engine: "codex", models: [{ id: "gpt-6-sol", label: "GPT-6 Sol" }] }],
+      catalogs: { antigravity: [{ id: "gemini-9-flash-medium", label: "Gemini 9 Flash (Medium)" }] },
+    } as unknown as ModelManagementStatus)
+    try {
+      render(<ModelSelector id="model" engine="antigravity" model="gemini-3.8-flash-medium" onChange={vi.fn()} />)
+      await waitFor(() => expect(screen.getByRole("option", { name: "Gemini 9 Flash (Medium)" })).toBeDefined())
+      expect(screen.queryByRole("option", { name: "GPT-6 Sol" })).toBeNull()
+    } finally { mock.mockRestore() }
+  })
 })

@@ -36,7 +36,8 @@ export function ModelSelector({
   useEffect(() => {
     let active = true
     api.getModels().then(status => {
-      if (active) setCatalog({ engine, models: status.engines.find(e => e.engine === engine)?.models.map(m => ({ value: m.id, label: m.label })) ?? [] })
+      const models = status.engines.find(e => e.engine === engine)?.models ?? status.catalogs?.[engine] ?? []
+      if (active) setCatalog({ engine, models: models.map(m => ({ value: m.id, label: m.label })) })
     }).catch(() => {})
     return () => { active = false }
   }, [engine])
@@ -54,7 +55,7 @@ export function ModelSelector({
       : engine === "gemini"
         ? "例: gemini-3.1-pro-preview"
         : engine === "antigravity"
-          ? "agy models に出る名前"
+          ? "例: gemini-3.8-flash-high（agy models の左の列）"
           : "例: gpt-private-preview"
 
   useEffect(() => {

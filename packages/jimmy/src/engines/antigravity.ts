@@ -108,6 +108,7 @@ class AntigravityTurn {
   private stderr = "";
   private conversationId: string;
   private contextTokens: number | undefined;
+  private streamedText = false;
   private timers: NodeJS.Timeout[] = [];
   private resolve: (result: EngineResult) => void = () => {};
   private reject: (error: Error) => void = () => {};
@@ -170,14 +171,18 @@ class AntigravityTurn {
     if (!parsed) return;
     if (parsed.conversationId) this.conversationId = parsed.conversationId;
     if (parsed.contextTokens) this.contextTokens = parsed.contextTokens;
-    for (const delta of parsed.deltas) this.opts.onStream?.(delta);
+    for (const delta of parsed.deltas) {
+      if (delta.type === "text") this.streamedText = true;
+      this.opts.onStream?.(delta);
+    }
     if (parsed.terminal) this.finishWithResult(parsed);
   }
 
   private finishWithResult(parsed: AntigravityParsedLine): void {
     // agy can linger after its result (background tasks); the turn is over.
     terminateProcessTree(this.proc);
-    if (parsed.result && this.opts.onStream) this.opts.onStream({ type: "text", content: parsed.result });
+    // An older agy that does not stream text_delta still shows its answer.
+    if (parsed.result && !this.streamedText) this.opts.onStream?.({ type: "text", content: parsed.result });
     this.settle({
       sessionId: this.conversationId,
       result: parsed.result ?? "",
