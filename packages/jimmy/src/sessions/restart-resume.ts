@@ -54,6 +54,16 @@ export const RESTART_LIMIT_RESET_BUFFER_MS = 10_000;
 /** Opening words of every nudge. Also how a nudge is recognised in the queue. */
 export const RESTART_NUDGE_PREFIX = "[Gateway] Restart complete.";
 
+/** Put in front of a queued message that was already being worked on when the
+ *  gateway went down and is now run again from the start. Kept to one
+ *  sentence: the message itself is still the request. */
+export const RESTART_REPLAY_NOTE =
+  "[Gateway] A gateway restart cut off your earlier run of the message below, and it is being run again from the start — before you act, read this session's latest messages and the conversation itself, and do not redo work or repost any part of an answer that is already there.";
+
+export function withRestartReplayNote(prompt: string): string {
+  return `${RESTART_REPLAY_NOTE}\n\n${prompt}`;
+}
+
 export interface RestartResumeState {
   /** When a restart cut this session's turn off. Present until that
    *  interruption has been handled (nudged, or deliberately left alone). */

@@ -245,8 +245,8 @@ export async function startGateway(
     }
   }
   const recoveredQueue = recoverStaleQueueItems();
-  if (recoveredQueue > 0) {
-    logger.info(`Recovered ${recoveredQueue} in-flight queue item(s) from previous run — reset to pending`);
+  if (recoveredQueue.length > 0) {
+    logger.info(`Recovered ${recoveredQueue.length} in-flight queue item(s) from previous run — reset to pending`);
   }
 
   // Set up engines
@@ -1320,7 +1320,8 @@ export async function startGateway(
   // Replay any pending web queue items (e.g. gateway restart mid-run). Deferred to
   // here so the server is listening and gateway.json exists before any interactive
   // recovery turn spawns — so hook-relay.mjs can deliver its Stop hook.
-  resumePendingWebQueueItems(apiContext);
+  // Items that were mid-run are told so, and to check before redoing or reposting.
+  resumePendingWebQueueItems(apiContext, { restartInterruptedItemIds: new Set(recoveredQueue) });
 
   // Nudge the sessions the restart cut off mid-turn to carry on. After the
   // replay above, so a session it already re-dispatched is not resumed twice.

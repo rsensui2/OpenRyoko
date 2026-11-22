@@ -1054,14 +1054,16 @@ export function cancelAllPendingQueueItems(sessionKey: string): number {
   return result.changes;
 }
 
-export function recoverStaleQueueItems(): number {
+/** Returns the ids of the items that were mid-run: their replay starts over
+ *  work that may already be partly done or posted. */
+export function recoverStaleQueueItems(): string[] {
   const db = initDb();
   // If the gateway restarts mid-run, move any "running" items back to "pending"
   // so they can be replayed. Do NOT cancel pending work.
-  const result = db.prepare(
-    "UPDATE queue_items SET status = 'pending', started_at = NULL WHERE status = 'running'"
-  ).run();
-  return result.changes;
+  const rows = db.prepare(
+    "UPDATE queue_items SET status = 'pending', started_at = NULL WHERE status = 'running' RETURNING id"
+  ).all() as Array<{ id: string }>;
+  return rows.map((row) => row.id);
 }
 
 export function listAllPendingQueueItems(): QueueItem[] {

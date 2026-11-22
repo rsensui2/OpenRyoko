@@ -44,7 +44,7 @@ describe("gateway/server.ts — session lifecycle wiring", () => {
   });
 
   it("chooses whom to nudge only after the queue replay", () => {
-    expect(callSite("resumePendingWebQueueItems(apiContext)")).toBeLessThan(callSite("resumeRestartInterruptedSessions({"));
+    expect(callSite("resumePendingWebQueueItems(apiContext,")).toBeLessThan(callSite("resumeRestartInterruptedSessions({"));
   });
 
   it("marks running sessions at shutdown before their engines are killed", () => {
