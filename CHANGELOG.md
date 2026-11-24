@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026.11.24
+
+### Added
+
+- The Slack model settings card ("モデル設定") shows Antigravity while it is in use: its current default, a select that sets `engines.antigravity.model` from the models `agy models` listed, and, in an Antigravity conversation, a select that switches only that conversation. The card's refresh button also re-reads `agy models`.
+
+### Fixed
+
+- An `engines.antigravity` block that sets only some keys (for example only `model` and `fallback`) no longer leaves the binary unset; missing keys come from the defaults, so model discovery runs and finds `agy`.
+- The Antigravity model list is read as soon as a configuration reload puts Antigravity into use or changes its binary, instead of at the next six-hour refresh.
+
 ## 2026.11.23
 
 ### Fixed

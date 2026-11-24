@@ -14,6 +14,7 @@ import { compatibleEffort, defaultFamilyFallbacks, familyModel, modelFamilies, m
 import { engineFallbackChain, resolveSubstituteModel } from "../shared/engine-fallback.js";
 import type { WorkflowService } from "../workflows/service.js";
 import type { JinnConfig } from "../shared/types.js";
+import { engineConfigFor } from "../shared/engine-config.js";
 
 const familySchema = z.string().regex(/^[a-z][a-z0-9]{0,39}$/);
 const effortSchema = z.enum(["low", "medium", "high", "xhigh", "max"]);
@@ -33,6 +34,7 @@ export const actionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("fallback"), enabled: z.boolean() }).strict(),
   z.object({ action: z.literal("fallback-family"), engine: z.enum(["codex", "claude"]), family: familySchema, targetFamily: familySchema.nullable() }).strict(),
   z.object({ action: z.literal("notification"), connector: z.string().min(1).max(100), channel: z.string().max(100) }).strict(),
+  z.object({ action: z.literal("antigravity-default"), model: z.string().min(1).max(160) }).strict(),
 ]);
 export type ModelAction = z.infer<typeof actionSchema>;
 export type ModelPolicy = z.infer<typeof policySchema>;
@@ -88,6 +90,8 @@ export class ModelManagement {
     getWorkflows?: () => Pick<WorkflowService, "listDefinitions" | "getDefinition" | "saveDefinition"> | undefined;
     discover?: typeof discoverModels;
     notify?: (text: string, engine: ManagedEngine, candidate?: string) => Promise<boolean>;
+    /** Re-reads `agy models`; Antigravity is outside the codex/claude catalogs. */
+    refreshAntigravity?: () => Promise<void>;
   }) {
     try {
       const parsed = stateSchema.parse(JSON.parse(fs.readFileSync(stateFile, "utf8")));
@@ -159,6 +163,10 @@ export class ModelManagement {
       // Engines outside model management: just what can be picked. Antigravity's
       // list comes from `agy models` (gateway/server.ts) merged into the registry.
       catalogs: { antigravity: (registry.antigravity?.models ?? []).map(({ id, label }) => ({ id, label })) },
+      antigravity: {
+        inUse: config.engines.default === "antigravity" || Boolean(config.engines.antigravity),
+        current: engineConfigFor(config, "antigravity").model,
+      },
       slackAdminConfigured: Boolean(config.portal?.operatorSlackId),
     };
   }
@@ -337,6 +345,11 @@ export class ModelManagement {
     }
   }
   assertAvailable(engine: ManagedEngine, model: string): void { this.available(engine, model); }
+  /** Antigravity's models are whatever `agy models` last listed (merged into the registry). */
+  assertAntigravityModel(model: string): void {
+    const models = getModelRegistry(this.options.getConfig()).antigravity?.models ?? [];
+    if (!models.some(m => m.id === model)) throw new Error("Antigravity のモデル一覧にないモデルです。一覧を更新してから選択してください。");
+  }
   private available(engine: ManagedEngine, model: string) {
     const c = this.state.catalogs[engine];
     if (!c || this.catalogError(engine)) throw new Error("モデル一覧を更新してから選択してください。");
@@ -380,7 +393,11 @@ export class ModelManagement {
     const action = actionSchema.parse(input);
     if ("engine" in action && ["policy", "default", "accept", "rollback"].includes(action.action)) delete this.state.pending[action.engine];
     switch (action.action) {
-      case "refresh": await this.refresh(true); break;
+      case "refresh": await Promise.all([this.refresh(true), this.options.refreshAntigravity?.()]); break;
+      case "antigravity-default":
+        this.assertAntigravityModel(action.model);
+        await this.editConfig(config => { config.engines.antigravity = { ...config.engines.antigravity, model: action.model } as NonNullable<JinnConfig["engines"]["antigravity"]>; });
+        break;
       case "policy":
         await this.editConfig(config => { config.modelManagement ??= {}; config.modelManagement.policies ??= {}; config.modelManagement.policies[action.engine] = action.policy; });
         await this.refresh(); await this.reconcile(action.engine); break;

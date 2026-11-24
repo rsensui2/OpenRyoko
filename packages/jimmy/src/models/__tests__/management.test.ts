@@ -278,3 +278,54 @@ it("lists and updates real workflow definitions across pages using JSON-safe que
     expect(saved.enabled).toBe(false);
   } finally { database.close(); }
 });
+
+describe("Antigravity in model settings", () => {
+  const agy = (id: string, label = id) => ({ id, label, supportsEffort: false, effortLevels: [] });
+  const select = (card: any[], actionId: string) => (card.find((b: any) => b.type === "actions" && b.elements[0].action_id === actionId) as any)?.elements[0];
+  beforeEach(() => {
+    config.engines.default = "antigravity";
+    fs.writeFileSync(CONFIG_PATH, yaml.dump(config));
+    setDiscoveredModels("antigravity", [agy("gemini-3.8-flash-medium", "Gemini 3.8 Flash (Medium)"), agy("gemini-4-neon", "Gemini 4 Neon")]);
+  });
+  afterEach(() => setDiscoveredModels("antigravity", []));
+
+  it("shows Antigravity's current model on the Slack card and sets its default from agy's list", async () => {
+    const service = make();
+    const controls = new SlackModelControls(() => service, () => "UADMIN");
+    const card = controls.card("C1", "UADMIN");
+    expect(JSON.stringify(card)).toContain("antigravity: Gemini 3.8 Flash (Medium)");
+    const neon = select(card, "ryoko_models_default_antigravity").options.find((o: any) => o.text.text === "Gemini 4 Neon");
+    await controls.execute(neon.value, "UADMIN", "C1");
+    expect(config.engines.antigravity?.model).toBe("gemini-4-neon");
+    expect((yaml.load(fs.readFileSync(CONFIG_PATH, "utf8")) as JinnConfig).engines.antigravity?.model).toBe("gemini-4-neon");
+    expect(service.snapshot().antigravity.current).toBe("gemini-4-neon");
+  });
+
+  it("refuses a model agy did not list", async () => {
+    await expect(make().act({ action: "antigravity-default", model: "gemini-9" })).rejects.toThrow("一覧");
+    expect(config.engines.antigravity).toBeUndefined();
+  });
+
+  it("switches only this conversation's model", async () => {
+    const service = make();
+    const session = createSession({ engine: "antigravity", source: "slack", sourceRef: "slack:C1:agy", sessionKey: "slack:C1:agy" });
+    const controls = new SlackModelControls(() => service, () => "UADMIN");
+    const option = select(controls.card("C1", "UADMIN", session.sessionKey!), "ryoko_models_session_antigravity").options.find((o: any) => o.text.text === "Gemini 4 Neon");
+    await controls.execute(option.value, "UADMIN", "C1");
+    expect(getSession(session.id)?.model).toBe("gemini-4-neon");
+    expect(config.engines.antigravity).toBeUndefined();
+  });
+
+  it("re-reads agy's list when the card's refresh is pressed", async () => {
+    const refreshAntigravity = vi.fn(async () => {});
+    const service = new ModelManagement({ getConfig: () => config, onConfig: c => { config = c; }, discover, notify, refreshAntigravity });
+    await service.act({ action: "refresh" });
+    expect(refreshAntigravity).toHaveBeenCalledOnce();
+  });
+
+  it("leaves Antigravity off the card while it is not in use", () => {
+    config.engines.default = "codex";
+    const card = new SlackModelControls(() => make(), () => "UADMIN").card("C1", "UADMIN");
+    expect(JSON.stringify(card)).not.toContain("antigravity:");
+  });
+});
