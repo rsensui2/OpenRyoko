@@ -17,6 +17,11 @@ describe("engineConfigFor", () => {
     expect(engineConfigFor(config, "antigravity")).toEqual({ bin: "/opt/agy", model: "gemini-3.8-flash-high" });
   });
 
+  it("fills keys a partial block leaves out from the defaults, so agy is still found", () => {
+    const config = { ...base, engines: { ...base.engines, antigravity: { model: "gemini-3.8-flash-high", fallback: ["codex"] } } } as unknown as JinnConfig;
+    expect(engineConfigFor(config, "antigravity")).toMatchObject({ bin: "agy", model: "gemini-3.8-flash-high" });
+  });
+
   it("keeps the earlier fallbacks for the other engines", () => {
     expect(engineConfigFor(base, "codex").bin).toBe("codex");
     expect(engineConfigFor(base, "gemini").bin).toBe("claude");

@@ -973,6 +973,7 @@ export async function startGateway(
   modelManagement = new ModelManagement({
     getConfig: () => currentConfig,
     getWorkflows: () => workflowService,
+    refreshAntigravity: () => refreshAntigravityModels(),
     onConfig: next => {
       currentConfig = next;
       apiContext.config = next;
@@ -1216,6 +1217,10 @@ export async function startGateway(
         const previousWorkflowsEnabled = Boolean(currentConfig.workflows?.enabled);
         currentConfig = loadConfig();
         invalidateModelRegistry(); // rebuild the model/capability registry from the reloaded config
+        // Antigravity just came into use, or its binary moved: read its model list now, not in six hours.
+        const antigravityKey = (config: JinnConfig) =>
+          config.engines.default === "antigravity" || config.engines.antigravity ? engineConfigFor(config, "antigravity").bin : null;
+        if (antigravityKey(currentConfig) && antigravityKey(currentConfig) !== antigravityKey(previous)) void refreshAntigravityModels();
         apiContext.config = currentConfig;
         // Workflow engine is boot-time wiring. Disable takes effect immediately
         // (dispose stops schedule triggers and the runner; routes disappear with

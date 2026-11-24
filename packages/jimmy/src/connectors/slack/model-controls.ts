@@ -6,7 +6,7 @@ import type { ModelManagement, ModelAction } from "../../models/service.js";
 import type { ManagedEngine } from "../../models/discovery.js";
 import { getSessionBySessionKey, getQueueItems, updateSession } from "../../sessions/registry.js";
 
-type Choice = ModelAction | { action: "session"; engine: ManagedEngine; model: string } | { action: "show" } | { action: "target"; kind: "employee" | "cron" | "workflow"; id: string } | { action: "backup"; engine: ManagedEngine; family: string };
+type Choice = ModelAction | { action: "session"; engine: ManagedEngine | "antigravity"; model: string } | { action: "show" } | { action: "target"; kind: "employee" | "cron" | "workflow"; id: string } | { action: "backup"; engine: ManagedEngine; family: string };
 const depthLabel = (level: string) => ({ low: "軽く", medium: "標準", high: "じっくり", xhigh: "深く", max: "最大" }[level] ?? level);
 const modeLabels = { auto: "自動追従", notify: "通知して選ぶ", fixed: "固定" };
 const profileLabels = { economy: "節約", balanced: "バランス", performance: "性能優先" };
@@ -53,6 +53,7 @@ export class SlackModelControls {
       ] });
       blocks.push({ type: "actions", elements: [{ type: "static_select", action_id: `ryoko_models_profile_${entry.engine}`, placeholder: { type: "plain_text", text: "用途を選ぶ" }, options: ([['economy', '節約'], ['balanced', 'バランス'], ['performance', '性能優先']] as const).map(([profile, text]) => ({ text: { type: "plain_text", text }, value: this.token({ action: "policy", engine: entry.engine, policy: { mode: entry.policy.mode, profile, effort: entry.policy.effort } }, channel, user, sessionKey) })) }] });
     }
+    blocks.push(...this.antigravityBlocks(status, channel, user, sessionKey));
     const pinned = status.pins.filter(p => p.model && !p.family);
     const following = status.pins.filter(p => p.family);
     blocks.push({ type: "section", text: { type: "plain_text", text: `系列を追従 ${following.length}件\n${following.slice(0, 10).map(p => `${p.name}: ${p.family} → ${p.effective}`).join("\n") || "タスクを選んで系列を設定できます。"}` } });
@@ -65,6 +66,19 @@ export class SlackModelControls {
     const pairs = status.engines.flatMap(e => e.families.map(f => ({ text: { type: "plain_text" as const, text: `${e.engine} ${f.label} の代役` }, value: this.token({ action: "backup", engine: e.engine, family: f.family }, channel, user, sessionKey) })));
     if (pairs.length) blocks.push({ type: "actions", elements: [{ type: "static_select", action_id: "ryoko_models_backup", placeholder: { type: "plain_text", text: "代役の組み合わせを変更" }, options: pairs.slice(0, 100) }] });
     blocks.push({ type: "actions", elements: [button("一覧を更新", { action: "refresh" }, "refresh"), button("このチャンネルで通知", { action: "notification", connector: this.connectorName, channel }, "notifications")] });
+    return blocks;
+  }
+  /** Antigravity is outside codex/claude model management: its default and this conversation's model only. */
+  private antigravityBlocks(status: ReturnType<ModelManagement["snapshot"]>, channel: string, user: string, sessionKey?: string): KnownBlock[] {
+    if (!status.antigravity?.inUse) return [];
+    const models = status.catalogs?.antigravity ?? [];
+    const labelOf = (id: string) => models.find(m => m.id === id)?.label ?? id;
+    const blocks: KnownBlock[] = [{ type: "section", text: { type: "plain_text", text: `antigravity: ${labelOf(status.antigravity.current)}\nモデル一覧は agy models から取得します（${models.length}件）。` } }];
+    const options = (choice: (id: string) => Choice) => models.slice(0, 90).map(m => ({ text: { type: "plain_text" as const, text: m.label.slice(0, 75) }, value: this.token(choice(m.id), channel, user, sessionKey) }));
+    if (!models.length) return blocks;
+    blocks.push({ type: "actions", elements: [{ type: "static_select", action_id: "ryoko_models_default_antigravity", placeholder: { type: "plain_text", text: "今後の既定を選ぶ" }, options: options(model => ({ action: "antigravity-default", model })) }] });
+    const session = sessionKey ? getSessionBySessionKey(sessionKey) : undefined;
+    if (session?.engine === "antigravity") blocks.push({ type: "actions", elements: [{ type: "static_select", action_id: "ryoko_models_session_antigravity", placeholder: { type: "plain_text", text: "この会話だけ切り替える" }, options: options(model => ({ action: "session", engine: "antigravity", model })) }] });
     return blocks;
   }
   private targetCard(kind: "employee" | "cron" | "workflow", id: string, channel: string, user: string, sessionKey?: string): KnownBlock[] {
@@ -97,7 +111,8 @@ export class SlackModelControls {
       const session = grant.sessionKey ? getSessionBySessionKey(grant.sessionKey) : undefined;
       if (!session || session.engine !== choice.engine) throw new Error("この会話のエンジンが変わりました。設定を開き直してください。");
       if (session.status !== "idle" || getQueueItems(session.sessionKey || session.sourceRef).some(q => q.status === "pending" || q.status === "running")) throw new Error("実行中です。処理が終わってから切り替えてください。");
-      service.assertAvailable(choice.engine, choice.model);
+      if (choice.engine === "antigravity") service.assertAntigravityModel(choice.model);
+      else service.assertAvailable(choice.engine, choice.model);
       updateSession(session.id, { model: choice.model, effortLevel: null });
     } else if (choice.action !== "show") await service.act(choice);
     if (choice.action === "follow" || choice.action === "effort") return { blocks: this.targetCard(choice.kind, choice.id, channel, user, grant.sessionKey), text: "タスクのモデル編成を更新しました。" };
