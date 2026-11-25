@@ -16,6 +16,8 @@ export interface PtyIdleSpawnOpts {
   bin?: string;
   cols?: number;
   rows?: number;
+  /** See EngineRunOpts.nativeMemory: the session's audience decides it, also for a PTY warmed up ahead of a turn. */
+  nativeMemory?: "off";
 }
 
 export interface PtyViewEngine {

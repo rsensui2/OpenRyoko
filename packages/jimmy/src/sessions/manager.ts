@@ -40,6 +40,7 @@ import { buildEngineSyncPrompt, clearEngineSyncMarker, engineFallbackFailure, en
 import { startOnHealthyEngine } from "./new-session-engine.js";
 import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "./callbacks.js";
 import { buildContext } from "./context.js";
+import { EXTERNAL_SPEAKER_SEEN, audienceFromTransportMeta, isExternalAudience, isOneToOneDm, isUntrustedSpeaker } from "./audience.js";
 import { normalizeDelivery, normalizeTurns, type DeliveryContext } from "./reply-disposition.js";
 import { deliverToOriginConnector, isUndeliveredToOrigin, recordFailedOriginDelivery } from "./origin-delivery.js";
 import { deliverTurn, recordUndeliveredTurn } from "./turn-delivery.js";
@@ -117,7 +118,7 @@ function mergeTransportMeta(
   const merged: Record<string, unknown> = { ...baseExisting, ...baseIncoming };
 
   // Preserve Jinn internal keys from being overwritten by transport adapters.
-  for (const key of ["engineOverride", "engineSessions", "claudeSyncSince", "engineSyncSince"]) {
+  for (const key of ["engineOverride", "engineSessions", "claudeSyncSince", "engineSyncSince", EXTERNAL_SPEAKER_SEEN]) {
     if (baseExisting[key] !== undefined) merged[key] = baseExisting[key];
   }
 
@@ -676,11 +677,36 @@ export class SessionManager {
       await connector.setTypingStatus(target.channel, threadTs, "入力中...").catch(() => {});
     }
 
+    // Once someone outside the trusted speakers has spoken in a session, what
+    // they said stays in the thread every later turn reads. The session keeps
+    // that fact, so a trusted speaker's next message there is not treated as
+    // if the thread were theirs alone. A one-to-one direct message has nobody
+    // else in it: there the current speaker decides each time, and nothing is
+    // kept (so correcting a mistyped ID takes effect on the next message).
+    const incomingMeta = msg.transportMeta ?? {};
+    const oneToOneDm = isOneToOneDm({
+      source: session.source,
+      channel: msg.channel,
+      isDM: incomingMeta.isDM === true,
+      isGroupDM: incomingMeta.isGroupDM === true,
+    });
+    const externalSpeakerSeen = !oneToOneDm && (
+      audienceFromTransportMeta(session.transportMeta).externalSpeakerSeen === true ||
+      isUntrustedSpeaker({
+        source: session.source,
+        speakerSlackId: (incomingMeta.speakerSlackId as string) || undefined,
+        speakerDiscordId: (incomingMeta.speakerDiscordId as string) || undefined,
+        config: this.config,
+      }));
+    const mergedTransportMeta = mergeTransportMeta(session.transportMeta, msg.transportMeta);
+
     updateSession(session.id, {
       status: "running",
       replyContext: msg.replyContext,
       messageId: msg.messageId ?? null,
-      transportMeta: mergeTransportMeta(session.transportMeta, msg.transportMeta),
+      transportMeta: externalSpeakerSeen
+        ? { ...(mergedTransportMeta as Record<string, unknown>), [EXTERNAL_SPEAKER_SEEN]: true } as Session["transportMeta"]
+        : mergedTransportMeta,
       lastActivity: new Date().toISOString(),
     });
 
@@ -715,6 +741,8 @@ export class SessionManager {
         speakerDiscordId: (meta.speakerDiscordId as string) || undefined,
         isDM: meta.isDM === true,
         isGroupDM: meta.isGroupDM === true,
+        channelExternal: meta.channelExternal === true,
+        externalSpeakerSeen,
         speakerIsBot: (meta.speakerIsBot as boolean | null) ?? undefined,
         speakerTz: (meta.speakerTz as string) || undefined,
         // Interactive PTY survives across turns; everything else (headless
@@ -731,6 +759,17 @@ export class SessionManager {
       });
 
       const systemPrompt = systemPromptFor(session.engine, employee?.sshHost);
+      // The engine's own memory follows the same line as the prompt above: it is
+      // neither offered to, nor fed by, a conversation that reaches an outsider.
+      const nativeMemory = isExternalAudience({
+        source: session.source,
+        speakerSlackId: (meta.speakerSlackId as string) || undefined,
+        speakerDiscordId: (meta.speakerDiscordId as string) || undefined,
+        channelExternal: meta.channelExternal === true,
+        externalSpeakerSeen,
+        oneToOneDm,
+        config: this.config,
+      }) ? "off" as const : undefined;
       const engineConfig = engineConfigFor(this.config, session.engine);
       if (session.engine === "claude") {
         const mcpConfig = resolveMcpServers(this.config.mcp, employee, {
@@ -824,6 +863,7 @@ export class SessionManager {
         model: session.model ?? engineConfig.model,
         effortLevel,
         cliFlags: employee?.cliFlags,
+        nativeMemory,
         sshHost: employee?.sshHost,
         remoteCwd: employee?.remoteCwd,
         mcpConfigPath,
@@ -905,6 +945,7 @@ export class SessionManager {
           model: session.model ?? engineConfig.model,
           effortLevel,
           cliFlags: employee?.cliFlags,
+          nativeMemory,
           sshHost: employee?.sshHost,
           remoteCwd: employee?.remoteCwd,
           mcpConfigPath,
@@ -963,6 +1004,7 @@ export class SessionManager {
             model: session.model ?? engineConfig.model,
             effortLevel,
             cliFlags: employee?.cliFlags,
+            nativeMemory,
             sshHost: employee?.sshHost,
             remoteCwd: employee?.remoteCwd,
             mcpConfigPath,
@@ -1100,6 +1142,7 @@ export class SessionManager {
               model: currentSession.model ?? engineConfig.model,
               effortLevel,
               cliFlags: employee?.cliFlags,
+              nativeMemory,
               sshHost: employee?.sshHost,
               remoteCwd: employee?.remoteCwd,
               mcpConfigPath,

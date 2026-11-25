@@ -17,7 +17,7 @@ import { SsePtyProxy, type SseDataEvent, type StreamCtx } from "./sse-pty-proxy.
 import { neutralizeForPaste } from "../shared/skill-commands.js";
 import { stripTerminalControlChars } from "../shared/terminal-safe-text.js";
 import { CLAUDE_LOCAL_ENV } from "../shared/childEnv.js";
-import { claudeAutoMemoryEnvFor } from "../shared/claude-auto-memory.js";
+import { claudeAutoMemoryEnv, claudeAutoMemoryEnvFor } from "../shared/claude-auto-memory.js";
 import { claudeLimitReset } from "../shared/claude-limit-reset.js";
 import { workStillCounts } from "./claude-activity.js";
 
@@ -667,7 +667,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
   /** Model/effort the live PTY was spawned with, per session. `--model`/`--effort`
    *  apply only at spawn, so a mid-chat switch must cold-respawn rather than reuse
    *  the warm PTY (which would keep running the old model). */
-  private spawnParams = new Map<string, { model?: string; effortLevel?: string }>();
+  private spawnParams = new Map<string, { model?: string; effortLevel?: string; nativeMemoryOff?: boolean }>();
   /** PTY handles already torn down by handlePtyDeath(). A socket `error` (EIO) and
    *  the proc's `onExit` can both fire for the same PTY (in either order, or only
    *  one of them), and run()'s warm-reuse guard may also report it dead — so death
@@ -731,6 +731,13 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
       const norm = (v?: string) => (!v || v === "default" ? "" : v);
       if (prev && (norm(opts.model) !== norm(prev.model) || norm(opts.effortLevel) !== norm(prev.effortLevel))) {
         logger.info(`InteractiveClaudeEngine: model/effort changed for ${jinnSessionId} (model ${prev.model ?? "default"}→${opts.model ?? "default"}, effort ${prev.effortLevel ?? "default"}→${opts.effortLevel ?? "default"}) — cold respawn`);
+        this.lifecycle.releaseSession(jinnSessionId);
+        warm = undefined;
+      } else if (opts.nativeMemory === "off" && prev?.nativeMemoryOff !== true) {
+        // The auto-memory switch is part of the env a PTY is spawned with. A PTY
+        // started for a trusted turn (or warmed up from the web view) must not
+        // carry on into a turn that asks for none.
+        logger.info(`InteractiveClaudeEngine: ${jinnSessionId} now runs without the engine's own memory — cold respawn`);
         this.lifecycle.releaseSession(jinnSessionId);
         warm = undefined;
       }
@@ -1010,8 +1017,13 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
    *  When `proxyPort` is given, points ANTHROPIC_BASE_URL at the per-PTY SSE
    *  forward proxy on 127.0.0.1 — subscription OAuth token is passed separately
    *  by claude, so this stays cc_entrypoint=cli / subsidy-safe (verified Item A). */
-  private buildPtyEnv(proxyPort: number | undefined, cwd: string): Record<string, string> {
-    return buildClaudePtyEnv(proxyPort, process.env, claudeAutoMemoryEnvFor(cwd));
+  private buildPtyEnv(proxyPort: number | undefined, cwd: string, nativeMemoryOff = false): Record<string, string> {
+    return buildClaudePtyEnv(proxyPort, process.env, {
+      ...claudeAutoMemoryEnvFor(cwd),
+      // See EngineRunOpts.nativeMemory. A PTY keeps the env it was spawned
+      // with, so this holds for the turns that reuse it.
+      ...(nativeMemoryOff ? claudeAutoMemoryEnv(false) : {}),
+    });
   }
 
   /** Translate parsed SSE events from a PTY's proxy into StreamDeltas and route
@@ -1182,7 +1194,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
     // one child triggers the (single-use) token refresh — others wait for it.
     await awaitFreshClaudeCredentials();
     const { proxy, port } = await this.startProxy(jinnSessionId);
-    const env = this.buildPtyEnv(port || undefined, opts.cwd || JINN_HOME);
+    const env = this.buildPtyEnv(port || undefined, opts.cwd || JINN_HOME, opts.nativeMemory === "off");
     const bin = opts.bin || "claude";
     const geom = this.lastGeom.get(jinnSessionId);
     logger.info(`InteractiveClaudeEngine spawning ${bin} (resume: ${opts.resumeSessionId || "none"}, geom: ${geom ? `${geom.cols}×${geom.rows}` : "default"}, sseProxy: ${port || "off"})`);
@@ -1193,7 +1205,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
       cwd: opts.cwd || JINN_HOME,
       env,
     });
-    this.spawnParams.set(jinnSessionId, { model: opts.model, effortLevel: opts.effortLevel });
+    this.spawnParams.set(jinnSessionId, { model: opts.model, effortLevel: opts.effortLevel, nativeMemoryOff: opts.nativeMemory === "off" });
     return this.wireProcToStream(jinnSessionId, proc, port ? proxy : undefined);
   }
 
@@ -1239,7 +1251,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
           proxy.stop();
           return;
         }
-        const env = this.buildPtyEnv(port || undefined, opts.cwd || JINN_HOME);
+        const env = this.buildPtyEnv(port || undefined, opts.cwd || JINN_HOME, opts.nativeMemory === "off");
         logger.info(`InteractiveClaudeEngine ensureIdleSpawn for session ${jinnSessionId} (resume ${opts.engineSessionId || "none — fresh"}, geom ${cols}×${rows}, sseProxy: ${port || "off"})`);
         const proc = pty.spawn(bin, args, {
           name: "xterm-256color",
@@ -1249,7 +1261,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
           env,
         });
         const handle = this.wireProcToStream(jinnSessionId, proc, port ? proxy : undefined);
-        this.spawnParams.set(jinnSessionId, { model: opts.model, effortLevel: undefined });
+        this.spawnParams.set(jinnSessionId, { model: opts.model, effortLevel: undefined, nativeMemoryOff: opts.nativeMemory === "off" });
         this.lifecycle.adopt(jinnSessionId, handle);
       } catch (err) {
         logger.warn(`ensureIdleSpawn failed for session ${jinnSessionId}: ${err instanceof Error ? err.message : String(err)}`);

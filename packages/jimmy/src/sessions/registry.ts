@@ -118,7 +118,7 @@ function initializeFts(database: Database.Database): void {
     }
   } catch (err) {
     ftsAvailable = false;
-    logger.warn(`FTS5 unavailable; message search disabled: ${err instanceof Error ? err.message : String(err)}`);
+    logger.warn(`FTS5 unavailable; message search uses substring matching: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -169,7 +169,7 @@ export function scheduleFtsBackfill(database: Database.Database = initDb(), chun
       } catch (err) {
         ftsAvailable = false;
         ftsBackfills.delete(database);
-        logger.warn(`FTS5 backfill failed; message search disabled until restart: ${err instanceof Error ? err.message : String(err)}`);
+        logger.warn(`FTS5 backfill failed; message search uses substring matching until restart: ${err instanceof Error ? err.message : String(err)}`);
         resolve();
       }
     };
@@ -924,7 +924,41 @@ export interface MessageSearchResult {
   timestamp: number;
   employee: string | null;
   engine: string | null;
+  /** Where the session came from ("slack", "web", "cron", …); null if the session row is gone. */
+  source: string | null;
 }
+
+export interface MessageSearchFilter {
+  sessionId?: string;
+  employee?: string;
+  engine?: string;
+  role?: 'user' | 'assistant';
+  /** Only sessions from these sources. */
+  sources?: string[];
+  /** "conversations" leaves out what no person typed: scheduled-job and workflow
+   *  sessions, and sessions another session started (their "user" turns are prompts). */
+  scope?: 'all' | 'conversations';
+}
+
+/** Sources whose "user" turns are stored prompts rather than something a person said. */
+const AUTOMATION_SOURCES = ['cron', 'workflow'];
+const SUBSTRING_MAX_TERMS = 8;
+const SUBSTRING_MAX_TERM_LENGTH = 64;
+/**
+ * How far back a substring search looks: this many of the newest message rows.
+ * The scan runs on the gateway's own thread, so it has to stay bounded however
+ * large the history grows; older messages are still found by the word index.
+ */
+const SUBSTRING_SCAN_ROWS = 200_000;
+const SNIPPET_BEFORE = 40;
+const SNIPPET_AFTER = 60;
+
+/**
+ * Scripts written without spaces between words. The FTS5 word index keeps a
+ * whole unbroken run of such text as one token, so a word inside a sentence is
+ * never found by it; these queries are matched as substrings instead.
+ */
+const UNSEGMENTED_SCRIPT = /[぀-ヿ㐀-䶿一-鿿豈-﫿ｦ-ﾟ가-힯฀-໿က-႟ក-៿]|[\ud840-\ud87f][\udc00-\udfff]/;
 
 function sanitizeFtsQuery(query: string): string {
   return query
@@ -936,40 +970,156 @@ function sanitizeFtsQuery(query: string): string {
     .join(' ');
 }
 
-export function searchMessages(
-  query: string,
-  limit = 20,
-  filter: { sessionId?: string; employee?: string; engine?: string; role?: 'user' | 'assistant' } = {},
-): MessageSearchResult[] {
-  const database = initDb();
-  if (!ftsAvailable) return [];
-  void scheduleFtsBackfill(database);
-  const match = sanitizeFtsQuery(query);
-  if (!match) return [];
-  const cap = Math.max(1, Math.min(Math.floor(limit) || 20, 200));
+/** Every term of a query, quotes dropped as the word index drops them. */
+function queryTerms(query: string): string[] {
+  return query
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .split(/\s+/)
+    .map((term) => term.replace(/"/g, ''))
+    .filter(Boolean);
+}
+
+/** The terms a substring match uses: at most eight, each cut to a bounded length. */
+function searchTerms(query: string): string[] {
+  return queryTerms(query)
+    .map((term) => term.slice(0, SUBSTRING_MAX_TERM_LENGTH))
+    .slice(0, SUBSTRING_MAX_TERMS);
+}
+
+/** True when the substring match would look for exactly the terms the query has. */
+function substringTermsAreComplete(query: string): boolean {
+  const all = queryTerms(query);
+  return all.length <= SUBSTRING_MAX_TERMS && all.every((term) => term.length <= SUBSTRING_MAX_TERM_LENGTH);
+}
+
+function escapeLike(term: string): string {
+  return term.replace(/[\\%_]/g, (char) => `\\${char}`);
+}
+
+function sessionFilterSql(filter: MessageSearchFilter): { sql: string; values: unknown[] } {
   const conditions: string[] = [];
   const values: unknown[] = [];
   if (filter.sessionId) { conditions.push('m.session_id = ?'); values.push(filter.sessionId); }
   if (filter.employee) { conditions.push('LOWER(s.employee) = ?'); values.push(filter.employee.toLowerCase()); }
   if (filter.engine) { conditions.push('LOWER(s.engine) = ?'); values.push(filter.engine.toLowerCase()); }
-  if (filter.role) { conditions.push('m.role = ?'); values.push(filter.role); }
-  const extra = conditions.length ? ` AND ${conditions.join(' AND ')}` : '';
+  const sources = (filter.sources ?? []).map((source) => source.toLowerCase()).filter(Boolean);
+  if (sources.length) {
+    conditions.push(`LOWER(s.source) IN (${sources.map(() => '?').join(', ')})`);
+    values.push(...sources);
+  }
+  if (filter.scope === 'conversations') {
+    // A message whose session row is gone has no known origin and is left out.
+    conditions.push(`LOWER(s.source) NOT IN (${AUTOMATION_SOURCES.map(() => '?').join(', ')})`);
+    values.push(...AUTOMATION_SOURCES);
+    conditions.push('s.parent_session_id IS NULL');
+  }
+  return { sql: conditions.length ? ` AND ${conditions.join(' AND ')}` : '', values };
+}
+
+/** A one-line excerpt around the first term found, marked the way the FTS snippet marks it. */
+function substringSnippet(content: string, terms: string[]): string {
+  let at = -1;
+  let length = 0;
+  for (const term of terms) {
+    // Matched on the text itself, so the position is one in the text (a lowercased copy can differ in length).
+    const found = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').exec(content);
+    if (found && (at < 0 || found.index < at)) { at = found.index; length = found[0].length; }
+  }
+  const flat = (text: string) => text.replace(/\s+/g, ' ');
+  if (at < 0) return flat(content.slice(0, SNIPPET_BEFORE + SNIPPET_AFTER)).trim();
+  const end = at + length;
+  let from = Math.max(0, at - SNIPPET_BEFORE);
+  let to = Math.min(content.length, end + SNIPPET_AFTER);
+  // Never cut a surrogate pair in half.
+  if (from > 0 && /[\udc00-\udfff]/.test(content[from])) from -= 1;
+  if (to < content.length && /[\ud800-\udbff]/.test(content[to - 1])) to += 1;
+  return `${from > 0 ? '…' : ''}${flat(content.slice(from, at))}«${flat(content.slice(at, end))}»${flat(content.slice(end, to))}${to < content.length ? '…' : ''}`;
+}
+
+/**
+ * Every term must appear somewhere in the message (LIKE: letter case is
+ * ignored for ASCII only). Exact for any script and any length of term.
+ *
+ * Read newest first along the (role, timestamp) index, one role at a time, so
+ * a common term stops at the limit instead of sorting every match; a rare one
+ * reads at most the newest SUBSTRING_SCAN_ROWS rows.
+ */
+function searchMessagesBySubstring(
+  database: Database.Database,
+  terms: string[],
+  cap: number,
+  filter: MessageSearchFilter,
+): MessageSearchResult[] {
+  if (!terms.length) return [];
+  const extra = sessionFilterSql(filter);
+  const newest = (database.prepare('SELECT COALESCE(MAX(rowid), 0) AS max FROM messages').get() as { max: number }).max;
+  // `+m.rowid`: a filter only. Left bare, the planner may walk rowids instead and sort all matches.
+  const statement = database.prepare(`
+    SELECT m.rowid AS rowid, m.id AS messageId, m.session_id AS sessionId, m.content AS content,
+           m.role AS role, m.timestamp AS timestamp,
+           s.employee AS employee, s.engine AS engine, s.source AS source
+    FROM messages m INDEXED BY idx_messages_role_timestamp
+    LEFT JOIN sessions s ON s.id = m.session_id
+    WHERE m.role = ? AND +m.rowid > ?
+      AND ${terms.map(() => "m.content LIKE ? ESCAPE '\\'").join(' AND ')}${extra.sql}
+    ORDER BY m.timestamp DESC, m.rowid DESC LIMIT ?
+  `);
+  const patterns = terms.map((term) => `%${escapeLike(term)}%`);
+  const roles = filter.role ? [filter.role] : ['user', 'assistant'];
+  const rows = roles.flatMap((role) => statement.all(
+    role, newest - SUBSTRING_SCAN_ROWS, ...patterns, ...extra.values, cap,
+  ) as Array<MessageSearchResult & { content: string; rowid: number }>);
+  rows.sort((a, b) => b.timestamp - a.timestamp || b.rowid - a.rowid);
+  return rows.slice(0, cap).map(({ content, rowid: _rowid, ...row }) => ({ ...row, snippet: substringSnippet(content, terms) }));
+}
+
+export function searchMessages(
+  query: string,
+  limit = 20,
+  filter: MessageSearchFilter = {},
+): MessageSearchResult[] {
+  const database = initDb();
+  const terms = searchTerms(query);
+  if (!terms.length) return [];
+  const cap = Math.max(1, Math.min(Math.floor(limit) || 20, 200));
+  if (!ftsAvailable || UNSEGMENTED_SCRIPT.test(query)) {
+    return searchMessagesBySubstring(database, terms, cap, filter);
+  }
+  void scheduleFtsBackfill(database);
+  const match = sanitizeFtsQuery(query);
+  if (!match) return [];
+  const extra = sessionFilterSql(filter);
+  if (filter.role) { extra.sql += ' AND m.role = ?'; extra.values.push(filter.role); }
+  let results: MessageSearchResult[];
   try {
-    return database.prepare(`
+    results = database.prepare(`
       SELECT m.id AS messageId, m.session_id AS sessionId,
              snippet(messages_fts, 0, '«', '»', '…', 12) AS snippet,
              m.role AS role, m.timestamp AS timestamp,
-             s.employee AS employee, s.engine AS engine
+             s.employee AS employee, s.engine AS engine, s.source AS source
       FROM messages_fts
       JOIN messages m ON m.rowid = messages_fts.rowid
       LEFT JOIN sessions s ON s.id = m.session_id
-      WHERE messages_fts MATCH ?${extra}
+      WHERE messages_fts MATCH ?${extra.sql}
       ORDER BY messages_fts.rank, m.timestamp DESC, m.rowid DESC LIMIT ?
-    `).all(match, ...values, cap) as MessageSearchResult[];
+    `).all(match, ...extra.values, cap) as MessageSearchResult[];
   } catch (err) {
-    if (String(err).includes('no such table')) return [];
-    throw err;
+    if (!String(err).includes('no such table')) throw err;
+    results = [];
   }
+  // The word index only matches whole words, and it keeps a word written
+  // straight against unspaced text ("Slackの設定") as part of one long token.
+  // While there is room, add the messages that contain the terms that way,
+  // newest first, after the whole-word matches. Not when the substring match
+  // would work from a cut-down query: what it adds has to hold every term the
+  // whole-word matches hold (with no whole-word match at all, the cut-down
+  // query is still better than nothing).
+  if (results.length >= cap) return results;
+  if (results.length > 0 && !substringTermsAreComplete(query)) return results;
+  const seen = new Set(results.map((result) => result.messageId));
+  const more = searchMessagesBySubstring(database, terms, cap + results.length, filter)
+    .filter((result) => !seen.has(result.messageId));
+  return [...results, ...more].slice(0, cap);
 }
 
 export interface QueueItem {

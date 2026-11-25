@@ -36,6 +36,46 @@ describe("CodexEngine", () => {
     vi.restoreAllMocks();
   });
 
+  describe("run() — Codex's own memory", () => {
+    const MEMORY_OFF = ["-c", "memories.use_memories=false", "-c", "memories.generate_memories=false"];
+
+    function argsOf(opts: Parameters<CodexEngine["run"]>[0]): string[] {
+      const proc = createMockProcess();
+      mockSpawn.mockReturnValue(proc as any);
+      const run = engine.run(opts);
+      const args = mockSpawn.mock.calls.at(-1)![1] as string[];
+      proc.stdout.emit("data", Buffer.from(JSON.stringify({ type: "turn.completed", usage: {} }) + "\n"));
+      proc.exitCode = 0;
+      proc.emit("close", 0);
+      void run.catch(() => {});
+      return args;
+    }
+
+    it("leaves Codex's configuration in charge unless told otherwise", () => {
+      expect(argsOf({ prompt: "hello", cwd: "/tmp" }).join(" ")).not.toContain("memories.");
+      expect(argsOf({ prompt: "hello", cwd: "/tmp", resumeSessionId: "thread-1" }).join(" ")).not.toContain("memories.");
+    });
+
+    it("keeps a new thread from loading or feeding memories when asked, ahead of the prompt", () => {
+      const args = argsOf({ prompt: "hello", cwd: "/tmp", nativeMemory: "off" });
+      expect(args).toEqual(expect.arrayContaining(MEMORY_OFF));
+      expect(args.indexOf("memories.generate_memories=false")).toBeLessThan(args.indexOf("--"));
+      expect(args.at(-1)).toBe("hello");
+    });
+
+    it("puts them after an employee's own flags, so those cannot turn memories back on", () => {
+      const args = argsOf({ prompt: "hello", cwd: "/tmp", nativeMemory: "off", cliFlags: ["-c", "memories.use_memories=true"] });
+      expect(args.lastIndexOf("memories.use_memories=false")).toBeGreaterThan(args.indexOf("memories.use_memories=true"));
+    });
+
+    it("passes the same settings when the thread is resumed", () => {
+      const args = argsOf({ prompt: "hello", cwd: "/tmp", resumeSessionId: "thread-1", nativeMemory: "off" });
+      expect(args.slice(0, 2)).toEqual(["exec", "resume"]);
+      expect(args).toEqual(expect.arrayContaining(MEMORY_OFF));
+      expect(args.slice(-3)).toEqual(["--", "thread-1", "hello"]);
+    });
+  });
+
   describe("run() — skill context budget notice", () => {
     const notice = {
       type: "item.completed",

@@ -73,10 +73,10 @@ describe("ClaudeEngine — auto memory for gateway-run sessions", () => {
     mockSpawn.mockReset();
   });
 
-  async function spawnedEnv(): Promise<Record<string, string>> {
+  async function spawnedEnv(extra: Record<string, unknown> = {}): Promise<Record<string, string>> {
     const proc = createMockProcess();
     mockSpawn.mockReturnValue(proc as any);
-    const run = new ClaudeEngine().run({ prompt: "hi", cwd, sessionId: "s1" } as any);
+    const run = new ClaudeEngine().run({ prompt: "hi", cwd, sessionId: "s1", ...extra } as any);
     await new Promise((resolve) => setImmediate(resolve));
     finishOk(proc);
     await run;
@@ -85,6 +85,13 @@ describe("ClaudeEngine — auto memory for gateway-run sessions", () => {
 
   it("turns auto memory off for an instance that never used it", async () => {
     expect((await spawnedEnv()).CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe("1");
+  });
+
+  it("keeps an opted-in instance's auto memory out of a run that asks for none", async () => {
+    configureClaudeAutoMemory(true);
+    expect((await spawnedEnv()).CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBeUndefined();
+    mockSpawn.mockReset();
+    expect((await spawnedEnv({ nativeMemory: "off" })).CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe("1");
   });
 
   it("leaves auto memory on while un-migrated notes exist", async () => {
