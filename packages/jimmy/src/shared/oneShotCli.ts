@@ -18,6 +18,14 @@ export interface OneShotOptions {
   classificationOnly?: boolean;
 }
 
+/**
+ * A classifier answers with a few dozen tokens of JSON. Claude Code thinks by
+ * default, which on Haiku spends 1k–5k output tokens and 13–50s before that
+ * answer and outruns the triage timeout. Measured with the triage prompt: about
+ * 1s and 30 output tokens with thinking off.
+ */
+const CLAUDE_CLASSIFIER_ENV = { MAX_THINKING_TOKENS: "0" } as const;
+
 export function defaultBinForEngine(engine: OneShotEngine): string {
   return engine === "codex" ? "codex" : "claude";
 }
@@ -36,7 +44,9 @@ export async function invokeOneShot(prompt: string, opts: OneShotOptions): Promi
       stdio: ["ignore", "pipe", "pipe"],
       // The Claude one-shot gets the same local launch guards as any gateway-run
       // Claude; Codex has no such flag.
-      env: engine === "claude" ? { ...buildChildEnv(), ...CLAUDE_LOCAL_ENV } : buildChildEnv(),
+      env: engine === "claude"
+        ? { ...buildChildEnv(), ...CLAUDE_LOCAL_ENV, ...(opts.classificationOnly ? CLAUDE_CLASSIFIER_ENV : {}) }
+        : buildChildEnv(),
       ...(cwd ? { cwd, detached: process.platform !== "win32" } : {}),
     });
 
