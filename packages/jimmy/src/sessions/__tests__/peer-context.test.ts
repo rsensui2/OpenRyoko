@@ -146,3 +146,50 @@ describe("delegated children", () => {
     expect(prompt(undefined, { source: "web", channel: "web" }, "parent-session-1")).toContain(MAIN_SECRET);
   });
 });
+
+describe("peer Ryoko in a conversation with someone outside the trusted speakers", () => {
+  const NOTICE = "This conversation includes someone outside the trusted speakers";
+  const strangerInChannel = { source: "slack", channel: "C0123", speakerSlackId: "U0STRANGER" };
+
+  it("is told to leave its own memory alone, and keeps the boundary around the main memory", () => {
+    const text = prompt(peer("own"), strangerInChannel);
+    expect(text).toContain(NOTICE);
+    expect(text).toContain(peerMemoryPath("hana"));
+    expect(text).toContain("Your memory is separate");
+    expect(text).not.toContain("You learn and evolve over time");
+    expect(text).not.toContain("read every session");
+  });
+
+  it("is told to leave the shared memory alone", () => {
+    const text = prompt(peer("shared"), strangerInChannel);
+    expect(text).toContain(NOTICE);
+    expect(text).toContain(path.join(JINN_HOME, "MEMORY.md"));
+    expect(text).not.toContain("You learn and evolve over time");
+  });
+
+  it("still names the main persona files as off limits", () => {
+    for (const memory of ["own", "shared"] as const) {
+      const text = prompt(peer(memory), strangerInChannel);
+      const notice = text.slice(text.indexOf(NOTICE), text.indexOf("\n", text.indexOf(NOTICE)));
+      expect(notice).toContain("`SOUL.md`");
+      expect(notice).toContain("`IDENTITY.md`");
+      expect(notice).toContain("`persona`");
+    }
+  });
+
+  it("keeps the notice when the prompt has to be cut down to size", () => {
+    const tight = { ...config, context: { maxChars: 2000 } } as unknown as JinnConfig;
+    for (const memory of ["own", "shared"] as const) {
+      const text = buildContext({ ...strangerInChannel, user: "someone", employee: peer(memory), config: tight });
+      expect(text).toContain("do not create or change anything");
+    }
+  });
+
+  it("keeps the usual guidance with a trusted speaker", () => {
+    for (const memory of ["own", "shared"] as const) {
+      const text = prompt(peer(memory), sharedChannel);
+      expect(text).toContain("You learn and evolve over time");
+      expect(text).not.toContain(NOTICE);
+    }
+  });
+});

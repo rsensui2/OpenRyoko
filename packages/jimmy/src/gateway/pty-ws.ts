@@ -1,7 +1,9 @@
 import type { WebSocket } from "ws";
 import type { PtyViewEngine } from "../engines/pty-view-engine.js";
 import { getSession } from "../sessions/registry.js";
+import { audienceOfSession, isExternalAudience } from "../sessions/audience.js";
 import { JINN_HOME } from "../shared/paths.js";
+import type { JinnConfig } from "../shared/types.js";
 
 /**
  * Attach a /ws/pty/:sessionId WebSocket to a session's interactive PTY stream.
@@ -19,16 +21,29 @@ import { JINN_HOME } from "../shared/paths.js";
  *   - On `ws.close`, decrements the viewer count if this socket reported viewing.
  *     Does NOT directly kill the PTY — the lifecycle manager owns that.
  */
-export function attachPtyWebSocket(ws: WebSocket, sessionId: string, engine: PtyViewEngine): void {
+export function attachPtyWebSocket(
+  ws: WebSocket,
+  sessionId: string,
+  engine: PtyViewEngine,
+  getConfig?: () => JinnConfig,
+): void {
   const spawnIfNeeded = (cols: number, rows: number) => {
     if (engine.hasWarmPty(sessionId)) return;
     const session = getSession(sessionId);
+    // The PTY warmed up here is the one the session's next turn runs in, so it
+    // starts with the memory setting that turn would ask for.
+    const external = !!session && isExternalAudience({
+      source: session.source,
+      ...audienceOfSession(session),
+      config: getConfig?.(),
+    });
     engine.ensureIdleSpawn(sessionId, {
       engineSessionId: session?.engineSessionId ?? undefined,
       model: session?.model ?? undefined,
       cwd: JINN_HOME,
       cols,
       rows,
+      ...(external ? { nativeMemory: "off" as const } : {}),
     });
   };
 

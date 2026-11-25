@@ -264,8 +264,23 @@ export class CodexEngine implements InterruptibleEngine {
     args.push("--json", "--color", "never", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check");
     if (opts.cwd) args.push("-C", opts.cwd);
     if (opts.cliFlags?.length) args.push(...opts.cliFlags);
+    // After cliFlags: a later -c wins, and an employee's flags must not turn this back on.
+    args.push(...this.nativeMemoryArgs(opts));
     args.push("--", prompt);
     return args;
+  }
+
+  /**
+   * Codex keeps its own memory under its home: a summary it loads into new
+   * threads, built from earlier threads. `use_memories` governs the loading
+   * and `generate_memories` whether a new thread becomes input for it. Both
+   * are per-thread decisions made when the thread starts, so they are passed
+   * on a resume too, where they are harmless.
+   */
+  private nativeMemoryArgs(opts: EngineRunOpts): string[] {
+    return opts.nativeMemory === "off"
+      ? ["-c", "memories.use_memories=false", "-c", "memories.generate_memories=false"]
+      : [];
   }
 
   private buildResumeArgs(opts: EngineRunOpts, prompt: string): string[] {
@@ -274,6 +289,7 @@ export class CodexEngine implements InterruptibleEngine {
     if (opts.effortLevel && opts.effortLevel !== "default") args.push("-c", `model_reasoning_effort="${opts.effortLevel}"`);
     args.push("--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check");
     if (opts.cliFlags?.length) args.push(...opts.cliFlags);
+    args.push(...this.nativeMemoryArgs(opts));
     args.push("--", opts.resumeSessionId!, prompt);
     return args;
   }

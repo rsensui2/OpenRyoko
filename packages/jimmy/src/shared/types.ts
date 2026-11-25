@@ -52,6 +52,15 @@ export interface EngineRunOpts {
   sshHost?: string;
   /** Working directory on the remote host (only used when sshHost is set). */
   remoteCwd?: string;
+  /**
+   * "off": the engine's own cross-session memory (Codex memories, Claude Code
+   * auto memory) is neither loaded into this run nor fed by it. Set for a
+   * conversation that reaches someone outside the trusted speakers (see
+   * isExternalAudience): what the engine learned elsewhere is not theirs to
+   * be told, and what they say must not become something every later session
+   * is told. Unset leaves the engine's own configuration in charge.
+   */
+  nativeMemory?: "off";
 }
 
 export interface EngineResult {

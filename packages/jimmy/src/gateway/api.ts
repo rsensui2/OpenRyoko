@@ -20,6 +20,7 @@ import { startOnHealthyEngine } from "../sessions/new-session-engine.js";
 import { cleanupMcpConfigFile, resolveMcpServers, writeMcpConfigFile } from "../mcp/resolver.js";
 import type { SessionManager } from "../sessions/manager.js";
 import { buildContext } from "../sessions/context.js";
+import { audienceOfSession, isExternalAudience } from "../sessions/audience.js";
 import {
   initDb,
   listSessions,
@@ -997,18 +998,26 @@ export async function handleApiRequest(
       return json(res, sessions.map((session) => serializeSession(session, context)));
     }
 
-    // GET /api/search/messages?q=... — FTS5 over user/assistant history.
+    // GET /api/search/messages?q=... — search over user/assistant history.
     if (method === "GET" && pathname === "/api/search/messages") {
       const query = (url.searchParams.get("q") || "").replace(/[\u0000-\u001f\u007f]/g, " ").trim();
       if (!query) return badRequest(res, "q is required");
       if (query.length > 500) return badRequest(res, "q is too long (max 500 characters)");
       const role = url.searchParams.get("role");
       if (role && role !== "user" && role !== "assistant") return badRequest(res, 'role must be "user" or "assistant"');
+      const scope = url.searchParams.get("scope");
+      if (scope && scope !== "all" && scope !== "conversations") return badRequest(res, 'scope must be "all" or "conversations"');
+      const sources = (url.searchParams.get("source") || "").split(",").map((source) => source.trim()).filter(Boolean);
+      if (sources.length > 16 || sources.some((source) => !/^[A-Za-z0-9_-]{1,32}$/.test(source))) {
+        return badRequest(res, "source must be a comma-separated list of source names");
+      }
       const results = searchMessages(query, parseInt(url.searchParams.get("limit") || "20", 10), {
         sessionId: url.searchParams.get("sessionId") || undefined,
         employee: url.searchParams.get("employee") || undefined,
         engine: url.searchParams.get("engine") || undefined,
         role: role as "user" | "assistant" | undefined,
+        sources: sources.length ? sources : undefined,
+        scope: scope as "all" | "conversations" | undefined,
       });
       return json(res, { query, results, indexing: isFtsBackfillPending() });
     }
@@ -2979,6 +2988,14 @@ async function runWebSession(
   const { resolveOrgHierarchy } = await import("./org-hierarchy.js");
   const orgHierarchy = resolveOrgHierarchy(scanOrgForHierarchy());
 
+  // A connector session driven through this runner (a wake-up after a child
+  // session or a job finished, a restart replay, a message typed into it from
+  // the web UI) is still the conversation it was: its audience is whoever spoke
+  // there last, and whoever spoke there before.
+  const audience = audienceOfSession(currentSession);
+  const nativeMemory = isExternalAudience({ source: currentSession.source || "web", ...audience, config })
+    ? "off" as const : undefined;
+
   let mcpConfigPath: string | undefined;
   try {
     const contextForEngine = (engineName: string, sshHost?: string) => buildContext({
@@ -2988,6 +3005,7 @@ async function runWebSession(
       source: currentSession.source || "web",
       channel: currentSession.sourceRef,
       user: "web-user",
+      ...audience,
       employee,
       connectors: Array.from(context.connectors.keys()),
       config,
@@ -3047,6 +3065,7 @@ async function runWebSession(
       model: currentSession.model ?? engineConfig.model,
       effortLevel,
       cliFlags: employee?.cliFlags,
+      nativeMemory,
       sshHost: employee?.sshHost,
       remoteCwd: employee?.remoteCwd,
       attachments: attachments?.length ? attachments : undefined,

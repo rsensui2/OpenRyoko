@@ -4,7 +4,7 @@ import { logger } from "../shared/logger.js";
 import { isDeadSessionError } from "../shared/rateLimit.js";
 import { resolveBin, formatSpawnError } from "../shared/resolveBin.js";
 import { buildChildEnv, CLAUDE_LOCAL_ENV } from "../shared/childEnv.js";
-import { claudeAutoMemoryEnvFor } from "../shared/claude-auto-memory.js";
+import { claudeAutoMemoryEnv, claudeAutoMemoryEnvFor } from "../shared/claude-auto-memory.js";
 import { findClaudeEndpoint, isClaudeEndpointRun, withClaudeEndpointEnv } from "../shared/claude-endpoints.js";
 import { lastActivityAt, startedRun, withOutput, withStreamLine, type ClaudeRunActivity } from "./claude-activity.js";
 
@@ -326,7 +326,13 @@ export class ClaudeEngine implements InterruptibleEngine {
       // (see CLAUDE_LOCAL_ENV).
       try {
         spawnEnv = withClaudeEndpointEnv(
-          { ...buildChildEnv(), ...claudeAutoMemoryEnvFor(opts.cwd || process.cwd()), ...CLAUDE_LOCAL_ENV },
+          {
+            ...buildChildEnv(),
+            ...claudeAutoMemoryEnvFor(opts.cwd || process.cwd()),
+            // An operator who opted into auto memory did not opt outsiders into it.
+            ...(opts.nativeMemory === "off" ? claudeAutoMemoryEnv(false) : {}),
+            ...CLAUDE_LOCAL_ENV,
+          },
           opts.model,
         );
       } catch (err) {

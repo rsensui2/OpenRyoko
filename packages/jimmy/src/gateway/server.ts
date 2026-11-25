@@ -1188,7 +1188,7 @@ export async function startGateway(
       const ptyEngine = ptySession ? ptyViewEngines[ptySession.engine] : undefined;
       if (!ptyEngine) { socket.destroy(); return; }
       ptyWss.handleUpgrade(req, socket, head, (ws) => {
-        attachPtyWebSocket(ws, sessionId, ptyEngine);
+        attachPtyWebSocket(ws, sessionId, ptyEngine, () => currentConfig);
       });
       return;
     }
